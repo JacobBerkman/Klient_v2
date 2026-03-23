@@ -1,7 +1,7 @@
 # Kinetic Klient Rebuild Architecture
 
 ## Product posture
-This rebuild treats the current application as the behavioral reference while deliberately replacing its Replit-centric monolith structure with a portable platform design.
+This rebuild now keeps a single portable runtime: the Node HTTP server in `apps/api/src/server.mjs`, which serves both the API and the static web experiences from one deployable process backed by SQLite.
 
 ## Architectural decisions
 
@@ -59,3 +59,10 @@ Exports should be requested synchronously but processed asynchronously through a
 5. Add persisted Kanban ordering.
 6. Complete repeatable item editing flows.
 7. Move exports to worker processing.
+
+
+## Runtime status
+- **Canonical runtime:** `apps/api/src/server.mjs`
+- **Frontend delivery:** static files in `apps/web/public` served by the backend
+- **Persistence:** SQLite snapshot state plus read-optimized query tables in `data/app.db`
+- **Historical prototype only:** the Fastify/TypeScript files under `apps/api/src/*.ts` are not part of the live startup path

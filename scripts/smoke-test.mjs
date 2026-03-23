@@ -34,6 +34,11 @@ async function run() {
     headers: authHeaders,
     body: JSON.stringify({ kind: 'prospect', firstName: 'Smoke', lastName: 'Test', email: 'smoke@example.com', stage: 'discovery', ssn: '123456789' })
   });
+  const client = await jsonFetch('/api/profiles', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ kind: 'client', firstName: 'House', lastName: 'Hold', email: 'house@example.com', phone: '555-202-3030', taxId: '99887766' })
+  });
 
   const foundProfiles = await jsonFetch('/api/profiles?search=Smoke', { headers: { Authorization: `Bearer ${login.token}` } });
   if (!foundProfiles.find((entry) => entry.id === profile.id)) throw new Error('Search failed');
@@ -44,6 +49,10 @@ async function run() {
     body: JSON.stringify({ body: 'Smoke test note' })
   });
 
+  const household = await jsonFetch('/api/households', { method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Smoke Household', primaryClientId: client.id }) });
+  await jsonFetch(`/api/households/${household.id}/members`, { method: 'POST', headers: authHeaders, body: JSON.stringify({ clientId: profile.id, role: 'member' }) });
+  const spouse = await jsonFetch('/api/households/create-spouse', { method: 'POST', headers: authHeaders, body: JSON.stringify({ primaryClientId: client.id, spouse: { firstName: 'Sam', lastName: 'Hold', email: 'sam@example.com', phone: '555-444-5555' } }) });
+  await jsonFetch(`/api/households/${household.id}/members`, { method: 'DELETE', headers: authHeaders, body: JSON.stringify({ clientId: profile.id }) });
   const invite = await jsonFetch('/api/invites', { method: 'POST', headers: authHeaders, body: JSON.stringify({ email: 'readonly@test.local', role: 'readonly' }) });
   const readonlySession = await jsonFetch('/api/invites/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: invite.token, firstName: 'Read', lastName: 'Only', password: 'Readonly123!' }) });
   const reset = await jsonFetch('/api/password-resets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'readonly@test.local' }) });
@@ -74,7 +83,9 @@ async function run() {
 
   const drafts = await jsonFetch('/api/forms/drafts', { headers: { Authorization: `Bearer ${login.token}` } });
   const analytics = await jsonFetch('/api/analytics', { headers: { Authorization: `Bearer ${login.token}` } });
-  const detail = await jsonFetch(`/api/profiles/${profile.id}`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const detail = await jsonFetch(`/api/profiles/${client.id}`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const households = await jsonFetch('/api/households', { headers: { Authorization: `Bearer ${login.token}` } });
+  const masked = await jsonFetch(`/api/profiles/${client.id}/sensitive`, { headers: { Authorization: `Bearer ${login.token}` } });
   const dashboard = await jsonFetch('/api/dashboard', { headers: { Authorization: `Bearer ${login.token}` } });
   await jsonFetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
 
@@ -83,7 +94,9 @@ async function run() {
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'draft')) throw new Error('Portal draft missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'submitted')) throw new Error('Portal submission missing');
   if (!exportsList.find((job) => job.id === exportJob.id && job.status === 'completed')) throw new Error('Export processing failed');
-  if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
+  if (!detail.household || detail.householdMembers.length < 2 || !detail.profileRecord) throw new Error('Profile detail failed');
+  if (!households.find((entry) => entry.id === household.id)) throw new Error('Household list failed');
+  if (!masked.taxIdMasked) throw new Error('Sensitive masking failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
 
@@ -91,6 +104,8 @@ async function run() {
     login: login.user.email,
     profileId: profile.id,
     noteId: note.id,
+    householdId: household.id,
+    spouseId: spouse.id,
     inviteRole: readonlySession.user.role,
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
