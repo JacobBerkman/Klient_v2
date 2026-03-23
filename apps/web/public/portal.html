@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kinetic Klient Portal</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="content">
+      <section class="card">
+        <h1>Client Portal</h1>
+        <p class="muted">Open this page with <code>?token=...</code> to view shared profile data.</p>
+        <div id="portal-data"></div>
+      </section>
+    </main>
+    <script type="module">
+      const token = new URLSearchParams(window.location.search).get('token');
+      const target = document.querySelector('#portal-data');
+      if (!token) {
+        target.textContent = 'Missing portal token.';
+      } else {
+        fetch(`/api/portal/${token}`)
+          .then((response) => response.json())
+          .then((data) => {
+            target.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+          })
+          .catch(() => {
+            target.textContent = 'Unable to load portal data.';
+          });
+      }
+    </script>
+  </body>
+</html>

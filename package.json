@@ -1,0 +1,13 @@
+{
+  "name": "kinetic-klient-rebuild",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "packageManager": "pnpm@10.6.5",
+  "scripts": {
+    "check": "git diff --check",
+    "dev": "node apps/api/src/server.mjs",
+    "start": "node apps/api/src/server.mjs",
+    "test": "node scripts/smoke-test.mjs"
+  }
+}
