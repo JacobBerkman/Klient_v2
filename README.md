@@ -7,7 +7,7 @@ Kinetic Klient is now consolidated onto **one real runtime architecture**:
 - the advisor web UI served directly from `apps/web/public`
 - the client portal served from `/portal`
 
-The older Fastify/TypeScript scaffold in `apps/api/src/*.ts` remains as historical reference only and is **not** the shipped runtime path.
+The older duplicate Fastify/TypeScript backend path and related workspace scaffolding have been removed so the repository now has one real startup path.
 
 ## Product capabilities
 - firm admin registration and sign-in
@@ -28,7 +28,7 @@ The repo now treats the plain Node runtime as canonical because it is the path t
 - powers the smoke test and Docker startup path,
 - and can be verified end-to-end without a second backend stack.
 
-That eliminates the split-brain between the unused Fastify prototype and the working `.mjs` application server.
+That eliminates the split-brain between competing backend implementations and keeps local, Docker, CI, and smoke verification on the same runtime.
 
 ## Local development
 ```bash

@@ -225,7 +225,6 @@ export function createStore() {
 
   function createSession(user) {
     const token = randomUUID();
-    state.sessions = state.sessions.filter((entry) => entry.userId !== user.id || entry.firmId !== user.firmId);
     state.sessions.push({ token, userId: user.id, firmId: user.firmId, createdAt: now(), expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString() });
     persist();
     return { token, user: publicUser(user) };

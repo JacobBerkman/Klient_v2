@@ -1,68 +1,38 @@
 # Kinetic Klient Rebuild Architecture
 
 ## Product posture
-This rebuild now keeps a single portable runtime: the Node HTTP server in `apps/api/src/server.mjs`, which serves both the API and the static web experiences from one deployable process backed by SQLite.
-
-## Architectural decisions
-
-### 1. Monorepo with explicit service and app boundaries
-- `apps/api` will host the primary application API.
-- `apps/web` will host the advisor/staff UI.
-- `packages/domain` will hold shared contracts, enums, DTOs, and canonical workflow definitions.
-
-### 2. Canonical template aggregate
-The legacy split between `form_templates` and `templates`/`form_definitions`/`form_sections` is replaced by a single versioned template aggregate that owns:
-- uploaded PDF metadata,
-- extracted PDF fields,
-- auto-built blueprint structure,
-- manual edits in the builder/inspector,
-- mapping rules,
-- publish history.
-
-### 3. Security-first backend policy
-The API should enforce authorization server-side using:
-- authenticated principal context,
-- firm scoping middleware,
-- policy checks by resource/action,
-- audited sensitive field access,
-- encryption services for PII.
-
-### 4. Durable pipeline ordering
-Prospect records should store a persisted per-stage `stageOrderIndex` so the Kanban board supports:
-- stable ordering inside a stage,
-- stable order when moving across stages,
-- optimistic UI with rollback,
-- deterministic analytics for stage aging and conversion funnels.
-
-### 5. Replace browser-storage workflow hacks
-Property and investment details should be draft-backed nested form flows instead of `sessionStorage` handoffs.
-
-### 6. Background export architecture
-Exports should be requested synchronously but processed asynchronously through a queue-backed worker. That worker should support retries, idempotency, and audit-friendly histories.
-
-## Canonical backend modules
-1. Auth + firms + invitations
-2. CRM profiles + source attribution
-3. Pipeline + stage history + analytics facts
-4. Households + spouse linking
-5. Forms + drafts + submissions
-6. Templates + auto-build + mappings + versioning
-7. Exports + document generation workers
-8. Audit + compliance + sensitive data access logs
-9. Reporting + analytics views
-
-## Migration priorities
-1. Build shared contracts and policies.
-2. Unify templates/forms data model.
-3. Introduce RBAC and firm enforcement everywhere.
-4. Introduce encryption and masking services.
-5. Add persisted Kanban ordering.
-6. Complete repeatable item editing flows.
-7. Move exports to worker processing.
-
+Kinetic Klient now ships as a **single deployable Node application** backed by SQLite.
+The runtime entrypoint is `apps/api/src/server.mjs`, and that server is responsible for:
+- serving the JSON API,
+- serving the advisor UI from `apps/web/public`,
+- serving the client portal from `/portal`,
+- persisting application state to `data/app.db`, and
+- exposing health/readiness probes for operations.
 
 ## Runtime status
 - **Canonical runtime:** `apps/api/src/server.mjs`
-- **Frontend delivery:** static files in `apps/web/public` served by the backend
+- **Frontend delivery:** static assets in `apps/web/public`
 - **Persistence:** SQLite snapshot state plus read-optimized query tables in `data/app.db`
-- **Historical prototype only:** the Fastify/TypeScript files under `apps/api/src/*.ts` are not part of the live startup path
+- **Background processing:** export jobs can be completed by `scripts/export-worker.mjs`
+- **Removed duplication:** the unused Fastify/TypeScript prototype and related workspace scaffolding are no longer part of the repository
+
+## Core backend capabilities
+1. Authentication, firm bootstrap, invites, and password reset
+2. Profiles, pipeline stages, notes, and dashboard reporting
+3. Households, spouse linking, and member management
+4. Form templates, drafts, submissions, and portal intake
+5. Document templates, mapping auto-build, and export jobs
+6. Audit history, analytics summaries, and masked sensitive-data access
+
+## Security posture in the shipped runtime
+- passwords must meet a minimum strength policy,
+- sessions expire automatically,
+- repeated failed logins are rate limited,
+- firm scoping is enforced by the runtime store,
+- and sensitive identifiers are encrypted at rest and exposed only as masked values.
+
+## Operational model
+- **Local start:** `node apps/api/src/server.mjs`
+- **Smoke verification:** `node scripts/smoke-test.mjs`
+- **Full validation:** `npm run test:all`
+- **Container runtime:** `docker compose --env-file .env up --build -d`

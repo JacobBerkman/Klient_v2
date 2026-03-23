@@ -68,3 +68,7 @@ node scripts/export-worker.mjs
 ## Logs and shutdown
 The server emits structured JSON logs to stdout/stderr and handles `SIGTERM` / `SIGINT` for graceful shutdown.
 Ship stdout/stderr to your logging platform and use the health endpoints for orchestration probes.
+
+
+## Build context hygiene
+A `.dockerignore` file excludes git metadata, local SQLite data, logs, and `node_modules` from image builds so Docker packages only the shipped runtime assets.
