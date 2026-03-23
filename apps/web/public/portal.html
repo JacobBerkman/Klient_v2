@@ -7,28 +7,312 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
-    <main class="content">
+    <main class="content portal-layout">
+      <section class="card portal-hero">
+        <p class="eyebrow">Secure client workspace</p>
+        <h1 id="portal-title">Client Portal</h1>
+        <p class="muted" id="portal-subtitle">Loading your shared profile and forms…</p>
+      </section>
+
+      <section class="grid two">
+        <article class="card">
+          <h2>Profile Snapshot</h2>
+          <div id="portal-profile" class="stack gap-sm"></div>
+        </article>
+
+        <article class="card">
+          <h2>Submission History</h2>
+          <div id="portal-submissions" class="stack gap-sm"></div>
+        </article>
+      </section>
+
       <section class="card">
-        <h1>Client Portal</h1>
-        <p class="muted">Open this page with <code>?token=...</code> to view shared profile data.</p>
-        <div id="portal-data"></div>
+        <div class="section-header">
+          <div>
+            <h2>Complete a Form</h2>
+            <p class="muted">Choose a shared template, save a draft, or submit when you are ready.</p>
+          </div>
+          <span id="portal-status" class="badge subtle">Awaiting template</span>
+        </div>
+
+        <div class="grid two">
+          <label>
+            <span>Template</span>
+            <select id="template-picker"></select>
+          </label>
+          <div class="item compact">
+            <strong>Instructions</strong>
+            <p class="muted" id="template-description">No shared template selected yet.</p>
+          </div>
+        </div>
+
+        <form id="portal-form" class="stack gap-md">
+          <div id="portal-fields" class="stack gap-md"></div>
+          <div class="actions-row">
+            <button type="submit" data-status="submitted">Submit Form</button>
+            <button type="button" data-save-draft>Save Draft</button>
+          </div>
+        </form>
       </section>
     </main>
+
     <script type="module">
       const token = new URLSearchParams(window.location.search).get('token');
-      const target = document.querySelector('#portal-data');
-      if (!token) {
-        target.textContent = 'Missing portal token.';
-      } else {
-        fetch(`/api/portal/${token}`)
-          .then((response) => response.json())
-          .then((data) => {
-            target.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
-          })
-          .catch(() => {
-            target.textContent = 'Unable to load portal data.';
-          });
+      const title = document.querySelector('#portal-title');
+      const subtitle = document.querySelector('#portal-subtitle');
+      const profileTarget = document.querySelector('#portal-profile');
+      const submissionsTarget = document.querySelector('#portal-submissions');
+      const statusBadge = document.querySelector('#portal-status');
+      const templatePicker = document.querySelector('#template-picker');
+      const templateDescription = document.querySelector('#template-description');
+      const fieldsTarget = document.querySelector('#portal-fields');
+      const form = document.querySelector('#portal-form');
+      const draftButton = document.querySelector('[data-save-draft]');
+
+      const portalState = {
+        token,
+        data: null,
+        selectedTemplateId: '',
+        sectionRepeats: new Map()
+      };
+
+      const fieldTypeToInput = {
+        text: 'text',
+        number: 'number',
+        date: 'date',
+        email: 'email'
+      };
+
+      function escapeHtml(value) {
+        return String(value ?? '')
+          .replaceAll('&', '&amp;')
+          .replaceAll('<', '&lt;')
+          .replaceAll('>', '&gt;')
+          .replaceAll('"', '&quot;')
+          .replaceAll("'", '&#39;');
       }
+
+      function renderEmptyState(target, message) {
+        target.innerHTML = `<div class="item compact muted">${escapeHtml(message)}</div>`;
+      }
+
+      function selectedTemplate() {
+        return portalState.data?.availableTemplates?.find((template) => template.id === portalState.selectedTemplateId) || null;
+      }
+
+      function renderProfile(profile, firm) {
+        if (!profile) {
+          renderEmptyState(profileTarget, 'No profile is linked to this portal token.');
+          return;
+        }
+        title.textContent = `${firm?.name || 'Kinetic Klient'} Portal`;
+        subtitle.textContent = `Welcome ${profile.firstName} ${profile.lastName}. Review your information and complete any requested forms below.`;
+        profileTarget.innerHTML = `
+          <div class="item compact">
+            <strong>${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</strong>
+            <div class="muted">${escapeHtml(profile.email || 'No email on file')}</div>
+            <div class="muted">${escapeHtml(profile.phone || 'No phone on file')}</div>
+          </div>
+          <div class="grid two compact-grid">
+            <div class="item compact"><strong>Household</strong><div class="muted">${escapeHtml(profile.householdId || 'Not linked yet')}</div></div>
+            <div class="item compact"><strong>Address</strong><div class="muted">${escapeHtml([profile.address?.city, profile.address?.state].filter(Boolean).join(', ') || 'Not provided')}</div></div>
+          </div>
+        `;
+      }
+
+      function renderSubmissions(submissions) {
+        if (!submissions?.length) {
+          renderEmptyState(submissionsTarget, 'No drafts or submitted forms yet.');
+          return;
+        }
+        submissionsTarget.innerHTML = submissions.map((submission) => `
+          <article class="item compact">
+            <div class="row between">
+              <strong>${escapeHtml(submission.templateId)}</strong>
+              <span class="badge ${submission.status === 'submitted' ? '' : 'subtle'}">${escapeHtml(submission.status)}</span>
+            </div>
+            <div class="muted">Updated ${new Date(submission.updatedAt || submission.createdAt).toLocaleString()}</div>
+            <pre>${escapeHtml(JSON.stringify(submission.data, null, 2))}</pre>
+          </article>
+        `).join('');
+      }
+
+      function fieldName(sectionIndex, fieldKey, rowIndex = null) {
+        return rowIndex === null ? `section-${sectionIndex}::${fieldKey}` : `section-${sectionIndex}::${rowIndex}::${fieldKey}`;
+      }
+
+      function renderField(sectionIndex, field, rowIndex = null) {
+        const baseName = fieldName(sectionIndex, field.key, rowIndex);
+        const label = escapeHtml(field.label || field.key);
+        if (field.type === 'textarea') {
+          return `<label><span>${label}</span><textarea name="${baseName}" rows="4" placeholder="${label}"></textarea></label>`;
+        }
+        if (field.type === 'select') {
+          return `<label><span>${label}</span><select name="${baseName}"><option value="">Select…</option>${(field.options || []).map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join('')}</select></label>`;
+        }
+        const inputType = fieldTypeToInput[field.type] || 'text';
+        return `<label><span>${label}</span><input type="${inputType}" name="${baseName}" placeholder="${label}" /></label>`;
+      }
+
+      function repeatCountFor(sectionIndex) {
+        return portalState.sectionRepeats.get(sectionIndex) || 1;
+      }
+
+      function renderTemplateFields() {
+        const template = selectedTemplate();
+        if (!template) {
+          templateDescription.textContent = 'No shared template selected yet.';
+          statusBadge.textContent = 'Awaiting template';
+          statusBadge.className = 'badge subtle';
+          fieldsTarget.innerHTML = '';
+          return;
+        }
+
+        templateDescription.textContent = template.description || 'No additional instructions were provided for this form.';
+        statusBadge.textContent = `Ready: ${template.name}`;
+        statusBadge.className = 'badge';
+
+        fieldsTarget.innerHTML = template.sections.map((section, sectionIndex) => {
+          const repeatable = Boolean(section.repeatable);
+          const repeatCount = repeatable ? repeatCountFor(sectionIndex) : 1;
+          const repeatedBlocks = Array.from({ length: repeatCount }, (_, rowIndex) => `
+            <div class="repeat-block">
+              ${repeatable ? `<div class="muted">Entry ${rowIndex + 1}</div>` : ''}
+              <div class="grid two compact-grid">
+                ${(section.fields || []).map((field) => renderField(sectionIndex, field, repeatable ? rowIndex : null)).join('')}
+              </div>
+            </div>
+          `).join('');
+
+          return `
+            <section class="item section-card">
+              <div class="row between">
+                <div>
+                  <h3>${escapeHtml(section.title || `Section ${sectionIndex + 1}`)}</h3>
+                  ${section.repeatable ? '<p class="muted">Add as many entries as needed.</p>' : ''}
+                </div>
+                ${repeatable ? `<button type="button" data-add-repeat="${sectionIndex}">Add entry</button>` : ''}
+              </div>
+              ${repeatedBlocks}
+            </section>
+          `;
+        }).join('');
+
+        document.querySelectorAll('[data-add-repeat]').forEach((button) => {
+          button.addEventListener('click', () => {
+            const sectionIndex = Number(button.dataset.addRepeat);
+            portalState.sectionRepeats.set(sectionIndex, repeatCountFor(sectionIndex) + 1);
+            renderTemplateFields();
+          });
+        });
+      }
+
+      function buildPayloadFromForm() {
+        const template = selectedTemplate();
+        if (!template) throw new Error('Please select a template.');
+        const formData = new FormData(form);
+        const payload = {};
+
+        template.sections.forEach((section, sectionIndex) => {
+          if (section.repeatable) {
+            const rows = [];
+            for (let rowIndex = 0; rowIndex < repeatCountFor(sectionIndex); rowIndex += 1) {
+              const row = {};
+              let hasValue = false;
+              for (const field of section.fields || []) {
+                const value = String(formData.get(fieldName(sectionIndex, field.key, rowIndex)) || '').trim();
+                if (value) hasValue = true;
+                row[field.key] = value;
+              }
+              if (hasValue) rows.push(row);
+            }
+            payload[(section.title || `section_${sectionIndex + 1}`).toLowerCase().replace(/[^a-z0-9]+/g, '_')] = rows;
+            return;
+          }
+
+          for (const field of section.fields || []) {
+            payload[field.key] = String(formData.get(fieldName(sectionIndex, field.key)) || '').trim();
+          }
+        });
+
+        return payload;
+      }
+
+      async function loadPortal() {
+        if (!token) {
+          title.textContent = 'Client Portal';
+          subtitle.textContent = 'Open this page with a valid token to review and complete forms.';
+          renderEmptyState(profileTarget, 'Missing portal token.');
+          renderEmptyState(submissionsTarget, 'No submission history is available without a portal token.');
+          renderEmptyState(fieldsTarget, 'A portal token is required to load forms.');
+          templatePicker.innerHTML = '<option value="">Missing token</option>';
+          draftButton.disabled = true;
+          return;
+        }
+
+        const response = await fetch(`/api/portal/${token}`);
+        const data = await response.json();
+        if (!response.ok) throw new Error(data.message || 'Unable to load portal data.');
+
+        portalState.data = data;
+        portalState.selectedTemplateId = data.availableTemplates?.[0]?.id || '';
+        portalState.sectionRepeats = new Map();
+
+        templatePicker.innerHTML = data.availableTemplates?.length
+          ? data.availableTemplates.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`).join('')
+          : '<option value="">No templates shared</option>';
+
+        renderProfile(data.profile, data.firm);
+        renderSubmissions(data.submissions || []);
+        renderTemplateFields();
+      }
+
+      templatePicker.addEventListener('change', () => {
+        portalState.selectedTemplateId = templatePicker.value;
+        portalState.sectionRepeats = new Map();
+        renderTemplateFields();
+      });
+
+      async function saveSubmission(status) {
+        const payload = buildPayloadFromForm();
+        const response = await fetch(`/api/portal/${token}/submissions`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ templateId: portalState.selectedTemplateId, status, data: payload })
+        });
+        const result = await response.json();
+        if (!response.ok) throw new Error(result.message || 'Unable to save form.');
+        await loadPortal();
+        form.reset();
+        statusBadge.textContent = status === 'draft' ? 'Draft saved' : 'Form submitted';
+        statusBadge.className = 'badge';
+      }
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          await saveSubmission('submitted');
+        } catch (error) {
+          statusBadge.textContent = error.message;
+          statusBadge.className = 'badge subtle';
+        }
+      });
+
+      draftButton.addEventListener('click', async () => {
+        try {
+          await saveSubmission('draft');
+        } catch (error) {
+          statusBadge.textContent = error.message;
+          statusBadge.className = 'badge subtle';
+        }
+      });
+
+      loadPortal().catch((error) => {
+        subtitle.textContent = error.message || 'Unable to load portal data.';
+        renderEmptyState(profileTarget, 'Unable to load portal data.');
+        renderEmptyState(submissionsTarget, 'Unable to load submission history.');
+        renderEmptyState(fieldsTarget, 'Unable to load form fields.');
+      });
     </script>
   </body>
 </html>

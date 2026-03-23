@@ -149,13 +149,30 @@ async function renderHouseholds() {
 }
 
 async function renderForms() {
-  const [templates, submissions] = await Promise.all([api('/api/forms/templates'), api('/api/forms/submissions')]);
+  const [templates, submissions, drafts] = await Promise.all([
+    api('/api/forms/templates'),
+    api('/api/forms/submissions'),
+    api('/api/forms/drafts')
+  ]);
+  const submitted = submissions.filter((item) => item.status !== 'draft');
   view.innerHTML = `
-    <h2>Forms</h2>
+    <div class="section-header">
+      <div>
+        <h2>Forms</h2>
+        <p class="muted">Monitor shared templates plus saved drafts and submitted client responses.</p>
+      </div>
+      <div class="stat-grid compact-stats">
+        <div class="stat"><strong>${templates.length}</strong><div class="muted">templates</div></div>
+        <div class="stat"><strong>${drafts.length}</strong><div class="muted">drafts</div></div>
+        <div class="stat"><strong>${submitted.length}</strong><div class="muted">submitted</div></div>
+      </div>
+    </div>
     <h3>Templates</h3>
-    ${renderItems(templates, (item) => `<div class="item"><strong>${item.name}</strong><div class="muted">${item.description || ''}</div></div>`)}
-    <h3>Submissions</h3>
-    ${renderItems(submissions, (item) => `<div class="item"><strong>${item.id}</strong><div class="muted">Client ${item.clientId}</div><pre>${JSON.stringify(item.data, null, 2)}</pre></div>`)}
+    ${renderItems(templates, (item) => `<div class="item"><strong>${item.name}</strong><div class="muted">${item.description || ''}</div><div class="muted">Sections: ${(item.sections || []).length}</div></div>`)}
+    <h3>Drafts</h3>
+    ${drafts.length ? renderItems(drafts, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge subtle">draft</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div><pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No drafts yet.</div>'}
+    <h3>Submitted</h3>
+    ${submitted.length ? renderItems(submitted, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge">${item.status}</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div><pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No submitted forms yet.</div>'}
   `;
 }
 

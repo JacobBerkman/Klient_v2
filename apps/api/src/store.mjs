@@ -434,7 +434,11 @@ export function createStore() {
       return template;
     },
     listFormSubmissions(user, status = null) {
-      return state.formSubmissions.filter((entry) => entry.firmId === user.firmId).filter((entry) => !status || entry.status === status);
+      return state.formSubmissions
+        .filter((entry) => entry.firmId === user.firmId)
+        .filter((entry) => !status || entry.status === status)
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
     },
     listFormDrafts(user) {
       return this.listFormSubmissions(user, 'draft');
@@ -623,14 +627,35 @@ export function createStore() {
     getPortalData(token) {
       const link = state.portalLinks.find((entry) => entry.token === token);
       if (!link) throw new Error('Portal link not found.');
+      const firm = state.firms.find((entry) => entry.id === link.firmId) || null;
       const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId);
-      const submissions = state.formSubmissions.filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId);
-      return { profile, submissions };
+      const submissions = state.formSubmissions
+        .filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId)
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      const availableTemplates = state.formTemplates
+        .filter((entry) => entry.firmId === link.firmId)
+        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
+      return { firm, profile, submissions, availableTemplates };
     },
     portalSubmit(token, input) {
       const link = state.portalLinks.find((entry) => entry.token === token);
       if (!link) throw new Error('Portal link not found.');
-      const submission = { id: randomUUID(), firmId: link.firmId, clientId: link.profileId, templateId: input.templateId || 'portal', status: input.status || 'submitted', data: input.data || {}, createdAt: now(), updatedAt: now(), source: 'portal' };
+      const templateId = input.templateId || 'portal';
+      const template = templateId === 'portal' ? null : state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === link.firmId);
+      if (templateId !== 'portal' && !template) throw new Error('Form template not found.');
+      const status = input.status === 'draft' ? 'draft' : 'submitted';
+      const submission = {
+        id: randomUUID(),
+        firmId: link.firmId,
+        clientId: link.profileId,
+        templateId,
+        status,
+        data: input.data && typeof input.data === 'object' ? input.data : {},
+        createdAt: now(),
+        updatedAt: now(),
+        source: 'portal'
+      };
       state.formSubmissions.push(submission);
       persist();
       return submission;

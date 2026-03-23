@@ -49,7 +49,7 @@ See `DEPLOYMENT.md` for deployment details and the `/health` endpoint.
 
 
 ## Portal view
-Open `http://localhost:3000/portal?token=...` with a generated portal token to view shared client data.
+Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
 
 
 ## Backup

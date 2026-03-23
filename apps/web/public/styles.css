@@ -27,3 +27,26 @@ pre { white-space: pre-wrap; }
 
 .detail-header { display: grid; gap: 8px; margin-bottom: 16px; }
 textarea { min-height: 84px; }
+
+.stack { display: grid; }
+.gap-sm { gap: 8px; }
+.gap-md { gap: 16px; }
+.row { display: flex; gap: 12px; align-items: center; }
+.row.between { justify-content: space-between; }
+.compact { padding: 10px; }
+.compact-grid { gap: 10px; }
+.compact-stats { grid-template-columns: repeat(3, minmax(100px, 1fr)); }
+.section-header { display: flex; justify-content: space-between; align-items: start; gap: 16px; margin-bottom: 16px; }
+.actions-row { display: flex; gap: 12px; flex-wrap: wrap; }
+.portal-layout { max-width: 1100px; margin: 0 auto; }
+.portal-hero { background: linear-gradient(135deg, #111827, #1d4ed8); }
+.eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; color: #bfdbfe; }
+.badge.subtle { background: #334155; }
+.section-card { display: grid; gap: 12px; }
+.repeat-block { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid #1e293b; }
+
+@media (max-width: 800px) {
+  .layout { grid-template-columns: 1fr; }
+  .sidebar { border-right: 0; border-bottom: 1px solid #1f2937; }
+  .section-header { flex-direction: column; }
+}
