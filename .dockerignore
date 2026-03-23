@@ -1,3 +1,5 @@
 .git
 node_modules
-data/app.db
+data/*.db
+data/backup-*.db
+.env

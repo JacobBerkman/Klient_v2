@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -106,6 +106,20 @@ function syncQueryTables(state) {
   replaceRows('export_jobs', state.exportJobs || [], (job) => [job.id, job.firmId, job.clientId || null, job.type, job.status, JSON.stringify(job)]);
   replaceRows('notes', state.notes || [], (note) => [note.id, note.firmId, note.profileId, note.createdAt, JSON.stringify(note)]);
   replaceRows('audit_events', state.auditEvents || [], (event) => [event.id, event.firmId, event.action, event.occurredAt, JSON.stringify(event)]);
+}
+
+
+export function ensureDatabaseReady() {
+  db.prepare('SELECT 1').get();
+  return {
+    ok: true,
+    dbPath: DB_PATH,
+    exists: existsSync(DB_PATH)
+  };
+}
+
+export function closeDatabase() {
+  db.close();
 }
 
 export function loadState(seedFactory) {

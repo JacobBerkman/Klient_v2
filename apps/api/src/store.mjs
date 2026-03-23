@@ -1,7 +1,8 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { runtime } from './runtime.mjs';
 import { loadState, saveState } from './storage.mjs';
 
-const APP_SECRET = createHash('sha256').update(process.env.APP_SECRET || 'kinetic-klient-dev-secret').digest();
+const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const PERMISSIONS = {
   admin: ['*'],
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
