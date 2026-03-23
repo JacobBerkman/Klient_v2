@@ -433,8 +433,11 @@ export function createStore() {
       persist();
       return template;
     },
-    listFormSubmissions(user) {
-      return state.formSubmissions.filter((entry) => entry.firmId === user.firmId);
+    listFormSubmissions(user, status = null) {
+      return state.formSubmissions.filter((entry) => entry.firmId === user.firmId).filter((entry) => !status || entry.status === status);
+    },
+    listFormDrafts(user) {
+      return this.listFormSubmissions(user, 'draft');
     },
     createFormSubmission(user, input) {
       requirePermission(user, 'forms:write');
@@ -486,12 +489,6 @@ export function createStore() {
       state.exportJobs.push(job);
       addAudit(user.firmId, user.id, 'export_job', job.id, 'export_job.created', { clientId: input.clientId, templateId: input.templateId, type: job.type });
       persist();
-      setTimeout(() => {
-        job.status = 'completed';
-        job.output = { fileName: `${input.type || 'pdf'}-${Date.now()}.json`, preview: { clientId: input.clientId, templateId: input.templateId } };
-        job.updatedAt = now();
-        persist();
-      }, 25);
       return job;
     },
     retryExport(user, exportId) {
@@ -501,13 +498,20 @@ export function createStore() {
       job.status = 'queued';
       job.updatedAt = now();
       persist();
-      setTimeout(() => {
-        job.status = 'completed';
-        job.output = { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
-        job.updatedAt = now();
-        persist();
-      }, 25);
       return job;
+    },
+    processQueuedExports() {
+      let processed = 0;
+      for (const job of state.exportJobs) {
+        if (job.status === 'queued') {
+          job.status = 'completed';
+          job.output = { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
+          job.updatedAt = now();
+          processed += 1;
+        }
+      }
+      persist();
+      return { processed };
     },
     listAudit(user) {
       return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();
@@ -622,6 +626,14 @@ export function createStore() {
       const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId);
       const submissions = state.formSubmissions.filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId);
       return { profile, submissions };
+    },
+    portalSubmit(token, input) {
+      const link = state.portalLinks.find((entry) => entry.token === token);
+      if (!link) throw new Error('Portal link not found.');
+      const submission = { id: randomUUID(), firmId: link.firmId, clientId: link.profileId, templateId: input.templateId || 'portal', status: input.status || 'submitted', data: input.data || {}, createdAt: now(), updatedAt: now(), source: 'portal' };
+      state.formSubmissions.push(submission);
+      persist();
+      return submission;
     },
     getAnalytics(user) {
       requirePermission(user, 'analytics:read');

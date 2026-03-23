@@ -5,10 +5,12 @@ import { fileURLToPath } from 'node:url';
 
 import { createStore } from './store.mjs';
 import { readQuerySummary } from './storage.mjs';
+import { SqliteReadRepository } from './repositories/sqlite-read-repository.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(__dirname, '../../web/public');
 const store = createStore();
+const reads = new SqliteReadRepository();
 const port = Number(process.env.PORT || 3000);
 
 function json(res, status, body) {
@@ -80,7 +82,7 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/session' && req.method === 'GET') return json(res, 200, { user: requireUser(req) });
     if (pathname === '/api/logout' && req.method === 'POST') return json(res, 200, store.logout(getToken(req)));
     if (pathname === '/api/dashboard' && req.method === 'GET') return json(res, 200, store.getDashboard(requireUser(req)));
-    if (pathname === '/api/profiles' && req.method === 'GET') return json(res, 200, store.listProfiles(requireUser(req), url.searchParams.get('kind'), url.searchParams.get('search') || ''));
+    if (pathname === '/api/profiles' && req.method === 'GET') { const user = requireUser(req); return json(res, 200, reads.listProfiles(user.firmId, { kind: url.searchParams.get('kind'), search: url.searchParams.get('search') || '' })); }
     if (pathname === '/api/profiles' && req.method === 'POST') return json(res, 201, store.createProfile(requireUser(req), await parseBody(req)));
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage-history') && req.method === 'GET') {
       const id = pathname.split('/')[3];
@@ -97,7 +99,8 @@ const server = createServer(async (req, res) => {
     }
     if (pathname.startsWith('/api/profiles/') && pathname.split('/').length === 4 && req.method === 'GET') {
       const id = pathname.split('/')[3];
-      return json(res, 200, store.getProfileDetail(requireUser(req), id));
+      const user = requireUser(req);
+      return json(res, 200, { ...store.getProfileDetail(user, id), profileRecord: reads.getProfileDetail(user.firmId, id) });
     }
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage') && req.method === 'PATCH') {
       const id = pathname.split('/')[3];
@@ -125,6 +128,7 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/forms/templates' && req.method === 'GET') return json(res, 200, store.listFormTemplates(requireUser(req)));
     if (pathname === '/api/forms/templates' && req.method === 'POST') return json(res, 201, store.createFormTemplate(requireUser(req), await parseBody(req)));
     if (pathname === '/api/forms/submissions' && req.method === 'GET') return json(res, 200, store.listFormSubmissions(requireUser(req)));
+    if (pathname === '/api/forms/drafts' && req.method === 'GET') return json(res, 200, store.listFormDrafts(requireUser(req)));
     if (pathname === '/api/forms/submissions' && req.method === 'POST') return json(res, 201, store.createFormSubmission(requireUser(req), await parseBody(req)));
     if (pathname.startsWith('/api/forms/submissions/') && req.method === 'PATCH') { const id = pathname.split('/')[4]; return json(res, 200, store.updateSubmission(requireUser(req), id, await parseBody(req))); }
     if (pathname.startsWith('/api/forms/submissions/') && req.method === 'DELETE') { const id = pathname.split('/')[4]; return json(res, 200, store.deleteSubmission(requireUser(req), id)); }
@@ -139,12 +143,14 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === '/api/exports' && req.method === 'GET') return json(res, 200, store.listExports(requireUser(req)));
     if (pathname === '/api/exports' && req.method === 'POST') return json(res, 201, store.createExport(requireUser(req), await parseBody(req)));
+    if (pathname === '/api/exports/process' && req.method === 'POST') return json(res, 200, store.processQueuedExports());
     if (pathname.startsWith('/api/exports/') && pathname.endsWith('/retry') && req.method === 'POST') { const id = pathname.split('/')[3]; return json(res, 200, store.retryExport(requireUser(req), id)); }
     if (pathname === '/api/audit' && req.method === 'GET') return json(res, 200, store.listAudit(requireUser(req)));
-    if (pathname === '/api/analytics' && req.method === 'GET') return json(res, 200, store.getAnalytics(requireUser(req)));
+    if (pathname === '/api/analytics' && req.method === 'GET') { const user = requireUser(req); return json(res, 200, { stageCounts: reads.getAnalytics(user.firmId), summary: store.getAnalytics(user) }); }
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/sensitive') && req.method === 'GET') { const id = pathname.split('/')[3]; return json(res, 200, store.getMaskedSensitiveData(requireUser(req), id)); }
     if (pathname === '/api/portal-links' && req.method === 'POST') { const body = await parseBody(req); return json(res, 201, store.createPortalLink(requireUser(req), body.profileId)); }
-    if (pathname.startsWith('/api/portal/') && req.method === 'GET') { const token = pathname.split('/')[3]; return json(res, 200, store.getPortalData(token)); }
+    if (pathname.startsWith('/api/portal/') && pathname.split('/').length === 4 && req.method === 'GET') { const token = pathname.split('/')[3]; return json(res, 200, store.getPortalData(token)); }
+    if (pathname.startsWith('/api/portal/') && pathname.endsWith('/submissions') && req.method === 'POST') { const token = pathname.split('/')[3]; return json(res, 201, store.portalSubmit(token, await parseBody(req))); }
     if (pathname === '/portal' && req.method === 'GET') return serveStatic('portal.html', res);
 
     return serveStatic(pathname, res);

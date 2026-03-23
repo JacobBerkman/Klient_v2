@@ -143,3 +143,21 @@ export function readQuerySummary() {
     exports: db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get().count
   };
 }
+
+
+export function completeQueuedExports() {
+  const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get();
+  if (!row?.payload) return { processed: 0 };
+  const state = JSON.parse(row.payload);
+  let processed = 0;
+  for (const job of state.exportJobs || []) {
+    if (job.status === 'queued') {
+      job.status = 'completed';
+      job.output = { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
+      job.updatedAt = new Date().toISOString();
+      processed += 1;
+    }
+  }
+  saveState(state);
+  return { processed };
+}

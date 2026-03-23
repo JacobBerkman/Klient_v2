@@ -61,3 +61,11 @@ This writes a timestamped SQLite backup into `data/`.
 
 ## CI
 A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.
+
+
+## Export worker
+```bash
+node scripts/export-worker.mjs
+```
+
+This processes queued export jobs in the SQLite-backed runtime.
