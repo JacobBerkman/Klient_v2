@@ -16,3 +16,7 @@ Use:
 ```bash
 curl http://localhost:3000/health
 ```
+
+
+## Backup
+Use `node scripts/backup-db.mjs` to write a timestamped backup of the SQLite database.

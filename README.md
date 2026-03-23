@@ -50,3 +50,14 @@ See `DEPLOYMENT.md` for deployment details and the `/health` endpoint.
 
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to view shared client data.
+
+
+## Backup
+```bash
+node scripts/backup-db.mjs
+```
+
+This writes a timestamped SQLite backup into `data/`.
+
+## CI
+A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.

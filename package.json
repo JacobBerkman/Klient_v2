@@ -8,6 +8,7 @@
     "check": "git diff --check",
     "dev": "node apps/api/src/server.mjs",
     "start": "node apps/api/src/server.mjs",
-    "test": "node scripts/smoke-test.mjs"
+    "test": "node scripts/smoke-test.mjs",
+    "backup": "node scripts/backup-db.mjs"
   }
 }

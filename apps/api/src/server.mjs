@@ -4,6 +4,7 @@ import { extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { createStore } from './store.mjs';
+import { readQuerySummary } from './storage.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(__dirname, '../../web/public');
@@ -68,7 +69,7 @@ const server = createServer(async (req, res) => {
 
   try {
     if (pathname === '/health') return json(res, 200, { status: 'ok' });
-    if (pathname === '/ready') return json(res, 200, { status: 'ready' });
+    if (pathname === '/ready') return json(res, 200, { status: 'ready', querySummary: readQuerySummary() });
     if (pathname === '/api/register' && req.method === 'POST') return json(res, 201, store.register(await parseBody(req)));
     if (pathname === '/api/login' && req.method === 'POST') return json(res, 200, store.login(await parseBody(req)));
     if (pathname === '/api/invites' && req.method === 'POST') return json(res, 201, store.inviteUser(requireUser(req), await parseBody(req)));
