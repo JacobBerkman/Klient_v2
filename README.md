@@ -11,6 +11,8 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - households and member linking
 - dynamic form template and submission flows
 - guided client portal for draft and submitted onboarding responses
+- role-isolated client workspace for authenticated client users (`/api/client/workspace`)
+- portal/client document upload visibility and upload logging
 - document template and export job foundations
 - audit trail and analytics views
 - invite flow and password reset endpoints
@@ -68,6 +70,12 @@ curl http://localhost:3000/ready
 
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
+
+## Client role experience
+- Invite a user with role `client` using the internal app.
+- The client can sign in to the main app and is routed to a restricted **My Portal** workspace.
+- Client users can only access their own profile-aligned form visibility/submissions and upload visibility.
+- Advisor/admin controls (prospects, households, templates, exports, audit) are hidden from clients in the UI and blocked by API permissions.
 
 ## Backup
 ```bash
