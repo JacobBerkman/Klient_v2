@@ -20,6 +20,8 @@ jobs:
       - run: node --check scripts/backup-db.mjs
       - run: node --check scripts/export-worker.mjs
       - run: node --check scripts/restore-db.mjs
+      - run: node --check scripts/reset-db.mjs
       - run: node --check scripts/smoke-test.mjs
+      - run: node scripts/reset-db.mjs
       - run: node scripts/smoke-test.mjs
       - run: git diff --check

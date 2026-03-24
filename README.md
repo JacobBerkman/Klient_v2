@@ -35,7 +35,13 @@ Then open:
 - `ChangeMe123!`
 
 ## Testing
-Run the smoke test:
+Reset the local SQLite state to the deterministic demo seed:
+
+```bash
+node scripts/reset-db.mjs
+```
+
+Run the smoke test (it auto-resets before exercising flows):
 
 ```bash
 node scripts/smoke-test.mjs
@@ -51,7 +57,11 @@ npm run test:all
 All persisted demo/runtime data is stored in:
 - `data/app.db`
 
-Delete that file to reseed the app.
+Reset to the deterministic seed without deleting files:
+
+```bash
+node scripts/reset-db.mjs
+```
 
 ## Docker deployment
 ```bash
@@ -89,4 +99,4 @@ node scripts/export-worker.mjs
 This processes queued export jobs in the SQLite-backed runtime.
 
 ## CI
-A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.
+A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml` and now runs `node scripts/reset-db.mjs` before smoke execution so seeded state is deterministic.

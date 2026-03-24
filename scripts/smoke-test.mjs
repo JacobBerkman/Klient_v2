@@ -1,5 +1,8 @@
 import { spawn } from 'node:child_process';
 
+import { createSeedState } from '../apps/api/src/store.mjs';
+import { resetState } from '../apps/api/src/storage.mjs';
+
 const port = 3010;
 const server = spawn(process.execPath, ['apps/api/src/server.mjs'], {
   env: { ...process.env, PORT: String(port) },
@@ -18,6 +21,7 @@ async function jsonFetch(path, options = {}) {
 }
 
 async function run() {
+  resetState(createSeedState);
   await wait(700);
   const ready = await jsonFetch('/ready');
   if (!ready.querySummary) throw new Error('Readiness summary missing');

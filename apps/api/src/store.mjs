@@ -53,19 +53,19 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
 }
 
-function seedState() {
-  const createdAt = now();
-  const firmId = randomUUID();
-  const adminId = randomUUID();
-  const householdId = randomUUID();
-  const clientId = randomUUID();
-  const spouseId = randomUUID();
-  const prospectOneId = randomUUID();
-  const prospectTwoId = randomUUID();
-  const templateId = randomUUID();
-  const formTemplateId = randomUUID();
-  const submissionId = randomUUID();
-  const exportId = randomUUID();
+export function createSeedState() {
+  const createdAt = '2026-01-01T00:00:00.000Z';
+  const firmId = '00000000-0000-4000-8000-000000000001';
+  const adminId = '00000000-0000-4000-8000-000000000002';
+  const householdId = '00000000-0000-4000-8000-000000000003';
+  const clientId = '00000000-0000-4000-8000-000000000004';
+  const spouseId = '00000000-0000-4000-8000-000000000005';
+  const prospectOneId = '00000000-0000-4000-8000-000000000006';
+  const prospectTwoId = '00000000-0000-4000-8000-000000000007';
+  const templateId = '00000000-0000-4000-8000-000000000008';
+  const formTemplateId = '00000000-0000-4000-8000-000000000009';
+  const submissionId = '00000000-0000-4000-8000-000000000010';
+  const exportId = '00000000-0000-4000-8000-000000000011';
 
   return {
     firms: [{ id: firmId, name: 'Demo Advisory Group', slug: 'demo-advisory-group', createdAt }],
@@ -157,11 +157,11 @@ function seedState() {
       { householdId, clientId: spouseId, role: 'spouse', firmId, createdAt }
     ],
     stageChanges: [
-      { id: randomUUID(), firmId, clientId: prospectOneId, toStage: 'discovery', changedByUserId: adminId, changedAt: createdAt },
-      { id: randomUUID(), firmId, clientId: prospectTwoId, toStage: 'analysis', changedByUserId: adminId, changedAt: createdAt }
+      { id: '00000000-0000-4000-8000-000000000012', firmId, clientId: prospectOneId, toStage: 'discovery', changedByUserId: adminId, changedAt: createdAt },
+      { id: '00000000-0000-4000-8000-000000000013', firmId, clientId: prospectTwoId, toStage: 'analysis', changedByUserId: adminId, changedAt: createdAt }
     ],
     auditEvents: [
-      { id: randomUUID(), firmId, actorUserId: adminId, entityType: 'seed', entityId: 'initial', action: 'seed.created', occurredAt: createdAt, metadata: {} }
+      { id: '00000000-0000-4000-8000-000000000014', firmId, actorUserId: adminId, entityType: 'seed', entityId: 'initial', action: 'seed.created', occurredAt: createdAt, metadata: {} }
     ],
     formTemplates: [{
       id: formTemplateId,
@@ -169,8 +169,8 @@ function seedState() {
       name: 'Financial Discovery',
       description: 'Core onboarding discovery form',
       sections: [
-        { id: randomUUID(), title: 'Household', fields: [{ key: 'goals', label: 'Goals', type: 'textarea' }, { key: 'riskTolerance', label: 'Risk Tolerance', type: 'select', options: ['Conservative','Moderate','Aggressive'] }] },
-        { id: randomUUID(), title: 'Assets', repeatable: true, fields: [{ key: 'accountName', label: 'Account Name', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }] }
+        { id: '00000000-0000-4000-8000-000000000015', title: 'Household', fields: [{ key: 'goals', label: 'Goals', type: 'textarea' }, { key: 'riskTolerance', label: 'Risk Tolerance', type: 'select', options: ['Conservative','Moderate','Aggressive'] }] },
+        { id: '00000000-0000-4000-8000-000000000016', title: 'Assets', repeatable: true, fields: [{ key: 'accountName', label: 'Account Name', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }] }
       ],
       createdAt,
       updatedAt: createdAt
@@ -196,7 +196,7 @@ function seedState() {
       updatedAt: createdAt
     }],
     exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json' }, createdAt, updatedAt: createdAt }],
-    notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
+    notes: [{ id: '00000000-0000-4000-8000-000000000017', firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
     portalLinks: []
@@ -204,7 +204,7 @@ function seedState() {
 }
 
 export function createStore() {
-  const state = loadState(seedState);
+  const state = loadState(createSeedState);
 
   function persist() {
     saveState(state);

@@ -142,6 +142,17 @@ export function saveState(state) {
   syncQueryTables(state);
 }
 
+
+export function resetState(seedFactory) {
+  const state = seedFactory();
+  saveState(state);
+  return {
+    ok: true,
+    dbPath: DB_PATH,
+    querySummary: readQuerySummary()
+  };
+}
+
 export function backupState(targetPath = resolve(process.cwd(), 'data', `backup-${Date.now()}.db`)) {
   copyFileSync(DB_PATH, targetPath);
   return { ok: true, targetPath };
