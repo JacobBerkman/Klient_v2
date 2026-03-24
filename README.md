@@ -90,3 +90,21 @@ This processes queued export jobs in the SQLite-backed runtime.
 
 ## CI
 A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.
+
+## Branch consolidation audit (March 24, 2026)
+To verify task consolidation on the active branch (`work`), run:
+
+```bash
+git rev-list --count HEAD
+git log --oneline
+git branch -a
+git reflog --date=iso
+```
+
+Current repository state in this environment:
+- active branch: `work`
+- reachable commit count: `6`
+- no additional local or remote branches configured
+- reflog includes only recent branch rename/checkout entries
+
+If you need to pull in an older "80+ task" history, add the missing remote or import the branch/patch bundle that contains those commits, then re-run the audit commands above.
