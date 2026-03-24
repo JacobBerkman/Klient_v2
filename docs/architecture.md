@@ -1,50 +1,68 @@
 # Kinetic Klient Rebuild Architecture
 
-## Product posture
-Kinetic Klient now ships as a **single deployable Node application** backed by SQLite.
-The runtime entrypoint is `apps/api/src/server.mjs`, and that server is responsible for:
-- serving the JSON API,
-- serving the advisor UI from `apps/web/public`,
-- serving the client portal from `/portal`,
-- persisting application state to `data/app.db`, and
-- exposing health/readiness probes for operations.
+## Runtime entrypoint
+- `apps/api/src/server.mjs` owns process startup and graceful shutdown.
+- HTTP wiring is created via `createHttpServer({ modules })`.
+- Routes remain thin: each route performs request parsing, authentication, **policy check**, and a single module service call.
 
-## Runtime status
-- **Canonical runtime:** `apps/api/src/server.mjs`
-- **Frontend delivery:** static assets in `apps/web/public`
-- **Persistence:** SQLite snapshot state plus read-optimized query tables in `data/app.db`
-- **Background processing:** export jobs can be completed by `scripts/export-worker.mjs`
-- **Removed duplication:** the unused Fastify/TypeScript prototype and related workspace scaffolding are no longer part of the repository
+## Module-first backend layout
+Domain modules live under `apps/api/src/modules/*`:
+- `auth`
+- `firms-users`
+- `profiles`
+- `pipeline`
+- `households`
+- `forms`
+- `templates`
+- `exports`
+- `audit`
+- `analytics`
 
-## Core backend capabilities
-1. Authentication, firm bootstrap, invites, and password reset
-2. Profiles, pipeline stages, notes, and dashboard reporting
-3. Households, spouse linking, and member management
-4. Form templates, drafts, submissions, and portal intake
-5. Document templates, mapping auto-build, and export jobs
-6. Audit history, analytics summaries, and masked sensitive-data access
+Each module exposes `service.mjs` and is composed in `apps/api/src/modules/index.mjs`.
 
-## Security posture in the shipped runtime
-- passwords must meet a minimum strength policy,
-- sessions expire automatically,
-- repeated failed logins are rate limited,
-- firm scoping is enforced by the runtime store,
-- and sensitive identifiers are encrypted at rest and exposed only as masked values.
+## Layering model
 
-## Operational model
-- **Local start:** `node apps/api/src/server.mjs`
-- **Smoke verification:** `node scripts/smoke-test.mjs`
-- **Full validation:** `npm run test:all`
-- **Container runtime:** `docker compose --env-file .env up --build -d`
+### 1) Transport layer (HTTP)
+- File: `apps/api/src/server.mjs`
+- Responsibilities:
+  - HTTP request/response handling
+  - auth token extraction
+  - CSRF validation
+  - route-level policy checks
+  - invoking module services
 
+### 2) Service layer (domain modules)
+- Files: `apps/api/src/modules/*/service.mjs`
+- Responsibilities:
+  - domain use-cases per bounded module
+  - orchestration across repositories
+  - no direct HTTP concerns
 
-## Main parity check
-Use the repository-level parity report command:
+### 3) Repository layer (persistence ports + adapters)
+- Interfaces:
+  - `apps/api/src/modules/profiles/repository.mjs` (`ProfileRepository`)
+  - `apps/api/src/modules/templates/repository.mjs` (`TemplateRepository`)
+- Adapters:
+  - `apps/api/src/repositories/store-adapters.mjs`
 
-```bash
-npm run check:main-parity
-```
+### 4) Runtime storage implementation
+- Current stateful runtime remains in `apps/api/src/store.mjs`.
+- Repository adapters bridge module services to legacy state logic during migration.
 
-Expected outputs:
-- terminal status showing whether `work` is behind `main`
-- `artifacts/main-parity.json` with branch names, merge-base SHA, ahead/behind counts, and missing commit SHAs
+## Dependency rules
+1. `server.mjs` may depend on module services and policy helpers, but must not implement business rules.
+2. Module services may depend on repository interfaces and cross-cutting policy abstractions.
+3. Repository adapters may depend on storage/runtime implementations (`store`, sqlite read models).
+4. Repository interfaces must not depend on concrete adapters.
+5. Modules should not import from other modules' internals; use composition in `modules/index.mjs`.
+6. Direct domain mutation is disallowed in `server.mjs`.
+
+## Testing strategy
+- Keep behavior parity with existing API contracts.
+- Add wiring-focused integration tests that assert route -> policy -> service invocation order.
+- Continue using smoke/integration scripts for end-to-end behavior.
+
+## Operational commands
+- Start: `node apps/api/src/server.mjs`
+- Wiring tests: `node --test apps/api/src/test/server-route-wiring.test.mjs`
+- Smoke: `node scripts/smoke-test.mjs`
