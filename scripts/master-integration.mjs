@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 const integrationScripts = [
   'integration-tenancy.mjs',
   'integration-rbac.mjs',
+  'integration-rbac-matrix.mjs',
   'integration-templates.mjs',
   'integration-exports.mjs',
   'integration-portal-lifecycle.mjs',

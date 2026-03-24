@@ -6,11 +6,90 @@ import { createAuthService } from './auth/service.mjs';
 import { createAuthService } from './auth/service.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { createAuthService } from './auth/service.mjs';
 import { createAuthService } from './auth/service.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs';
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const ROLE_POLICY_MATRIX = {
+  admin: {
+    profiles: { read: 'firm', write: 'firm', sensitiveRead: 'firm' },
+    pipeline: { write: 'firm' },
+    households: { read: 'firm', write: 'firm' },
+    forms: { read: 'firm', write: 'firm' },
+    templates: { read: 'firm', write: 'firm', publish: 'firm' },
+    exports: { read: 'firm', write: 'firm', process: 'firm' },
+    analytics: { read: 'firm' },
+    users: { read: 'firm', write: 'firm' },
+    firm: { settingsWrite: 'firm' },
+    portal: { read: 'self', write: 'self' },
+    client: { write: 'self' }
+  },
+  advisor: {
+    profiles: { read: 'firm', write: 'firm', sensitiveRead: 'firm' },
+    pipeline: { write: 'firm' },
+    households: { read: 'firm', write: 'firm' },
+    forms: { read: 'firm', write: 'firm' },
+    templates: { read: 'firm', write: 'firm', publish: 'firm' },
+    exports: { read: 'firm', write: 'firm', process: 'firm' },
+    analytics: { read: 'firm' },
+    users: { read: null, write: null },
+    firm: { settingsWrite: null },
+    portal: { read: 'self', write: 'self' },
+    client: { write: null }
+  },
+  readonly: {
+    profiles: { read: 'firm', write: null, sensitiveRead: null },
+    pipeline: { write: null },
+    households: { read: 'firm', write: null },
+    forms: { read: 'firm', write: null },
+    templates: { read: null, write: null, publish: null },
+    exports: { read: null, write: null, process: null },
+    analytics: { read: 'firm' },
+    users: { read: null, write: null },
+    firm: { settingsWrite: null },
+    portal: { read: null, write: null },
+    client: { write: null }
+  },
+  client: {
+    profiles: { read: null, write: null, sensitiveRead: null },
+    pipeline: { write: null },
+    households: { read: null, write: null },
+    forms: { read: null, write: null },
+    templates: { read: null, write: null, publish: null },
+    exports: { read: null, write: null, process: null },
+    analytics: { read: null },
+    users: { read: null, write: null },
+    firm: { settingsWrite: null },
+    portal: { read: 'self', write: 'self' },
+    client: { write: 'self' }
+  }
+};
+
+const OPERATION_TO_POLICY = {
+  'profiles:read': ['profiles', 'read'],
+  'profiles:write': ['profiles', 'write'],
+  'profiles:sensitive:read': ['profiles', 'sensitiveRead'],
+  'pipeline:write': ['pipeline', 'write'],
+  'households:read': ['households', 'read'],
+  'households:write': ['households', 'write'],
+  'forms:read': ['forms', 'read'],
+  'forms:write': ['forms', 'write'],
+  'templates:read': ['templates', 'read'],
+  'templates:write': ['templates', 'write'],
+  'templates:publish': ['templates', 'publish'],
+  'exports:read': ['exports', 'read'],
+  'exports:write': ['exports', 'write'],
+  'exports:process': ['exports', 'process'],
+  'analytics:read': ['analytics', 'read'],
+  'users:read': ['users', 'read'],
+  'users:write': ['users', 'write'],
+  'firm:settings:write': ['firm', 'settingsWrite'],
+  'portal:read': ['portal', 'read'],
+  'portal:write': ['portal', 'write'],
+  'client:write': ['client', 'write']
 const CSRF_TOKEN_TTL_MS = 1000 * 60 * 15;
 const PERMISSIONS = {
   admin: ['*'],
@@ -46,13 +125,16 @@ const SENSITIVE_ACCESS_POLICY = {
   client: {}
 };
 
-function can(role, permission) {
-  return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission);
+function can(role, operation) {
+  const policy = OPERATION_TO_POLICY[operation];
+  if (!policy) return false;
+  const [resource, action] = policy;
+  return Boolean(ROLE_POLICY_MATRIX[role]?.[resource]?.[action]);
 }
 
-function requirePermission(user, permission) {
-  if (!can(user.role, permission)) {
-    throw new Error(`Missing permission: ${permission}`);
+function authorize(user, operation) {
+  if (!can(user.role, operation)) {
+    throw new Error(`Missing permission: ${operation}`);
   }
 }
 
@@ -651,6 +733,30 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     return publicUser(user);
   }
 
+  function assertFirmScopedRecord(record, user, entityName = 'Record') {
+    if (!record) throw new Error(`${entityName} not found.`);
+    if (record.firmId && record.firmId !== user.firmId) {
+      throw new Error(`${entityName} not found.`);
+    }
+    return record;
+  }
+
+  function requireFirmProfile(user, profileId, entityName = 'Profile') {
+    const profile = state.profiles.find((entry) => entry.id === profileId);
+    return assertFirmScopedRecord(profile, user, entityName);
+  }
+
+  function requireFirmHousehold(user, householdId, entityName = 'Household') {
+    const household = state.households.find((entry) => entry.id === householdId);
+    return assertFirmScopedRecord(household, user, entityName);
+  }
+
+  function requireFirmTemplate(user, templateId, entityName = 'Template') {
+    const template = state.formTemplates.find((entry) => entry.id === templateId);
+    return assertFirmScopedRecord(template, user, entityName);
+  }
+
+  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}) {
   function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}, options = {}) {
     state.auditEvents.push({ id: randomUUID(), firmId, actorUserId, entityType, entityId, action, occurredAt: now(), metadata });
     if (options.persist !== false) {
@@ -734,7 +840,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   }
 
   function requireClientProfile(user) {
-    requirePermission(user, 'portal:read');
+    authorize(user, 'portal:read');
     const profile = state.profiles.find((entry) =>
       entry.firmId === user.firmId
       && entry.kind === 'client'
@@ -804,8 +910,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
 
   return {
     state,
+    policyMatrix: ROLE_POLICY_MATRIX,
     assertPermission(user, permission) {
-      requirePermission(user, permission);
+      authorize(user, permission);
       return true;
     },
     auth,
@@ -871,7 +978,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     _internal: { piiCrypto },
     getDashboard(user) {
-      requirePermission(user, 'profiles:read');
+      authorize(user, 'profiles:read');
       const profiles = state.profiles.filter((profile) => profile.firmId === user.firmId);
       const prospects = profiles.filter((profile) => profile.kind === 'prospect');
       const clients = profiles.filter((profile) => profile.kind === 'client');
@@ -890,7 +997,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       };
     },
     listProfiles(user, kind, search = '') {
-      requirePermission(user, 'profiles:read');
+      authorize(user, 'profiles:read');
       const q = String(search || '').toLowerCase();
       return state.profiles
         .filter((profile) => profile.firmId === user.firmId)
@@ -899,7 +1006,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .sort((a, b) => (a.stage === b.stage ? (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0) : a.lastName.localeCompare(b.lastName)));
     },
     getProfileDetail(user, profileId) {
-      requirePermission(user, 'profiles:read');
+      authorize(user, 'profiles:read');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
       const household = profile.householdId ? state.households.find((entry) => entry.id === profile.householdId && entry.firmId === user.firmId) : null;
@@ -911,7 +1018,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { profile, household, householdMembers, submissions, stageHistory, notes };
     },
     createProfile(user, input) {
-      requirePermission(user, 'profiles:write');
+      authorize(user, 'profiles:write');
+      if (input.householdId) requireFirmHousehold(user, input.householdId);
+      if (input.spouseClientId) requireFirmProfile(user, input.spouseClientId);
       const createdAt = now();
       const inStage = state.profiles.filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === (input.stage || 'discovery')).length;
       const profile = {
@@ -945,7 +1054,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return profile;
     },
     updateProfile(user, profileId, patch) {
-      requirePermission(user, 'profiles:write');
+      authorize(user, 'profiles:write');
       if (patch.kind === 'client') { patch.stage = null; patch.stageOrderIndex = null; }
       if (patch.kind === 'prospect' && !patch.stage) { patch.stage = 'discovery'; }
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
@@ -965,6 +1074,17 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return profile;
     },
     moveProfileStage(user, profileId, stage, beforeProfileId = null) {
+      authorize(user, 'pipeline:write');
+      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
+      if (!profile) throw new Error('Profile not found.');
+      const sameStage = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === stage && entry.id !== profileId).sort((a,b)=>(a.stageOrderIndex||0)-(b.stageOrderIndex||0));
+      const previousStage = profile.stage || null;
+      let nextIndex = sameStage.length + 1;
+      if (beforeProfileId) {
+        const before = sameStage.find((entry) => entry.id === beforeProfileId);
+        if (before) {
+          nextIndex = before.stageOrderIndex || 1;
+          sameStage.filter((entry) => (entry.stageOrderIndex || 0) >= nextIndex).forEach((entry) => { entry.stageOrderIndex = (entry.stageOrderIndex || 0) + 1; });
       return this.reorderBoard(user, { profileId, toStage: stage, beforeProfileId });
     },
     reorderBoard(user, input) {
@@ -1074,16 +1194,25 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       });
     },
     getBoard(user) {
+      authorize(user, 'profiles:read');
+      const columns = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
+      return columns.map((stage) => ({
+        stage,
+        cards: state.profiles
+          .filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === stage)
+          .sort((a, b) => (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0))
+      }));
       requirePermission(user, 'profiles:read');
       normalizePipelineIndices(user.firmId);
       return buildBoardPayload(user);
     },
     listStageHistory(user, profileId) {
-      requirePermission(user, 'profiles:read');
+      authorize(user, 'profiles:read');
       return state.stageChanges.filter((entry) => entry.firmId === user.firmId && entry.clientId === profileId);
     },
     createHousehold(user, input) {
-      requirePermission(user, 'households:write');
+      authorize(user, 'households:write');
+      requireFirmProfile(user, input.primaryClientId);
       const household = { id: randomUUID(), firmId: user.firmId, name: input.name, primaryClientId: input.primaryClientId, createdAt: now() };
       state.households.push(household);
       state.householdMembers.push({ householdId: household.id, clientId: input.primaryClientId, role: 'primary', firmId: user.firmId, createdAt: household.createdAt });
@@ -1094,9 +1223,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return household;
     },
     addHouseholdMember(user, householdId, input) {
-      requirePermission(user, 'households:write');
-      const household = state.households.find((entry) => entry.id === householdId && entry.firmId === user.firmId);
-      if (!household) throw new Error('Household not found.');
+      authorize(user, 'households:write');
+      const household = requireFirmHousehold(user, householdId);
+      requireFirmProfile(user, input.clientId);
       const member = { householdId, clientId: input.clientId, role: input.role, firmId: user.firmId, createdAt: now() };
       state.householdMembers.push(member);
       const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId);
@@ -1106,20 +1235,19 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return member;
     },
     listHouseholds(user) {
-      requirePermission(user, 'profiles:read');
+      authorize(user, 'profiles:read');
       return state.households.filter((entry) => entry.firmId === user.firmId).map((household) => ({
         ...household,
         members: state.householdMembers.filter((member) => member.firmId === user.firmId && member.householdId === household.id)
       }));
     },
     listNotes(user, profileId) {
-      requirePermission(user, 'profiles:read');
+      authorize(user, 'profiles:read');
       return state.notes.filter((entry) => entry.firmId === user.firmId && entry.profileId === profileId).slice().reverse();
     },
     addNote(user, profileId, body) {
-      requirePermission(user, 'profiles:write');
-      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
+      authorize(user, 'profiles:write');
+      const profile = requireFirmProfile(user, profileId);
       const note = { id: randomUUID(), firmId: user.firmId, profileId, body, createdByUserId: user.id, createdAt: now() };
       state.notes.push(note);
       addAudit(user.firmId, user.id, 'profile_note', note.id, 'profile.note_added', { profileId });
@@ -1127,6 +1255,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return note;
     },
     listFormTemplates(user) {
+      authorize(user, 'profiles:read');
+      return state.formTemplates.filter((entry) => entry.firmId === user.firmId);
+    },
+    createFormTemplate(user, input) {
+      authorize(user, 'forms:write');
+      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, description: input.description || '', sections: input.sections || [], createdAt: now(), updatedAt: now() };
+      state.formTemplates.push(template);
+      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.created', { name: template.name });
       requirePermission(user, 'profiles:read');
       return state.templateAggregates
         .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
@@ -1174,6 +1310,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { id: template.id, firmId: template.firmId, name: template.name, description: template.description, sections: template.formSchema.sections, createdAt, updatedAt: createdAt };
     },
     listFormSubmissions(user, status = null) {
+      authorize(user, 'profiles:read');
       requirePermission(user, 'profiles:read');
       const submissions = state.formSubmissions
       const currentTime = Date.now();
@@ -1220,8 +1357,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { profile, submissions, templates, templateProgress, uploads };
     },
     submitClientForm(user, input) {
-      requirePermission(user, 'client:write');
+      authorize(user, 'client:write');
       const profile = requireClientProfile(user);
+      requireFirmTemplate(user, input.templateId, 'Form template');
       const template = state.templateAggregates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId && entry.kind === 'form');
       if (!template) throw new Error('Form template not found.');
       const status = input.status === 'draft' ? 'draft' : 'submitted';
@@ -1259,7 +1397,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { uploadId: intent.id, object: intent.object, presigned };
     },
     submitClientUpload(user, input) {
-      requirePermission(user, 'client:write');
+      authorize(user, 'client:write');
       const profile = requireClientProfile(user);
       const intent = input.uploadId ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === user.firmId) : null;
       const object = normalizeObjectMetadata(input.object || intent?.object || {}, 'uploaded_document');
@@ -1294,6 +1432,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return this.listFormSubmissions(user, 'draft');
     },
     createFormSubmission(user, input) {
+      authorize(user, 'forms:write');
+      requireFirmProfile(user, input.clientId);
+      requireFirmTemplate(user, input.templateId, 'Form template');
+      const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status: input.status || 'draft', data: input.data || {}, createdAt: now(), updatedAt: now() };
       requirePermission(user, 'forms:write');
       const status = input.status || 'draft';
       const createdAt = now();
@@ -1426,6 +1568,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { ok: true, submission };
     },
     listDocumentTemplates(user) {
+      authorize(user, 'templates:read');
+      return state.documentTemplates.filter((entry) => entry.firmId === user.firmId);
+    },
+    createDocumentTemplate(user, input) {
+      authorize(user, 'templates:write');
+      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
+      state.documentTemplates.push(template);
+      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
       requirePermission(user, 'templates:write');
       return state.templateAggregates
         .filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form')
@@ -1478,6 +1628,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
     },
     updateTemplateMappings(user, templateId, mappings) {
+      authorize(user, 'templates:write');
+      const template = assertFirmScopedRecord(state.documentTemplates.find((entry) => entry.id === templateId), user, 'Template');
+      template.mappings = mappings;
+      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
       requirePermission(user, 'templates:write');
       const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
@@ -1498,6 +1652,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
     },
     publishTemplate(user, templateId) {
+      authorize(user, 'templates:publish');
+      const template = assertFirmScopedRecord(state.documentTemplates.find((entry) => entry.id === templateId), user, 'Template');
       requirePermission(user, 'templates:write');
       const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
@@ -1530,12 +1686,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return template.publishTransitions || [];
     },
     listExports(user) {
-      requirePermission(user, 'exports:write');
+      authorize(user, 'exports:write');
       state.exportJobs = listExportQueueJobs();
       return state.exportJobs.filter((entry) => entry.firmId === user.firmId);
     },
     createExport(user, input) {
-      requirePermission(user, 'exports:write');
+      authorize(user, 'exports:write');
+      requireFirmProfile(user, input.clientId);
+      assertFirmScopedRecord(state.documentTemplates.find((entry) => entry.id === input.templateId), user, 'Template');
       const queued = enqueueExportJob({
         id: randomUUID(),
         firmId: user.firmId,
@@ -1552,9 +1710,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return queued;
     },
     retryExport(user, exportId) {
-      requirePermission(user, 'exports:write');
-      const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
-      if (!job) throw new Error('Export not found.');
+      authorize(user, 'exports:write');
+      const job = assertFirmScopedRecord(state.exportJobs.find((entry) => entry.id === exportId), user, 'Export');
       const updated = requeueExportJob(exportId);
       if (!updated) throw new Error('Export not found.');
       state.exportJobs = state.exportJobs.map((entry) => (entry.id === exportId ? updated : entry));
@@ -1580,7 +1737,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { processed: result.processed, leased: result.leased, failed: result.failed };
     },
     listAudit(user) {
-      requirePermission(user, 'profiles:read');
+      authorize(user, 'profiles:read');
       return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();
     },
     logout(token) {
@@ -1590,11 +1747,11 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { ok: true };
     },
     listUsers(user) {
-      requirePermission(user, 'analytics:read');
+      authorize(user, 'users:read');
       return state.users.filter((entry) => entry.firmId === user.firmId).map(publicUser);
     },
     inviteUser(user, input) {
-      requirePermission(user, 'profiles:write');
+      authorize(user, 'users:write');
       const invite = { id: randomUUID(), firmId: user.firmId, email: input.email.toLowerCase(), role: input.role || 'advisor', invitedByUserId: user.id, token: randomUUID(), createdAt: now() };
       state.invites.push(invite);
       addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role });
@@ -1619,7 +1776,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     objectStorage,
     removeHouseholdMember(user, householdId, clientId) {
-      requirePermission(user, 'households:write');
+      authorize(user, 'households:write');
+      requireFirmHousehold(user, householdId);
+      requireFirmProfile(user, clientId);
       state.householdMembers = state.householdMembers.filter((entry) => !(entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId));
       const profile = state.profiles.find((entry) => entry.id === clientId && entry.firmId === user.firmId);
       if (profile) profile.householdId = null;
@@ -1627,10 +1786,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { ok: true };
     },
     linkSpouse(user, primaryClientId, spouseClientId) {
-      requirePermission(user, 'households:write');
-      const primary = state.profiles.find((entry) => entry.id === primaryClientId && entry.firmId === user.firmId);
-      const spouse = state.profiles.find((entry) => entry.id === spouseClientId && entry.firmId === user.firmId);
-      if (!primary || !spouse) throw new Error('Profile not found.');
+      authorize(user, 'households:write');
+      const primary = requireFirmProfile(user, primaryClientId);
+      const spouse = requireFirmProfile(user, spouseClientId);
       primary.spouseClientId = spouse.id;
       spouse.spouseClientId = primary.id;
       let householdId = primary.householdId;
@@ -1648,9 +1806,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return spouse;
     },
     updateSubmission(user, submissionId, patch) {
-      requirePermission(user, 'forms:write');
-      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId);
-      if (!submission) throw new Error('Submission not found.');
+      authorize(user, 'forms:write');
+      const submission = assertFirmScopedRecord(state.formSubmissions.find((entry) => entry.id === submissionId), user, 'Submission');
       Object.assign(submission, patch, { updatedAt: now() });
       persist();
       return submission;
@@ -1715,13 +1872,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { submission, ok: true };
     },
     deleteSubmission(user, submissionId) {
-      requirePermission(user, 'forms:write');
+      authorize(user, 'forms:write');
+      assertFirmScopedRecord(state.formSubmissions.find((entry) => entry.id === submissionId), user, 'Submission');
       state.formSubmissions = state.formSubmissions.filter((entry) => !(entry.id === submissionId && entry.firmId === user.firmId));
       persist();
       return { ok: true };
     },
     autoBuildTemplate(user, input) {
-      requirePermission(user, 'templates:write');
+      authorize(user, 'templates:write');
       const sections = (input.fields || []).reduce((acc, field) => {
         const sectionKey = field.split('.')[0] || 'general';
         acc[sectionKey] ||= [];
@@ -1731,7 +1889,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return this.createDocumentTemplate(user, { name: input.name, fileName: input.fileName || 'uploaded.pdf', blueprint: { sections }, mappings: (input.fields || []).map((field) => ({ pdfField: field, sourcePath: field.replace(/\s+/g, '_').toLowerCase() })) });
     },
     createPortalLink(user, profileId) {
-      requirePermission(user, 'profiles:read');
+      authorize(user, 'profiles:read');
+      requireFirmProfile(user, profileId);
       const link = { id: randomUUID(), firmId: user.firmId, profileId, token: randomUUID(), createdAt: now() };
       state.portalLinks.push(link);
       persist();
@@ -1830,6 +1989,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 });
     },
     getAnalytics(user) {
+      authorize(user, 'analytics:read');
+      const prospects = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect');
       requirePermission(user, 'analytics:read');
       const firmProfiles = state.profiles.filter((entry) => entry.firmId === user.firmId);
       const prospects = firmProfiles.filter((entry) => entry.kind === 'prospect');
@@ -1919,6 +2080,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         avgProspectStageAgeDays: Number(average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2))
       };
     },
+    getMaskedSensitiveData(user, profileId) {
+      authorize(user, 'profiles:sensitive:read');
+      const profile = requireFirmProfile(user, profileId);
+      const ssn = decryptValue(profile.pii?.ssnCiphertext);
+      const taxId = decryptValue(profile.pii?.taxIdCiphertext);
+      return {
+        ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
+        taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
 
     async createExportDownloadUrl(user, exportId) {
       requirePermission(user, 'exports:write');

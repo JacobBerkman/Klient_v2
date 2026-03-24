@@ -537,6 +537,8 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/exports' && req.method === 'POST') { const result = store.createExport(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/exports/process' && req.method === 'POST') {
       const user = requireUser(req);
+      store.assertPermission(user, 'exports:process');
+      const result = store.processQueuedExports();
       store.assertPermission(user, 'exports:write');
       const result = await store.processQueuedExports();
       finalizeLog(200);

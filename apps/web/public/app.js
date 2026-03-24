@@ -1,10 +1,19 @@
 import { routes } from './api-contract.js';
 
+const STAGES = ['discovery', 'gather_oi', 'analysis', 'advisor_proposal_meeting', 'intake', 'on_boarding', 'investment_strategy', 'completed', 'drop_dead_lead', 'drop_nurture'];
+
 const state = {
   token: localStorage.getItem('klient-token') || '',
   user: null,
   view: 'dashboard',
   selectedProfileId: null,
+  user: null,
+  profileFilter: 'all',
+  search: '',
+  clients: [],
+  profiles: [],
+  activeSession: null,
+  flash: null
   flash: null,
   profileDetail: null,
   templatesById: new Map()
@@ -20,6 +29,7 @@ const authStatusEl = document.querySelector('#auth-status');
 const householdPrimaryEl = document.querySelector('select[name="primaryClientId"]');
 const portalProfileEl = document.querySelector('select[name="profileId"]');
 
+const headers = () => state.token ? { Authorization: `Bearer ${state.token}` } : {};
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 let csrfToken = '';
 
@@ -107,6 +117,44 @@ async function ensureTemplates() {
   state.templatesById = new Map(templates.map((entry) => [entry.id, entry]));
 }
 
+const ROLE_POLICY_MATRIX = {
+  admin: new Set(['dashboard:view', 'profiles:view', 'households:view', 'forms:view', 'templates:view', 'exports:view', 'analytics:view', 'audit:view', 'users:view', 'portal-links:view', 'client-workspace:view']),
+  advisor: new Set(['dashboard:view', 'profiles:view', 'households:view', 'forms:view', 'templates:view', 'exports:view', 'analytics:view', 'audit:view', 'portal-links:view']),
+  readonly: new Set(['dashboard:view', 'profiles:view', 'households:view', 'forms:view', 'analytics:view', 'audit:view']),
+  client: new Set(['client-workspace:view'])
+};
+
+const VIEW_POLICIES = {
+  dashboard: 'dashboard:view',
+  prospects: 'profiles:view',
+  clients: 'profiles:view',
+  board: 'profiles:view',
+  'profile-detail': 'profiles:view',
+  households: 'households:view',
+  forms: 'forms:view',
+  templates: 'templates:view',
+  exports: 'exports:view',
+  analytics: 'analytics:view',
+  audit: 'audit:view',
+  settings: 'users:view',
+  portal: 'portal-links:view',
+  'client-workspace': 'client-workspace:view'
+};
+
+function canAccessView(nextView) {
+  const role = activeRole();
+  if (!role) return false;
+  const policy = VIEW_POLICIES[nextView];
+  return policy ? ROLE_POLICY_MATRIX[role]?.has(policy) : false;
+}
+
+function updateRoleVisibility() {
+  const role = activeRole();
+  const navButtons = document.querySelectorAll('[data-view]');
+  navButtons.forEach((button) => {
+    const targetView = button.dataset.view;
+    button.hidden = !role || !canAccessView(targetView);
+  });
 function renderFlash() {
   if (!state.flash) return '';
   return `<div class="item compact ${state.flash.type === 'error' ? 'error-banner' : 'success-banner'}">${escapeHtml(state.flash.message)}</div>`;
@@ -129,6 +177,10 @@ async function renderProfiles() {
   });
 }
 
+function profileName(profile) {
+  return `${profile.firstName} ${profile.lastName}`;
+}
+
 function getRepeatableSections(template) {
   return (template?.sections || []).filter((section) => section.repeatable).map((section) => ({
     ...section,
@@ -145,6 +197,25 @@ function installRepeatableModal(profile, submission) {
     return;
   }
 
+  try {
+    const clients = await api('/api/profiles?kind=client');
+    const allProfiles = await api('/api/profiles');
+    state.clients = clients;
+    state.profiles = allProfiles;
+    householdPrimary.innerHTML = clients.map((profile) => `<option value="${profile.id}">${escapeHtml(profileName(profile))}</option>`).join('');
+    portalProfileSelect.innerHTML = allProfiles.map((profile) => `<option value="${profile.id}">${escapeHtml(profileName(profile))}</option>`).join('');
+  } catch {
+    state.clients = [];
+    state.profiles = [];
+    householdPrimary.innerHTML = '<option value="">Login first</option>';
+    portalProfileSelect.innerHTML = '<option value="">Login first</option>';
+  }
+}
+
+async function hydrateSession() {
+  if (!state.token) {
+    syncAuthStatus();
+    return;
   const modal = document.createElement('dialog');
   modal.innerHTML = `
     <form method="dialog" class="stack gap-sm" style="min-width:520px">
@@ -265,6 +336,56 @@ async function renderProfileDetail() {
   return data;
 }
 
+async function renderProfiles(kind) {
+  const params = new URLSearchParams();
+  if (kind !== 'all') params.set('kind', kind);
+  if (state.search) params.set('search', state.search);
+  const profiles = await api(`/api/profiles${params.toString() ? `?${params.toString()}` : ''}`);
+  const title = kind === 'prospect' ? 'Prospects' : kind === 'client' ? 'Clients' : 'Profiles';
+  view.innerHTML = `
+    <div class="section-header">
+      <div>
+        <h2>${title}</h2>
+        <p class="muted">Search, open details, and manage pipeline stages from one place.</p>
+      </div>
+      <div class="row gap-sm wrap">
+        <input id="profile-search" placeholder="Search by name or email" value="${escapeHtml(state.search)}" />
+        <select id="profile-kind-filter">
+          <option value="all" ${kind === 'all' ? 'selected' : ''}>All</option>
+          <option value="prospect" ${kind === 'prospect' ? 'selected' : ''}>Prospects</option>
+          <option value="client" ${kind === 'client' ? 'selected' : ''}>Clients</option>
+        </select>
+        <button id="profile-search-button">Search</button>
+      </div>
+    </div>
+    ${renderItems(profiles, (profile) => `
+      <div class="item">
+        <div class="row between wrap gap-sm">
+          <div>
+            <strong>${escapeHtml(profileName(profile))}</strong> <span class="badge">${escapeHtml(profile.kind)}</span>
+            <div class="muted">${escapeHtml(profile.email || 'No email')}</div>
+            <div class="muted">Source: ${escapeHtml(profile.source?.displayValue || '—')}</div>
+            <div class="muted">Stage: ${escapeHtml(profile.stage || '—')}</div>
+          </div>
+          <div class="row gap-sm wrap">
+            <button data-profile-id="${profile.id}">Open Profile</button>
+            ${profile.kind === 'prospect' ? `<select data-stage-id="${profile.id}">${STAGES.map((stage) => `<option value="${stage}" ${profile.stage === stage ? 'selected' : ''}>${stage}</option>`).join('')}</select>` : ''}
+          </div>
+        </div>
+      </div>`, 'No profiles matched your filters.')}
+  `;
+
+  document.querySelectorAll('[data-stage-id]').forEach((select) => {
+    select.addEventListener('change', async (event) => {
+      await api(routes.profileStage(event.target.dataset.stageId), { method: 'PATCH', body: JSON.stringify({ stage: event.target.value }) });
+      await renderCurrentView();
+    });
+  });
+  document.querySelector('#profile-search-button').addEventListener('click', async () => {
+    state.search = document.querySelector('#profile-search').value.trim();
+    state.profileFilter = document.querySelector('#profile-kind-filter').value;
+    state.view = state.profileFilter === 'all' ? 'profiles' : state.profileFilter;
+    await renderCurrentView();
 function roleAllowed(buttonRoleCsv = '') {
   if (!buttonRoleCsv) return true;
   if (!state.user?.role) return false;
