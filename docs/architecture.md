@@ -3,6 +3,11 @@
 ## Product posture
 This rebuild treats the current application as the behavioral reference while deliberately replacing its Replit-centric monolith structure with a portable platform design.
 
+## Canonical runtime
+- The shipped production/runtime backend is the Node HTTP app at `apps/api/src/server.mjs`.
+- Fastify TypeScript modules in `apps/api/src/*.ts` are supporting migration artifacts and are not the deployed runtime path.
+- API structure is stabilized with documented contract/versioning at `docs/api-contract.md`.
+
 ## Architectural decisions
 
 ### 1. Monorepo with explicit service and app boundaries

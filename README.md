@@ -66,6 +66,15 @@ curl http://localhost:3000/health
 curl http://localhost:3000/ready
 ```
 
+## API contract
+- Canonical runtime API: `apps/api/src/server.mjs`
+- Stable API contract docs: `docs/api-contract.md`
+- Contract discovery endpoint:
+  - `GET /api/contract`
+  - `GET /api/v1/contract`
+- `/api/v1/*` returns a stable envelope with `data` + `meta`.
+- `/api/*` remains available for backwards compatibility while clients migrate.
+
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
 
