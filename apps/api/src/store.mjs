@@ -37,6 +37,10 @@ function decryptValue(payload) {
   return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
 }
 
+function sha256Hex(value) {
+  return createHash('sha256').update(value).digest('hex');
+}
+
 function now() {
   return new Date().toISOString();
 }
@@ -199,12 +203,15 @@ function seedState() {
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
-    portalLinks: []
+    portalLinks: [],
+    portalUploads: []
   };
 }
 
 export function createStore() {
   const state = loadState(seedState);
+  state.portalUploads ||= [];
+  state.portalLinks ||= [];
 
   function persist() {
     saveState(state);
@@ -232,6 +239,44 @@ export function createStore() {
   function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}) {
     state.auditEvents.push({ id: randomUUID(), firmId, actorUserId, entityType, entityId, action, occurredAt: now(), metadata });
     persist();
+  }
+
+  function requirePortalLink(token) {
+    const link = state.portalLinks.find((entry) => entry.token === token);
+    if (!link) throw new Error('Portal link not found.');
+    const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId);
+    if (!profile) throw new Error('Profile not found.');
+    return { link, profile };
+  }
+
+  function portalCompletionSummary(firmId, profileId) {
+    const submissions = state.formSubmissions.filter((entry) => entry.firmId === firmId && entry.clientId === profileId);
+    const availableTemplates = state.formTemplates.filter((entry) => entry.firmId === firmId);
+    const uploads = state.portalUploads.filter((entry) => entry.firmId === firmId && entry.profileId === profileId);
+    const submittedTemplateIds = new Set(
+      submissions
+        .filter((entry) => entry.status === 'submitted' && entry.templateId !== 'portal')
+        .map((entry) => entry.templateId)
+    );
+    const completionRatio = availableTemplates.length ? submittedTemplateIds.size / availableTemplates.length : 0;
+    const hasActivity = submissions.length > 0 || uploads.length > 0;
+    const complete = submittedTemplateIds.size > 0 && uploads.length > 0;
+
+    return {
+      requiredTemplateCount: availableTemplates.length,
+      submittedTemplateCount: submittedTemplateIds.size,
+      draftCount: submissions.filter((entry) => entry.status === 'draft').length,
+      uploadedDocumentCount: uploads.length,
+      completionRatio: Number(completionRatio.toFixed(2)),
+      status: complete ? 'complete' : hasActivity ? 'in_progress' : 'not_started',
+      lastActivityAt: [...submissions.map((entry) => entry.updatedAt || entry.createdAt), ...uploads.map((entry) => entry.createdAt)]
+        .sort((a, b) => new Date(b).getTime() - new Date(a).getTime())[0] || null
+    };
+  }
+
+  function toUploadMetadata(upload) {
+    const { contentCiphertext, ...metadata } = upload;
+    return metadata;
   }
 
   return {
@@ -288,9 +333,14 @@ export function createStore() {
       const household = profile.householdId ? state.households.find((entry) => entry.id === profile.householdId && entry.firmId === user.firmId) : null;
       const householdMembers = household ? state.householdMembers.filter((entry) => entry.householdId === household.id && entry.firmId === user.firmId) : [];
       const submissions = state.formSubmissions.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
+      const uploads = state.portalUploads
+        .filter((entry) => entry.profileId === profile.id && entry.firmId === user.firmId)
+        .slice()
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .map(toUploadMetadata);
       const stageHistory = state.stageChanges.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
       const notes = state.notes.filter((entry) => entry.profileId === profile.id && entry.firmId === user.firmId).slice().reverse();
-      return { profile, household, householdMembers, submissions, stageHistory, notes };
+      return { profile, household, householdMembers, submissions, stageHistory, notes, uploads, portalCompletion: portalCompletionSummary(user.firmId, profile.id) };
     },
     createProfile(user, input) {
       requirePermission(user, 'profiles:write');
@@ -626,8 +676,7 @@ export function createStore() {
       return link;
     },
     getPortalData(token) {
-      const link = state.portalLinks.find((entry) => entry.token === token);
-      if (!link) throw new Error('Portal link not found.');
+      const { link } = requirePortalLink(token);
       const firm = state.firms.find((entry) => entry.id === link.firmId) || null;
       const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId);
       const submissions = state.formSubmissions
@@ -637,11 +686,15 @@ export function createStore() {
       const availableTemplates = state.formTemplates
         .filter((entry) => entry.firmId === link.firmId)
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
-      return { firm, profile, submissions, availableTemplates };
+      const uploads = state.portalUploads
+        .filter((entry) => entry.firmId === link.firmId && entry.profileId === link.profileId)
+        .slice()
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+        .map(toUploadMetadata);
+      return { firm, profile, submissions, availableTemplates, uploads, portalCompletion: portalCompletionSummary(link.firmId, link.profileId) };
     },
     portalSubmit(token, input) {
-      const link = state.portalLinks.find((entry) => entry.token === token);
-      if (!link) throw new Error('Portal link not found.');
+      const { link } = requirePortalLink(token);
       const templateId = input.templateId || 'portal';
       const template = templateId === 'portal' ? null : state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === link.firmId);
       if (templateId !== 'portal' && !template) throw new Error('Form template not found.');
@@ -660,6 +713,58 @@ export function createStore() {
       state.formSubmissions.push(submission);
       persist();
       return submission;
+    },
+    portalUpload(token, input) {
+      const { link, profile } = requirePortalLink(token);
+      const fileName = String(input.fileName || '').trim();
+      const mimeType = String(input.mimeType || '').trim().toLowerCase();
+      const description = String(input.description || '').trim();
+      const category = String(input.category || 'supporting_document').trim().toLowerCase();
+      const sizeBytes = Number(input.sizeBytes || 0);
+      const contentBase64 = String(input.contentBase64 || '');
+
+      if (!fileName || !mimeType || !sizeBytes || !contentBase64) {
+        throw new Error('fileName, mimeType, sizeBytes, and contentBase64 are required.');
+      }
+      const allowedMimeTypes = new Set(['application/pdf', 'image/png', 'image/jpeg']);
+      if (!allowedMimeTypes.has(mimeType)) {
+        throw new Error('Unsupported file type. Allowed types: PDF, PNG, JPG.');
+      }
+      if (sizeBytes > 10 * 1024 * 1024) {
+        throw new Error('File exceeds 10MB upload limit.');
+      }
+
+      const normalizedBase64 = contentBase64.replace(/^data:[^;]+;base64,/, '');
+      const fileBuffer = Buffer.from(normalizedBase64, 'base64');
+      if (fileBuffer.length === 0 || Math.abs(fileBuffer.length - sizeBytes) > 2) {
+        throw new Error('Uploaded file size is invalid.');
+      }
+
+      const upload = {
+        id: randomUUID(),
+        firmId: link.firmId,
+        profileId: profile.id,
+        portalLinkId: link.id,
+        source: 'portal',
+        fileName,
+        mimeType,
+        sizeBytes: fileBuffer.length,
+        category,
+        description,
+        checksumSha256: sha256Hex(fileBuffer),
+        contentCiphertext: encryptValue(normalizedBase64),
+        createdAt: now()
+      };
+      state.portalUploads.push(upload);
+      addAudit(link.firmId, null, 'portal_upload', upload.id, 'portal.uploaded', {
+        profileId: profile.id,
+        fileName: upload.fileName,
+        mimeType: upload.mimeType,
+        sizeBytes: upload.sizeBytes,
+        category: upload.category
+      });
+      persist();
+      return toUploadMetadata(upload);
     },
     getAnalytics(user) {
       requirePermission(user, 'analytics:read');

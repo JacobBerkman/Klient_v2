@@ -10,6 +10,19 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForServer(maxAttempts = 30) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}/health`);
+      if (response.ok) return;
+    } catch {
+      // ignore until retries exhausted
+    }
+    await wait(200);
+  }
+  throw new Error('Server did not become ready for smoke test.');
+}
+
 async function jsonFetch(path, options = {}) {
   const response = await fetch(`http://127.0.0.1:${port}${path}`, options);
   const data = await response.json();
@@ -18,7 +31,7 @@ async function jsonFetch(path, options = {}) {
 }
 
 async function run() {
-  await wait(700);
+  await waitForServer();
   const ready = await jsonFetch('/ready');
   if (!ready.querySummary) throw new Error('Readiness summary missing');
 
@@ -65,6 +78,21 @@ async function run() {
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'draft', data: { primaryGoal: 'Retire early' } }) });
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'submitted', data: { primaryGoal: 'Retire early', accounts: [{ institution: 'Vanguard', balance: '120000' }] } }) });
   const refreshedPortalData = await jsonFetch(`/api/portal/${portal.token}`);
+  const uploadSource = '%PDF-1.4 smoke regression';
+  const uploadPayload = Buffer.from(uploadSource).toString('base64');
+  await jsonFetch(`/api/portal/${portal.token}/uploads`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      fileName: 'intake-doc.pdf',
+      mimeType: 'application/pdf',
+      sizeBytes: Buffer.from(uploadSource).length,
+      category: 'intake',
+      description: 'Smoke upload',
+      contentBase64: uploadPayload
+    })
+  });
+  const portalAfterUpload = await jsonFetch(`/api/portal/${portal.token}`);
 
   const exportJob = await jsonFetch('/api/exports', { method: 'POST', headers: authHeaders, body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' }) });
   await jsonFetch('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
@@ -82,8 +110,12 @@ async function run() {
   if (!portalData.availableTemplates.find((entry) => entry.id === portalTemplate.id)) throw new Error('Portal templates missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'draft')) throw new Error('Portal draft missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'submitted')) throw new Error('Portal submission missing');
+  if (!portalAfterUpload.uploads.find((entry) => entry.fileName === 'intake-doc.pdf')) throw new Error('Portal upload missing');
+  if (portalAfterUpload.uploads.find((entry) => entry.contentCiphertext)) throw new Error('Portal upload leaked encrypted payload');
   if (!exportsList.find((job) => job.id === exportJob.id && job.status === 'completed')) throw new Error('Export processing failed');
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
+  if (!detail.uploads.find((entry) => entry.fileName === 'intake-doc.pdf')) throw new Error('Advisor upload visibility failed');
+  if (detail.portalCompletion.status !== 'complete') throw new Error('Portal completion status not updated');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
 
@@ -95,7 +127,8 @@ async function run() {
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,
-    templateStatus: published.status
+    templateStatus: published.status,
+    portalCompletion: detail.portalCompletion.status
   }, null, 2));
 }
 

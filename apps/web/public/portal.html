@@ -26,6 +26,17 @@
         </article>
       </section>
 
+      <section class="grid two">
+        <article class="card">
+          <h2>Uploaded Documents</h2>
+          <div id="portal-uploads" class="stack gap-sm"></div>
+        </article>
+        <article class="card">
+          <h2>Portal Completion</h2>
+          <div id="portal-completion" class="stack gap-sm"></div>
+        </article>
+      </section>
+
       <section class="card">
         <div class="section-header">
           <div>
@@ -54,6 +65,21 @@
           </div>
         </form>
       </section>
+
+      <section class="card">
+        <h2>Secure Document Upload</h2>
+        <p class="muted">Upload client documents (PDF or image) tied to your portal profile. Advisors can only see uploads from your firm and profile context.</p>
+        <form id="portal-upload-form" class="stack gap-md">
+          <div class="grid two">
+            <label><span>Category</span><input name="category" placeholder="tax_return, statement, id_document" /></label>
+            <label><span>Description</span><input name="description" placeholder="Optional note for advisor context" /></label>
+          </div>
+          <label><span>File</span><input type="file" name="file" accept=".pdf,.png,.jpg,.jpeg" required /></label>
+          <div class="actions-row">
+            <button type="submit">Upload Document</button>
+          </div>
+        </form>
+      </section>
     </main>
 
     <script type="module">
@@ -62,12 +88,15 @@
       const subtitle = document.querySelector('#portal-subtitle');
       const profileTarget = document.querySelector('#portal-profile');
       const submissionsTarget = document.querySelector('#portal-submissions');
+      const uploadsTarget = document.querySelector('#portal-uploads');
+      const completionTarget = document.querySelector('#portal-completion');
       const statusBadge = document.querySelector('#portal-status');
       const templatePicker = document.querySelector('#template-picker');
       const templateDescription = document.querySelector('#template-description');
       const fieldsTarget = document.querySelector('#portal-fields');
       const form = document.querySelector('#portal-form');
       const draftButton = document.querySelector('[data-save-draft]');
+      const uploadForm = document.querySelector('#portal-upload-form');
 
       const portalState = {
         token,
@@ -135,6 +164,44 @@
             <pre>${escapeHtml(JSON.stringify(submission.data, null, 2))}</pre>
           </article>
         `).join('');
+      }
+
+      function renderUploads(uploads) {
+        if (!uploads?.length) {
+          renderEmptyState(uploadsTarget, 'No uploaded documents yet.');
+          return;
+        }
+        uploadsTarget.innerHTML = uploads.map((upload) => `
+          <article class="item compact">
+            <div class="row between">
+              <strong>${escapeHtml(upload.fileName)}</strong>
+              <span class="badge subtle">${escapeHtml(upload.category || 'document')}</span>
+            </div>
+            <div class="muted">${escapeHtml(upload.mimeType)} • ${Math.ceil((upload.sizeBytes || 0) / 1024)} KB</div>
+            <div class="muted">Uploaded ${new Date(upload.createdAt).toLocaleString()}</div>
+            ${upload.description ? `<div class="muted">${escapeHtml(upload.description)}</div>` : ''}
+          </article>
+        `).join('');
+      }
+
+      function renderCompletion(summary) {
+        if (!summary) {
+          renderEmptyState(completionTarget, 'Completion status unavailable.');
+          return;
+        }
+        completionTarget.innerHTML = `
+          <div class="item compact">
+            <div class="row between">
+              <strong>Status</strong>
+              <span class="badge ${summary.status === 'complete' ? '' : 'subtle'}">${escapeHtml(summary.status)}</span>
+            </div>
+            <div class="muted">Submitted templates: ${summary.submittedTemplateCount}/${summary.requiredTemplateCount}</div>
+            <div class="muted">Draft forms: ${summary.draftCount}</div>
+            <div class="muted">Uploaded documents: ${summary.uploadedDocumentCount}</div>
+            <div class="muted">Completion ratio: ${Math.round((summary.completionRatio || 0) * 100)}%</div>
+            <div class="muted">Last activity: ${summary.lastActivityAt ? new Date(summary.lastActivityAt).toLocaleString() : '—'}</div>
+          </div>
+        `;
       }
 
       function fieldName(sectionIndex, fieldKey, rowIndex = null) {
@@ -244,6 +311,8 @@
           subtitle.textContent = 'Open this page with a valid token to review and complete forms.';
           renderEmptyState(profileTarget, 'Missing portal token.');
           renderEmptyState(submissionsTarget, 'No submission history is available without a portal token.');
+          renderEmptyState(uploadsTarget, 'No upload history is available without a portal token.');
+          renderEmptyState(completionTarget, 'Completion status is unavailable without a portal token.');
           renderEmptyState(fieldsTarget, 'A portal token is required to load forms.');
           templatePicker.innerHTML = '<option value="">Missing token</option>';
           draftButton.disabled = true;
@@ -264,6 +333,8 @@
 
         renderProfile(data.profile, data.firm);
         renderSubmissions(data.submissions || []);
+        renderUploads(data.uploads || []);
+        renderCompletion(data.portalCompletion || null);
         renderTemplateFields();
       }
 
@@ -307,10 +378,49 @@
         }
       });
 
+      uploadForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        try {
+          const payload = new FormData(uploadForm);
+          const file = payload.get('file');
+          if (!(file instanceof File) || !file.size) throw new Error('Please choose a file before uploading.');
+          const contentBase64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ''));
+            reader.onerror = () => reject(new Error('Unable to read file.'));
+            reader.readAsDataURL(file);
+          });
+
+          const response = await fetch(`/api/portal/${token}/uploads`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              fileName: file.name,
+              mimeType: file.type || 'application/octet-stream',
+              sizeBytes: file.size,
+              category: String(payload.get('category') || '').trim() || 'supporting_document',
+              description: String(payload.get('description') || '').trim(),
+              contentBase64
+            })
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.message || 'Unable to upload document.');
+          await loadPortal();
+          uploadForm.reset();
+          statusBadge.textContent = `Uploaded ${result.fileName}`;
+          statusBadge.className = 'badge';
+        } catch (error) {
+          statusBadge.textContent = error.message;
+          statusBadge.className = 'badge subtle';
+        }
+      });
+
       loadPortal().catch((error) => {
         subtitle.textContent = error.message || 'Unable to load portal data.';
         renderEmptyState(profileTarget, 'Unable to load portal data.');
         renderEmptyState(submissionsTarget, 'Unable to load submission history.');
+        renderEmptyState(uploadsTarget, 'Unable to load upload history.');
+        renderEmptyState(completionTarget, 'Unable to load completion status.');
         renderEmptyState(fieldsTarget, 'Unable to load form fields.');
       });
     </script>

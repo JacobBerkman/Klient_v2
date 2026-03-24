@@ -113,6 +113,14 @@ async function renderProfileDetail() {
         <h3>Form Submissions</h3>
         <pre>${JSON.stringify(detail.submissions, null, 2)}</pre>
       </div>
+      <div class="item">
+        <h3>Portal Uploads</h3>
+        <pre>${JSON.stringify(detail.uploads, null, 2)}</pre>
+      </div>
+      <div class="item">
+        <h3>Portal Completion</h3>
+        <pre>${JSON.stringify(detail.portalCompletion, null, 2)}</pre>
+      </div>
     </div>
     <div class="item">
       <h3>Notes</h3>

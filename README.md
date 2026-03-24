@@ -10,7 +10,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - persisted prospect pipeline board
 - households and member linking
 - dynamic form template and submission flows
-- guided client portal for draft and submitted onboarding responses
+- guided client portal for draft/submitted onboarding responses plus secure portal-scoped document uploads
 - document template and export job foundations
 - audit trail and analytics views
 - invite flow and password reset endpoints
@@ -67,7 +67,13 @@ curl http://localhost:3000/ready
 ```
 
 ## Portal view
-Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
+Open `http://localhost:3000/portal?token=...` with a generated portal token to:
+- review shared client/profile data
+- save drafts and submit onboarding responses
+- upload supporting documents (PDF/PNG/JPG) with metadata persisted to the linked profile
+- track portal completion status (template progress + document uploads)
+
+Advisor profile detail now includes uploaded document metadata and portal completion status for the same firm-scoped profile.
 
 ## Backup
 ```bash

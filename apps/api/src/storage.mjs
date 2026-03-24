@@ -85,6 +85,16 @@ db.exec(`
     occurred_at TEXT NOT NULL,
     payload TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS portal_uploads (
+    id TEXT PRIMARY KEY,
+    firm_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    mime_type TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    payload TEXT NOT NULL
+  );
 `);
 
 function replaceRows(tableName, rows, mapper) {
@@ -106,6 +116,7 @@ function syncQueryTables(state) {
   replaceRows('export_jobs', state.exportJobs || [], (job) => [job.id, job.firmId, job.clientId || null, job.type, job.status, JSON.stringify(job)]);
   replaceRows('notes', state.notes || [], (note) => [note.id, note.firmId, note.profileId, note.createdAt, JSON.stringify(note)]);
   replaceRows('audit_events', state.auditEvents || [], (event) => [event.id, event.firmId, event.action, event.occurredAt, JSON.stringify(event)]);
+  replaceRows('portal_uploads', state.portalUploads || [], (upload) => [upload.id, upload.firmId, upload.profileId, upload.fileName, upload.mimeType, upload.createdAt, JSON.stringify(upload)]);
 }
 
 
@@ -154,7 +165,8 @@ export function readQuerySummary() {
     profiles: db.prepare('SELECT COUNT(*) AS count FROM profiles').get().count,
     households: db.prepare('SELECT COUNT(*) AS count FROM households').get().count,
     templates: db.prepare('SELECT COUNT(*) AS count FROM document_templates').get().count,
-    exports: db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get().count
+    exports: db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get().count,
+    portalUploads: db.prepare('SELECT COUNT(*) AS count FROM portal_uploads').get().count
   };
 }
 
