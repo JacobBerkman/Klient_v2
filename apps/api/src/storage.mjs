@@ -67,7 +67,19 @@ db.exec(`
     client_id TEXT,
     type TEXT NOT NULL,
     status TEXT NOT NULL,
-    payload TEXT NOT NULL
+    attempts INTEGER NOT NULL DEFAULT 0,
+    max_attempts INTEGER NOT NULL DEFAULT 3,
+    payload TEXT NOT NULL,
+    output_payload TEXT,
+    error_message TEXT,
+    next_attempt_at TEXT,
+    leased_by TEXT,
+    lease_expires_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT,
+    dead_lettered_at TEXT,
+    last_attempt_at TEXT
   );
 
   CREATE TABLE IF NOT EXISTS notes (
@@ -87,12 +99,147 @@ db.exec(`
   );
 `);
 
+function hasColumn(table, column) {
+  return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+}
+
+function ensureExportJobsColumns() {
+  const definitions = [
+    ['attempts', 'INTEGER NOT NULL DEFAULT 0'],
+    ['max_attempts', 'INTEGER NOT NULL DEFAULT 3'],
+    ['output_payload', 'TEXT'],
+    ['error_message', 'TEXT'],
+    ['next_attempt_at', 'TEXT'],
+    ['leased_by', 'TEXT'],
+    ['lease_expires_at', 'TEXT'],
+    ['created_at', 'TEXT'],
+    ['updated_at', 'TEXT'],
+    ['completed_at', 'TEXT'],
+    ['dead_lettered_at', 'TEXT'],
+    ['last_attempt_at', 'TEXT']
+  ];
+  for (const [column, ddl] of definitions) {
+    if (!hasColumn('export_jobs', column)) {
+      db.exec(`ALTER TABLE export_jobs ADD COLUMN ${column} ${ddl}`);
+    }
+  }
+}
+
+ensureExportJobsColumns();
+
+db.exec(`
+  UPDATE export_jobs
+  SET
+    attempts = COALESCE(attempts, json_extract(payload, '$.attempts'), 0),
+    max_attempts = COALESCE(max_attempts, json_extract(payload, '$.maxAttempts'), 3),
+    created_at = COALESCE(created_at, json_extract(payload, '$.createdAt'), datetime('now')),
+    updated_at = COALESCE(updated_at, json_extract(payload, '$.updatedAt'), datetime('now')),
+    next_attempt_at = COALESCE(next_attempt_at, json_extract(payload, '$.nextAttemptAt'), created_at)
+`);
+
+function nowIso() {
+  return new Date().toISOString();
+}
+
 function replaceRows(tableName, rows, mapper) {
   db.exec(`DELETE FROM ${tableName}`);
   for (const row of rows) {
     const mapped = mapper(row);
     const placeholders = mapped.map(() => '?').join(', ');
     db.prepare(`INSERT INTO ${tableName} VALUES (${placeholders})`).run(...mapped);
+  }
+}
+
+function readStatePayload() {
+  const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get();
+  if (!row?.payload) return null;
+  return JSON.parse(row.payload);
+}
+
+export function listExportQueueJobs() {
+  const rows = db.prepare(`
+    SELECT id, firm_id AS firmId, client_id AS clientId, type, status, attempts,
+      max_attempts AS maxAttempts, payload, output_payload AS outputPayload,
+      error_message AS errorMessage, next_attempt_at AS nextAttemptAt,
+      leased_by AS leasedBy, lease_expires_at AS leaseExpiresAt,
+      created_at AS createdAt, updated_at AS updatedAt,
+      completed_at AS completedAt, dead_lettered_at AS deadLetteredAt,
+      last_attempt_at AS lastAttemptAt
+    FROM export_jobs
+    ORDER BY created_at DESC
+  `).all();
+  return rows.map((row) => {
+    const payload = row.payload ? JSON.parse(row.payload) : {};
+    const output = row.outputPayload ? JSON.parse(row.outputPayload) : null;
+    return {
+      ...payload,
+      id: row.id,
+      firmId: row.firmId,
+      clientId: row.clientId,
+      type: row.type,
+      status: row.status,
+      attempts: row.attempts || 0,
+      maxAttempts: row.maxAttempts || 3,
+      output,
+      errorMessage: row.errorMessage || null,
+      nextAttemptAt: row.nextAttemptAt || null,
+      leasedBy: row.leasedBy || null,
+      leaseExpiresAt: row.leaseExpiresAt || null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      completedAt: row.completedAt || null,
+      deadLetteredAt: row.deadLetteredAt || null,
+      lastAttemptAt: row.lastAttemptAt || null
+    };
+  });
+}
+
+function syncStateExportsFromQueue() {
+  const state = readStatePayload();
+  if (!state) return;
+  state.exportJobs = listExportQueueJobs();
+  db.prepare(`
+    INSERT INTO app_state (id, payload, updated_at)
+    VALUES (1, ?, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
+  `).run(JSON.stringify(state));
+}
+
+function ensureQueueSeededFromState(state) {
+  const countRow = db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get();
+  if ((countRow?.count || 0) > 0) return;
+  const insert = db.prepare(`
+    INSERT INTO export_jobs (
+      id, firm_id, client_id, type, status, attempts, max_attempts, payload, output_payload,
+      error_message, next_attempt_at, leased_by, lease_expires_at, created_at, updated_at,
+      completed_at, dead_lettered_at, last_attempt_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  for (const job of state.exportJobs || []) {
+    const createdAt = job.createdAt || nowIso();
+    const updatedAt = job.updatedAt || createdAt;
+    const completedAt = job.status === 'completed' ? updatedAt : null;
+    const nextAttemptAt = job.nextAttemptAt || createdAt;
+    insert.run(
+      job.id,
+      job.firmId,
+      job.clientId || null,
+      job.type || 'pdf',
+      job.status || 'queued',
+      Number(job.attempts || 0),
+      Number(job.maxAttempts || 3),
+      JSON.stringify(job),
+      job.output ? JSON.stringify(job.output) : null,
+      job.errorMessage || null,
+      nextAttemptAt,
+      null,
+      null,
+      createdAt,
+      updatedAt,
+      completedAt,
+      job.deadLetteredAt || null,
+      job.lastAttemptAt || null
+    );
   }
 }
 
@@ -103,11 +250,9 @@ function syncQueryTables(state) {
   replaceRows('households', state.households || [], (household) => [household.id, household.firmId, household.name, JSON.stringify(household)]);
   replaceRows('form_templates', state.formTemplates || [], (template) => [template.id, template.firmId, template.name, JSON.stringify(template)]);
   replaceRows('document_templates', state.documentTemplates || [], (template) => [template.id, template.firmId, template.name, template.status || 'draft', JSON.stringify(template)]);
-  replaceRows('export_jobs', state.exportJobs || [], (job) => [job.id, job.firmId, job.clientId || null, job.type, job.status, JSON.stringify(job)]);
   replaceRows('notes', state.notes || [], (note) => [note.id, note.firmId, note.profileId, note.createdAt, JSON.stringify(note)]);
   replaceRows('audit_events', state.auditEvents || [], (event) => [event.id, event.firmId, event.action, event.occurredAt, JSON.stringify(event)]);
 }
-
 
 export function ensureDatabaseReady() {
   db.prepare('SELECT 1').get();
@@ -125,12 +270,17 @@ export function closeDatabase() {
 export function loadState(seedFactory) {
   const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get();
   if (row?.payload) {
-    return JSON.parse(row.payload);
+    const state = JSON.parse(row.payload);
+    ensureQueueSeededFromState(state);
+    syncStateExportsFromQueue();
+    return readStatePayload();
   }
 
   const state = seedFactory();
   saveState(state);
-  return state;
+  ensureQueueSeededFromState(state);
+  syncStateExportsFromQueue();
+  return readStatePayload();
 }
 
 export function saveState(state) {
@@ -145,6 +295,224 @@ export function saveState(state) {
 export function backupState(targetPath = resolve(process.cwd(), 'data', `backup-${Date.now()}.db`)) {
   copyFileSync(DB_PATH, targetPath);
   return { ok: true, targetPath };
+}
+
+export function enqueueExportJob(job) {
+  const createdAt = job.createdAt || nowIso();
+  const payload = {
+    id: job.id,
+    firmId: job.firmId,
+    clientId: job.clientId || null,
+    templateId: job.templateId || null,
+    type: job.type || 'pdf',
+    status: 'queued',
+    attempts: 0,
+    maxAttempts: Number(job.maxAttempts || 3),
+    output: null,
+    createdAt,
+    updatedAt: createdAt,
+    metadata: job.metadata || {}
+  };
+  db.prepare(`
+    INSERT INTO export_jobs (
+      id, firm_id, client_id, type, status, attempts, max_attempts, payload, output_payload,
+      error_message, next_attempt_at, leased_by, lease_expires_at, created_at, updated_at,
+      completed_at, dead_lettered_at, last_attempt_at
+    ) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, NULL, NULL, NULL)
+  `).run(
+    payload.id,
+    payload.firmId,
+    payload.clientId,
+    payload.type,
+    payload.maxAttempts,
+    JSON.stringify(payload),
+    createdAt,
+    createdAt,
+    createdAt
+  );
+  syncStateExportsFromQueue();
+  return payload;
+}
+
+export function requeueExportJob(jobId) {
+  const existing = db.prepare('SELECT payload FROM export_jobs WHERE id = ?').get(jobId);
+  if (!existing) return null;
+  const timestamp = nowIso();
+  const payload = {
+    ...(existing.payload ? JSON.parse(existing.payload) : {}),
+    status: 'queued',
+    attempts: 0,
+    errorMessage: null,
+    deadLetteredAt: null,
+    completedAt: null,
+    updatedAt: timestamp
+  };
+  db.prepare(`
+    UPDATE export_jobs
+    SET status = 'queued',
+      attempts = 0,
+      error_message = NULL,
+      next_attempt_at = ?,
+      leased_by = NULL,
+      lease_expires_at = NULL,
+      completed_at = NULL,
+      dead_lettered_at = NULL,
+      updated_at = ?,
+      payload = ?
+    WHERE id = ?
+  `).run(timestamp, timestamp, JSON.stringify(payload), jobId);
+  syncStateExportsFromQueue();
+  return getExportJob(jobId);
+}
+
+export function getExportJob(jobId) {
+  return listExportQueueJobs().find((job) => job.id === jobId) || null;
+}
+
+export function leaseExportJobs({ workerId = 'worker', limit = 5, leaseMs = 30_000 } = {}) {
+  const nowMs = Date.now();
+  const nowText = new Date(nowMs).toISOString();
+  const leaseUntil = new Date(nowMs + leaseMs).toISOString();
+
+  db.exec('BEGIN IMMEDIATE');
+  try {
+    const candidates = db.prepare(`
+      SELECT id
+      FROM export_jobs
+      WHERE status IN ('queued', 'retrying', 'processing')
+        AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+        AND (
+          status != 'processing'
+          OR lease_expires_at IS NULL
+          OR lease_expires_at <= ?
+        )
+      ORDER BY created_at ASC
+      LIMIT ?
+    `).all(nowText, nowText, limit);
+
+    const ids = candidates.map((row) => row.id);
+    if (!ids.length) {
+      db.exec('COMMIT');
+      return [];
+    }
+
+    const placeholders = ids.map(() => '?').join(',');
+    db.prepare(`
+      UPDATE export_jobs
+      SET status = 'processing', leased_by = ?, lease_expires_at = ?, updated_at = ?
+      WHERE id IN (${placeholders})
+    `).run(workerId, leaseUntil, nowText, ...ids);
+
+    db.exec('COMMIT');
+    syncStateExportsFromQueue();
+    return ids.map((id) => getExportJob(id)).filter(Boolean);
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function markExportJobCompleted(jobId, output) {
+  const existing = db.prepare('SELECT payload FROM export_jobs WHERE id = ?').get(jobId);
+  if (!existing) return null;
+  const timestamp = nowIso();
+  const payload = {
+    ...(existing.payload ? JSON.parse(existing.payload) : {}),
+    status: 'completed',
+    output: output || null,
+    errorMessage: null,
+    completedAt: timestamp,
+    updatedAt: timestamp
+  };
+  db.prepare(`
+    UPDATE export_jobs
+    SET status = 'completed',
+      output_payload = ?,
+      error_message = NULL,
+      leased_by = NULL,
+      lease_expires_at = NULL,
+      completed_at = ?,
+      updated_at = ?,
+      payload = ?
+    WHERE id = ?
+  `).run(JSON.stringify(output || null), timestamp, timestamp, JSON.stringify(payload), jobId);
+  syncStateExportsFromQueue();
+  return getExportJob(jobId);
+}
+
+export function markExportJobFailed(jobId, errorMessage, options = {}) {
+  const maxAttempts = Number(options.maxAttempts || 3);
+  const baseBackoffMs = Number(options.baseBackoffMs || 500);
+  const maxBackoffMs = Number(options.maxBackoffMs || 30_000);
+  const current = db.prepare('SELECT attempts, max_attempts AS maxAttempts, payload FROM export_jobs WHERE id = ?').get(jobId);
+  if (!current) return null;
+  const existingPayload = current.payload ? JSON.parse(current.payload) : {};
+  const attempts = Number(current.attempts || 0) + 1;
+  const effectiveMaxAttempts = Number(current.maxAttempts || maxAttempts);
+  const timestamp = nowIso();
+
+  if (attempts >= effectiveMaxAttempts) {
+    const payload = {
+      ...existingPayload,
+      status: 'dead_letter',
+      attempts,
+      errorMessage: String(errorMessage || 'Unknown worker failure'),
+      deadLetteredAt: timestamp,
+      lastAttemptAt: timestamp,
+      updatedAt: timestamp
+    };
+    db.prepare(`
+      UPDATE export_jobs
+      SET status = 'dead_letter', attempts = ?, error_message = ?, leased_by = NULL,
+        lease_expires_at = NULL, dead_lettered_at = ?, last_attempt_at = ?, updated_at = ?, payload = ?
+      WHERE id = ?
+    `).run(attempts, String(errorMessage || 'Unknown worker failure'), timestamp, timestamp, timestamp, JSON.stringify(payload), jobId);
+  } else {
+    const delayMs = Math.min(baseBackoffMs * (2 ** (attempts - 1)), maxBackoffMs);
+    const nextAttemptAt = new Date(Date.now() + delayMs).toISOString();
+    const nextFailures = Number(existingPayload?.metadata?.simulateFailuresRemaining || 0);
+    const payload = {
+      ...existingPayload,
+      status: 'retrying',
+      attempts,
+      errorMessage: String(errorMessage || 'Unknown worker failure'),
+      nextAttemptAt,
+      lastAttemptAt: timestamp,
+      updatedAt: timestamp,
+      metadata: {
+        ...(existingPayload.metadata || {}),
+        simulateFailuresRemaining: Math.max(0, nextFailures - 1)
+      }
+    };
+    db.prepare(`
+      UPDATE export_jobs
+      SET status = 'retrying', attempts = ?, error_message = ?, next_attempt_at = ?, leased_by = NULL,
+        lease_expires_at = NULL, last_attempt_at = ?, updated_at = ?, payload = ?
+      WHERE id = ?
+    `).run(attempts, String(errorMessage || 'Unknown worker failure'), nextAttemptAt, timestamp, timestamp, JSON.stringify(payload), jobId);
+  }
+
+  syncStateExportsFromQueue();
+  return getExportJob(jobId);
+}
+
+export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs = 30_000, processor }) {
+  const leased = leaseExportJobs({ workerId, limit, leaseMs });
+  let processed = 0;
+  let failed = 0;
+
+  for (const job of leased) {
+    try {
+      const output = processor(job);
+      markExportJobCompleted(job.id, output);
+      processed += 1;
+    } catch (error) {
+      markExportJobFailed(job.id, error?.message || String(error), { maxAttempts: job.maxAttempts || 3 });
+      failed += 1;
+    }
+  }
+
+  return { leased: leased.length, processed, failed };
 }
 
 export function readQuerySummary() {
@@ -168,15 +536,33 @@ export function readExportWorkerStatus() {
   const latest = db.prepare(`
     SELECT payload
     FROM export_jobs
-    ORDER BY json_extract(payload, '$.updatedAt') DESC
+    ORDER BY updated_at DESC
     LIMIT 1
   `).get();
+  const activeLeases = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM export_jobs
+    WHERE status = 'processing' AND lease_expires_at > ?
+  `).get(nowIso()).count;
+  const retryCounts = db.prepare(`
+    SELECT attempts, COUNT(*) AS count
+    FROM export_jobs
+    WHERE status = 'retrying'
+    GROUP BY attempts
+    ORDER BY attempts ASC
+  `).all();
+  const deadLetter = db.prepare("SELECT COUNT(*) AS count FROM export_jobs WHERE status = 'dead_letter'").get().count;
+
   return {
-    queued: byStatus.queued || 0,
+    queued: (byStatus.queued || 0) + (byStatus.retrying || 0),
     processing: byStatus.processing || 0,
     completed: byStatus.completed || 0,
     failed: byStatus.failed || 0,
+    deadLetter,
     total: Object.values(byStatus).reduce((sum, count) => sum + count, 0),
+    activeLeases,
+    retryCounts,
+    byStatus,
     latestJob: latest?.payload ? JSON.parse(latest.payload) : null
   };
 }
@@ -214,22 +600,4 @@ export function readAuditEventSummary() {
     total: row?.total || 0,
     latest: last || null
   };
-}
-
-
-export function completeQueuedExports() {
-  const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get();
-  if (!row?.payload) return { processed: 0 };
-  const state = JSON.parse(row.payload);
-  let processed = 0;
-  for (const job of state.exportJobs || []) {
-    if (job.status === 'queued') {
-      job.status = 'completed';
-      job.output = { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
-      job.updatedAt = new Date().toISOString();
-      processed += 1;
-    }
-  }
-  saveState(state);
-  return { processed };
 }
