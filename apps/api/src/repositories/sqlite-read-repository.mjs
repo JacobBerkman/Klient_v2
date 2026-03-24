@@ -35,6 +35,11 @@ export class SqliteReadRepository {
     return Object.fromEntries(stageRows.map((row) => [row.stage, row.count]));
   }
 
+  getAnalyticsMaterialized(firmId) {
+    const row = db.prepare('SELECT payload FROM analytics_materialized WHERE firm_id = ?').get(firmId);
+    return row?.payload ? JSON.parse(row.payload) : null;
+  }
+
   getQueuedExports(firmId) {
     const rows = db.prepare('SELECT payload FROM export_jobs WHERE firm_id = ? AND status = ?').all(firmId, 'queued');
     return parsePayloadRows(rows);

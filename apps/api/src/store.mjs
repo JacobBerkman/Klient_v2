@@ -13,6 +13,7 @@ const PERMISSIONS = {
   readonly: ['profiles:read', 'analytics:read'],
   client: ['portal:read', 'client:write']
 };
+const BOARD_COLUMNS = ['discovery', 'gather_oi', 'analysis', 'advisor_proposal_meeting', 'intake', 'on_boarding', 'investment_strategy', 'completed', 'drop_dead_lead', 'drop_nurture'];
 
 function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission);
@@ -45,6 +46,16 @@ function now() {
   return new Date().toISOString();
 }
 
+function parseIso(value) {
+  const time = new Date(value || '').getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
 function hash(password) {
   return createHash('sha256').update(password).digest('hex');
 }
@@ -70,6 +81,14 @@ function daysBetween(thenIso, nowMs) {
 
 function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
+}
+
+function pipelineConflict(message, details = {}) {
+  const error = new Error(message);
+  error.statusCode = 409;
+  error.code = 'PIPELINE_ORDER_CONFLICT';
+  error.details = details;
+  return error;
 }
 
 function seedState() {
@@ -147,6 +166,7 @@ function seedState() {
         phone: '555-111-3333',
         stage: 'discovery',
         stageOrderIndex: 1,
+        pipelineVersion: 1,
         source: { cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10', displayValue: sourceDisplay({ cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10' }) },
         address: { city: 'Austin', state: 'TX' },
         customProfile: {},
@@ -164,6 +184,7 @@ function seedState() {
         phone: '555-111-4444',
         stage: 'analysis',
         stageOrderIndex: 1,
+        pipelineVersion: 1,
         source: { cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15', displayValue: sourceDisplay({ cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15' }) },
         address: { city: 'Houston', state: 'TX' },
         customProfile: {},
@@ -234,7 +255,8 @@ function seedState() {
     invites: [],
     passwordResets: [],
     portalLinks: [],
-    authAttempts: []
+    authAttempts: [],
+    boardVersions: { [firmId]: 1 }
   };
 }
 
@@ -310,9 +332,103 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
 
     persist();
   }
+  let testHooks = {};
 
   function persist() {
+    if (typeof testHooks.beforePersist === 'function') {
+      testHooks.beforePersist(state);
+    }
     saveState(state);
+  }
+
+  function getBoardVersion(firmId) {
+    if (!state.boardVersions || typeof state.boardVersions !== 'object') {
+      state.boardVersions = {};
+    }
+    if (!state.boardVersions[firmId]) {
+      state.boardVersions[firmId] = 1;
+    }
+    return state.boardVersions[firmId];
+  }
+
+  function bumpBoardVersion(firmId) {
+    const current = getBoardVersion(firmId);
+    state.boardVersions[firmId] = current + 1;
+    return state.boardVersions[firmId];
+  }
+
+  function listProspectsByStage(firmId, stage, excludedProfileId = null) {
+    return state.profiles
+      .filter((profile) => profile.firmId === firmId && profile.kind === 'prospect' && profile.stage === stage && profile.id !== excludedProfileId)
+      .sort((a, b) => {
+        const indexDiff = (a.stageOrderIndex || Number.MAX_SAFE_INTEGER) - (b.stageOrderIndex || Number.MAX_SAFE_INTEGER);
+        if (indexDiff !== 0) return indexDiff;
+        const updatedDiff = new Date(a.updatedAt || a.createdAt || 0).getTime() - new Date(b.updatedAt || b.createdAt || 0).getTime();
+        if (updatedDiff !== 0) return updatedDiff;
+        return a.id.localeCompare(b.id);
+      });
+  }
+
+  function compactStageIndices(firmId, stage) {
+    const cards = listProspectsByStage(firmId, stage);
+    let changed = false;
+    cards.forEach((card, index) => {
+      const nextIndex = index + 1;
+      if (card.stageOrderIndex !== nextIndex) {
+        card.stageOrderIndex = nextIndex;
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+  function normalizePipelineIndices(firmId, stage = null) {
+    const stages = stage ? [stage] : BOARD_COLUMNS;
+    const normalizedStages = [];
+    for (const currentStage of stages) {
+      if (compactStageIndices(firmId, currentStage)) {
+        normalizedStages.push(currentStage);
+      }
+    }
+    return normalizedStages;
+  }
+
+  function buildBoardPayload(user, conflict = null) {
+    const columns = BOARD_COLUMNS.map((stage) => ({
+      stage,
+      orderingVersion: getBoardVersion(user.firmId),
+      cards: listProspectsByStage(user.firmId, stage)
+    }));
+    return {
+      boardVersion: getBoardVersion(user.firmId),
+      generatedAt: now(),
+      ordering: {
+        mode: 'sequential_stage_index',
+        normalized: true
+      },
+      conflict,
+      columns
+    };
+  }
+
+  function executePipelineTransaction(mutator) {
+    const snapshot = {
+      profiles: state.profiles.map((profile) => ({ ...profile })),
+      stageChangesLength: state.stageChanges.length,
+      auditEventsLength: state.auditEvents.length,
+      boardVersions: { ...(state.boardVersions || {}) }
+    };
+    try {
+      const result = mutator();
+      persist();
+      return result;
+    } catch (error) {
+      state.profiles = snapshot.profiles;
+      state.stageChanges = state.stageChanges.slice(0, snapshot.stageChangesLength);
+      state.auditEvents = state.auditEvents.slice(0, snapshot.auditEventsLength);
+      state.boardVersions = snapshot.boardVersions;
+      throw error;
+    }
   }
 
   function createSession(user) {
@@ -344,9 +460,11 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     return publicUser(user);
   }
 
-  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}) {
+  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}, options = {}) {
     state.auditEvents.push({ id: randomUUID(), firmId, actorUserId, entityType, entityId, action, occurredAt: now(), metadata });
-    persist();
+    if (options.persist !== false) {
+      persist();
+    }
   }
 
   function requireClientProfile(user) {
@@ -441,6 +559,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
         stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
+        pipelineVersion: input.kind === 'prospect' ? 1 : null,
         address: input.address || {},
         customProfile: input.customProfile || {},
         householdId: input.householdId || null,
@@ -477,37 +596,118 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return profile;
     },
     moveProfileStage(user, profileId, stage, beforeProfileId = null) {
+      return this.reorderBoard(user, { profileId, toStage: stage, beforeProfileId });
+    },
+    reorderBoard(user, input) {
       requirePermission(user, 'pipeline:write');
-      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
-      const sameStage = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === stage && entry.id !== profileId).sort((a,b)=>(a.stageOrderIndex||0)-(b.stageOrderIndex||0));
-      const previousStage = profile.stage || null;
-      let nextIndex = sameStage.length + 1;
-      if (beforeProfileId) {
-        const before = sameStage.find((entry) => entry.id === beforeProfileId);
-        if (before) {
-          nextIndex = before.stageOrderIndex || 1;
-          sameStage.filter((entry) => (entry.stageOrderIndex || 0) >= nextIndex).forEach((entry) => { entry.stageOrderIndex = (entry.stageOrderIndex || 0) + 1; });
-        }
+      const { profileId, toStage, beforeProfileId = null, expectedVersion = null, expectedUpdatedAt = null, expectedBoardVersion = null } = input || {};
+      if (!profileId || !toStage) {
+        throw new Error('Reorder payload must include profileId and toStage.');
       }
-      profile.kind = 'prospect';
-      profile.stage = stage;
-      profile.stageOrderIndex = nextIndex;
-      profile.updatedAt = now();
-      state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, fromStage: previousStage, toStage: stage, changedByUserId: user.id, changedAt: profile.updatedAt });
-      addAudit(user.firmId, user.id, 'profile', profile.id, 'pipeline.stage_changed', { fromStage: previousStage, toStage: stage });
-      persist();
-      return profile;
+      if (!BOARD_COLUMNS.includes(toStage)) {
+        throw new Error(`Unknown stage: ${toStage}.`);
+      }
+
+      try {
+        return executePipelineTransaction(() => {
+          const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
+          if (!profile) throw new Error('Profile not found.');
+
+          const currentVersion = Number(profile.pipelineVersion || 1);
+          if (expectedVersion !== null && Number(expectedVersion) !== currentVersion) {
+            throw pipelineConflict('Profile ordering version mismatch.', {
+              profileId,
+              expectedVersion: Number(expectedVersion),
+              actualVersion: currentVersion,
+              profileUpdatedAt: profile.updatedAt
+            });
+          }
+          if (expectedUpdatedAt && String(expectedUpdatedAt) !== String(profile.updatedAt)) {
+            throw pipelineConflict('Profile updatedAt mismatch.', {
+              profileId,
+              expectedUpdatedAt,
+              actualUpdatedAt: profile.updatedAt
+            });
+          }
+          const boardVersion = getBoardVersion(user.firmId);
+          if (expectedBoardVersion !== null && Number(expectedBoardVersion) !== Number(boardVersion)) {
+            throw pipelineConflict('Board version mismatch.', {
+              expectedBoardVersion: Number(expectedBoardVersion),
+              actualBoardVersion: Number(boardVersion)
+            });
+          }
+
+          const destinationCards = listProspectsByStage(user.firmId, toStage, profile.id);
+          let insertIndex = destinationCards.length;
+          if (beforeProfileId) {
+            insertIndex = destinationCards.findIndex((entry) => entry.id === beforeProfileId);
+            if (insertIndex < 0) {
+              throw new Error('beforeProfileId was not found in the destination stage.');
+            }
+          }
+
+          const previousStage = profile.stage || null;
+          const movedAt = now();
+          profile.kind = 'prospect';
+          profile.stage = toStage;
+          profile.updatedAt = movedAt;
+          profile.pipelineVersion = currentVersion + 1;
+
+          destinationCards.splice(insertIndex, 0, profile);
+          destinationCards.forEach((card, index) => {
+            card.stageOrderIndex = index + 1;
+          });
+
+          if (previousStage && previousStage !== toStage) {
+            compactStageIndices(user.firmId, previousStage);
+          }
+
+          normalizePipelineIndices(user.firmId, toStage);
+          const normalized = normalizePipelineIndices(user.firmId, previousStage);
+          if (normalized.length > 0) {
+            addAudit(user.firmId, user.id, 'pipeline', profile.id, 'pipeline.indices_normalized', { stages: normalized }, { persist: false });
+          }
+          bumpBoardVersion(user.firmId);
+          state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, fromStage: previousStage, toStage, changedByUserId: user.id, changedAt: movedAt });
+          addAudit(user.firmId, user.id, 'profile', profile.id, 'pipeline.stage_changed', { fromStage: previousStage, toStage, beforeProfileId }, { persist: false });
+          return {
+            moved: profile,
+            board: buildBoardPayload(user),
+            conflict: null
+          };
+        });
+      } catch (error) {
+        if (error?.code === 'PIPELINE_ORDER_CONFLICT') {
+          error.details = {
+            ...(error.details || {}),
+            serverBoard: buildBoardPayload(user, {
+              code: error.code,
+              message: error.message
+            })
+          };
+        }
+        throw error;
+      }
+    },
+    normalizeBoardOrdering(user) {
+      requirePermission(user, 'pipeline:write');
+      return executePipelineTransaction(() => {
+        const normalizedStages = normalizePipelineIndices(user.firmId);
+        if (normalizedStages.length > 0) {
+          bumpBoardVersion(user.firmId);
+          addAudit(user.firmId, user.id, 'pipeline', user.firmId, 'pipeline.indices_normalized', { stages: normalizedStages }, { persist: false });
+        }
+        return {
+          normalizedStages,
+          board: buildBoardPayload(user),
+          changed: normalizedStages.length > 0
+        };
+      });
     },
     getBoard(user) {
       requirePermission(user, 'profiles:read');
-      const columns = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
-      return columns.map((stage) => ({
-        stage,
-        cards: state.profiles
-          .filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === stage)
-          .sort((a, b) => (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0))
-      }));
+      normalizePipelineIndices(user.firmId);
+      return buildBoardPayload(user);
     },
     listStageHistory(user, profileId) {
       requirePermission(user, 'profiles:read');
@@ -571,9 +771,16 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     listFormSubmissions(user, status = null) {
       requirePermission(user, 'profiles:read');
+      const currentTime = Date.now();
       return state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || entry.status === status)
+        .map((entry) => {
+          if (entry.lock && parseIso(entry.lock.expiresAt) <= currentTime) {
+            return { ...entry, lock: null };
+          }
+          return entry;
+        })
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
     },
@@ -615,6 +822,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         status,
         data: input.data && typeof input.data === 'object' ? input.data : {},
         source: 'client_portal',
+        createdByUserId: user.id,
         createdAt: now(),
         updatedAt: now()
       };
@@ -676,11 +884,135 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     createFormSubmission(user, input) {
       requirePermission(user, 'forms:write');
-      const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status: input.status || 'draft', data: input.data || {}, createdAt: now(), updatedAt: now() };
+      const status = input.status || 'draft';
+      const createdAt = now();
+      const submission = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        clientId: input.clientId,
+        templateId: input.templateId,
+        status,
+        data: input.data || {},
+        createdByUserId: user.id,
+        createdAt,
+        updatedAt: createdAt,
+        revisionId: status === 'draft' ? 1 : null,
+        lock: null
+      };
       state.formSubmissions.push(submission);
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', { templateId: input.templateId, clientId: input.clientId });
       persist();
       return submission;
+    },
+    acquireDraftLock(user, submissionId, input = {}) {
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft');
+      if (!submission) throw new Error('Draft submission not found.');
+
+      const nowTime = Date.now();
+      const leaseMs = Math.max(5_000, Math.min(120_000, Number(input.leaseMs || 30_000)));
+      const existing = submission.lock;
+      const active = existing && parseIso(existing.expiresAt) > nowTime;
+      const force = input.force === true;
+      if (active && existing.holderUserId !== user.id && !force) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft is currently locked by another advisor.',
+          lock: existing,
+          revisionId: submission.revisionId || 1
+        };
+      }
+
+      const lock = {
+        leaseId: randomUUID(),
+        holderUserId: user.id,
+        acquiredAt: now(),
+        expiresAt: new Date(nowTime + leaseMs).toISOString(),
+        leaseMs
+      };
+      submission.lock = lock;
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.lock_acquired', { leaseMs, force });
+      persist();
+      return { ok: true, lock, revisionId: submission.revisionId || 1 };
+    },
+    releaseDraftLock(user, submissionId, leaseId = '') {
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft');
+      if (!submission) throw new Error('Draft submission not found.');
+      const existing = submission.lock;
+      if (!existing) return { ok: true, released: false };
+      if (existing.holderUserId !== user.id && leaseId && existing.leaseId !== leaseId) {
+        throw new Error('Cannot release lock held by another advisor.');
+      }
+      submission.lock = null;
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.lock_released', {});
+      persist();
+      return { ok: true, released: true };
+    },
+    reviseDraftSubmission(user, submissionId, input = {}) {
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft');
+      if (!submission) throw new Error('Draft submission not found.');
+
+      const currentRevision = Number(submission.revisionId || 1);
+      const expectedRevision = Number(input.expectedRevisionId || 0);
+      if (!Number.isFinite(expectedRevision) || expectedRevision < 1) {
+        throw new Error('expectedRevisionId is required.');
+      }
+
+      const lock = submission.lock;
+      const lockActive = lock && parseIso(lock.expiresAt) > Date.now();
+      if (!lockActive || lock.holderUserId !== user.id || lock.leaseId !== input.leaseId) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft lease is missing, expired, or held by another advisor.',
+          mergePrompt: {
+            type: 'lease_conflict',
+            localRevisionId: expectedRevision,
+            serverRevisionId: currentRevision,
+            suggestion: 'Refresh draft, compare changes, and reacquire lock before saving.'
+          },
+          serverDraft: submission
+        };
+      }
+
+      if (expectedRevision !== currentRevision) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft has changed since your last load.',
+          mergePrompt: {
+            type: 'revision_conflict',
+            localRevisionId: expectedRevision,
+            serverRevisionId: currentRevision,
+            suggestion: 'Show merge preview and choose keep-local, keep-server, or manual merge.'
+          },
+          serverDraft: submission
+        };
+      }
+
+      submission.data = input.data && typeof input.data === 'object' ? input.data : {};
+      submission.revisionId = currentRevision + 1;
+      submission.updatedAt = now();
+      if (input.status === 'submitted') {
+        submission.status = 'submitted';
+        submission.lock = null;
+      } else {
+        submission.lock = {
+          ...lock,
+          expiresAt: new Date(Date.now() + Number(lock.leaseMs || 30_000)).toISOString()
+        };
+      }
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.draft_revised', {
+        revisionId: submission.revisionId,
+        submitted: submission.status === 'submitted'
+      });
+      persist();
+      return { ok: true, submission };
     },
     listDocumentTemplates(user) {
       requirePermission(user, 'templates:write');
@@ -894,6 +1226,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         templateId,
         status,
         data: input.data && typeof input.data === 'object' ? input.data : {},
+        createdByUserId: null,
         createdAt: now(),
         updatedAt: now(),
         source: 'portal'
@@ -951,17 +1284,91 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     getAnalytics(user) {
       requirePermission(user, 'analytics:read');
-      const prospects = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect');
+      const firmProfiles = state.profiles.filter((entry) => entry.firmId === user.firmId);
+      const prospects = firmProfiles.filter((entry) => entry.kind === 'prospect');
       const stageCounts = prospects.reduce((acc, profile) => {
-        acc[profile.stage || 'unassigned'] = (acc[profile.stage || 'unassigned'] || 0) + 1;
+        const stage = profile.stage || 'unassigned';
+        acc[stage] = (acc[stage] || 0) + 1;
         return acc;
       }, {});
+      const totalProspects = prospects.length || 1;
+      const stageOrder = ['discovery', 'gather_oi', 'analysis', 'advisor_proposal_meeting', 'intake', 'on_boarding', 'investment_strategy', 'completed'];
+      const funnel = stageOrder.map((stage) => {
+        const count = stageCounts[stage] || 0;
+        return { stage, count, conversionRate: Number((count / totalProspects).toFixed(4)) };
+      });
+      const firstStage = stageCounts[stageOrder[0]] || 0;
+      const lastStage = stageCounts.completed || 0;
+
+      const stageEvents = state.stageChanges
+        .filter((entry) => entry.firmId === user.firmId)
+        .slice()
+        .sort((a, b) => parseIso(a.changedAt) - parseIso(b.changedAt));
+      const stageEntryTimes = new Map();
+      stageEvents.forEach((event) => {
+        const key = `${event.clientId}:${event.toStage || 'unassigned'}`;
+        if (!stageEntryTimes.has(key)) stageEntryTimes.set(key, parseIso(event.changedAt));
+      });
+      const stageAging = Object.fromEntries(stageOrder.map((stage) => [stage, { count: 0, avgDays: 0 }]));
+      const nowTime = Date.now();
+      prospects.forEach((profile) => {
+        const stage = profile.stage || 'unassigned';
+        if (!stageAging[stage]) stageAging[stage] = { count: 0, avgDays: 0 };
+        const enteredAt = stageEntryTimes.get(`${profile.id}:${stage}`) || parseIso(profile.createdAt);
+        const ageDays = Math.max(0, (nowTime - enteredAt) / 86_400_000);
+        stageAging[stage].count += 1;
+        stageAging[stage].avgDays += ageDays;
+      });
+      Object.values(stageAging).forEach((entry) => {
+        if (entry.count) entry.avgDays = Number((entry.avgDays / entry.count).toFixed(2));
+      });
+
+      const templateIds = new Set(state.formTemplates.filter((entry) => entry.firmId === user.firmId).map((entry) => entry.id));
+      const formsByTemplate = {};
+      templateIds.forEach((templateId) => {
+        formsByTemplate[templateId] = { templateId, drafts: 0, submitted: 0, completionRate: 0 };
+      });
+      state.formSubmissions
+        .filter((entry) => entry.firmId === user.firmId)
+        .forEach((submission) => {
+          formsByTemplate[submission.templateId] ||= { templateId: submission.templateId, drafts: 0, submitted: 0, completionRate: 0 };
+          if (submission.status === 'submitted') formsByTemplate[submission.templateId].submitted += 1;
+          else formsByTemplate[submission.templateId].drafts += 1;
+        });
+      Object.values(formsByTemplate).forEach((entry) => {
+        const total = entry.drafts + entry.submitted;
+        entry.completionRate = total ? Number((entry.submitted / total).toFixed(4)) : 0;
+      });
+
+      const advisors = state.users.filter((entry) => entry.firmId === user.firmId && ['advisor', 'admin'].includes(entry.role));
+      const advisorProductivity = advisors.map((advisor) => {
+        const assignedProfiles = firmProfiles.filter((entry) => entry.advisorUserId === advisor.id);
+        const notesCount = state.notes.filter((entry) => entry.firmId === user.firmId && entry.createdByUserId === advisor.id).length;
+        const stageMoves = state.stageChanges.filter((entry) => entry.firmId === user.firmId && entry.changedByUserId === advisor.id).length;
+        const submissions = state.formSubmissions.filter((entry) => entry.firmId === user.firmId && entry.createdByUserId === advisor.id).length;
+        return {
+          advisorUserId: advisor.id,
+          advisorName: `${advisor.firstName} ${advisor.lastName}`,
+          profilesManaged: assignedProfiles.length,
+          notesAuthored: notesCount,
+          stageMoves,
+          formSubmissionsAuthored: submissions,
+          productivityScore: assignedProfiles.length + notesCount + stageMoves + submissions
+        };
+      });
+
       return {
         stageCounts,
-        profileCount: state.profiles.filter((entry) => entry.firmId === user.firmId).length,
+        funnel,
+        overallConversionRate: firstStage ? Number((lastStage / firstStage).toFixed(4)) : 0,
+        stageAging,
+        formCompletionRates: Object.values(formsByTemplate),
+        advisorProductivity,
+        profileCount: firmProfiles.length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
-        templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length
+        templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length,
+        avgProspectStageAgeDays: Number(average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2))
       };
     },
 
@@ -992,6 +1399,12 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
         taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
       };
+    },
+    __setTestHooks(hooks = {}) {
+      testHooks = { ...hooks };
+    },
+    __clearTestHooks() {
+      testHooks = {};
     }
   };
 }
