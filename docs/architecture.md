@@ -40,6 +40,19 @@ Property and investment details should be draft-backed nested form flows instead
 ### 6. Background export architecture
 Exports should be requested synchronously but processed asynchronously through a queue-backed worker. That worker should support retries, idempotency, and audit-friendly histories.
 
+### 7. Single Node runtime with modular route concerns
+The shipped runtime remains `apps/api/src/server.mjs` and is still the only backend entrypoint used in development and production. Runtime request handling is now split into focused route modules to keep advisory workflows clear and maintainable:
+- auth/users/firms (`auth-users-firms-routes.mjs`),
+- profiles (`profiles-routes.mjs`),
+- households (`households-routes.mjs`),
+- forms (`forms-routes.mjs`),
+- templates/mappings (`templates-mappings-routes.mjs`),
+- exports (`exports-routes.mjs`),
+- audit/analytics (`audit-analytics-routes.mjs`),
+- portal (`portal-routes.mjs`).
+
+`runtime-router.mjs` orchestrates these modules while preserving existing HTTP behavior and firm-scoped store access.
+
 ## Canonical backend modules
 1. Auth + firms + invitations
 2. CRM profiles + source attribution
