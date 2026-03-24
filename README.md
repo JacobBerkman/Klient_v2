@@ -73,6 +73,7 @@ Open:
 - Sessions expire after 8 hours.
 - Repeated failed login attempts are rate limited.
 - Sensitive identifiers are stored encrypted and only returned in masked form.
+- Sensitive identifiers now use envelope encryption metadata (`keyId`, `alg`, `createdAt`, `ciphertext`) with key-provider backed rotation support and audited unmask policy checks.
 
 ## Testing
 Run the production server contract test:
@@ -173,3 +174,7 @@ docker compose --env-file .env up --build -d
 ```
 
 See `DEPLOYMENT.md` for deployment details.
+
+### PII key rotation utility
+
+Run `node scripts/reencrypt-pii.mjs` to re-encrypt stored PII fields using the active key configured by `PII_ACTIVE_KEY_ID` and `PII_KEYRING`.
