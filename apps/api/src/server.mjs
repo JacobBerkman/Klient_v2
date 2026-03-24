@@ -13,6 +13,10 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(__dirname, '../../web/public');
 const store = createStore();
 const reads = new SqliteReadRepository();
+const csrfSessions = new Map();
+const CSRF_SESSION_COOKIE = 'klient-csrf-session';
+const CSRF_HEADER = 'x-csrf-token';
+const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
 function json(res, status, body, headers = {}) {
   res.writeHead(status, { ...baseHeaders(), 'Content-Type': 'application/json', ...headers });
@@ -21,6 +25,83 @@ function json(res, status, body, headers = {}) {
 
 function notFound(res, requestId) {
   json(res, 404, { message: 'Not found' }, { 'X-Request-Id': requestId });
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie || '';
+  if (!header) return {};
+  return Object.fromEntries(
+    header
+      .split(';')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const [name, ...rest] = entry.split('=');
+        return [name, decodeURIComponent(rest.join('=') || '')];
+      })
+  );
+}
+
+function expectedOrigin(req) {
+  const protocol = req.headers['x-forwarded-proto'] || 'http';
+  return `${protocol}://${req.headers.host || `${runtime.host}:${runtime.port}`}`;
+}
+
+function getCsrfTokenRecord(req) {
+  const cookies = parseCookies(req);
+  const sessionId = cookies[CSRF_SESSION_COOKIE];
+  if (!sessionId) return null;
+  const token = csrfSessions.get(sessionId);
+  if (!token) return null;
+  return { sessionId, token };
+}
+
+function createCsrfSession() {
+  const sessionId = randomUUID();
+  const token = randomUUID();
+  csrfSessions.set(sessionId, token);
+  return { sessionId, token };
+}
+
+function requiresCsrfProtection(method = 'GET') {
+  return !CSRF_SAFE_METHODS.has(method.toUpperCase());
+}
+
+function getCsrfErrorResponse(reason, requestId) {
+  return {
+    statusCode: 403,
+    body: {
+      error: {
+        code: 'CSRF_VALIDATION_FAILED',
+        message: 'CSRF validation failed.',
+        details: { reason }
+      }
+    },
+    headers: { 'X-Request-Id': requestId }
+  };
+}
+
+function validateCsrf(req, requestId) {
+  const suppliedOrigin = req.headers.origin;
+  const suppliedReferer = req.headers.referer;
+  const origin = expectedOrigin(req);
+
+  if (suppliedOrigin && suppliedOrigin !== origin) {
+    return getCsrfErrorResponse('Origin mismatch.', requestId);
+  }
+  if (suppliedReferer && !suppliedReferer.startsWith(`${origin}/`)) {
+    return getCsrfErrorResponse('Referrer mismatch.', requestId);
+  }
+
+  const record = getCsrfTokenRecord(req);
+  if (!record) {
+    return getCsrfErrorResponse('Missing CSRF session.', requestId);
+  }
+  const headerToken = req.headers[CSRF_HEADER];
+  if (!headerToken || headerToken !== record.token) {
+    return getCsrfErrorResponse('Invalid or missing CSRF token.', requestId);
+  }
+  return null;
 }
 
 function parseBody(req) {
@@ -116,6 +197,26 @@ const server = createServer(async (req, res) => {
       const database = ensureDatabaseReady();
       finalizeLog(200);
       return json(res, 200, { status: 'ready', querySummary: readQuerySummary(), database }, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/csrf' && req.method === 'GET') {
+      const session = createCsrfSession();
+      finalizeLog(200);
+      return json(
+        res,
+        200,
+        { csrfToken: session.token },
+        {
+          'X-Request-Id': requestId,
+          'Set-Cookie': `${CSRF_SESSION_COOKIE}=${session.sessionId}; HttpOnly; Path=/; SameSite=Strict`
+        }
+      );
+    }
+    if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method)) {
+      const csrfError = validateCsrf(req, requestId);
+      if (csrfError) {
+        finalizeLog(csrfError.statusCode, { reason: csrfError.body.error.details.reason });
+        return json(res, csrfError.statusCode, csrfError.body, csrfError.headers);
+      }
     }
     if (pathname === '/api/register' && req.method === 'POST') { const result = store.register(await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/login' && req.method === 'POST') { const result = store.login(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
