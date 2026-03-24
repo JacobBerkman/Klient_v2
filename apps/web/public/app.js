@@ -543,8 +543,127 @@ async function renderAudit() {
 }
 
 async function renderAnalytics() {
-  const analytics = await api('/api/analytics');
-  view.innerHTML = `<h2>Analytics</h2><pre>${escapeHtml(JSON.stringify(analytics, null, 2))}</pre>`;
+  const endDate = new Date().toISOString().slice(0, 10);
+  const start = new Date();
+  start.setDate(start.getDate() - 30);
+  const startDate = start.toISOString().slice(0, 10);
+  const filters = {
+    startDate,
+    endDate,
+    cohortBy: state.analyticsCohortBy || 'sourceVenue',
+    cohortValue: state.analyticsCohortValue || '',
+    slaTargetDays: state.analyticsSlaDays || 14
+  };
+  const analytics = await api(routes.analytics(filters));
+  const summary = analytics.summary || {};
+  const funnelRows = (summary.funnel || []).map((entry) => `
+    <tr>
+      <td>${escapeHtml(entry.stage)}</td>
+      <td>${entry.count}</td>
+      <td>${Math.round((entry.conversionRate || 0) * 100)}%</td>
+      <td>${Math.round((entry.stageToStageRate || 0) * 100)}%</td>
+    </tr>
+  `).join('');
+  const agingRows = Object.entries(summary.stageAging || {}).map(([stage, value]) => `
+    <tr>
+      <td>${escapeHtml(stage)}</td>
+      <td>${value.count || 0}</td>
+      <td>${value.p50Days || 0}</td>
+      <td>${value.p90Days || 0}</td>
+      <td>${value.p95Days || 0}</td>
+    </tr>
+  `).join('');
+  const throughputRows = (summary.advisorThroughput || []).map((entry) => `
+    <tr>
+      <td>${escapeHtml(entry.advisorName)}</td>
+      <td>${entry.assignedProspects}</td>
+      <td>${entry.completedProspects}</td>
+      <td>${entry.stageMoves}</td>
+      <td>${entry.notesAuthored}</td>
+      <td>${entry.throughput}</td>
+    </tr>
+  `).join('');
+  const cohorts = Object.entries(summary.cohortSegments || {}).sort((a, b) => b[1] - a[1]);
+  const cohortBars = cohorts.map(([label, count]) => {
+    const pct = cohorts[0]?.[1] ? Math.round((count / cohorts[0][1]) * 100) : 0;
+    return `<div class="item compact"><div class="row between"><strong>${escapeHtml(label)}</strong><span>${count}</span></div><div style="height:8px;background:#e8e8ef;border-radius:999px;overflow:hidden"><div style="height:8px;width:${pct}%;background:#4f46e5"></div></div></div>`;
+  }).join('');
+
+  view.innerHTML = `
+    <div class="section-header">
+      <div>
+        <h2>Analytics</h2>
+        <p class="muted">Operational reporting with date range filters, cohorting, reconciliation, and advisor throughput.</p>
+      </div>
+      <button id="analytics-export">Export Snapshot</button>
+    </div>
+    <section class="item">
+      <h3>Filters</h3>
+      <div class="row">
+        <label>Start <input id="analytics-start" type="date" value="${startDate}"></label>
+        <label>End <input id="analytics-end" type="date" value="${endDate}"></label>
+        <label>Cohort
+          <select id="analytics-cohort-by">
+            <option value="sourceVenue" ${filters.cohortBy === 'sourceVenue' ? 'selected' : ''}>Source venue</option>
+            <option value="sourceCity" ${filters.cohortBy === 'sourceCity' ? 'selected' : ''}>Source city</option>
+            <option value="advisor" ${filters.cohortBy === 'advisor' ? 'selected' : ''}>Advisor</option>
+            <option value="stage" ${filters.cohortBy === 'stage' ? 'selected' : ''}>Stage</option>
+          </select>
+        </label>
+        <label>Cohort value <input id="analytics-cohort-value" value="${escapeHtml(filters.cohortValue)}" placeholder="optional"></label>
+        <label>SLA days <input id="analytics-sla-days" type="number" min="1" value="${filters.slaTargetDays}"></label>
+        <button id="analytics-apply">Apply</button>
+      </div>
+    </section>
+    <div class="stat-grid compact-stats">
+      ${metricCard('Profiles', summary.profileCount || 0)}
+      ${metricCard('Overall conversion', `${Math.round((summary.overallConversionRate || 0) * 100)}%`)}
+      ${metricCard('SLA met', `${Math.round((summary.completionSla?.completionRate || 0) * 100)}%`)}
+      ${metricCard('Reconciliation', summary.reconciliation?.matches ? '✓ Matched' : '⚠ Drift')}
+    </div>
+    <section class="item">
+      <h3>Funnel Conversion</h3>
+      <table><thead><tr><th>Stage</th><th>Count</th><th>From top</th><th>Stage-to-stage</th></tr></thead><tbody>${funnelRows || '<tr><td colspan=\"4\">No data</td></tr>'}</tbody></table>
+    </section>
+    <section class="item">
+      <h3>Stage Aging Percentiles (days)</h3>
+      <table><thead><tr><th>Stage</th><th>Prospects</th><th>P50</th><th>P90</th><th>P95</th></tr></thead><tbody>${agingRows || '<tr><td colspan=\"5\">No data</td></tr>'}</tbody></table>
+    </section>
+    <section class="item">
+      <h3>Completion SLA</h3>
+      <div class="row">
+        <div class="item compact">Submitted within target: <strong>${summary.completionSla?.submittedWithinTarget || 0}</strong></div>
+        <div class="item compact">Submitted outside target: <strong>${summary.completionSla?.submittedOutsideTarget || 0}</strong></div>
+        <div class="item compact">Drafts beyond target: <strong>${summary.completionSla?.draftOpenBeyondTarget || 0}</strong></div>
+      </div>
+    </section>
+    <section class="item">
+      <h3>Advisor Throughput</h3>
+      <table><thead><tr><th>Advisor</th><th>Assigned</th><th>Completed</th><th>Moves</th><th>Notes</th><th>Throughput</th></tr></thead><tbody>${throughputRows || '<tr><td colspan=\"6\">No advisor activity</td></tr>'}</tbody></table>
+    </section>
+    <section class="item">
+      <h3>Cohort Mix</h3>
+      ${cohortBars || '<div class="item compact muted">No cohorts in range.</div>'}
+    </section>
+  `;
+
+  document.querySelector('#analytics-apply')?.addEventListener('click', async () => {
+    state.analyticsCohortBy = document.querySelector('#analytics-cohort-by')?.value || 'sourceVenue';
+    state.analyticsCohortValue = document.querySelector('#analytics-cohort-value')?.value || '';
+    state.analyticsSlaDays = Number(document.querySelector('#analytics-sla-days')?.value || 14);
+    await renderAnalytics();
+  });
+  document.querySelector('#analytics-export')?.addEventListener('click', async () => {
+    const payload = await api(routes.analyticsExport(filters));
+    const data = JSON.stringify(payload, null, 2);
+    const blob = new Blob([data], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = payload.fileName || 'analytics-snapshot.json';
+    link.click();
+    URL.revokeObjectURL(url);
+  });
 }
 
 async function renderBoard() {

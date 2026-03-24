@@ -431,7 +431,20 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/exports/process' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'exports:write'); const result = modules.exports.processQueuedExports(); finalizeLog(200); return json(res, 200, { ...result, deprecated: true, message: 'Manual processing endpoint is deprecated; prefer running scripts/export-worker.mjs.' }, { 'X-Request-Id': requestId }); }
       if (pathname.startsWith('/api/exports/') && pathname.endsWith('/retry') && req.method === 'POST') { const id = pathname.split('/')[3]; const user = requireUser(); modules.policy.requirePermission(user, 'exports:write'); const result = modules.exports.retry(user, id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/audit' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.audit.list(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-      if (pathname === '/api/analytics' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'analytics:read'); const result = modules.analytics.get(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/analytics' && req.method === 'GET') {
+        const user = requireUser();
+        modules.policy.requirePermission(user, 'analytics:read');
+        const result = modules.analytics.get(user, Object.fromEntries(urlObj.searchParams.entries()));
+        finalizeLog(200);
+        return json(res, 200, result, { 'X-Request-Id': requestId });
+      }
+      if (pathname === '/api/analytics/export' && req.method === 'GET') {
+        const user = requireUser();
+        modules.policy.requirePermission(user, 'analytics:read');
+        const payload = modules.analytics.exportSnapshot(user, Object.fromEntries(urlObj.searchParams.entries()));
+        finalizeLog(200);
+        return json(res, 200, payload, { 'X-Request-Id': requestId });
+      }
       if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/sensitive') && req.method === 'GET') { const id = pathname.split('/')[3]; const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.profiles.getMaskedSensitiveData(user, id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/portal-links' && req.method === 'POST') { const body = await parseBody(req); const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.forms.createPortalLink(user, body.profileId); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
       if (pathname.startsWith('/api/portal/') && pathname.split('/').length === 4 && req.method === 'GET') { const token = pathname.split('/')[3]; const result = modules.forms.getPortalData(token); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
