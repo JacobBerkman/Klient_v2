@@ -174,7 +174,14 @@ function baseHeaders() {
 function sendError(res, error, requestId) {
   const message = error?.message || 'Request failed';
   const statusCode = /not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400;
-  json(res, statusCode, { message }, { 'X-Request-Id': requestId });
+  json(res, statusCode, {
+    message,
+    error: {
+      message,
+      statusCode,
+      requestId
+    }
+  }, { 'X-Request-Id': requestId });
 }
 
 function requestLogger(req, requestId) {
