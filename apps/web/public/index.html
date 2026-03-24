@@ -13,6 +13,16 @@
         <p class="muted">Advisory onboarding OS</p>
         <button id="demo-login">Use Demo Login</button>
         <nav>
+          <button data-view="dashboard" data-roles="admin,advisor,readonly">Dashboard</button>
+          <button data-view="prospects" data-roles="admin,advisor">Prospects</button>
+          <button data-view="clients" data-roles="admin,advisor,readonly">Clients</button>
+          <button data-view="households" data-roles="admin,advisor">Households</button>
+          <button data-view="forms" data-roles="admin,advisor,readonly">Forms</button>
+          <button data-view="templates" data-roles="admin,advisor">Templates</button>
+          <button data-view="exports" data-roles="admin,advisor">Exports</button>
+          <button data-view="analytics" data-roles="admin,advisor,readonly">Analytics</button>
+          <button data-view="audit" data-roles="admin,advisor">Audit</button>
+          <button data-view="client-workspace" data-roles="client">My Portal</button>
           <button data-view="dashboard">Dashboard</button>
           <button data-view="prospects">Prospects</button>
           <button data-view="clients">Clients</button>
@@ -49,7 +59,7 @@
           <pre id="auth-status"></pre>
         </section>
 
-        <section class="actions grid two">
+        <section class="actions grid two" data-requires-role="admin,advisor">
           <form id="profile-form" class="card">
             <h3>Create Prospect / Client</h3>
             <select name="kind"><option value="prospect">Prospect</option><option value="client">Client</option></select>
@@ -86,7 +96,7 @@
           </form>
         </section>
 
-        <section class="actions grid two">
+        <section class="actions grid two" data-requires-role="admin,advisor">
           <form id="invite-form" class="card">
             <h3>Invite User</h3>
             <input name="email" type="email" placeholder="User email" required />

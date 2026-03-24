@@ -11,7 +11,7 @@ const PERMISSIONS = {
   admin: ['*'],
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
   readonly: ['profiles:read', 'analytics:read'],
-  client: ['portal:read']
+  client: ['portal:read', 'client:write']
 };
 
 function can(role, permission) {
@@ -78,6 +78,7 @@ function seedState() {
   const formTemplateId = randomUUID();
   const submissionId = randomUUID();
   const exportId = randomUUID();
+  const documentUploadId = randomUUID();
 
   return {
     firms: [{ id: firmId, name: 'Demo Advisory Group', slug: 'demo-advisory-group', createdAt }],
@@ -208,6 +209,18 @@ function seedState() {
       updatedAt: createdAt
     }],
     exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json' }, createdAt, updatedAt: createdAt }],
+    documentUploads: [{
+      id: documentUploadId,
+      firmId,
+      clientId,
+      name: 'Driver License - Morgan',
+      category: 'identification',
+      visibility: 'shared',
+      status: 'uploaded',
+      uploadedBy: 'advisor',
+      createdAt,
+      updatedAt: createdAt
+    }],
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
@@ -273,8 +286,24 @@ export function createStore() {
     persist();
   }
 
+  function requireClientProfile(user) {
+    requirePermission(user, 'portal:read');
+    const profile = state.profiles.find((entry) =>
+      entry.firmId === user.firmId
+      && entry.kind === 'client'
+      && entry.email
+      && entry.email.toLowerCase() === user.email.toLowerCase()
+    );
+    if (!profile) throw new Error('Client profile not found.');
+    return profile;
+  }
+
   return {
     state,
+    assertPermission(user, permission) {
+      requirePermission(user, permission);
+      return true;
+    },
     register({ firmName, firstName, lastName, email, password }) {
       assertStrongPassword(password);
       const normalizedEmail = email.toLowerCase();
@@ -414,6 +443,7 @@ export function createStore() {
       return profile;
     },
     getBoard(user) {
+      requirePermission(user, 'profiles:read');
       const columns = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
       return columns.map((stage) => ({
         stage,
@@ -423,6 +453,7 @@ export function createStore() {
       }));
     },
     listStageHistory(user, profileId) {
+      requirePermission(user, 'profiles:read');
       return state.stageChanges.filter((entry) => entry.firmId === user.firmId && entry.clientId === profileId);
     },
     createHousehold(user, input) {
@@ -456,6 +487,7 @@ export function createStore() {
       }));
     },
     listNotes(user, profileId) {
+      requirePermission(user, 'profiles:read');
       return state.notes.filter((entry) => entry.firmId === user.firmId && entry.profileId === profileId).slice().reverse();
     },
     addNote(user, profileId, body) {
@@ -469,6 +501,7 @@ export function createStore() {
       return note;
     },
     listFormTemplates(user) {
+      requirePermission(user, 'profiles:read');
       return state.formTemplates.filter((entry) => entry.firmId === user.firmId);
     },
     createFormTemplate(user, input) {
@@ -480,11 +513,79 @@ export function createStore() {
       return template;
     },
     listFormSubmissions(user, status = null) {
+      requirePermission(user, 'profiles:read');
       return state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || entry.status === status)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+    },
+    getClientWorkspace(user) {
+      const profile = requireClientProfile(user);
+      const submissions = state.formSubmissions
+        .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      const templates = state.formTemplates
+        .filter((entry) => entry.firmId === user.firmId)
+        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
+      const uploads = state.documentUploads
+        .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      const submissionByTemplate = new Map();
+      submissions.forEach((submission) => {
+        if (!submissionByTemplate.has(submission.templateId)) submissionByTemplate.set(submission.templateId, submission.status);
+      });
+      const templateProgress = templates.map((template) => ({
+        templateId: template.id,
+        templateName: template.name,
+        status: submissionByTemplate.get(template.id) || 'not_started'
+      }));
+      return { profile, submissions, templates, templateProgress, uploads };
+    },
+    submitClientForm(user, input) {
+      requirePermission(user, 'client:write');
+      const profile = requireClientProfile(user);
+      const template = state.formTemplates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Form template not found.');
+      const status = input.status === 'draft' ? 'draft' : 'submitted';
+      const submission = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        clientId: profile.id,
+        templateId: input.templateId,
+        status,
+        data: input.data && typeof input.data === 'object' ? input.data : {},
+        source: 'client_portal',
+        createdAt: now(),
+        updatedAt: now()
+      };
+      state.formSubmissions.push(submission);
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'client.form_submission.created', { templateId: input.templateId, status });
+      persist();
+      return submission;
+    },
+    submitClientUpload(user, input) {
+      requirePermission(user, 'client:write');
+      const profile = requireClientProfile(user);
+      const upload = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        clientId: profile.id,
+        name: input.name || 'Client upload',
+        category: input.category || 'general',
+        visibility: 'shared',
+        status: 'uploaded',
+        uploadedBy: 'client',
+        notes: input.notes || '',
+        createdAt: now(),
+        updatedAt: now()
+      };
+      state.documentUploads.push(upload);
+      addAudit(user.firmId, user.id, 'document_upload', upload.id, 'client.document_upload.created', { category: upload.category });
+      persist();
+      return upload;
     },
     listFormDrafts(user) {
       return this.listFormSubmissions(user, 'draft');
@@ -564,6 +665,7 @@ export function createStore() {
       return { processed };
     },
     listAudit(user) {
+      requirePermission(user, 'profiles:read');
       return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();
     },
     logout(token) {
@@ -684,7 +786,11 @@ export function createStore() {
       const availableTemplates = state.formTemplates
         .filter((entry) => entry.firmId === link.firmId)
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
-      return { firm, profile, submissions, availableTemplates };
+      const uploads = state.documentUploads
+        .filter((entry) => entry.firmId === link.firmId && entry.clientId === link.profileId)
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      return { firm, profile, submissions, availableTemplates, uploads };
     },
     portalSubmit(token, input) {
       const link = state.portalLinks.find((entry) => entry.token === token);
@@ -707,6 +813,26 @@ export function createStore() {
       state.formSubmissions.push(submission);
       persist();
       return submission;
+    },
+    portalUpload(token, input) {
+      const link = state.portalLinks.find((entry) => entry.token === token);
+      if (!link) throw new Error('Portal link not found.');
+      const upload = {
+        id: randomUUID(),
+        firmId: link.firmId,
+        clientId: link.profileId,
+        name: input.name || 'Portal upload',
+        category: input.category || 'general',
+        visibility: 'shared',
+        status: 'uploaded',
+        uploadedBy: 'portal',
+        notes: input.notes || '',
+        createdAt: now(),
+        updatedAt: now()
+      };
+      state.documentUploads.push(upload);
+      persist();
+      return upload;
     },
     getAnalytics(user) {
       requirePermission(user, 'analytics:read');

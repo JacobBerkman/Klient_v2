@@ -55,6 +55,8 @@ async function run() {
   await jsonFetch(`/api/households/${household.id}/members`, { method: 'DELETE', headers: authHeaders, body: JSON.stringify({ clientId: profile.id }) });
   const invite = await jsonFetch('/api/invites', { method: 'POST', headers: authHeaders, body: JSON.stringify({ email: 'readonly@test.local', role: 'readonly' }) });
   const readonlySession = await jsonFetch('/api/invites/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: invite.token, firstName: 'Read', lastName: 'Only', password: 'Readonly123!' }) });
+  const clientInvite = await jsonFetch('/api/invites', { method: 'POST', headers: authHeaders, body: JSON.stringify({ email: 'morgan@example.com', role: 'client' }) });
+  const clientSession = await jsonFetch('/api/invites/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: clientInvite.token, firstName: 'Morgan', lastName: 'Taylor', password: 'Client123!' }) });
   const reset = await jsonFetch('/api/password-resets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'readonly@test.local' }) });
   await jsonFetch('/api/password-resets/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: reset.token, password: 'Readonly456!' }) });
 
@@ -73,7 +75,14 @@ async function run() {
   const portalData = await jsonFetch(`/api/portal/${portal.token}`);
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'draft', data: { primaryGoal: 'Retire early' } }) });
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'submitted', data: { primaryGoal: 'Retire early', accounts: [{ institution: 'Vanguard', balance: '120000' }] } }) });
+  await jsonFetch(`/api/portal/${portal.token}/uploads`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: '2025 Tax Return', category: 'tax' }) });
   const refreshedPortalData = await jsonFetch(`/api/portal/${portal.token}`);
+
+  const deniedClientProfiles = await fetch(`http://127.0.0.1:${port}/api/profiles`, { headers: { Authorization: `Bearer ${clientSession.token}` } });
+  if (deniedClientProfiles.status !== 401) throw new Error('Client should not access advisor profiles endpoint');
+  const clientWorkspace = await jsonFetch('/api/client/workspace', { headers: { Authorization: `Bearer ${clientSession.token}` } });
+  await jsonFetch('/api/client/forms/submissions', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${clientSession.token}` }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'draft', data: { primaryGoal: 'Client draft' } }) });
+  await jsonFetch('/api/client/uploads', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${clientSession.token}` }, body: JSON.stringify({ name: 'Passport', category: 'identification' }) });
 
   const exportJob = await jsonFetch('/api/exports', { method: 'POST', headers: authHeaders, body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' }) });
   await jsonFetch('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
@@ -94,11 +103,14 @@ async function run() {
   if (!portalData.availableTemplates.find((entry) => entry.id === portalTemplate.id)) throw new Error('Portal templates missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'draft')) throw new Error('Portal draft missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'submitted')) throw new Error('Portal submission missing');
+  if (!refreshedPortalData.uploads.find((entry) => entry.name === '2025 Tax Return')) throw new Error('Portal upload missing');
   if (!exportsList.find((job) => job.id === exportJob.id && job.status === 'completed')) throw new Error('Export processing failed');
   if (!detail.household || detail.householdMembers.length < 2 || !detail.profileRecord) throw new Error('Profile detail failed');
   if (!households.find((entry) => entry.id === household.id)) throw new Error('Household list failed');
   if (!masked.taxIdMasked) throw new Error('Sensitive masking failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
+  if (clientSession.user.role !== 'client') throw new Error('Client invite acceptance failed');
+  if (!clientWorkspace.templateProgress.some((entry) => entry.templateId === portalTemplate.id)) throw new Error('Client workspace missing template progress');
   if (published.status !== 'published') throw new Error('Template publish failed');
   if (!diagnostics.data?.audit?.total) throw new Error('Ops diagnostics audit summary missing');
   if (!diagnostics.data?.storageHealth?.connected) throw new Error('Ops diagnostics storage summary missing');
@@ -111,6 +123,7 @@ async function run() {
     householdId: household.id,
     spouseId: spouse.id,
     inviteRole: readonlySession.user.role,
+    clientRole: clientSession.user.role,
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,
