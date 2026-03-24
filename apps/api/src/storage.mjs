@@ -46,17 +46,11 @@ db.exec(`
     payload TEXT NOT NULL
   );
 
-  CREATE TABLE IF NOT EXISTS form_templates (
+  CREATE TABLE IF NOT EXISTS template_engines (
     id TEXT PRIMARY KEY,
     firm_id TEXT NOT NULL,
     name TEXT NOT NULL,
-    payload TEXT NOT NULL
-  );
-
-  CREATE TABLE IF NOT EXISTS document_templates (
-    id TEXT PRIMARY KEY,
-    firm_id TEXT NOT NULL,
-    name TEXT NOT NULL,
+    category TEXT NOT NULL,
     status TEXT,
     payload TEXT NOT NULL
   );
@@ -101,8 +95,7 @@ function syncQueryTables(state) {
   replaceRows('users', state.users || [], (user) => [user.id, user.firmId, user.email, user.role, JSON.stringify(user)]);
   replaceRows('profiles', state.profiles || [], (profile) => [profile.id, profile.firmId, profile.kind, profile.firstName, profile.lastName, profile.stage || null, profile.stageOrderIndex || null, JSON.stringify(profile)]);
   replaceRows('households', state.households || [], (household) => [household.id, household.firmId, household.name, JSON.stringify(household)]);
-  replaceRows('form_templates', state.formTemplates || [], (template) => [template.id, template.firmId, template.name, JSON.stringify(template)]);
-  replaceRows('document_templates', state.documentTemplates || [], (template) => [template.id, template.firmId, template.name, template.status || 'draft', JSON.stringify(template)]);
+  replaceRows('template_engines', state.templateEngines || [], (template) => [template.id, template.firmId, template.name, template.category || 'document', template.status || 'draft', JSON.stringify(template)]);
   replaceRows('export_jobs', state.exportJobs || [], (job) => [job.id, job.firmId, job.clientId || null, job.type, job.status, JSON.stringify(job)]);
   replaceRows('notes', state.notes || [], (note) => [note.id, note.firmId, note.profileId, note.createdAt, JSON.stringify(note)]);
   replaceRows('audit_events', state.auditEvents || [], (event) => [event.id, event.firmId, event.action, event.occurredAt, JSON.stringify(event)]);
@@ -153,7 +146,7 @@ export function readQuerySummary() {
     users: db.prepare('SELECT COUNT(*) AS count FROM users').get().count,
     profiles: db.prepare('SELECT COUNT(*) AS count FROM profiles').get().count,
     households: db.prepare('SELECT COUNT(*) AS count FROM households').get().count,
-    templates: db.prepare('SELECT COUNT(*) AS count FROM document_templates').get().count,
+    templates: db.prepare('SELECT COUNT(*) AS count FROM template_engines').get().count,
     exports: db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get().count
   };
 }

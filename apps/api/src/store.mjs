@@ -163,15 +163,58 @@ function seedState() {
     auditEvents: [
       { id: randomUUID(), firmId, actorUserId: adminId, entityType: 'seed', entityId: 'initial', action: 'seed.created', occurredAt: createdAt, metadata: {} }
     ],
-    formTemplates: [{
+    templateEngines: [{
       id: formTemplateId,
       firmId,
       name: 'Financial Discovery',
-      description: 'Core onboarding discovery form',
-      sections: [
-        { id: randomUUID(), title: 'Household', fields: [{ key: 'goals', label: 'Goals', type: 'textarea' }, { key: 'riskTolerance', label: 'Risk Tolerance', type: 'select', options: ['Conservative','Moderate','Aggressive'] }] },
-        { id: randomUUID(), title: 'Assets', repeatable: true, fields: [{ key: 'accountName', label: 'Account Name', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }] }
-      ],
+      category: 'form',
+      status: 'published',
+      formDefinition: {
+        description: 'Core onboarding discovery form',
+        sections: [
+          { id: randomUUID(), title: 'Household', fields: [{ key: 'goals', label: 'Goals', type: 'textarea' }, { key: 'riskTolerance', label: 'Risk Tolerance', type: 'select', options: ['Conservative', 'Moderate', 'Aggressive'] }] },
+          { id: randomUUID(), title: 'Assets', repeatable: true, fields: [{ key: 'accountName', label: 'Account Name', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }] }
+        ]
+      },
+      uploadedDocument: null,
+      extractedFields: [],
+      mappings: [],
+      publishHistory: [{ status: 'published', version: 1, changedAt: createdAt, changedByUserId: adminId }],
+      versions: [{
+        version: 1,
+        formDefinition: {
+          description: 'Core onboarding discovery form',
+          sections: [
+            { id: randomUUID(), title: 'Household', fields: [{ key: 'goals', label: 'Goals', type: 'textarea' }, { key: 'riskTolerance', label: 'Risk Tolerance', type: 'select', options: ['Conservative', 'Moderate', 'Aggressive'] }] },
+            { id: randomUUID(), title: 'Assets', repeatable: true, fields: [{ key: 'accountName', label: 'Account Name', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }] }
+          ]
+        },
+        uploadedDocument: null,
+        extractedFields: [],
+        mappings: [],
+        createdAt
+      }],
+      createdAt,
+      updatedAt: createdAt
+    }, {
+      id: templateId,
+      firmId,
+      name: 'Client Intake PDF Template',
+      category: 'document',
+      status: 'draft',
+      formDefinition: null,
+      uploadedDocument: { fileName: 'client-intake.pdf', mimeType: 'application/pdf', uploadedAt: createdAt },
+      extractedFields: [{ fieldKey: 'client_name', label: 'Client Name', type: 'text' }],
+      mappings: [{ targetField: 'client_name', sourcePath: 'profile.firstName' }],
+      publishHistory: [],
+      versions: [{
+        version: 1,
+        formDefinition: null,
+        uploadedDocument: { fileName: 'client-intake.pdf', mimeType: 'application/pdf', uploadedAt: createdAt },
+        extractedFields: [{ fieldKey: 'client_name', label: 'Client Name', type: 'text' }],
+        mappings: [{ targetField: 'client_name', sourcePath: 'profile.firstName' }],
+        createdAt
+      }],
       createdAt,
       updatedAt: createdAt
     }],
@@ -185,16 +228,6 @@ function seedState() {
       createdAt,
       updatedAt: createdAt
     }],
-    documentTemplates: [{
-      id: templateId,
-      firmId,
-      name: 'Client Intake PDF Template',
-      fileName: 'client-intake.pdf',
-      blueprint: { sections: ['client', 'household', 'assets'] },
-      mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName' }],
-      createdAt,
-      updatedAt: createdAt
-    }],
     exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json' }, createdAt, updatedAt: createdAt }],
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
@@ -203,8 +236,86 @@ function seedState() {
   };
 }
 
+function migrateTemplateState(state) {
+  if (Array.isArray(state.templateEngines) && state.templateEngines.length) return;
+  const templateEngines = [];
+  for (const formTemplate of state.formTemplates || []) {
+    const migratedAt = formTemplate.updatedAt || formTemplate.createdAt || now();
+    templateEngines.push({
+      id: formTemplate.id,
+      firmId: formTemplate.firmId,
+      name: formTemplate.name,
+      category: 'form',
+      status: 'published',
+      formDefinition: { description: formTemplate.description || '', sections: formTemplate.sections || [] },
+      uploadedDocument: null,
+      extractedFields: [],
+      mappings: [],
+      publishHistory: [{ status: 'published', version: 1, changedAt: migratedAt, changedByUserId: 'system-migration' }],
+      versions: [{
+        version: 1,
+        formDefinition: { description: formTemplate.description || '', sections: formTemplate.sections || [] },
+        uploadedDocument: null,
+        extractedFields: [],
+        mappings: [],
+        createdAt: migratedAt
+      }],
+      createdAt: formTemplate.createdAt || migratedAt,
+      updatedAt: migratedAt
+    });
+  }
+  for (const documentTemplate of state.documentTemplates || []) {
+    const migratedAt = documentTemplate.updatedAt || documentTemplate.createdAt || now();
+    templateEngines.push({
+      id: documentTemplate.id,
+      firmId: documentTemplate.firmId,
+      name: documentTemplate.name,
+      category: 'document',
+      status: documentTemplate.status || 'draft',
+      formDefinition: documentTemplate.blueprint || null,
+      uploadedDocument: { fileName: documentTemplate.fileName || 'template.pdf', mimeType: 'application/pdf', uploadedAt: documentTemplate.createdAt || migratedAt },
+      extractedFields: (documentTemplate.mappings || []).map((mapping) => ({ fieldKey: mapping.pdfField, label: mapping.pdfField, type: 'text' })),
+      mappings: (documentTemplate.mappings || []).map((mapping) => ({ targetField: mapping.pdfField, sourcePath: mapping.sourcePath })),
+      publishHistory: documentTemplate.status === 'published' ? [{ status: 'published', version: (documentTemplate.versions || []).length || 1, changedAt: migratedAt, changedByUserId: 'system-migration' }] : [],
+      versions: (documentTemplate.versions || []).map((version, index) => ({
+        version: version.version || index + 1,
+        formDefinition: version.blueprint || null,
+        uploadedDocument: { fileName: documentTemplate.fileName || 'template.pdf', mimeType: 'application/pdf', uploadedAt: version.createdAt || migratedAt },
+        extractedFields: (version.mappings || []).map((mapping) => ({ fieldKey: mapping.pdfField, label: mapping.pdfField, type: 'text' })),
+        mappings: (version.mappings || []).map((mapping) => ({ targetField: mapping.pdfField, sourcePath: mapping.sourcePath })),
+        createdAt: version.createdAt || migratedAt
+      })),
+      createdAt: documentTemplate.createdAt || migratedAt,
+      updatedAt: migratedAt
+    });
+  }
+  state.templateEngines = templateEngines;
+}
+
 export function createStore() {
   const state = loadState(seedState);
+  migrateTemplateState(state);
+
+  function normalizeTemplateEngine(template) {
+    return {
+      ...template,
+      category: template.category || (template.formDefinition ? 'form' : 'document'),
+      status: template.status || 'draft',
+      formDefinition: template.formDefinition || null,
+      uploadedDocument: template.uploadedDocument || null,
+      extractedFields: template.extractedFields || [],
+      mappings: template.mappings || [],
+      publishHistory: template.publishHistory || [],
+      versions: template.versions || []
+    };
+  }
+
+  function listTemplateEnginesForFirm(firmId, category = null) {
+    return (state.templateEngines || [])
+      .filter((entry) => entry.firmId === firmId)
+      .filter((entry) => !category || entry.category === category)
+      .map(normalizeTemplateEngine);
+  }
 
   function persist() {
     saveState(state);
@@ -424,15 +535,46 @@ export function createStore() {
       return note;
     },
     listFormTemplates(user) {
-      return state.formTemplates.filter((entry) => entry.firmId === user.firmId);
+      return listTemplateEnginesForFirm(user.firmId, 'form').map((entry) => ({
+        id: entry.id,
+        firmId: entry.firmId,
+        name: entry.name,
+        description: entry.formDefinition?.description || '',
+        sections: entry.formDefinition?.sections || [],
+        status: entry.status,
+        updatedAt: entry.updatedAt,
+        versions: entry.versions
+      }));
     },
     createFormTemplate(user, input) {
       requirePermission(user, 'forms:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, description: input.description || '', sections: input.sections || [], createdAt: now(), updatedAt: now() };
-      state.formTemplates.push(template);
-      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.created', { name: template.name });
+      const createdAt = now();
+      const template = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: input.name,
+        category: 'form',
+        status: input.status || 'draft',
+        formDefinition: { description: input.description || '', sections: input.sections || [] },
+        uploadedDocument: null,
+        extractedFields: input.extractedFields || [],
+        mappings: input.mappings || [],
+        publishHistory: [],
+        versions: [{
+          version: 1,
+          formDefinition: { description: input.description || '', sections: input.sections || [] },
+          uploadedDocument: null,
+          extractedFields: input.extractedFields || [],
+          mappings: input.mappings || [],
+          createdAt
+        }],
+        createdAt,
+        updatedAt: createdAt
+      };
+      state.templateEngines.push(template);
+      addAudit(user.firmId, user.id, 'template_engine', template.id, 'template_engine.form_created', { name: template.name });
       persist();
-      return template;
+      return normalizeTemplateEngine(template);
     },
     listFormSubmissions(user, status = null) {
       return state.formSubmissions
@@ -454,35 +596,95 @@ export function createStore() {
     },
     listDocumentTemplates(user) {
       requirePermission(user, 'templates:write');
-      return state.documentTemplates.filter((entry) => entry.firmId === user.firmId);
+      return listTemplateEnginesForFirm(user.firmId, 'document').map((entry) => ({
+        id: entry.id,
+        firmId: entry.firmId,
+        name: entry.name,
+        fileName: entry.uploadedDocument?.fileName || 'template.pdf',
+        blueprint: entry.formDefinition || { sections: [] },
+        extractedFields: entry.extractedFields,
+        mappings: entry.mappings,
+        versions: entry.versions,
+        status: entry.status,
+        updatedAt: entry.updatedAt
+      }));
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
-      state.documentTemplates.push(template);
-      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
+      const createdAt = now();
+      const template = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: input.name,
+        category: 'document',
+        status: 'draft',
+        formDefinition: input.blueprint || input.formDefinition || { sections: [] },
+        uploadedDocument: {
+          fileName: input.fileName || input.uploadedDocument?.fileName || 'template.pdf',
+          mimeType: input.uploadedDocument?.mimeType || 'application/pdf',
+          uploadedAt: createdAt
+        },
+        extractedFields: input.extractedFields || [],
+        mappings: input.mappings || [],
+        publishHistory: [],
+        versions: [{
+          version: 1,
+          formDefinition: input.blueprint || input.formDefinition || { sections: [] },
+          uploadedDocument: {
+            fileName: input.fileName || input.uploadedDocument?.fileName || 'template.pdf',
+            mimeType: input.uploadedDocument?.mimeType || 'application/pdf',
+            uploadedAt: createdAt
+          },
+          extractedFields: input.extractedFields || [],
+          mappings: input.mappings || [],
+          createdAt
+        }],
+        createdAt,
+        updatedAt: createdAt
+      };
+      state.templateEngines.push(template);
+      addAudit(user.firmId, user.id, 'template_engine', template.id, 'template_engine.document_created', { name: template.name });
       persist();
-      return template;
+      return normalizeTemplateEngine(template);
     },
     updateTemplateMappings(user, templateId, mappings) {
       requirePermission(user, 'templates:write');
-      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      const template = state.templateEngines.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
       template.mappings = mappings;
-      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
+      template.versions.push({
+        version: template.versions.length + 1,
+        formDefinition: template.formDefinition,
+        uploadedDocument: template.uploadedDocument,
+        extractedFields: template.extractedFields,
+        mappings,
+        createdAt: now()
+      });
       template.updatedAt = now();
-      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.mappings_updated', { count: mappings.length });
+      addAudit(user.firmId, user.id, 'template_engine', template.id, 'template_engine.mappings_updated', { count: mappings.length });
       persist();
-      return template;
+      return normalizeTemplateEngine(template);
     },
     publishTemplate(user, templateId) {
       requirePermission(user, 'templates:write');
-      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      const template = state.templateEngines.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
       template.status = 'published';
+      template.publishHistory.push({ status: 'published', version: template.versions.length || 1, changedAt: now(), changedByUserId: user.id });
       template.updatedAt = now();
       persist();
-      return template;
+      return normalizeTemplateEngine(template);
+    },
+    listTemplateEngines(user, category = null) {
+      requirePermission(user, 'templates:write');
+      return listTemplateEnginesForFirm(user.firmId, category);
+    },
+    createTemplateEngine(user, input) {
+      const category = input.category || 'document';
+      if (category === 'form') {
+        return this.createFormTemplate(user, input);
+      }
+      return this.createDocumentTemplate(user, input);
     },
     listExports(user) {
       requirePermission(user, 'exports:write');
@@ -616,7 +818,13 @@ export function createStore() {
         acc[sectionKey].push(field);
         return acc;
       }, {});
-      return this.createDocumentTemplate(user, { name: input.name, fileName: input.fileName || 'uploaded.pdf', blueprint: { sections }, mappings: (input.fields || []).map((field) => ({ pdfField: field, sourcePath: field.replace(/\s+/g, '_').toLowerCase() })) });
+      return this.createDocumentTemplate(user, {
+        name: input.name,
+        fileName: input.fileName || 'uploaded.pdf',
+        blueprint: { sections },
+        extractedFields: (input.fields || []).map((field) => ({ fieldKey: field, label: field, type: 'text' })),
+        mappings: (input.fields || []).map((field) => ({ targetField: field, sourcePath: field.replace(/\s+/g, '_').toLowerCase() }))
+      });
     },
     createPortalLink(user, profileId) {
       requirePermission(user, 'profiles:read');
@@ -634,16 +842,16 @@ export function createStore() {
         .filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
-      const availableTemplates = state.formTemplates
-        .filter((entry) => entry.firmId === link.firmId)
-        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
+      const availableTemplates = listTemplateEnginesForFirm(link.firmId, 'form')
+        .filter((entry) => entry.status === 'published')
+        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.formDefinition?.description || '', sections: entry.formDefinition?.sections || [] }));
       return { firm, profile, submissions, availableTemplates };
     },
     portalSubmit(token, input) {
       const link = state.portalLinks.find((entry) => entry.token === token);
       if (!link) throw new Error('Portal link not found.');
       const templateId = input.templateId || 'portal';
-      const template = templateId === 'portal' ? null : state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === link.firmId);
+      const template = templateId === 'portal' ? null : state.templateEngines.find((entry) => entry.id === templateId && entry.firmId === link.firmId && entry.category === 'form');
       if (templateId !== 'portal' && !template) throw new Error('Form template not found.');
       const status = input.status === 'draft' ? 'draft' : 'submitted';
       const submission = {
@@ -673,7 +881,7 @@ export function createStore() {
         profileCount: state.profiles.filter((entry) => entry.firmId === user.firmId).length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
-        templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length
+        templateCount: (state.templateEngines || []).filter((entry) => entry.firmId === user.firmId).length
       };
     },
     getMaskedSensitiveData(user, profileId) {

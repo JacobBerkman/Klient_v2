@@ -53,7 +53,8 @@ async function run() {
   const published = await jsonFetch(`/api/templates/${template.id}/publish`, { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
 
   const portal = await jsonFetch('/api/portal-links', { method: 'POST', headers: authHeaders, body: JSON.stringify({ profileId: profile.id }) });
-  const portalTemplate = await jsonFetch('/api/forms/templates', { method: 'POST', headers: authHeaders, body: JSON.stringify({
+  const portalTemplate = await jsonFetch('/api/template-engines', { method: 'POST', headers: authHeaders, body: JSON.stringify({
+    category: 'form',
     name: 'Portal Intake',
     description: 'Client-completed discovery questions',
     sections: [
@@ -61,6 +62,7 @@ async function run() {
       { title: 'Accounts', repeatable: true, fields: [{ key: 'institution', label: 'Institution', type: 'text' }, { key: 'balance', label: 'Balance', type: 'number' }] }
     ]
   }) });
+  await jsonFetch(`/api/templates/${portalTemplate.id}/publish`, { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
   const portalData = await jsonFetch(`/api/portal/${portal.token}`);
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'draft', data: { primaryGoal: 'Retire early' } }) });
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'submitted', data: { primaryGoal: 'Retire early', accounts: [{ institution: 'Vanguard', balance: '120000' }] } }) });
@@ -86,6 +88,7 @@ async function run() {
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
+  if (!template.extractedFields?.length) throw new Error('Auto built extracted fields missing');
 
   console.log(JSON.stringify({
     login: login.user.email,

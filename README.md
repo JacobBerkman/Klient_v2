@@ -9,9 +9,9 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - prospects and clients management
 - persisted prospect pipeline board
 - households and member linking
-- dynamic form template and submission flows
+- canonical template engine covering form definitions, uploaded document metadata, extracted fields, mappings, and publish/version history
 - guided client portal for draft and submitted onboarding responses
-- document template and export job foundations
+- export job foundations aligned to template engine versions
 - audit trail and analytics views
 - invite flow and password reset endpoints
 - internal web UI served by the backend

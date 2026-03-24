@@ -150,7 +150,7 @@ async function renderHouseholds() {
 
 async function renderForms() {
   const [templates, submissions, drafts] = await Promise.all([
-    api('/api/forms/templates'),
+    api('/api/template-engines?category=form'),
     api('/api/forms/submissions'),
     api('/api/forms/drafts')
   ]);
@@ -168,7 +168,7 @@ async function renderForms() {
       </div>
     </div>
     <h3>Templates</h3>
-    ${renderItems(templates, (item) => `<div class="item"><strong>${item.name}</strong><div class="muted">${item.description || ''}</div><div class="muted">Sections: ${(item.sections || []).length}</div></div>`)}
+    ${renderItems(templates, (item) => `<div class="item"><strong>${item.name}</strong><div class="muted">${item.formDefinition?.description || ''}</div><div class="muted">Status: ${item.status}</div><div class="muted">Sections: ${(item.formDefinition?.sections || []).length}</div><div class="muted">Versions: ${(item.versions || []).length}</div></div>`)}
     <h3>Drafts</h3>
     ${drafts.length ? renderItems(drafts, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge subtle">draft</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div><pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No drafts yet.</div>'}
     <h3>Submitted</h3>
@@ -177,8 +177,21 @@ async function renderForms() {
 }
 
 async function renderTemplates() {
-  const templates = await api('/api/templates');
-  view.innerHTML = '<h2>Templates</h2>' + renderItems(templates, (item) => `<div class="item"><strong>${item.name}</strong><div class="muted">${item.fileName}</div><pre>${JSON.stringify(item.mappings, null, 2)}</pre></div>`);
+  const templates = await api('/api/template-engines');
+  view.innerHTML = '<h2>Template Engine</h2>' + renderItems(templates, (item) => `
+    <div class="item">
+      <div class="row between">
+        <strong>${item.name}</strong>
+        <span class="badge">${item.category}</span>
+      </div>
+      <div class="muted">Status: ${item.status}</div>
+      <div class="muted">Uploaded document: ${item.uploadedDocument?.fileName || 'n/a'}</div>
+      <div class="muted">Extracted fields: ${(item.extractedFields || []).length}</div>
+      <div class="muted">Mappings: ${(item.mappings || []).length}</div>
+      <div class="muted">Versions: ${(item.versions || []).length}</div>
+      <div class="muted">Publishes: ${(item.publishHistory || []).length}</div>
+    </div>
+  `);
 }
 
 async function renderExports() {
@@ -279,7 +292,7 @@ document.querySelector('#household-form').addEventListener('submit', async (even
 document.querySelector('#form-template-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  await api('/api/forms/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), sections: [] }) });
+  await api('/api/template-engines', { method: 'POST', body: JSON.stringify({ category: 'form', ...Object.fromEntries(form.entries()), sections: [] }) });
   event.target.reset();
   state.view = 'forms';
   await renderCurrentView();
@@ -288,7 +301,7 @@ document.querySelector('#form-template-form').addEventListener('submit', async (
 document.querySelector('#doc-template-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), blueprint: { sections: [] }, mappings: [] }) });
+  await api('/api/template-engines', { method: 'POST', body: JSON.stringify({ category: 'document', ...Object.fromEntries(form.entries()), blueprint: { sections: [] }, mappings: [] }) });
   event.target.reset();
   state.view = 'templates';
   await renderCurrentView();
