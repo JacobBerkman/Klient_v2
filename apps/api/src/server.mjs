@@ -15,24 +15,22 @@ import {
   readAuditEventSummary,
   readAnalyticsMaterializedSummary
 } from './storage.mjs';
-import { createStore } from './store.mjs';
 import { createModules } from './modules/index.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(__dirname, '../../web/public');
 const bootedAt = new Date().toISOString();
 const startupDiagnostics = validateRuntimeConfig();
-const CSRF_SESSION_COOKIE = '__Host-klient-csrf';
-const CSRF_HEADER = 'x-csrf-token';
-const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
-const CSRF_BOOTSTRAP_PATH = '/api/csrf';
-const CSRF_EXEMPT_PATHS = new Set([
-  '/api/login',
-  '/api/register',
-  '/api/invites/accept',
-  '/api/password-resets',
-  '/api/password-resets/confirm'
-]);
+
+function baseHeaders() {
+  return {
+    'X-Frame-Options': 'DENY',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    'Cross-Origin-Resource-Policy': 'same-origin'
+  };
+}
 
 function json(res, status, body, headers = {}) {
   res.writeHead(status, { ...baseHeaders(), 'Content-Type': 'application/json', ...headers });
@@ -43,179 +41,18 @@ function notFound(res, requestId) {
   json(res, 404, { message: 'Not found' }, { 'X-Request-Id': requestId });
 }
 
-function parseCookies(req) {
-  const header = req.headers.cookie || '';
-  if (!header) return {};
-  return Object.fromEntries(
-    header
-      .split(';')
-      .map((entry) => entry.trim())
-      .filter(Boolean)
-      .map((entry) => {
-        const [name, ...rest] = entry.split('=');
-        return [name, decodeURIComponent(rest.join('=') || '')];
-      })
-  );
-}
-
-function cookieConfig(req) {
-  const xfProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
-  const secure = runtime.isProduction || xfProto === 'https';
-  return {
-    secure,
-    sameSite: secure ? 'Strict' : 'Lax',
-    httpOnly: true,
-    path: '/api',
-    maxAge: 60 * 15
-  };
-}
-
-function serializeCookie(name, value, options = {}) {
-  const parts = [`${name}=${encodeURIComponent(value)}`];
-  if (options.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
-  if (options.path) parts.push(`Path=${options.path}`);
-  if (options.sameSite) parts.push(`SameSite=${options.sameSite}`);
-  if (options.httpOnly) parts.push('HttpOnly');
-  if (options.secure) parts.push('Secure');
-  return parts.join('; ');
-}
-
-function clearCsrfCookie(req) {
-  const options = cookieConfig(req);
-  return serializeCookie(CSRF_SESSION_COOKIE, '', { ...options, maxAge: 0 });
-}
-
-function requiresCsrfProtection(method = 'GET') {
-  return !CSRF_SAFE_METHODS.has(method.toUpperCase());
-}
-
-function getCsrfErrorResponse(reason, requestId) {
-  return {
-    statusCode: 403,
-    body: {
-      error: {
-        code: 'CSRF_VALIDATION_FAILED',
-        message: 'CSRF validation failed.',
-        details: { reason }
-      }
-    },
-    headers: { 'X-Request-Id': requestId }
-  };
-}
-
-function getExpectedOrigins(req) {
-  const host = String(req.headers.host || `${runtime.host}:${runtime.port}`).split(',')[0].trim();
-  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
-  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
-  const protocol = forwardedProto || (runtime.isProduction ? 'https' : 'http');
-  const origins = new Set();
-  if (host) origins.add(`${protocol}://${host}`);
-  if (forwardedHost) origins.add(`${protocol}://${forwardedHost}`);
-  return origins;
-}
-
-function isCsrfExempt(pathname) {
-  return pathname === CSRF_BOOTSTRAP_PATH || CSRF_EXEMPT_PATHS.has(pathname);
-}
-
-function validateOriginAndReferer(req, requestId) {
-  const suppliedOrigin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
-  const suppliedReferer = typeof req.headers.referer === 'string' ? req.headers.referer.trim() : '';
-  const secFetchSite = typeof req.headers['sec-fetch-site'] === 'string' ? req.headers['sec-fetch-site'].toLowerCase() : '';
-  const expectedOrigins = getExpectedOrigins(req);
-  const matchesOrigin = suppliedOrigin && expectedOrigins.has(suppliedOrigin);
-  const matchesReferer = suppliedReferer && [...expectedOrigins].some((origin) => suppliedReferer.startsWith(`${origin}/`) || suppliedReferer === origin);
-
-  if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
-    return getCsrfErrorResponse('Cross-site browser context rejected.', requestId);
-  }
-  if (!suppliedOrigin && !suppliedReferer) {
-    return getCsrfErrorResponse('Missing Origin or Referer.', requestId);
-  }
-  if (suppliedOrigin && !matchesOrigin) {
-    return getCsrfErrorResponse('Origin mismatch.', requestId);
-  }
-  if (suppliedReferer && !matchesReferer) {
-    return getCsrfErrorResponse('Referrer mismatch.', requestId);
-  }
-  return null;
-}
-
-function validateCsrf(req, requestId) {
-  const originError = validateOriginAndReferer(req, requestId);
-  if (originError) return originError;
-  const sessionToken = getToken(req);
-  if (!sessionToken) {
-    return getCsrfErrorResponse('Missing or expired authenticated session.', requestId);
-  }
-  const cookies = parseCookies(req);
-  const cookieTokenId = cookies[CSRF_SESSION_COOKIE];
-  const headerToken = req.headers[CSRF_HEADER];
-  const result = store.validateCsrfToken(sessionToken, cookieTokenId, headerToken);
-  if (!result.ok) return getCsrfErrorResponse(result.reason, requestId);
-  return { nextToken: result.nextToken };
-}
-
-function csrfRefreshHeaders(req, nextToken) {
-  const options = cookieConfig(req);
-  return {
-    'Set-Cookie': serializeCookie(CSRF_SESSION_COOKIE, nextToken.id, options),
-    'X-CSRF-Token': nextToken.token
-  };
-}
-
-function applyResponseHeaders(res, headers = {}) {
-  for (const [name, value] of Object.entries(headers)) {
-    if (value === undefined || value === null) continue;
-    res.setHeader(name, value);
-  }
-}
-
-function withCommonHeaders(res, requestId, headers = {}) {
-  applyResponseHeaders(res, { ...baseHeaders(), 'X-Request-Id': requestId, ...headers });
-}
-
-function jsonWithHeaders(res, status, body, requestId, headers = {}) {
-  withCommonHeaders(res, requestId, { 'Content-Type': 'application/json', ...headers });
-  res.statusCode = status;
-  res.end(JSON.stringify(body, null, 2));
-}
-
-function sendCsrfBootstrap(res, req, requestId, sessionToken) {
-  const session = store.getSession(sessionToken);
-  if (!session) {
-    return jsonWithHeaders(res, 401, { message: 'Authentication required.' }, requestId, { 'Set-Cookie': clearCsrfCookie(req) });
-  }
-  const tokenRecord = store.issueCsrfToken(session.token);
-  const headers = csrfRefreshHeaders(req, tokenRecord);
-  return jsonWithHeaders(res, 200, { csrfToken: tokenRecord.token, expiresAt: tokenRecord.expiresAt }, requestId, headers);
-}
-
-function serveJson(res, statusCode, payload, requestId, extraHeaders = {}) {
-  return jsonWithHeaders(res, statusCode, payload, requestId, extraHeaders);
-}
-
-function csrfHeadersForRequest(req, pathname, method, requestId) {
-  if (!pathname.startsWith('/api/') || !requiresCsrfProtection(method) || isCsrfExempt(pathname)) {
-    return { error: null, headers: {} };
-  }
-  const validation = validateCsrf(req, requestId);
-  if (validation?.statusCode) {
-    return { error: validation, headers: {} };
-  }
-  return { error: null, headers: csrfRefreshHeaders(req, validation.nextToken) };
+function sendError(res, error, requestId) {
+  const message = error?.message || 'Request failed';
+  const statusCode = Number.isInteger(error?.statusCode)
+    ? error.statusCode
+    : (/not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400);
+  json(res, statusCode, { message }, { 'X-Request-Id': requestId });
 }
 
 function parseBody(req) {
   return new Promise((resolveBody, reject) => {
     let data = '';
-    req.on('data', (chunk) => {
-      data += chunk;
-      if (data.length > 1_000_000) {
-        req.destroy();
-        reject(new Error('Payload too large'));
-      }
-    });
+    req.on('data', (chunk) => { data += chunk; });
     req.on('end', () => {
       try {
         resolveBody(data ? JSON.parse(data) : {});
@@ -227,43 +64,14 @@ function parseBody(req) {
   });
 }
 
-function parseRawBody(req) {
-  return new Promise((resolveBody, reject) => {
-    const chunks = [];
-    let size = 0;
-    req.on('data', (chunk) => {
-      chunks.push(chunk);
-      size += chunk.length;
-      if (size > 25_000_000) {
-        req.destroy();
-        reject(new Error('Payload too large'));
-      }
-    });
-    req.on('end', () => resolveBody(Buffer.concat(chunks)));
-    req.on('error', reject);
-  });
-}
-
-
 function getToken(req) {
   return req.headers.authorization?.replace('Bearer ', '');
-}
-
-function requireUser(req) {
-  return store.requireUser(getToken(req));
-}
-
-function getClientIp(req) {
-  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
-  return forwarded || req.socket?.remoteAddress || 'unknown';
 }
 
 function serveStatic(pathname, res, requestId) {
   const filePath = pathname === '/' ? resolve(publicDir, 'index.html') : resolve(publicDir, pathname.slice(1));
   const publicDirRoot = `${publicDir}${sep}`;
-  if (filePath !== publicDir && !filePath.startsWith(publicDirRoot)) {
-    return notFound(res, requestId);
-  }
+  if (filePath !== publicDir && !filePath.startsWith(publicDirRoot)) return notFound(res, requestId);
   readFile(filePath)
     .then((contents) => {
       const contentType = {
@@ -332,20 +140,49 @@ export function createHttpServer({ modules }) {
         return json(res, 200, { status: 'ok', service: runtime.serviceName, uptimeSeconds: Math.round(process.uptime()) }, { 'X-Request-Id': requestId });
       }
       if (pathname === '/ready' && (req.method === 'GET' || req.method === 'HEAD')) {
-        const database = ensureDatabaseReady();
-        const storageHealth = readStorageHealth();
-        const queue = readExportWorkerStatus();
         finalizeLog(200);
         return json(res, 200, {
           status: 'ready',
           querySummary: readQuerySummary(),
-          database,
-          storageHealth,
-          exportWorker: queue,
+          database: ensureDatabaseReady(),
+          storageHealth: readStorageHealth(),
+          exportWorker: readExportWorkerStatus(),
           auditEvents: readAuditEventSummary(),
           startupDiagnostics
         }, { 'X-Request-Id': requestId });
       }
+
+      if (pathname === '/api/dashboard' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.profiles.getDashboard(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/profiles' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.profiles.listProfiles(user, { kind: url.searchParams.get('kind'), search: url.searchParams.get('search') || '' }); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/profiles' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:write'); const result = modules.profiles.createProfile(user, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+      if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage-history') && req.method === 'GET') { const id = pathname.split('/')[3]; const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.profiles.listStageHistory(user, id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'GET') { const id = pathname.split('/')[3]; const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.profiles.listNotes(user, id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'POST') { const id = pathname.split('/')[3]; const body = await parseBody(req); const user = requireUser(); modules.policy.requirePermission(user, 'profiles:write'); const result = modules.profiles.addNote(user, id, body.body || ''); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+      if (pathname.startsWith('/api/profiles/') && pathname.split('/').length === 4 && req.method === 'GET') { const id = pathname.split('/')[3]; const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.profiles.getProfileDetail(user, id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage') && req.method === 'PATCH') { const id = pathname.split('/')[3]; const body = await parseBody(req); const user = requireUser(); modules.policy.requirePermission(user, 'pipeline:write'); const result = modules.pipeline.moveProfileStage(user, id, body.stage, body.beforeProfileId || null, { expectedVersion: body.expectedVersion ?? null, expectedUpdatedAt: body.expectedUpdatedAt ?? null, expectedBoardVersion: body.expectedBoardVersion ?? null }); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/board/reorder' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'pipeline:write'); const result = modules.pipeline.reorderBoard(user, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/board/normalize' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'pipeline:write'); const result = modules.pipeline.normalizeBoardOrdering(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname.startsWith('/api/profiles/') && req.method === 'PATCH') { const id = pathname.split('/')[3]; const user = requireUser(); modules.policy.requirePermission(user, 'profiles:write'); const result = modules.profiles.updateProfile(user, id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/board' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.pipeline.getBoard(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+
+      if (pathname === '/api/households' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'households:read'); const result = modules.households.listHouseholds(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/households' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'households:write'); const result = modules.households.createHousehold(user, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+      if (pathname.startsWith('/api/households/') && pathname.endsWith('/members') && req.method === 'POST') { const id = pathname.split('/')[3]; const user = requireUser(); modules.policy.requirePermission(user, 'households:write'); const result = modules.households.addHouseholdMember(user, id, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+
+      if (pathname === '/api/forms/templates' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'forms:read'); const result = modules.forms.listFormTemplates(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/forms/templates' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'forms:write'); const result = modules.forms.createFormTemplate(user, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/forms/submissions' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'forms:read'); const result = modules.forms.listFormSubmissions(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/forms/submissions' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'forms:write'); const result = modules.forms.createFormSubmission(user, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+
+      if (pathname === '/api/templates' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'templates:read'); const result = modules.templates.list(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/templates' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'templates:write'); const result = modules.templates.create(user, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+
+      if (pathname === '/api/exports' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'exports:read'); const result = modules.exports.list(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/exports' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'exports:write'); const result = modules.exports.create(user, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+      if (pathname.startsWith('/api/exports/') && pathname.endsWith('/retry') && req.method === 'POST') { const id = pathname.split('/')[3]; const user = requireUser(); modules.policy.requirePermission(user, 'exports:write'); const result = modules.exports.retry(user, id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+
+      if (pathname === '/api/audit' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.audit.list(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/analytics' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'analytics:read'); const result = { ...modules.analytics.get(user), materialized: readAnalyticsMaterializedSummary(user.firmId) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/ops/diagnostics' && req.method === 'GET') {
         const user = requireUser();
         const { auditEvents, exports } = modules.analytics.getDiagnosticsContext(user);
@@ -438,17 +275,18 @@ export function createHttpServer({ modules }) {
       if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads') && req.method === 'POST') { const token = pathname.split('/')[3]; const result = modules.forms.portalUpload(token, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/portal' && req.method === 'GET') { finalizeLog(200); return serveStatic('portal.html', res, requestId); }
 
+      if (pathname === '/portal' && req.method === 'GET') { finalizeLog(200); return serveStatic('portal.html', res, requestId); }
       finalizeLog(200, { static: true });
       return serveStatic(pathname, res, requestId);
     } catch (error) {
-      log('error', 'request.failed', { requestId, method: req.method, path: req.url, error: error.message || String(error) });
       finalizeLog(/not found/i.test(error?.message || '') ? 404 : 400);
       return sendError(res, error, requestId);
     }
   });
 }
 
-function startServer() {
+export async function startServer() {
+  const { createStore } = await import('./store.mjs');
   const store = createStore();
   const reads = new SqliteReadRepository();
   const modules = createModules({ store, reads });
@@ -799,23 +637,20 @@ function startServer() {
 
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
-  process.on('uncaughtException', (error) => {
-    log('error', 'process.uncaughtException', { error: error.message, stack: error.stack });
-    shutdown('uncaughtException');
-  });
-  process.on('unhandledRejection', (error) => {
-    log('error', 'process.unhandledRejection', { error: error?.message || String(error) });
-  });
 
   server.listen(runtime.port, runtime.host, () => {
     const ready = ensureDatabaseReady();
-    const diag = {
+    log('info', 'server.started', {
+      host: runtime.host,
+      port: runtime.port,
+      dbPath: ready.dbPath,
       bootedAt,
       config: startupDiagnostics,
       storageHealth: readStorageHealth(),
       querySummary: readQuerySummary(),
       exportWorker: readExportWorkerStatus(),
       auditEvents: readAuditEventSummary()
+    });
     };
     log('info', 'server.started', { host: runtime.host, port: runtime.port, dbPath: ready.dbPath, diagnostics: diag });
     if (!startupDiagnostics.ok) {
