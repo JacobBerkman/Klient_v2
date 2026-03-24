@@ -10,17 +10,33 @@ function nowIso() {
 export function createLocalFilesystemStorageProvider({ rootDir }) {
   const baseDir = resolve(rootDir || resolve(process.cwd(), 'data', 'objects'));
   const presignedTokens = new Map();
+  const objectMetadata = new Map();
 
   function keyPath(bucket, key) {
     const normalized = String(key || '').replace(/^\/+/, '');
     return resolve(baseDir, bucket, normalized);
   }
 
+  function metadataKey({ bucket, key }) {
+    return `${bucket}:${key}`;
+  }
+
   function putToken(operation, object, expiresInSeconds = 300) {
     const token = randomUUID();
+    const normalizedObject = {
+      ...object,
+      maxSizeBytes: Number(object?.maxSizeBytes || 0) || null,
+      tokenScope: {
+        actorId: object?.actorId || null,
+        context: object?.context || null,
+        intent: object?.intent || null
+      }
+    };
     presignedTokens.set(token, {
       operation,
-      object,
+      object: normalizedObject,
+      consumed: false,
+      oneTime: object?.oneTime !== false,
       expiresAt: Date.now() + Math.max(1, Number(expiresInSeconds || 300)) * 1000
     });
     return token;
@@ -38,12 +54,20 @@ export function createLocalFilesystemStorageProvider({ rootDir }) {
       await mkdir(dirname(absolutePath), { recursive: true });
       const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
       await writeFile(absolutePath, buffer);
-      return { etag: digest(buffer) };
+      const etag = digest(buffer);
+      objectMetadata.set(metadataKey({ bucket, key }), {
+        checksum: etag,
+        etag,
+        sizeBytes: buffer.length,
+        uploadedAt: nowIso()
+      });
+      return { etag, checksum: etag, sizeBytes: buffer.length };
     },
     async getObject({ bucket, key }) {
       const absolutePath = keyPath(bucket, key);
       const body = await readFile(absolutePath);
-      return { body, etag: digest(body), contentType: null };
+      const etag = digest(body);
+      return { body, etag, checksum: etag, contentType: null };
     },
     async createPresignedUploadUrl(object) {
       const token = putToken('upload', object, object.expiresInSeconds || 900);
@@ -52,7 +76,10 @@ export function createLocalFilesystemStorageProvider({ rootDir }) {
         method: 'PUT',
         url: `/api/storage/presigned/upload?token=${encodeURIComponent(token)}`,
         headers: {
-          'Content-Type': object.contentType || 'application/octet-stream'
+          'Content-Type': object.contentType || 'application/octet-stream',
+          ...(object.actorId ? { 'X-Storage-Actor-Id': object.actorId } : {}),
+          ...(object.context ? { 'X-Storage-Context': object.context } : {}),
+          ...(object.intent ? { 'X-Storage-Intent': object.intent } : {})
         },
         expiresAt
       };
@@ -73,7 +100,7 @@ export function createLocalFilesystemStorageProvider({ rootDir }) {
         await rm(absolutePath, { force: true });
       }
     },
-    consumePresignedToken(token, operation) {
+    consumePresignedToken(token, operation, context = {}) {
       const entry = presignedTokens.get(token);
       if (!entry) return null;
       if (entry.expiresAt <= Date.now()) {
@@ -81,11 +108,18 @@ export function createLocalFilesystemStorageProvider({ rootDir }) {
         return null;
       }
       if (entry.operation !== operation) return null;
-      if (operation === 'download') {
-        return entry.object;
+      if (entry.consumed && entry.oneTime) return null;
+      if (entry.object?.tokenScope?.actorId && context.actorId && entry.object.tokenScope.actorId !== context.actorId) return null;
+      if (entry.object?.tokenScope?.context && context.context && entry.object.tokenScope.context !== context.context) return null;
+      if (entry.object?.tokenScope?.intent && context.intent && entry.object.tokenScope.intent !== context.intent) return null;
+      if (entry.oneTime) {
+        entry.consumed = true;
+        presignedTokens.delete(token);
       }
-      presignedTokens.delete(token);
       return entry.object;
+    },
+    getObjectMetadata({ bucket, key }) {
+      return objectMetadata.get(metadataKey({ bucket, key })) || null;
     },
     describeHealth() {
       const info = {
@@ -100,7 +134,8 @@ export function createLocalFilesystemStorageProvider({ rootDir }) {
     async statObject({ bucket, key }) {
       const absolutePath = keyPath(bucket, key);
       const objectStat = await stat(absolutePath);
-      return { sizeBytes: objectStat.size, updatedAt: objectStat.mtime.toISOString() };
+      const stored = objectMetadata.get(metadataKey({ bucket, key })) || {};
+      return { sizeBytes: objectStat.size, updatedAt: objectStat.mtime.toISOString(), etag: stored.etag || null, checksum: stored.checksum || null };
     }
   };
 }

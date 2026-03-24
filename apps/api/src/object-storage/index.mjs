@@ -23,18 +23,29 @@ function parseRetentionPolicies() {
 
 export function createObjectStorage({ provider, bucketDocuments, bucketExports, retentionPolicies } = {}) {
   const resolvedProvider = assertStorageProvider(provider || buildProviderFromRuntime());
+  const policies = retentionPolicies || parseRetentionPolicies();
+
+  function assertRetentionClass(input = {}) {
+    if (!input.retentionClass) return;
+    if (!policies[input.retentionClass]) {
+      throw new Error(`Unknown retention class: ${input.retentionClass}`);
+    }
+  }
+
   return {
     provider: resolvedProvider,
     bucketDocuments: bucketDocuments || runtime.storageBucketDocuments,
     bucketExports: bucketExports || runtime.storageBucketExports,
-    retentionPolicies: retentionPolicies || parseRetentionPolicies(),
+    retentionPolicies: policies,
     async putObject(input) {
+      assertRetentionClass(input);
       return resolvedProvider.putObject(input);
     },
     async getObject(input) {
       return resolvedProvider.getObject(input);
     },
     async createPresignedUploadUrl(input) {
+      assertRetentionClass(input);
       return resolvedProvider.createPresignedUploadUrl(input);
     },
     async createPresignedDownloadUrl(input) {
