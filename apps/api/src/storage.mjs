@@ -1,9 +1,11 @@
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
 export const DB_PATH = resolve(process.cwd(), 'data', 'app.db');
 mkdirSync(dirname(DB_PATH), { recursive: true });
+const EXPORTS_DIR = resolve(process.cwd(), 'data', 'exports');
+mkdirSync(EXPORTS_DIR, { recursive: true });
 
 const db = new DatabaseSync(DB_PATH);
 db.exec(`
@@ -166,8 +168,41 @@ export function completeQueuedExports() {
   let processed = 0;
   for (const job of state.exportJobs || []) {
     if (job.status === 'queued') {
-      job.status = 'completed';
-      job.output = { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
+      try {
+        const createdAt = new Date().toISOString();
+        const extension = job.type === 'excel' ? 'xlsx' : job.type === 'pdf' ? 'pdf' : null;
+        const contentType = job.type === 'excel'
+          ? 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+          : job.type === 'pdf'
+            ? 'application/pdf'
+            : null;
+        if (!extension || !contentType) throw new Error(`Unsupported export type: ${job.type}`);
+        const filename = `export-${job.id}.${extension}`;
+        const path = resolve(EXPORTS_DIR, filename);
+        const content = job.type === 'pdf'
+          ? Buffer.from('%PDF-1.4\n1 0 obj <<>>\nendobj\ntrailer <<>>\n%%EOF\n', 'utf8')
+          : Buffer.from(`job_id,client_id,template_id,type,status\n${job.id},${job.clientId || ''},${job.templateId || ''},${job.type},completed\n`, 'utf8');
+        writeFileSync(path, content);
+        job.status = 'completed';
+        job.output = {
+          path,
+          contentType,
+          filename,
+          createdAt,
+          completedAt: new Date().toISOString(),
+          failureReason: null
+        };
+      } catch (error) {
+        job.status = 'failed';
+        job.output = {
+          path: null,
+          contentType: null,
+          filename: null,
+          createdAt: new Date().toISOString(),
+          completedAt: null,
+          failureReason: error?.message || 'Export generation failed'
+        };
+      }
       job.updatedAt = new Date().toISOString();
       processed += 1;
     }

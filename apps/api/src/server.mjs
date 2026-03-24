@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { extname, resolve } from 'node:path';
+import { basename, extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SqliteReadRepository } from './repositories/sqlite-read-repository.mjs';
@@ -143,6 +143,19 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/exports' && req.method === 'POST') { const result = store.createExport(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/exports/process' && req.method === 'POST') { const result = store.processQueuedExports(); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/exports/') && pathname.endsWith('/retry') && req.method === 'POST') { const id = pathname.split('/')[3]; const result = store.retryExport(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/exports/') && pathname.endsWith('/download') && req.method === 'GET') {
+      const id = pathname.split('/')[3];
+      const file = store.getExportDownload(requireUser(req), id);
+      const contents = await readFile(file.path);
+      finalizeLog(200);
+      res.writeHead(200, {
+        'Content-Type': file.contentType,
+        'Content-Disposition': `attachment; filename="${basename(file.filename)}"`,
+        'Content-Length': String(contents.byteLength),
+        'X-Request-Id': requestId
+      });
+      return res.end(contents);
+    }
     if (pathname === '/api/audit' && req.method === 'GET') { const result = store.listAudit(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/analytics' && req.method === 'GET') { const user = requireUser(req); const result = { stageCounts: reads.getAnalytics(user.firmId), summary: store.getAnalytics(user) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/sensitive') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.getMaskedSensitiveData(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }

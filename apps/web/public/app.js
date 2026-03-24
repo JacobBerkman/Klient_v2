@@ -21,6 +21,26 @@ async function api(path, options = {}) {
   return data;
 }
 
+async function downloadExport(jobId, fallbackFilename) {
+  const response = await fetch(`/api/exports/${jobId}/download`, { headers: headers() });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new Error(data.message || 'Download failed');
+  }
+  const blob = await response.blob();
+  const contentDisposition = response.headers.get('content-disposition') || '';
+  const nameMatch = contentDisposition.match(/filename="(.+)"/i);
+  const filename = nameMatch?.[1] || fallbackFilename || `export-${jobId}`;
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  URL.revokeObjectURL(url);
+}
+
 function renderItems(items, render) {
   return `<div class="list">${items.map(render).join('')}</div>`;
 }
@@ -183,7 +203,24 @@ async function renderTemplates() {
 
 async function renderExports() {
   const exportsList = await api('/api/exports');
-  view.innerHTML = '<h2>Exports</h2>' + renderItems(exportsList, (item) => `<div class="item"><strong>${item.type.toUpperCase()}</strong><div class="muted">${item.status}</div><pre>${JSON.stringify(item.output, null, 2)}</pre></div>`);
+  view.innerHTML = '<h2>Exports</h2>' + renderItems(exportsList, (item) => `
+    <div class="item">
+      <strong>${item.type.toUpperCase()}</strong>
+      <div class="muted">${item.status}</div>
+      ${item.status === 'completed' ? `<button data-export-download="${item.id}" data-export-filename="${item.output?.filename || ''}">Download</button>` : ''}
+      ${item.status === 'failed' ? `<div class="muted">Failure: ${item.output?.failureReason || 'Unknown error'}</div>` : ''}
+      <pre>${JSON.stringify(item.output, null, 2)}</pre>
+    </div>
+  `);
+  document.querySelectorAll('[data-export-download]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      try {
+        await downloadExport(button.dataset.exportDownload, button.dataset.exportFilename);
+      } catch (error) {
+        alert(error.message || 'Download failed');
+      }
+    });
+  });
 }
 
 async function renderAudit() {

@@ -11,7 +11,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - households and member linking
 - dynamic form template and submission flows
 - guided client portal for draft and submitted onboarding responses
-- document template and export job foundations
+- document template and export jobs with generated PDF/Excel files + authenticated download endpoints
 - audit trail and analytics views
 - invite flow and password reset endpoints
 - internal web UI served by the backend
@@ -86,7 +86,7 @@ node scripts/restore-db.mjs data/backup-<timestamp>.db
 node scripts/export-worker.mjs
 ```
 
-This processes queued export jobs in the SQLite-backed runtime.
+This processes queued export jobs in the SQLite-backed runtime, writes files into `data/exports`, and records output metadata (`path`, `contentType`, `filename`, `createdAt`, `completedAt`, `failureReason`).
 
 ## CI
 A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.

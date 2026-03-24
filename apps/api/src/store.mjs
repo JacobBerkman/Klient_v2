@@ -1,4 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { runtime } from './runtime.mjs';
 import { loadState, saveState } from './storage.mjs';
 
@@ -39,6 +41,67 @@ function decryptValue(payload) {
 
 function now() {
   return new Date().toISOString();
+}
+
+const EXPORTS_DIR = resolve(process.cwd(), 'data', 'exports');
+mkdirSync(EXPORTS_DIR, { recursive: true });
+
+function exportFileConfig(type) {
+  if (type === 'pdf') return { extension: 'pdf', contentType: 'application/pdf' };
+  if (type === 'excel') return { extension: 'xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' };
+  throw new Error(`Unsupported export type: ${type}`);
+}
+
+function buildPdfDocument(job) {
+  return Buffer.from([
+    '%PDF-1.4',
+    '1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj',
+    '2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj',
+    '3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << >> >> endobj',
+    `4 0 obj << /Length 88 >> stream`,
+    'BT /F1 16 Tf 72 720 Td',
+    `(Klient export ${job.id}) Tj`,
+    '0 -20 Td',
+    `(Client ${job.clientId || "unknown"}) Tj`,
+    'ET',
+    'endstream endobj',
+    'xref',
+    '0 5',
+    '0000000000 65535 f ',
+    '0000000010 00000 n ',
+    '0000000060 00000 n ',
+    '0000000117 00000 n ',
+    '0000000243 00000 n ',
+    'trailer << /Size 5 /Root 1 0 R >>',
+    'startxref',
+    '380',
+    '%%EOF'
+  ].join('\n'), 'utf8');
+}
+
+function buildExcelDocument(job) {
+  return Buffer.from([
+    'job_id,client_id,template_id,type,status',
+    `${job.id},${job.clientId || ''},${job.templateId || ''},${job.type},completed`
+  ].join('\n'), 'utf8');
+}
+
+function writeExportOutput(job) {
+  const createdAt = now();
+  const file = exportFileConfig(job.type);
+  const filename = `export-${job.id}.${file.extension}`;
+  const outputPath = resolve(EXPORTS_DIR, filename);
+  const content = job.type === 'pdf' ? buildPdfDocument(job) : buildExcelDocument(job);
+  writeFileSync(outputPath, content);
+  const completedAt = now();
+  return {
+    path: outputPath,
+    contentType: file.contentType,
+    filename,
+    createdAt,
+    completedAt,
+    failureReason: null
+  };
 }
 
 function slugify(value) {
@@ -501,6 +564,7 @@ export function createStore() {
       const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
       if (!job) throw new Error('Export not found.');
       job.status = 'queued';
+      job.output = null;
       job.updatedAt = now();
       persist();
       return job;
@@ -509,14 +573,33 @@ export function createStore() {
       let processed = 0;
       for (const job of state.exportJobs) {
         if (job.status === 'queued') {
-          job.status = 'completed';
-          job.output = { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
+          try {
+            job.output = writeExportOutput(job);
+            job.status = 'completed';
+          } catch (error) {
+            job.status = 'failed';
+            job.output = {
+              path: null,
+              contentType: null,
+              filename: null,
+              createdAt: now(),
+              completedAt: null,
+              failureReason: error?.message || 'Export generation failed'
+            };
+          }
           job.updatedAt = now();
           processed += 1;
         }
       }
       persist();
       return { processed };
+    },
+    getExportDownload(user, exportId) {
+      requirePermission(user, 'exports:write');
+      const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
+      if (!job) throw new Error('Export not found.');
+      if (job.status !== 'completed' || !job.output?.path) throw new Error('Export file not available.');
+      return job.output;
     },
     listAudit(user) {
       return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();

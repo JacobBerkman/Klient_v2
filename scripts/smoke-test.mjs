@@ -17,6 +17,10 @@ async function jsonFetch(path, options = {}) {
   return data;
 }
 
+async function rawFetch(path, options = {}) {
+  return fetch(`http://127.0.0.1:${port}${path}`, options);
+}
+
 async function run() {
   await wait(700);
   const ready = await jsonFetch('/ready');
@@ -66,11 +70,20 @@ async function run() {
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'submitted', data: { primaryGoal: 'Retire early', accounts: [{ institution: 'Vanguard', balance: '120000' }] } }) });
   const refreshedPortalData = await jsonFetch(`/api/portal/${portal.token}`);
 
-  const exportJob = await jsonFetch('/api/exports', { method: 'POST', headers: authHeaders, body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' }) });
+  const pdfExportJob = await jsonFetch('/api/exports', { method: 'POST', headers: authHeaders, body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' }) });
+  const excelExportJob = await jsonFetch('/api/exports', { method: 'POST', headers: authHeaders, body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'excel' }) });
   await jsonFetch('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
-  await jsonFetch(`/api/exports/${exportJob.id}/retry`, { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
+  await jsonFetch(`/api/exports/${pdfExportJob.id}/retry`, { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
   await jsonFetch('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
   const exportsList = await jsonFetch('/api/exports', { headers: { Authorization: `Bearer ${login.token}` } });
+  const pdfJob = exportsList.find((job) => job.id === pdfExportJob.id);
+  const excelJob = exportsList.find((job) => job.id === excelExportJob.id);
+
+  const unauthorizedDownload = await rawFetch(`/api/exports/${pdfExportJob.id}/download`);
+  const pdfDownload = await rawFetch(`/api/exports/${pdfExportJob.id}/download`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const excelDownload = await rawFetch(`/api/exports/${excelExportJob.id}/download`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const pdfBody = await pdfDownload.arrayBuffer();
+  const excelBody = await excelDownload.text();
 
   const drafts = await jsonFetch('/api/forms/drafts', { headers: { Authorization: `Bearer ${login.token}` } });
   const analytics = await jsonFetch('/api/analytics', { headers: { Authorization: `Bearer ${login.token}` } });
@@ -82,7 +95,15 @@ async function run() {
   if (!portalData.availableTemplates.find((entry) => entry.id === portalTemplate.id)) throw new Error('Portal templates missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'draft')) throw new Error('Portal draft missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'submitted')) throw new Error('Portal submission missing');
-  if (!exportsList.find((job) => job.id === exportJob.id && job.status === 'completed')) throw new Error('Export processing failed');
+  if (unauthorizedDownload.status !== 401) throw new Error('Unauthenticated download must be rejected');
+  if (!pdfJob || pdfJob.status !== 'completed') throw new Error('PDF export processing failed');
+  if (!excelJob || excelJob.status !== 'completed') throw new Error('Excel export processing failed');
+  if (!pdfJob.output?.path || !pdfJob.output?.contentType || !pdfJob.output?.filename || !pdfJob.output?.createdAt || !pdfJob.output?.completedAt) throw new Error('PDF export metadata missing');
+  if (!excelJob.output?.path || !excelJob.output?.contentType || !excelJob.output?.filename || !excelJob.output?.createdAt || !excelJob.output?.completedAt) throw new Error('Excel export metadata missing');
+  if (pdfDownload.status !== 200 || pdfDownload.headers.get('content-type') !== 'application/pdf') throw new Error('PDF download failed');
+  if (excelDownload.status !== 200 || excelDownload.headers.get('content-type') !== 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet') throw new Error('Excel download failed');
+  if (pdfBody.byteLength < 20) throw new Error('PDF output too small');
+  if (!excelBody.includes('job_id')) throw new Error('Excel output missing content');
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
@@ -93,7 +114,8 @@ async function run() {
     noteId: note.id,
     inviteRole: readonlySession.user.role,
     draftCount: drafts.length,
-    exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
+    exportStatus: pdfJob.status,
+    excelExportStatus: excelJob.status,
     totalProfiles: dashboard.stats.totalProfiles,
     templateStatus: published.status
   }, null, 2));
