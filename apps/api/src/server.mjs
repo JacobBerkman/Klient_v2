@@ -1,5 +1,5 @@
 import { createServer } from 'node:http';
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -540,15 +540,48 @@ function startServer() {
         finalizeLog(404);
         return notFound(res, requestId);
       }
-      const object = store.objectStorage.provider.consumePresignedToken(token, operation);
+      const object = store.objectStorage.provider.consumePresignedToken(token, operation, {
+        actorId: req.headers['x-storage-actor-id'] || null,
+        context: req.headers['x-storage-context'] || null,
+        intent: req.headers['x-storage-intent'] || null
+      });
       if (!object) {
         finalizeLog(403);
         return json(res, 403, { message: 'Invalid or expired presigned token.' }, { 'X-Request-Id': requestId });
       }
+      const requestContentType = String(req.headers['content-type'] || '').split(';')[0].trim() || 'application/octet-stream';
+      const expectedContentType = String(object.contentType || '').split(';')[0].trim();
+      if (expectedContentType && expectedContentType !== requestContentType) {
+        finalizeLog(415);
+        return json(res, 415, { message: 'Invalid content type for presigned upload.' }, { 'X-Request-Id': requestId });
+      }
       const payload = await parseRawBody(req);
-      await store.objectStorage.putObject({ ...object, body: payload, contentType: req.headers['content-type'] || object.contentType || 'application/octet-stream' });
+      if (object.maxSizeBytes && payload.length > Number(object.maxSizeBytes)) {
+        finalizeLog(413);
+        return json(res, 413, { message: 'Presigned upload exceeded max allowed size.' }, { 'X-Request-Id': requestId });
+      }
+      if (object.checksum) {
+        const checksum = createHash('sha256').update(payload).digest('hex');
+        if (checksum !== object.checksum) {
+          finalizeLog(422);
+          return json(res, 422, { message: 'Uploaded payload checksum does not match expected checksum.' }, { 'X-Request-Id': requestId });
+        }
+      }
+      const putResult = await store.objectStorage.putObject({ ...object, body: payload, contentType: requestContentType });
+      const storedMeta = typeof store.objectStorage.provider.getObjectMetadata === 'function'
+        ? store.objectStorage.provider.getObjectMetadata({ bucket: object.bucket, key: object.key })
+        : null;
+      if (object.checksum && storedMeta?.checksum && object.checksum !== storedMeta.checksum) {
+        finalizeLog(409);
+        return json(res, 409, { message: 'Stored object checksum failed post-upload verification.' }, { 'X-Request-Id': requestId });
+      }
       finalizeLog(200);
-      return json(res, 200, { ok: true }, { 'X-Request-Id': requestId });
+      return json(res, 200, {
+        ok: true,
+        etag: putResult?.etag || storedMeta?.etag || null,
+        checksum: storedMeta?.checksum || object.checksum || null,
+        sizeBytes: storedMeta?.sizeBytes || payload.length
+      }, { 'X-Request-Id': requestId });
     }
     if (pathname.startsWith('/api/storage/presigned/') && req.method === 'GET') {
       const token = url.searchParams.get('token');
