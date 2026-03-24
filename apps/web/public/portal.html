@@ -113,7 +113,8 @@
         token,
         data: null,
         selectedTemplateId: '',
-        sectionRepeats: new Map()
+        sectionRepeats: new Map(),
+        csrfToken: ''
       };
 
       const fieldTypeToInput = {
@@ -304,6 +305,31 @@
         return payload;
       }
 
+      async function ensureCsrfToken() {
+        if (portalState.csrfToken) return portalState.csrfToken;
+        const response = await fetch('/api/csrf');
+        const data = await response.json();
+        if (!response.ok || !data.csrfToken) {
+          throw new Error(data?.error?.message || data?.message || 'Unable to initialize CSRF protection.');
+        }
+        portalState.csrfToken = data.csrfToken;
+        return portalState.csrfToken;
+      }
+
+      async function apiRequest(path, options = {}) {
+        const method = (options.method || 'GET').toUpperCase();
+        const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+        const headers = { ...(options.headers || {}) };
+        if (mutating) {
+          headers['X-CSRF-Token'] = await ensureCsrfToken();
+          if (!headers['Content-Type']) headers['Content-Type'] = 'application/json';
+        }
+        const response = await fetch(path, { ...options, headers });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error?.message || data?.message || 'Request failed.');
+        return data;
+      }
+
       async function loadPortal() {
         if (!token) {
           title.textContent = 'Client Portal';
@@ -319,9 +345,7 @@
           return;
         }
 
-        const response = await fetch(`/api/portal/${token}`);
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || 'Unable to load portal data.');
+        const data = await apiRequest(`/api/portal/${token}`);
 
         portalState.data = data;
         portalState.selectedTemplateId = data.availableTemplates?.[0]?.id || '';
@@ -346,13 +370,10 @@
 
       async function saveSubmission(status) {
         const payload = buildPayloadFromForm();
-        const response = await fetch(`/api/portal/${token}/submissions`, {
+        await apiRequest(`/api/portal/${token}/submissions`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ templateId: portalState.selectedTemplateId, status, data: payload })
         });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.message || 'Unable to save form.');
         await loadPortal();
         form.reset();
         statusBadge.textContent = status === 'draft' ? 'Draft saved' : 'Form submitted';

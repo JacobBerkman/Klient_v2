@@ -19,6 +19,8 @@ const householdPrimary = document.querySelector('select[name="primaryClientId"]'
 const portalProfileSelect = document.querySelector('select[name="profileId"]');
 
 const headers = () => state.token ? { Authorization: `Bearer ${state.token}` } : {};
+const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
+let csrfToken = '';
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -38,10 +40,21 @@ function clearFlash() {
 }
 
 async function api(path, options = {}) {
+  const method = (options.method || 'GET').toUpperCase();
+  if (MUTATING_METHODS.has(method) && !csrfToken) {
+    const csrfResponse = await fetch('/api/csrf');
+    const csrfData = await csrfResponse.json();
+    if (!csrfResponse.ok || !csrfData.csrfToken) {
+      throw new Error(csrfData?.error?.message || csrfData?.message || 'Unable to initialize CSRF protection.');
+    }
+    csrfToken = csrfData.csrfToken;
+  }
+
   const response = await fetch(path, {
     ...options,
     headers: {
       'Content-Type': 'application/json',
+      ...(MUTATING_METHODS.has(method) ? { 'X-CSRF-Token': csrfToken } : {}),
       ...headers(),
       ...(options.headers || {})
     }
@@ -51,6 +64,7 @@ async function api(path, options = {}) {
     if (response.status === 401) {
       state.token = '';
       state.activeSession = null;
+      csrfToken = '';
       localStorage.removeItem('klient-token');
       authStatus.textContent = 'Session expired. Sign in again.';
     }
