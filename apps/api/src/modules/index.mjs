@@ -35,5 +35,14 @@ export function createModules({ store, reads }) {
     exports: createExportsService({ exportsRepository: new StoreExportsRepository(store) }),
     audit: createAuditService({ auditRepository: new StoreAuditRepository(store) }),
     analytics: createAnalyticsService({ analyticsRepository: new StoreAnalyticsRepository(store, reads) })
+    firmsUsers: createFirmsUsersService({ store, policy }),
+    profiles: createProfilesService({ profileRepository, policy }),
+    pipeline: createPipelineService({ store, policy }),
+    households: createHouseholdsService({ store, policy }),
+    forms: createFormsService({ store, policy }),
+    templates: createTemplatesService({ templateRepository, policy }),
+    exports: createExportsService({ store, policy }),
+    audit: createAuditService({ store, policy }),
+    analytics: createAnalyticsService({ store, reads, policy })
   };
 }
