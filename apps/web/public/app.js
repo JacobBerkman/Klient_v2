@@ -1,3 +1,5 @@
+import { createJsonApiClient, routes } from './api-contract.js';
+
 const state = { token: localStorage.getItem('klient-token') || '', view: 'dashboard', selectedProfileId: null };
 
 const view = document.querySelector('#view');
@@ -5,21 +7,7 @@ const authStatus = document.querySelector('#auth-status');
 const householdPrimary = document.querySelector('select[name="primaryClientId"]');
 const portalProfileSelect = document.querySelector('select[name="profileId"]');
 
-const headers = () => state.token ? { Authorization: `Bearer ${state.token}` } : {};
-
-async function api(path, options = {}) {
-  const response = await fetch(path, {
-    ...options,
-    headers: {
-      'Content-Type': 'application/json',
-      ...headers(),
-      ...(options.headers || {})
-    }
-  });
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.message || 'Request failed');
-  return data;
-}
+const api = createJsonApiClient({ getToken: () => state.token });
 
 function renderItems(items, render) {
   return `<div class="list">${items.map(render).join('')}</div>`;
@@ -27,8 +15,8 @@ function renderItems(items, render) {
 
 async function refreshPrimaryClientOptions() {
   try {
-    const clients = await api('/api/profiles?kind=client');
-    const allProfiles = await api('/api/profiles');
+    const clients = await api(routes.profiles({ kind: 'client' }));
+    const allProfiles = await api(routes.profiles());
     householdPrimary.innerHTML = clients.map((profile) => `<option value="${profile.id}">${profile.firstName} ${profile.lastName}</option>`).join('');
     portalProfileSelect.innerHTML = allProfiles.map((profile) => `<option value="${profile.id}">${profile.firstName} ${profile.lastName}</option>`).join('');
   } catch {
@@ -48,7 +36,7 @@ function wireProfileButtons() {
 }
 
 async function renderDashboard() {
-  const data = await api('/api/dashboard');
+  const data = await api(routes.dashboard());
   view.innerHTML = `
     <h2>Dashboard</h2>
     <div class="stat-grid">
@@ -61,7 +49,7 @@ async function renderDashboard() {
 }
 
 async function renderProfiles(kind) {
-  const profiles = await api(`/api/profiles?kind=${kind}`);
+  const profiles = await api(routes.profiles({ kind }));
   view.innerHTML = `<h2>${kind === 'prospect' ? 'Prospects' : 'Clients'}</h2>` + renderItems(profiles, (profile) => `
     <div class="item">
       <strong>${profile.firstName} ${profile.lastName}</strong> <span class="badge">${profile.kind}</span>
@@ -76,7 +64,7 @@ async function renderProfiles(kind) {
 
   document.querySelectorAll('[data-stage-id]').forEach((select) => {
     select.addEventListener('change', async (event) => {
-      await api(`/api/profiles/${event.target.dataset.stageId}/stage`, { method: 'PATCH', body: JSON.stringify({ stage: event.target.value }) });
+      await api(routes.profileStage(event.target.dataset.stageId), { method: 'PATCH', body: JSON.stringify({ stage: event.target.value }) });
       await renderCurrentView();
     });
   });
@@ -89,7 +77,7 @@ async function renderProfileDetail() {
     return renderCurrentView();
   }
 
-  const detail = await api(`/api/profiles/${state.selectedProfileId}`);
+  const detail = await api(routes.profileDetail(state.selectedProfileId));
   view.innerHTML = `
     <div class="detail-header">
       <button id="back-to-dashboard">← Back</button>
@@ -132,13 +120,13 @@ async function renderProfileDetail() {
   document.querySelector('#note-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = new FormData(event.target);
-    await api(`/api/profiles/${state.selectedProfileId}/notes`, { method: 'POST', body: JSON.stringify({ body: form.get('body') }) });
+    await api(routes.profileNotes(state.selectedProfileId), { method: 'POST', body: JSON.stringify({ body: form.get('body') }) });
     await renderProfileDetail();
   });
 }
 
 async function renderHouseholds() {
-  const households = await api('/api/households');
+  const households = await api(routes.households());
   view.innerHTML = '<h2>Households</h2>' + renderItems(households, (household) => `
     <div class="item">
       <strong>${household.name}</strong>
@@ -150,9 +138,9 @@ async function renderHouseholds() {
 
 async function renderForms() {
   const [templates, submissions, drafts] = await Promise.all([
-    api('/api/forms/templates'),
-    api('/api/forms/submissions'),
-    api('/api/forms/drafts')
+    api(routes.formTemplates()),
+    api(routes.formSubmissions()),
+    api(routes.formDrafts())
   ]);
   const submitted = submissions.filter((item) => item.status !== 'draft');
   view.innerHTML = `
@@ -177,27 +165,27 @@ async function renderForms() {
 }
 
 async function renderTemplates() {
-  const templates = await api('/api/templates');
+  const templates = await api(routes.documentTemplates());
   view.innerHTML = '<h2>Templates</h2>' + renderItems(templates, (item) => `<div class="item"><strong>${item.name}</strong><div class="muted">${item.fileName}</div><pre>${JSON.stringify(item.mappings, null, 2)}</pre></div>`);
 }
 
 async function renderExports() {
-  const exportsList = await api('/api/exports');
+  const exportsList = await api(routes.exports());
   view.innerHTML = '<h2>Exports</h2>' + renderItems(exportsList, (item) => `<div class="item"><strong>${item.type.toUpperCase()}</strong><div class="muted">${item.status}</div><pre>${JSON.stringify(item.output, null, 2)}</pre></div>`);
 }
 
 async function renderAudit() {
-  const events = await api('/api/audit');
+  const events = await api(routes.audit());
   view.innerHTML = '<h2>Audit</h2>' + renderItems(events, (event) => `<div class="item"><strong>${event.action}</strong><div class="muted">${event.occurredAt}</div><pre>${JSON.stringify(event.metadata, null, 2)}</pre></div>`);
 }
 
 async function renderAnalytics() {
-  const analytics = await api('/api/analytics');
+  const analytics = await api(routes.analytics());
   view.innerHTML = `<h2>Analytics</h2><pre>${JSON.stringify(analytics, null, 2)}</pre>`;
 }
 
 async function renderBoard() {
-  const columns = await api('/api/board');
+  const columns = await api(routes.board());
   view.innerHTML = `<h2>Prospect Board</h2><div class="columns">${columns.map((column) => `<div class="column"><h3>${column.stage}</h3>${column.cards.map((card) => `<div class="item"><strong>${card.firstName} ${card.lastName}</strong><div class="muted">#${card.stageOrderIndex}</div><button data-profile-id="${card.id}">Open Profile</button></div>`).join('')}</div>`).join('')}</div>`;
   wireProfileButtons();
 }
@@ -227,7 +215,7 @@ document.querySelectorAll('[data-view]').forEach((button) => {
 });
 
 document.querySelector('#demo-login').addEventListener('click', async () => {
-  const session = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' }) });
+  const session = await api(routes.login(), { method: 'POST', body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' }) });
   state.token = session.token;
   localStorage.setItem('klient-token', state.token);
   authStatus.textContent = JSON.stringify(session.user, null, 2);
@@ -239,7 +227,7 @@ document.querySelector('#register-form').addEventListener('submit', async (event
   event.preventDefault();
   const form = new FormData(event.target);
   const payload = Object.fromEntries(form.entries());
-  const session = await api('/api/register', { method: 'POST', body: JSON.stringify(payload) });
+  const session = await api(routes.register(), { method: 'POST', body: JSON.stringify(payload) });
   state.token = session.token;
   localStorage.setItem('klient-token', state.token);
   authStatus.textContent = JSON.stringify(session.user, null, 2);
@@ -250,7 +238,7 @@ document.querySelector('#register-form').addEventListener('submit', async (event
 document.querySelector('#login-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  const session = await api('/api/login', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+  const session = await api(routes.login(), { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
   state.token = session.token;
   localStorage.setItem('klient-token', state.token);
   authStatus.textContent = JSON.stringify(session.user, null, 2);
@@ -262,7 +250,7 @@ document.querySelector('#profile-form').addEventListener('submit', async (event)
   event.preventDefault();
   const form = new FormData(event.target);
   const source = form.get('cityOrLocation') ? { cityOrLocation: form.get('cityOrLocation'), venue: form.get('venue'), occurredOn: form.get('occurredOn') } : null;
-  await api('/api/profiles', { method: 'POST', body: JSON.stringify({ kind: form.get('kind'), firstName: form.get('firstName'), lastName: form.get('lastName'), email: form.get('email'), phone: form.get('phone'), stage: form.get('stage'), source }) });
+  await api(routes.profiles(), { method: 'POST', body: JSON.stringify({ kind: form.get('kind'), firstName: form.get('firstName'), lastName: form.get('lastName'), email: form.get('email'), phone: form.get('phone'), stage: form.get('stage'), source }) });
   event.target.reset();
   await refreshPrimaryClientOptions();
   await renderCurrentView();
@@ -271,7 +259,7 @@ document.querySelector('#profile-form').addEventListener('submit', async (event)
 document.querySelector('#household-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  await api('/api/households', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+  await api(routes.households(), { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
   event.target.reset();
   await renderCurrentView();
 });
@@ -279,7 +267,7 @@ document.querySelector('#household-form').addEventListener('submit', async (even
 document.querySelector('#form-template-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  await api('/api/forms/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), sections: [] }) });
+  await api(routes.formTemplates(), { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), sections: [] }) });
   event.target.reset();
   state.view = 'forms';
   await renderCurrentView();
@@ -288,7 +276,7 @@ document.querySelector('#form-template-form').addEventListener('submit', async (
 document.querySelector('#doc-template-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), blueprint: { sections: [] }, mappings: [] }) });
+  await api(routes.documentTemplates(), { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), blueprint: { sections: [] }, mappings: [] }) });
   event.target.reset();
   state.view = 'templates';
   await renderCurrentView();
@@ -301,7 +289,7 @@ renderCurrentView();
 document.querySelector('#invite-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  const invite = await api('/api/invites', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+  const invite = await api(routes.invites(), { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
   alert(`Invite token: ${invite.token}`);
   event.target.reset();
 });
@@ -309,6 +297,6 @@ document.querySelector('#invite-form').addEventListener('submit', async (event) 
 document.querySelector('#portal-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  const link = await api('/api/portal-links', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+  const link = await api(routes.portalLinks(), { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
   alert(`Portal token: ${link.token}`);
 });
