@@ -1,4 +1,4 @@
-name: smoke
+name: smoke-and-integration
 
 on:
   push:
@@ -25,3 +25,4 @@ jobs:
       - run: node scripts/api-contract-test.mjs
       - run: node scripts/smoke-test.mjs
       - run: git diff --check
+      - run: npm run test:all

@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 
@@ -155,6 +155,64 @@ export function readQuerySummary() {
     households: db.prepare('SELECT COUNT(*) AS count FROM households').get().count,
     templates: db.prepare('SELECT COUNT(*) AS count FROM document_templates').get().count,
     exports: db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get().count
+  };
+}
+
+export function readExportWorkerStatus() {
+  const statuses = db.prepare(`
+    SELECT status, COUNT(*) AS count
+    FROM export_jobs
+    GROUP BY status
+  `).all();
+  const byStatus = Object.fromEntries(statuses.map((row) => [row.status, row.count]));
+  const latest = db.prepare(`
+    SELECT payload
+    FROM export_jobs
+    ORDER BY json_extract(payload, '$.updatedAt') DESC
+    LIMIT 1
+  `).get();
+  return {
+    queued: byStatus.queued || 0,
+    processing: byStatus.processing || 0,
+    completed: byStatus.completed || 0,
+    failed: byStatus.failed || 0,
+    total: Object.values(byStatus).reduce((sum, count) => sum + count, 0),
+    latestJob: latest?.payload ? JSON.parse(latest.payload) : null
+  };
+}
+
+export function readStorageHealth() {
+  const now = Date.now();
+  const info = {
+    dbPath: DB_PATH,
+    exists: existsSync(DB_PATH),
+    sizeBytes: 0,
+    quickCheck: 'unknown',
+    connected: false,
+    latencyMs: 0
+  };
+  if (info.exists) {
+    info.sizeBytes = statSync(DB_PATH).size;
+  }
+  db.prepare('SELECT 1').get();
+  info.connected = true;
+  const quickCheck = db.prepare('PRAGMA quick_check').get();
+  info.quickCheck = quickCheck?.quick_check || 'unknown';
+  info.latencyMs = Date.now() - now;
+  return info;
+}
+
+export function readAuditEventSummary() {
+  const row = db.prepare('SELECT COUNT(*) AS total FROM audit_events').get();
+  const last = db.prepare(`
+    SELECT occurred_at AS occurredAt, action
+    FROM audit_events
+    ORDER BY occurred_at DESC
+    LIMIT 1
+  `).get();
+  return {
+    total: row?.total || 0,
+    latest: last || null
   };
 }
 

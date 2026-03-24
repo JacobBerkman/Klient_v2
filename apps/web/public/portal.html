@@ -26,6 +26,43 @@
         </article>
       </section>
 
+      <section class="grid two">
+        <article class="card">
+          <h2>Form Completion Visibility</h2>
+          <div id="portal-completion" class="stack gap-sm"></div>
+        </article>
+
+        <article class="card">
+          <h2>Document Upload Visibility</h2>
+          <div id="portal-uploads" class="stack gap-sm"></div>
+        </article>
+      </section>
+
+      <section class="card">
+        <h2>Upload a Document</h2>
+        <p class="muted">Track what has already been uploaded and share missing files securely.</p>
+        <form id="portal-upload-form" class="grid two">
+          <label>
+            <span>Document Name</span>
+            <input name="name" placeholder="e.g. Recent tax return" required />
+          </label>
+          <label>
+            <span>Category</span>
+            <select name="category">
+              <option value="general">General</option>
+              <option value="identification">Identification</option>
+              <option value="tax">Tax</option>
+              <option value="investment">Investment</option>
+            </select>
+          </label>
+          <label style="grid-column: 1 / -1;">
+            <span>Notes</span>
+            <textarea name="notes" rows="3" placeholder="Optional context for your advisor"></textarea>
+          </label>
+          <button type="submit">Log Upload</button>
+        </form>
+      </section>
+
       <section class="card">
         <div class="section-header">
           <div>
@@ -57,23 +94,31 @@
     </main>
 
     <script type="module">
+      import { createJsonApiClient, routes } from '/api-contract.js';
+
       const token = new URLSearchParams(window.location.search).get('token');
       const title = document.querySelector('#portal-title');
       const subtitle = document.querySelector('#portal-subtitle');
       const profileTarget = document.querySelector('#portal-profile');
       const submissionsTarget = document.querySelector('#portal-submissions');
+      const completionTarget = document.querySelector('#portal-completion');
+      const uploadsTarget = document.querySelector('#portal-uploads');
       const statusBadge = document.querySelector('#portal-status');
       const templatePicker = document.querySelector('#template-picker');
       const templateDescription = document.querySelector('#template-description');
       const fieldsTarget = document.querySelector('#portal-fields');
       const form = document.querySelector('#portal-form');
+      const uploadForm = document.querySelector('#portal-upload-form');
       const draftButton = document.querySelector('[data-save-draft]');
+
+      const api = createJsonApiClient();
 
       const portalState = {
         token,
         data: null,
         selectedTemplateId: '',
-        sectionRepeats: new Map()
+        sectionRepeats: new Map(),
+        csrfToken: ''
       };
 
       const fieldTypeToInput = {
@@ -137,6 +182,36 @@
         `).join('');
       }
 
+      function renderCompletion(data) {
+        const templates = data?.availableTemplates || [];
+        if (!templates.length) {
+          renderEmptyState(completionTarget, 'No form templates have been shared yet.');
+          return;
+        }
+        const byTemplate = new Map((data.submissions || []).map((submission) => [submission.templateId, submission.status]));
+        completionTarget.innerHTML = templates.map((template) => {
+          const status = byTemplate.get(template.id) || 'not_started';
+          return `<div class="item compact row between"><strong>${escapeHtml(template.name)}</strong><span class="badge ${status === 'submitted' ? '' : 'subtle'}">${escapeHtml(status)}</span></div>`;
+        }).join('');
+      }
+
+      function renderUploads(uploads) {
+        if (!uploads?.length) {
+          renderEmptyState(uploadsTarget, 'No uploaded documents yet.');
+          return;
+        }
+        uploadsTarget.innerHTML = uploads.map((upload) => `
+          <article class="item compact">
+            <div class="row between">
+              <strong>${escapeHtml(upload.name)}</strong>
+              <span class="badge">${escapeHtml(upload.status || 'uploaded')}</span>
+            </div>
+            <div class="muted">${escapeHtml(upload.category || 'general')} • by ${escapeHtml(upload.uploadedBy || 'client')}</div>
+            <div class="muted">Updated ${new Date(upload.updatedAt || upload.createdAt).toLocaleString()}</div>
+          </article>
+        `).join('');
+      }
+
       function fieldName(sectionIndex, fieldKey, rowIndex = null) {
         return rowIndex === null ? `section-${sectionIndex}::${fieldKey}` : `section-${sectionIndex}::${rowIndex}::${fieldKey}`;
       }
@@ -144,12 +219,8 @@
       function renderField(sectionIndex, field, rowIndex = null) {
         const baseName = fieldName(sectionIndex, field.key, rowIndex);
         const label = escapeHtml(field.label || field.key);
-        if (field.type === 'textarea') {
-          return `<label><span>${label}</span><textarea name="${baseName}" rows="4" placeholder="${label}"></textarea></label>`;
-        }
-        if (field.type === 'select') {
-          return `<label><span>${label}</span><select name="${baseName}"><option value="">Select…</option>${(field.options || []).map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join('')}</select></label>`;
-        }
+        if (field.type === 'textarea') return `<label><span>${label}</span><textarea name="${baseName}" rows="4" placeholder="${label}"></textarea></label>`;
+        if (field.type === 'select') return `<label><span>${label}</span><select name="${baseName}"><option value="">Select…</option>${(field.options || []).map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join('')}</select></label>`;
         const inputType = fieldTypeToInput[field.type] || 'text';
         return `<label><span>${label}</span><input type="${inputType}" name="${baseName}" placeholder="${label}" /></label>`;
       }
@@ -238,21 +309,48 @@
         return payload;
       }
 
+      async function ensureCsrfToken() {
+        if (portalState.csrfToken) return portalState.csrfToken;
+        const response = await fetch('/api/csrf');
+        const data = await response.json();
+        if (!response.ok || !data.csrfToken) {
+          throw new Error(data?.error?.message || data?.message || 'Unable to initialize CSRF protection.');
+        }
+        portalState.csrfToken = data.csrfToken;
+        return portalState.csrfToken;
+      }
+
+      async function apiRequest(path, options = {}) {
+        const method = (options.method || 'GET').toUpperCase();
+        const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method);
+        const headers = { ...(options.headers || {}) };
+        if (mutating) {
+          headers['X-CSRF-Token'] = await ensureCsrfToken();
+          if (!headers['Content-Type']) headers['Content-Type'] = 'application/json';
+        }
+        const response = await fetch(path, { ...options, headers });
+        const data = await response.json();
+        if (!response.ok) throw new Error(data?.error?.message || data?.message || 'Request failed.');
+        return data;
+      }
+
       async function loadPortal() {
         if (!token) {
           title.textContent = 'Client Portal';
           subtitle.textContent = 'Open this page with a valid token to review and complete forms.';
           renderEmptyState(profileTarget, 'Missing portal token.');
           renderEmptyState(submissionsTarget, 'No submission history is available without a portal token.');
+          renderEmptyState(completionTarget, 'A portal token is required to load completion visibility.');
+          renderEmptyState(uploadsTarget, 'A portal token is required to load upload visibility.');
           renderEmptyState(fieldsTarget, 'A portal token is required to load forms.');
           templatePicker.innerHTML = '<option value="">Missing token</option>';
           draftButton.disabled = true;
+          uploadForm.querySelector('button[type="submit"]').disabled = true;
           return;
         }
 
-        const response = await fetch(`/api/portal/${token}`);
-        const data = await response.json();
-        if (!response.ok) throw new Error(data.message || 'Unable to load portal data.');
+        const data = await api(routes.portal(token));
+        const data = await apiRequest(`/api/portal/${token}`);
 
         portalState.data = data;
         portalState.selectedTemplateId = data.availableTemplates?.[0]?.id || '';
@@ -264,6 +362,8 @@
 
         renderProfile(data.profile, data.firm);
         renderSubmissions(data.submissions || []);
+        renderCompletion(data);
+        renderUploads(data.uploads || []);
         renderTemplateFields();
       }
 
@@ -275,13 +375,11 @@
 
       async function saveSubmission(status) {
         const payload = buildPayloadFromForm();
-        const response = await fetch(`/api/portal/${token}/submissions`, {
+        await api(routes.portalSubmissions(token), {
+        await apiRequest(`/api/portal/${token}/submissions`, {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ templateId: portalState.selectedTemplateId, status, data: payload })
         });
-        const result = await response.json();
-        if (!response.ok) throw new Error(result.message || 'Unable to save form.');
         await loadPortal();
         form.reset();
         statusBadge.textContent = status === 'draft' ? 'Draft saved' : 'Form submitted';
@@ -307,10 +405,33 @@
         }
       });
 
+      uploadForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        const payload = Object.fromEntries(new FormData(uploadForm).entries());
+        try {
+          const response = await fetch(`/api/portal/${token}/uploads`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+          });
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.message || 'Unable to log upload.');
+          uploadForm.reset();
+          await loadPortal();
+          statusBadge.textContent = 'Document upload logged';
+          statusBadge.className = 'badge';
+        } catch (error) {
+          statusBadge.textContent = error.message;
+          statusBadge.className = 'badge subtle';
+        }
+      });
+
       loadPortal().catch((error) => {
         subtitle.textContent = error.message || 'Unable to load portal data.';
         renderEmptyState(profileTarget, 'Unable to load portal data.');
         renderEmptyState(submissionsTarget, 'Unable to load submission history.');
+        renderEmptyState(completionTarget, 'Unable to load completion visibility.');
+        renderEmptyState(uploadsTarget, 'Unable to load upload visibility.');
         renderEmptyState(fieldsTarget, 'Unable to load form fields.');
       });
     </script>
