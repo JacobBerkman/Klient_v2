@@ -12,14 +12,24 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - run: node --check apps/api/src/runtime.mjs
-      - run: node --check apps/api/src/storage.mjs
-      - run: node --check apps/api/src/server.mjs
-      - run: node --check apps/api/src/store.mjs
-      - run: node --check apps/web/public/app.js
-      - run: node --check scripts/backup-db.mjs
-      - run: node --check scripts/export-worker.mjs
-      - run: node --check scripts/restore-db.mjs
-      - run: node --check scripts/smoke-test.mjs
+      - run: npm run test:syntax
       - run: node scripts/smoke-test.mjs
       - run: git diff --check
+
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker build -t kinetic-klient:test .
+      - run: docker run -d --name kinetic-klient -e NODE_ENV=production -e APP_SECRET=ci-smoke-secret -p 3000:3000 kinetic-klient:test
+      - run: |
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:3000/health >/dev/null; then
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs kinetic-klient
+          exit 1
+      - if: always()
+        run: docker rm -f kinetic-klient

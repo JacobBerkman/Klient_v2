@@ -1,92 +1,78 @@
 # Kinetic Klient Rebuild
 
-This repository contains a **single-command runnable advisory onboarding app** with persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and smoke-test coverage for the main user flows.
+Kinetic Klient is a single-process advisory onboarding product that ships as one deployable Node 22 service with:
+- a built-in web UI served from `apps/web/public`
+- a JSON API for advisor and portal workflows
+- persistent SQLite storage in `data/app.db`
+- structured logs, health/readiness endpoints, and backup/restore scripts
+- Docker and CI artifacts aligned to the same runtime entrypoint: `apps/api/src/server.mjs`
 
-## What is included
+## Product surface
+The deployable product includes these major workflows:
 - admin firm bootstrap and sign-in
-- persistent SQLite-backed local data storage in `data/app.db`
-- dashboard with stats and recent activity
-- prospects and clients management
-- persisted prospect pipeline board
-- households and member linking
-- dynamic form template and submission flows
-- guided client portal for draft and submitted onboarding responses
-- document template and export job foundations
-- audit trail and analytics views
-- invite flow and password reset endpoints
-- internal web UI served by the backend
-- Docker + compose deployment artifacts
-- backup, restore, and export worker scripts
+- dashboard, prospects, clients, and pipeline board
+- households and spouse/member linking
+- form template creation plus advisor/client submission flows
+- client portal draft/save/submit flows
+- document template management and export job processing
+- audit trail, analytics, invites, and password reset flows
 
-## Environment
-Copy `.env.example` to `.env` for deployment-oriented runs.
-In production, `APP_SECRET` must be set to a long random value.
+## Runtime requirements
+- Node.js 22+
+- no external database; SQLite is embedded
+- set `APP_SECRET` before any production deployment
 
-## Run locally
+## Local run
 ```bash
+cp .env.example .env
+export $(grep -v '^#' .env | xargs)
 node apps/api/src/server.mjs
 ```
 
-Then open:
-- `http://localhost:3000`
+Open `http://localhost:3000`.
 
 ## Demo credentials
 - `admin@demo.test`
 - `ChangeMe123!`
 
-## Testing
-Run the smoke test:
-
+## Operations
+### Health
 ```bash
-node scripts/smoke-test.mjs
+curl http://localhost:3000/health
+curl http://localhost:3000/ready
 ```
 
-Run the broader local validation bundle:
-
+### Backup
 ```bash
+node scripts/backup-db.mjs
+```
+
+### Restore
+```bash
+node scripts/restore-db.mjs data/backup-<timestamp>.db
+```
+
+### Export worker
+```bash
+node scripts/export-worker.mjs
+```
+
+## Testing
+```bash
+npm run test:syntax
+npm run test:smoke
 npm run test:all
 ```
-
-## Data location
-All persisted demo/runtime data is stored in:
-- `data/app.db`
-
-Delete that file to reseed the app.
 
 ## Docker deployment
 ```bash
 docker compose --env-file .env up --build -d
 ```
 
-See `DEPLOYMENT.md` for deployment details, environment variables, health checks, and restore procedures.
+## Production notes
+- The service rejects startup in production if `APP_SECRET` is left at the default value.
+- Static assets are served from an allowlisted path rooted at `apps/web/public`.
+- API and static responses emit baseline hardening headers, and request/body timeouts are configurable through environment variables.
+- CI validates syntax, smoke tests the end-to-end product, and performs a container health check.
 
-## Health endpoints
-```bash
-curl http://localhost:3000/health
-curl http://localhost:3000/ready
-```
-
-## Portal view
-Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
-
-## Backup
-```bash
-node scripts/backup-db.mjs
-```
-
-This writes a timestamped SQLite backup into `data/`.
-
-## Restore
-```bash
-node scripts/restore-db.mjs data/backup-<timestamp>.db
-```
-
-## Export worker
-```bash
-node scripts/export-worker.mjs
-```
-
-This processes queued export jobs in the SQLite-backed runtime.
-
-## CI
-A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.
+See `DEPLOYMENT.md` for the full deployment contract.

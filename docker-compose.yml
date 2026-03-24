@@ -9,8 +9,14 @@ services:
       PORT: 3000
       HOST: 0.0.0.0
       NODE_ENV: production
-      APP_SECRET: ${APP_SECRET:-change-this-before-production}
+      APP_SECRET: ${APP_SECRET:?APP_SECRET must be set}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      MAX_BODY_BYTES: ${MAX_BODY_BYTES:-1000000}
+      REQUEST_TIMEOUT_MS: ${REQUEST_TIMEOUT_MS:-15000}
+      HEADERS_TIMEOUT_MS: ${HEADERS_TIMEOUT_MS:-20000}
+      KEEP_ALIVE_TIMEOUT_MS: ${KEEP_ALIVE_TIMEOUT_MS:-5000}
+      SERVICE_NAME: ${SERVICE_NAME:-kinetic-klient-api}
+      INSTANCE_ID: ${INSTANCE_ID:-docker-local}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
       interval: 30s

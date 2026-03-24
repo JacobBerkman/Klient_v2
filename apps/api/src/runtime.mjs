@@ -27,7 +27,11 @@ export const runtime = {
   appSecret,
   logLevel: process.env.LOG_LEVEL || (nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',
-  instanceId: process.env.INSTANCE_ID || hostname()
+  instanceId: process.env.INSTANCE_ID || hostname(),
+  maxBodyBytes: readNumber('MAX_BODY_BYTES', 1_000_000),
+  requestTimeoutMs: readNumber('REQUEST_TIMEOUT_MS', 15_000),
+  headersTimeoutMs: readNumber('HEADERS_TIMEOUT_MS', 20_000),
+  keepAliveTimeoutMs: readNumber('KEEP_ALIVE_TIMEOUT_MS', 5_000)
 };
 
 function shouldLog(level) {

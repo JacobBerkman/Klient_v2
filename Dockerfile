@@ -2,13 +2,25 @@ FROM node:22-alpine
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=3000
+    PORT=3000 \
+    LOG_LEVEL=info \
+    MAX_BODY_BYTES=1000000 \
+    REQUEST_TIMEOUT_MS=15000 \
+    HEADERS_TIMEOUT_MS=20000 \
+    KEEP_ALIVE_TIMEOUT_MS=5000
 
 WORKDIR /app
 
-COPY . .
+COPY .dockerignore ./
+COPY package.json README.md DEPLOYMENT.md ./
+COPY apps ./apps
+COPY scripts ./scripts
+COPY docs ./docs
+COPY data/.gitkeep ./data/.gitkeep
+COPY .env.example ./
 
-RUN addgroup -S klient && adduser -S klient -G klient \
+RUN addgroup -S klient \
+  && adduser -S klient -G klient \
   && mkdir -p /app/data \
   && chown -R klient:klient /app
 
