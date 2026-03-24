@@ -22,10 +22,17 @@ const store = createStore();
 const reads = new SqliteReadRepository();
 const bootedAt = new Date().toISOString();
 const startupDiagnostics = validateRuntimeConfig();
-const csrfSessions = new Map();
-const CSRF_SESSION_COOKIE = 'klient-csrf-session';
+const CSRF_SESSION_COOKIE = '__Host-klient-csrf';
 const CSRF_HEADER = 'x-csrf-token';
 const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const CSRF_BOOTSTRAP_PATH = '/api/csrf';
+const CSRF_EXEMPT_PATHS = new Set([
+  '/api/login',
+  '/api/register',
+  '/api/invites/accept',
+  '/api/password-resets',
+  '/api/password-resets/confirm'
+]);
 
 function json(res, status, body, headers = {}) {
   res.writeHead(status, { ...baseHeaders(), 'Content-Type': 'application/json', ...headers });
@@ -51,25 +58,31 @@ function parseCookies(req) {
   );
 }
 
-function expectedOrigin(req) {
-  const protocol = req.headers['x-forwarded-proto'] || 'http';
-  return `${protocol}://${req.headers.host || `${runtime.host}:${runtime.port}`}`;
+function cookieConfig(req) {
+  const xfProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  const secure = runtime.isProduction || xfProto === 'https';
+  return {
+    secure,
+    sameSite: secure ? 'Strict' : 'Lax',
+    httpOnly: true,
+    path: '/api',
+    maxAge: 60 * 15
+  };
 }
 
-function getCsrfTokenRecord(req) {
-  const cookies = parseCookies(req);
-  const sessionId = cookies[CSRF_SESSION_COOKIE];
-  if (!sessionId) return null;
-  const token = csrfSessions.get(sessionId);
-  if (!token) return null;
-  return { sessionId, token };
+function serializeCookie(name, value, options = {}) {
+  const parts = [`${name}=${encodeURIComponent(value)}`];
+  if (options.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
+  if (options.path) parts.push(`Path=${options.path}`);
+  if (options.sameSite) parts.push(`SameSite=${options.sameSite}`);
+  if (options.httpOnly) parts.push('HttpOnly');
+  if (options.secure) parts.push('Secure');
+  return parts.join('; ');
 }
 
-function createCsrfSession() {
-  const sessionId = randomUUID();
-  const token = randomUUID();
-  csrfSessions.set(sessionId, token);
-  return { sessionId, token };
+function clearCsrfCookie(req) {
+  const options = cookieConfig(req);
+  return serializeCookie(CSRF_SESSION_COOKIE, '', { ...options, maxAge: 0 });
 }
 
 function requiresCsrfProtection(method = 'GET') {
@@ -90,27 +103,107 @@ function getCsrfErrorResponse(reason, requestId) {
   };
 }
 
-function validateCsrf(req, requestId) {
-  const suppliedOrigin = req.headers.origin;
-  const suppliedReferer = req.headers.referer;
-  const origin = expectedOrigin(req);
+function getExpectedOrigins(req) {
+  const host = String(req.headers.host || `${runtime.host}:${runtime.port}`).split(',')[0].trim();
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  const protocol = forwardedProto || (runtime.isProduction ? 'https' : 'http');
+  const origins = new Set();
+  if (host) origins.add(`${protocol}://${host}`);
+  if (forwardedHost) origins.add(`${protocol}://${forwardedHost}`);
+  return origins;
+}
 
-  if (suppliedOrigin && suppliedOrigin !== origin) {
+function isCsrfExempt(pathname) {
+  return pathname === CSRF_BOOTSTRAP_PATH || CSRF_EXEMPT_PATHS.has(pathname);
+}
+
+function validateOriginAndReferer(req, requestId) {
+  const suppliedOrigin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+  const suppliedReferer = typeof req.headers.referer === 'string' ? req.headers.referer.trim() : '';
+  const secFetchSite = typeof req.headers['sec-fetch-site'] === 'string' ? req.headers['sec-fetch-site'].toLowerCase() : '';
+  const expectedOrigins = getExpectedOrigins(req);
+  const matchesOrigin = suppliedOrigin && expectedOrigins.has(suppliedOrigin);
+  const matchesReferer = suppliedReferer && [...expectedOrigins].some((origin) => suppliedReferer.startsWith(`${origin}/`) || suppliedReferer === origin);
+
+  if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
+    return getCsrfErrorResponse('Cross-site browser context rejected.', requestId);
+  }
+  if (!suppliedOrigin && !suppliedReferer) {
+    return getCsrfErrorResponse('Missing Origin or Referer.', requestId);
+  }
+  if (suppliedOrigin && !matchesOrigin) {
     return getCsrfErrorResponse('Origin mismatch.', requestId);
   }
-  if (suppliedReferer && !suppliedReferer.startsWith(`${origin}/`)) {
+  if (suppliedReferer && !matchesReferer) {
     return getCsrfErrorResponse('Referrer mismatch.', requestId);
   }
-
-  const record = getCsrfTokenRecord(req);
-  if (!record) {
-    return getCsrfErrorResponse('Missing CSRF session.', requestId);
-  }
-  const headerToken = req.headers[CSRF_HEADER];
-  if (!headerToken || headerToken !== record.token) {
-    return getCsrfErrorResponse('Invalid or missing CSRF token.', requestId);
-  }
   return null;
+}
+
+function validateCsrf(req, requestId) {
+  const originError = validateOriginAndReferer(req, requestId);
+  if (originError) return originError;
+  const sessionToken = getToken(req);
+  if (!sessionToken) {
+    return getCsrfErrorResponse('Missing or expired authenticated session.', requestId);
+  }
+  const cookies = parseCookies(req);
+  const cookieTokenId = cookies[CSRF_SESSION_COOKIE];
+  const headerToken = req.headers[CSRF_HEADER];
+  const result = store.validateCsrfToken(sessionToken, cookieTokenId, headerToken);
+  if (!result.ok) return getCsrfErrorResponse(result.reason, requestId);
+  return { nextToken: result.nextToken };
+}
+
+function csrfRefreshHeaders(req, nextToken) {
+  const options = cookieConfig(req);
+  return {
+    'Set-Cookie': serializeCookie(CSRF_SESSION_COOKIE, nextToken.id, options),
+    'X-CSRF-Token': nextToken.token
+  };
+}
+
+function applyResponseHeaders(res, headers = {}) {
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined || value === null) continue;
+    res.setHeader(name, value);
+  }
+}
+
+function withCommonHeaders(res, requestId, headers = {}) {
+  applyResponseHeaders(res, { ...baseHeaders(), 'X-Request-Id': requestId, ...headers });
+}
+
+function jsonWithHeaders(res, status, body, requestId, headers = {}) {
+  withCommonHeaders(res, requestId, { 'Content-Type': 'application/json', ...headers });
+  res.statusCode = status;
+  res.end(JSON.stringify(body, null, 2));
+}
+
+function sendCsrfBootstrap(res, req, requestId, sessionToken) {
+  const session = store.getSession(sessionToken);
+  if (!session) {
+    return jsonWithHeaders(res, 401, { message: 'Authentication required.' }, requestId, { 'Set-Cookie': clearCsrfCookie(req) });
+  }
+  const tokenRecord = store.issueCsrfToken(session.token);
+  const headers = csrfRefreshHeaders(req, tokenRecord);
+  return jsonWithHeaders(res, 200, { csrfToken: tokenRecord.token, expiresAt: tokenRecord.expiresAt }, requestId, headers);
+}
+
+function serveJson(res, statusCode, payload, requestId, extraHeaders = {}) {
+  return jsonWithHeaders(res, statusCode, payload, requestId, extraHeaders);
+}
+
+function csrfHeadersForRequest(req, pathname, method, requestId) {
+  if (!pathname.startsWith('/api/') || !requiresCsrfProtection(method) || isCsrfExempt(pathname)) {
+    return { error: null, headers: {} };
+  }
+  const validation = validateCsrf(req, requestId);
+  if (validation?.statusCode) {
+    return { error: validation, headers: {} };
+  }
+  return { error: null, headers: csrfRefreshHeaders(req, validation.nextToken) };
 }
 
 function parseBody(req) {
@@ -253,24 +346,19 @@ const server = createServer(async (req, res) => {
       }, { 'X-Request-Id': requestId });
     }
     if (pathname === '/api/csrf' && req.method === 'GET') {
-      const session = createCsrfSession();
-      finalizeLog(200);
-      return json(
-        res,
-        200,
-        { csrfToken: session.token },
-        {
-          'X-Request-Id': requestId,
-          'Set-Cookie': `${CSRF_SESSION_COOKIE}=${session.sessionId}; HttpOnly; Path=/; SameSite=Strict`
-        }
-      );
+      const token = getToken(req);
+      const session = token ? store.getSession(token) : null;
+      const response = sendCsrfBootstrap(res, req, requestId, token);
+      finalizeLog(session ? 200 : 401);
+      return response;
     }
-    if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method)) {
-      const csrfError = validateCsrf(req, requestId);
-      if (csrfError) {
-        finalizeLog(csrfError.statusCode, { reason: csrfError.body.error.details.reason });
-        return json(res, csrfError.statusCode, csrfError.body, csrfError.headers);
-      }
+    const csrfValidation = csrfHeadersForRequest(req, pathname, req.method, requestId);
+    if (csrfValidation.error) {
+      finalizeLog(csrfValidation.error.statusCode, { reason: csrfValidation.error.body.error.details.reason });
+      return serveJson(res, csrfValidation.error.statusCode, csrfValidation.error.body, requestId, csrfValidation.error.headers);
+    }
+    if (Object.keys(csrfValidation.headers).length) {
+      applyResponseHeaders(res, csrfValidation.headers);
     }
     if (pathname === '/api/register' && req.method === 'POST') { const result = store.auth.register(await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/login' && req.method === 'POST') { const result = store.auth.login(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
