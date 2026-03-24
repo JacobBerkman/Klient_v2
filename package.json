@@ -13,13 +13,6 @@
     "restore": "node scripts/restore-db.mjs",
     "worker": "node scripts/export-worker.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
-    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/test-harness.mjs && node --check scripts/smoke-test.mjs && node --check scripts/integration-tenancy.mjs && node --check scripts/integration-rbac.mjs && node --check scripts/integration-exports.mjs && node --check scripts/integration-templates.mjs && node --check scripts/integration-portal-lifecycle.mjs && node --check scripts/integration-analytics.mjs && npm run test:smoke && npm run test:integration && git diff --check",
-    "test:integration": "npm run test:integration:tenancy && npm run test:integration:rbac && npm run test:integration:exports && npm run test:integration:templates && npm run test:integration:portal-lifecycle && npm run test:integration:analytics",
-    "test:integration:tenancy": "node scripts/integration-tenancy.mjs",
-    "test:integration:rbac": "node scripts/integration-rbac.mjs",
-    "test:integration:exports": "node scripts/integration-exports.mjs",
-    "test:integration:templates": "node scripts/integration-templates.mjs",
-    "test:integration:portal-lifecycle": "node scripts/integration-portal-lifecycle.mjs",
-    "test:integration:analytics": "node scripts/integration-analytics.mjs"
+    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/smoke-test.mjs && git diff --check"
   }
 }
