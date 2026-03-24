@@ -44,11 +44,23 @@ function normalize(entry, kind) {
 }
 
 function migrate(state) {
+  const existingIds = new Set((state.templateAggregates || []).map((entry) => entry.id));
+  const legacyIds = new Set([...(state.formTemplates || []).map((entry) => entry.id), ...(state.documentTemplates || []).map((entry) => entry.id)]);
+  if (legacyIds.size === 0 && existingIds.size === 0) {
+    return {
+      migrated: false,
+      reason: 'no legacy templates to migrate',
+      templateAggregateCount: 0,
+      idempotent: true
+    };
+  }
   if (Array.isArray(state.templateAggregates) && state.templateAggregates.length > 0) {
+    const isSuperset = [...legacyIds].every((id) => existingIds.has(id));
     return {
       migrated: false,
       reason: 'templateAggregates already present',
-      templateAggregateCount: state.templateAggregates.length
+      templateAggregateCount: state.templateAggregates.length,
+      idempotent: isSuperset
     };
   }
   const formTemplates = (state.formTemplates || []).map((template) => normalize({
@@ -72,9 +84,21 @@ function migrate(state) {
   };
 }
 
+function verifyRollbackState(beforeState, afterState) {
+  const beforeLegacy = ((beforeState.formTemplates || []).length + (beforeState.documentTemplates || []).length);
+  const afterLegacy = ((afterState.formTemplates || []).length + (afterState.documentTemplates || []).length);
+  return {
+    rollbackCompatible: afterLegacy >= beforeLegacy,
+    beforeLegacyCount: beforeLegacy,
+    afterLegacyCount: afterLegacy
+  };
+}
+
 const backup = backupState();
-const state = loadState(() => ({}));
+const originalState = loadState(() => ({}));
+const state = JSON.parse(JSON.stringify(originalState));
 const result = migrate(state);
 if (result.migrated) saveState(state);
 
-console.log(JSON.stringify({ backup, ...result }, null, 2));
+const rollbackVerification = verifyRollbackState(originalState, state);
+console.log(JSON.stringify({ backup, ...result, rollbackVerification }, null, 2));
