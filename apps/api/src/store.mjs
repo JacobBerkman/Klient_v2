@@ -10,7 +10,7 @@ import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { createAuthService } from './auth/service.mjs';
 import { createAuthService } from './auth/service.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
-import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
+import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState, upsertCsrfToken, readCsrfToken, deleteCsrfToken, deleteCsrfTokensBySession, deleteExpiredCsrfTokens } from './storage.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { createAuthService } from './auth/service.mjs';
 import { createAuthService } from './auth/service.mjs';
@@ -98,6 +98,7 @@ const OPERATION_TO_POLICY = {
   'portal:write': ['portal', 'write'],
   'client:write': ['client', 'write']
 const CSRF_TOKEN_TTL_MS = 1000 * 60 * 15;
+const CSRF_ROTATION_INTERVAL_MS = 1000 * 60 * 5;
 const PERMISSIONS = {
   admin: ['*'],
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
@@ -709,12 +710,15 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   }
 
   function pruneExpiredCsrfTokens(persistChanges = true) {
-    const cutoff = Date.now();
+    const cutoffIso = new Date().toISOString();
+    deleteExpiredCsrfTokens(cutoffIso);
     const activeSessionTokens = new Set(state.sessions.map((entry) => entry.token));
-    const nextTokens = state.csrfTokens.filter((entry) => {
-      const expiresAt = new Date(entry.expiresAt).getTime();
-      return activeSessionTokens.has(entry.sessionToken) && Number.isFinite(expiresAt) && expiresAt > cutoff;
-    });
+    for (const token of state.csrfTokens.map((entry) => entry.sessionToken)) {
+      if (!activeSessionTokens.has(token)) {
+        deleteCsrfTokensBySession(token);
+      }
+    }
+    const nextTokens = state.csrfTokens.filter((entry) => activeSessionTokens.has(entry.sessionToken) && new Date(entry.expiresAt).getTime() > Date.now());
     if (nextTokens.length !== state.csrfTokens.length) {
       state.csrfTokens = nextTokens;
       if (persistChanges) persist();
@@ -723,9 +727,13 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
 
   function pruneExpiredSessions() {
     const cutoff = Date.now();
+    const expired = state.sessions.filter((entry) => new Date(entry.expiresAt).getTime() <= cutoff);
     const nextSessions = state.sessions.filter((entry) => new Date(entry.expiresAt).getTime() > cutoff);
     if (nextSessions.length !== state.sessions.length) {
       state.sessions = nextSessions;
+      for (const session of expired) {
+        deleteCsrfTokensBySession(session.token);
+      }
       pruneExpiredCsrfTokens(false);
       persist();
     }
@@ -969,10 +977,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       const record = {
         id: randomUUID(),
         sessionToken,
+        userId: session.userId,
         token: randomUUID(),
         issuedAt,
+        lastRotatedAt: issuedAt,
         expiresAt: new Date(Date.now() + CSRF_TOKEN_TTL_MS).toISOString()
       };
+      deleteCsrfTokensBySession(sessionToken);
+      upsertCsrfToken(record);
       state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== sessionToken);
       state.csrfTokens.push(record);
       persist();
@@ -984,25 +996,40 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       if (!session) {
         return { ok: false, reason: 'Missing or expired authenticated session.' };
       }
-      const record = state.csrfTokens.find((entry) => entry.sessionToken === sessionToken && entry.id === csrfTokenId);
+      const inMemory = state.csrfTokens.find((entry) => entry.sessionToken === sessionToken && entry.id === csrfTokenId);
+      const record = readCsrfToken(sessionToken, csrfTokenId) || inMemory;
       if (!record) {
         return { ok: false, reason: 'Missing CSRF session.' };
       }
+      if (record.userId && record.userId !== session.userId) {
+        deleteCsrfToken(record.id);
+        return { ok: false, reason: 'CSRF token/session mismatch.' };
+      }
       if (new Date(record.expiresAt).getTime() <= Date.now()) {
         state.csrfTokens = state.csrfTokens.filter((entry) => entry.id !== record.id);
+        deleteCsrfToken(record.id);
         persist();
         return { ok: false, reason: 'Stale CSRF token.' };
       }
       if (!csrfToken || record.token !== csrfToken) {
         return { ok: false, reason: 'Invalid or missing CSRF token.' };
       }
+      const issuedAtMs = new Date(record.lastRotatedAt || record.issuedAt).getTime();
+      const shouldRotate = !Number.isFinite(issuedAtMs) || (Date.now() - issuedAtMs >= CSRF_ROTATION_INTERVAL_MS) || true; // rotate on each successful mutating request
+      if (!shouldRotate) {
+        return { ok: true, nextToken: { ...record } };
+      }
       const nextToken = {
         id: randomUUID(),
         sessionToken,
+        userId: session.userId,
         token: randomUUID(),
         issuedAt: now(),
+        lastRotatedAt: now(),
         expiresAt: new Date(Date.now() + CSRF_TOKEN_TTL_MS).toISOString()
       };
+      deleteCsrfTokensBySession(sessionToken);
+      upsertCsrfToken(nextToken);
       state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== sessionToken);
       state.csrfTokens.push(nextToken);
       persist();
@@ -1775,6 +1802,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     logout(token) {
       state.sessions = state.sessions.filter((entry) => entry.token !== token);
       state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== token);
+      deleteCsrfTokensBySession(token);
       persist();
       return { ok: true };
     },

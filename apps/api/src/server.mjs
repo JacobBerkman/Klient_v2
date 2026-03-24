@@ -107,10 +107,18 @@ function getExpectedOrigins(req) {
   const host = String(req.headers.host || `${runtime.host}:${runtime.port}`).split(',')[0].trim();
   const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
   const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  const forwardedPort = String(req.headers['x-forwarded-port'] || '').split(',')[0].trim();
   const protocol = forwardedProto || (runtime.isProduction ? 'https' : 'http');
+  const normalizeHost = (value) => {
+    if (!value) return '';
+    if (value.includes(':') || !forwardedPort) return value;
+    return `${value}:${forwardedPort}`;
+  };
   const origins = new Set();
-  if (host) origins.add(`${protocol}://${host}`);
-  if (forwardedHost) origins.add(`${protocol}://${forwardedHost}`);
+  const directHost = normalizeHost(host);
+  const proxyHost = normalizeHost(forwardedHost);
+  if (directHost) origins.add(`${protocol}://${directHost}`);
+  if (proxyHost) origins.add(`${protocol}://${proxyHost}`);
   return origins;
 }
 
@@ -375,16 +383,18 @@ export function createHttpServer({ modules }) {
         }, { 'X-Request-Id': requestId });
       }
       if (pathname === '/api/csrf' && req.method === 'GET') {
-        const session = createCsrfSession();
-        finalizeLog(200);
-        return json(res, 200, { csrfToken: session.token }, { 'X-Request-Id': requestId, 'Set-Cookie': `${CSRF_SESSION_COOKIE}=${session.sessionId}; HttpOnly; Path=/; SameSite=Strict` });
+        const token = getToken(req);
+        const response = sendCsrfBootstrap(res, req, requestId, token);
+        finalizeLog(token ? 200 : 401);
+        return response;
       }
-      if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method)) {
-        const csrfError = validateCsrf(req, requestId);
-        if (csrfError) {
-          finalizeLog(csrfError.statusCode, { reason: csrfError.body.error.details.reason });
-          return json(res, csrfError.statusCode, csrfError.body, csrfError.headers);
-        }
+      const csrfValidation = csrfHeadersForRequest(req, pathname, req.method, requestId);
+      if (csrfValidation.error) {
+        finalizeLog(csrfValidation.error.statusCode, { reason: csrfValidation.error.body.error.details.reason });
+        return serveJson(res, csrfValidation.error.statusCode, csrfValidation.error.body, requestId, csrfValidation.error.headers);
+      }
+      if (Object.keys(csrfValidation.headers).length) {
+        applyResponseHeaders(res, csrfValidation.headers);
       }
       if (pathname === '/api/register' && req.method === 'POST') { const result = modules.auth.register(await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/login' && req.method === 'POST') { const result = modules.auth.login(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
@@ -394,7 +404,7 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/password-resets/confirm' && req.method === 'POST') { const result = modules.auth.resetPassword(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/users' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'analytics:read'); const result = modules.firmsUsers.listUsers(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/session' && req.method === 'GET') { const result = { user: requireUser() }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-      if (pathname === '/api/logout' && req.method === 'POST') { const result = modules.auth.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/logout' && req.method === 'POST') { const result = modules.auth.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId, 'Set-Cookie': clearCsrfCookie(req) }); }
       if (pathname === '/api/dashboard' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.profiles.getDashboard(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/profiles' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.profiles.listProfiles(user, { kind: url.searchParams.get('kind'), search: url.searchParams.get('search') || '' }); finalizeLog(200, { firmId: user.firmId }); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/profiles' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:write'); const result = modules.profiles.createProfile(user, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
@@ -615,7 +625,7 @@ function startServer() {
     }
     if (pathname === '/api/users' && req.method === 'GET') { const result = store.listUsers(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/session' && req.method === 'GET') { const result = { user: requireUser(req) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-    if (pathname === '/api/logout' && req.method === 'POST') { const result = store.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/logout' && req.method === 'POST') { const result = store.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId, 'Set-Cookie': clearCsrfCookie(req) }); }
     if (pathname === '/api/dashboard' && req.method === 'GET') { const result = store.getDashboard(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/profiles' && req.method === 'GET') { const user = requireUser(req); store.assertPermission(user, 'profiles:read'); const result = reads.listProfiles(user.firmId, { kind: url.searchParams.get('kind'), search: url.searchParams.get('search') || '' }); finalizeLog(200, { firmId: user.firmId }); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/profiles' && req.method === 'POST') { const result = store.createProfile(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
