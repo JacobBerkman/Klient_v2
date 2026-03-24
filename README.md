@@ -88,12 +88,21 @@ Smoke test the full runtime:
 npm run test:smoke
 ```
 
-Run the full local validation bundle:
+### One-command local validation
+
+Prepare dependencies and local environment defaults:
 
 ```bash
-npm run test:all
+npm run bootstrap:dev
 ```
 
+Run the full master-aligned validation chain (syntax checks, runtime contract tests, smoke test, integration suites, and merge/main parity check):
+
+```bash
+npm run validate:master
+```
+
+`npm run test:all` remains available and now delegates to `validate:master`.
 ## Main parity check
 Run the parity sync/report command:
 
