@@ -17,6 +17,23 @@ function readLogLevel(value, fallback) {
   return ['debug', 'info', 'warn', 'error'].includes(normalized) ? normalized : fallback;
 }
 
+
+function readBoolean(name, fallback = false) {
+  const raw = process.env[name];
+  if (raw === undefined || raw === '') return fallback;
+  const normalized = String(raw).toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  throw new Error(`Invalid ${name}: expected boolean value.`);
+}
+
+function readStorageProvider(value) {
+  const normalized = String(value || 'local').toLowerCase();
+  if (!['local', 's3'].includes(normalized)) {
+    throw new Error(`Invalid STORAGE_PROVIDER: ${normalized}.`);
+  }
+  return normalized;
+}
 function readAuthProvider(value) {
   const normalized = String(value || 'local').toLowerCase();
   if (!['local'].includes(normalized)) {
@@ -41,7 +58,22 @@ export const runtime = {
   authProvider: readAuthProvider(process.env.AUTH_PROVIDER),
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',
-  instanceId: process.env.INSTANCE_ID || hostname()
+  instanceId: process.env.INSTANCE_ID || hostname(),
+  storageProvider: readStorageProvider(process.env.STORAGE_PROVIDER),
+  storageLocalDir: process.env.STORAGE_LOCAL_DIR || '',
+  storageBucketDocuments: process.env.STORAGE_BUCKET_DOCUMENTS || 'klient-documents',
+  storageBucketExports: process.env.STORAGE_BUCKET_EXPORTS || 'klient-exports',
+  storageEndpoint: process.env.STORAGE_ENDPOINT || '',
+  storageRegion: process.env.STORAGE_REGION || '',
+  storageAccessKeyId: process.env.STORAGE_ACCESS_KEY_ID || '',
+  storageSecretAccessKey: process.env.STORAGE_SECRET_ACCESS_KEY || '',
+  storageForcePathStyle: readBoolean('STORAGE_FORCE_PATH_STYLE', true),
+  storageExportTtlDays: readNumber('STORAGE_EXPORT_TTL_DAYS', 14),
+  storageExportArchiveAfterDays: readNumber('STORAGE_EXPORT_ARCHIVE_AFTER_DAYS', 3),
+  storageExportPurgeAfterDays: readNumber('STORAGE_EXPORT_PURGE_AFTER_DAYS', 30),
+  storageUploadTtlDays: readNumber('STORAGE_UPLOAD_TTL_DAYS', 365),
+  storageUploadArchiveAfterDays: readNumber('STORAGE_UPLOAD_ARCHIVE_AFTER_DAYS', 90),
+  storageUploadPurgeAfterDays: readNumber('STORAGE_UPLOAD_PURGE_AFTER_DAYS', 730)
 };
 
 export function validateRuntimeConfig() {
@@ -50,6 +82,9 @@ export function validateRuntimeConfig() {
   if (!runtime.host) issues.push('HOST must be provided.');
   if (!runtime.serviceName) issues.push('SERVICE_NAME must be provided.');
   if (runtime.port < 1 || runtime.port > 65535) issues.push('PORT must be between 1 and 65535.');
+  if (runtime.storageProvider === 's3' && (!runtime.storageEndpoint || !runtime.storageRegion || !runtime.storageAccessKeyId || !runtime.storageSecretAccessKey)) {
+    issues.push('S3 storage provider requires STORAGE_ENDPOINT, STORAGE_REGION, STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY.');
+  }
   if (runtime.nodeEnv === 'production' && runtime.logLevel === 'debug') {
     warnings.push('LOG_LEVEL=debug in production may emit sensitive operational details.');
   }
@@ -67,7 +102,12 @@ export function validateRuntimeConfig() {
       logLevel: runtime.logLevel,
       authProvider: runtime.authProvider,
       serviceName: runtime.serviceName,
-      instanceId: runtime.instanceId
+      instanceId: runtime.instanceId,
+      storageProvider: runtime.storageProvider,
+      storageBuckets: {
+        documents: runtime.storageBucketDocuments,
+        exports: runtime.storageBucketExports
+      }
     }
   };
 }

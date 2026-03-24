@@ -1,6 +1,9 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
+import { createAuthService } from './auth/service.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
@@ -52,6 +55,17 @@ function assertStrongPassword(password) {
   if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value)) {
     throw new Error('Password must include uppercase, lowercase, and numeric characters.');
   }
+}
+
+
+function sanitizeFileName(value = 'file.bin') {
+  return String(value || 'file.bin').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-{2,}/g, '-').slice(0, 120) || 'file.bin';
+}
+
+function daysBetween(thenIso, nowMs) {
+  const thenMs = new Date(thenIso || 0).getTime();
+  if (!Number.isFinite(thenMs) || thenMs <= 0) return 0;
+  return Math.floor((nowMs - thenMs) / (1000 * 60 * 60 * 24));
 }
 
 function sourceDisplay(source) {
@@ -201,7 +215,7 @@ function seedState() {
       createdAt,
       updatedAt: createdAt
     }],
-    exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json' }, createdAt, updatedAt: createdAt }],
+    exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json', object: { bucket: defaultObjectStorage.bucketExports, key: `${firmId}/exports/client-intake-demo.json`, checksum: null, contentType: 'application/json', retentionClass: 'export_artifact' } }, createdAt, updatedAt: createdAt }],
     documentUploads: [{
       id: documentUploadId,
       firmId,
@@ -211,9 +225,11 @@ function seedState() {
       visibility: 'shared',
       status: 'uploaded',
       uploadedBy: 'advisor',
+      object: { bucket: defaultObjectStorage.bucketDocuments, key: `${firmId}/documents/${clientId}/driver-license-demo.pdf`, checksum: null, contentType: 'application/pdf', retentionClass: 'uploaded_document' },
       createdAt,
       updatedAt: createdAt
     }],
+    pendingUploadIntents: [],
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
@@ -222,8 +238,78 @@ function seedState() {
   };
 }
 
-export function createStore() {
+export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   const state = loadState(seedState);
+  state.pendingUploadIntents ||= [];
+
+  function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
+    return {
+      bucket: metadata.bucket,
+      key: metadata.key,
+      checksum: metadata.checksum || null,
+      contentType: metadata.contentType || 'application/octet-stream',
+      retentionClass: metadata.retentionClass || defaultRetentionClass
+    };
+  }
+
+  function createUploadIntent({ firmId, clientId, fileName, contentType, checksum, category, source }) {
+    const id = randomUUID();
+    const key = `${firmId}/documents/${clientId}/${Date.now()}-${id}-${sanitizeFileName(fileName || 'upload.bin')}`;
+    const object = normalizeObjectMetadata({
+      bucket: objectStorage.bucketDocuments,
+      key,
+      checksum: checksum || null,
+      contentType: contentType || 'application/octet-stream',
+      retentionClass: 'uploaded_document'
+    });
+    const intent = {
+      id,
+      firmId,
+      clientId,
+      category: category || 'general',
+      source: source || 'client',
+      fileName: fileName || 'upload.bin',
+      object,
+      createdAt: now(),
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+    };
+    state.pendingUploadIntents.push(intent);
+    return intent;
+  }
+
+  async function applyLifecyclePolicies() {
+    const policy = objectStorage.retentionPolicies;
+    const nowMs = Date.now();
+
+    for (const upload of state.documentUploads) {
+      const object = upload.object;
+      if (!object?.bucket || !object?.key) continue;
+      const ageDays = daysBetween(upload.createdAt, nowMs);
+      if (ageDays >= policy.uploaded_document.purgeAfterDays) {
+        await objectStorage.deleteObject(object).catch(() => null);
+        upload.status = 'purged';
+        upload.purgedAt = now();
+      } else if (ageDays >= policy.uploaded_document.archiveAfterDays && upload.status !== 'archived') {
+        upload.status = 'archived';
+        upload.archivedAt = now();
+      }
+    }
+
+    for (const job of state.exportJobs) {
+      const object = job.output?.object;
+      if (!object?.bucket || !object?.key) continue;
+      const ageDays = daysBetween(job.updatedAt || job.createdAt, nowMs);
+      if (ageDays >= policy.export_artifact.purgeAfterDays) {
+        await objectStorage.deleteObject(object).catch(() => null);
+        job.status = job.status === 'completed' ? 'purged' : job.status;
+        job.output = { ...job.output, purgedAt: now() };
+      } else if (ageDays >= policy.export_artifact.archiveAfterDays && !job.output.archivedAt) {
+        job.output = { ...job.output, archivedAt: now() };
+      }
+    }
+
+    persist();
+  }
 
   function persist() {
     saveState(state);
@@ -537,26 +623,53 @@ export function createStore() {
       persist();
       return submission;
     },
+    async createClientUploadPresign(user, input) {
+      requirePermission(user, 'client:write');
+      const profile = requireClientProfile(user);
+      const intent = createUploadIntent({
+        firmId: user.firmId,
+        clientId: profile.id,
+        fileName: input.fileName,
+        contentType: input.contentType,
+        checksum: input.checksum,
+        category: input.category,
+        source: 'client'
+      });
+      const presigned = await objectStorage.createPresignedUploadUrl({ ...intent.object, expiresInSeconds: Number(input.expiresInSeconds || 900) });
+      persist();
+      return { uploadId: intent.id, object: intent.object, presigned };
+    },
     submitClientUpload(user, input) {
       requirePermission(user, 'client:write');
       const profile = requireClientProfile(user);
+      const intent = input.uploadId ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === user.firmId) : null;
+      const object = normalizeObjectMetadata(input.object || intent?.object || {}, 'uploaded_document');
       const upload = {
         id: randomUUID(),
         firmId: user.firmId,
         clientId: profile.id,
-        name: input.name || 'Client upload',
-        category: input.category || 'general',
+        name: input.name || input.fileName || intent?.fileName || 'Client upload',
+        category: input.category || intent?.category || 'general',
         visibility: 'shared',
         status: 'uploaded',
         uploadedBy: 'client',
         notes: input.notes || '',
+        object,
         createdAt: now(),
         updatedAt: now()
       };
+      state.pendingUploadIntents = state.pendingUploadIntents.filter((entry) => entry.id !== input.uploadId);
       state.documentUploads.push(upload);
-      addAudit(user.firmId, user.id, 'document_upload', upload.id, 'client.document_upload.created', { category: upload.category });
+      addAudit(user.firmId, user.id, 'document_upload', upload.id, 'client.document_upload.created', { category: upload.category, key: upload.object.key });
       persist();
       return upload;
+    },
+    async createClientUploadDownloadUrl(user, uploadId) {
+      requirePermission(user, 'client:write');
+      const profile = requireClientProfile(user);
+      const upload = state.documentUploads.find((entry) => entry.id === uploadId && entry.firmId === user.firmId && entry.clientId === profile.id);
+      if (!upload) throw new Error('Upload not found.');
+      return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 });
     },
     listFormDrafts(user) {
       return this.listFormSubmissions(user, 'draft');
@@ -633,7 +746,7 @@ export function createStore() {
       persist();
       return updated;
     },
-    processQueuedExports() {
+    async processQueuedExports() {
       const result = processExportQueueTick({
         workerId: 'api-process-endpoint',
         limit: 10,
@@ -644,7 +757,9 @@ export function createStore() {
             job.metadata.simulateFailuresRemaining = failCount - 1;
             throw new Error(`Simulated export failure for ${job.id}`);
           }
-          return { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
+          const fileName = `${job.type}-${Date.now()}.json`;
+          const key = `${job.firmId}/exports/${fileName}`;
+          return { fileName, preview: { clientId: job.clientId, templateId: job.templateId }, object: { bucket: objectStorage.bucketExports, key, checksum: null, contentType: 'application/json', retentionClass: 'export_artifact' } };
         }
       });
       return { processed: result.processed, leased: result.leased, failed: result.failed };
@@ -686,6 +801,7 @@ export function createStore() {
     resetPassword(input) {
       return auth.resetPassword(input);
     },
+    objectStorage,
     removeHouseholdMember(user, householdId, clientId) {
       requirePermission(user, 'households:write');
       state.householdMembers = state.householdMembers.filter((entry) => !(entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId));
@@ -786,25 +902,52 @@ export function createStore() {
       persist();
       return submission;
     },
+    async createPortalUploadPresign(token, input) {
+      const link = state.portalLinks.find((entry) => entry.token === token);
+      if (!link) throw new Error('Portal link not found.');
+      const intent = createUploadIntent({
+        firmId: link.firmId,
+        clientId: link.profileId,
+        fileName: input.fileName,
+        contentType: input.contentType,
+        checksum: input.checksum,
+        category: input.category,
+        source: 'portal'
+      });
+      const presigned = await objectStorage.createPresignedUploadUrl({ ...intent.object, expiresInSeconds: Number(input.expiresInSeconds || 900) });
+      persist();
+      return { uploadId: intent.id, object: intent.object, presigned };
+    },
     portalUpload(token, input) {
       const link = state.portalLinks.find((entry) => entry.token === token);
       if (!link) throw new Error('Portal link not found.');
+      const intent = input.uploadId ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === link.firmId) : null;
+      const object = normalizeObjectMetadata(input.object || intent?.object || {}, 'uploaded_document');
       const upload = {
         id: randomUUID(),
         firmId: link.firmId,
         clientId: link.profileId,
-        name: input.name || 'Portal upload',
-        category: input.category || 'general',
+        name: input.name || input.fileName || intent?.fileName || 'Portal upload',
+        category: input.category || intent?.category || 'general',
         visibility: 'shared',
         status: 'uploaded',
         uploadedBy: 'portal',
         notes: input.notes || '',
+        object,
         createdAt: now(),
         updatedAt: now()
       };
+      state.pendingUploadIntents = state.pendingUploadIntents.filter((entry) => entry.id !== input.uploadId);
       state.documentUploads.push(upload);
       persist();
       return upload;
+    },
+    async createPortalUploadDownloadUrl(token, uploadId) {
+      const link = state.portalLinks.find((entry) => entry.token === token);
+      if (!link) throw new Error('Portal link not found.');
+      const upload = state.documentUploads.find((entry) => entry.id === uploadId && entry.firmId === link.firmId && entry.clientId === link.profileId);
+      if (!upload) throw new Error('Upload not found.');
+      return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 });
     },
     getAnalytics(user) {
       requirePermission(user, 'analytics:read');
@@ -819,6 +962,24 @@ export function createStore() {
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
         templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length
+      };
+    },
+
+    async createExportDownloadUrl(user, exportId) {
+      requirePermission(user, 'exports:write');
+      const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
+      if (!job) throw new Error('Export not found.');
+      const object = job.output?.object;
+      if (!object) throw new Error('Export output object not available.');
+      return objectStorage.createPresignedDownloadUrl({ ...object, expiresInSeconds: 900 });
+    },
+    async runLifecyclePolicies(user) {
+      requirePermission(user, 'exports:write');
+      await applyLifecyclePolicies();
+      return {
+        uploads: state.documentUploads.filter((entry) => entry.firmId === user.firmId),
+        exports: state.exportJobs.filter((entry) => entry.firmId === user.firmId),
+        retention: objectStorage.retentionPolicies
       };
     },
     getMaskedSensitiveData(user, profileId) {
