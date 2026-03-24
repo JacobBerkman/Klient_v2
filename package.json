@@ -7,31 +7,24 @@
   "scripts": {
     "bootstrap:dev": "npm install && node -e \"const fs=require('fs');if(!fs.existsSync('.env')&&fs.existsSync('.env.example')){fs.copyFileSync('.env.example','.env');console.log('Created .env from .env.example');}else{console.log('.env already exists or .env.example is missing');}\"",
     "check": "git diff --check",
-    "check:syntax": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/integration-csrf.mjs && node --check scripts/restore-db.mjs && node --check scripts/role-portal-test.mjs && node --check scripts/smoke-test.mjs && node --check scripts/integration-tenancy.mjs && node --check scripts/integration-rbac.mjs && node --check scripts/integration-templates.mjs && node --check scripts/integration-exports.mjs && node --check scripts/integration-portal-lifecycle.mjs && node --check scripts/integration-analytics.mjs && node --check scripts/master-validate.mjs",
+    "check:syntax": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/api-contract-test.mjs && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/integration-csrf.mjs && node --check scripts/master-integration.mjs && node --check scripts/master-validate.mjs && node --check scripts/migration-order-check.mjs && node --check scripts/reencrypt-pii.mjs && node --check scripts/reset-test-data.mjs && node --check scripts/restore-db.mjs && node --check scripts/security-checks.mjs && node --check scripts/smoke-test.mjs",
     "check:merge-main": "bash scripts/verify-main-merge.sh",
+    "check:main-parity": "bash scripts/sync-main-and-report.sh",
     "dev": "node apps/api/src/server.mjs",
     "start": "node apps/api/src/server.mjs",
-    "test": "node scripts/smoke-test.mjs",
-    "test:contract": "node scripts/api-contract-test.mjs",
     "test": "npm run test:smoke",
+    "test:contract": "node scripts/api-contract-test.mjs",
     "test:runtime-contract": "node --test apps/api/src/test/runtime-contract.test.mjs",
     "test:csrf": "node scripts/integration-csrf.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
-    "test:integration": "node scripts/integration-tenancy.mjs && node scripts/integration-rbac.mjs && node scripts/integration-templates.mjs && node scripts/integration-exports.mjs && node scripts/integration-portal-lifecycle.mjs && node scripts/integration-analytics.mjs",
+    "test:integration": "node scripts/master-integration.mjs",
+    "test:security": "node scripts/security-checks.mjs",
+    "check:migrations": "node scripts/migration-order-check.mjs",
     "validate:master": "node scripts/master-validate.mjs",
     "test:all": "npm run validate:master",
     "backup": "node scripts/backup-db.mjs",
     "restore": "node scripts/restore-db.mjs",
-    "worker": "node scripts/export-worker.mjs"
-    "test:integration": "node scripts/master-integration.mjs",
-    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/master-integration.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/smoke-test.mjs && npm run test:integration && git diff --check",
-    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/api-contract-test.mjs && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node scripts/api-contract-test.mjs && node scripts/smoke-test.mjs && git diff --check"
-    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --check scripts/role-portal-test.mjs && node scripts/smoke-test.mjs && node scripts/role-portal-test.mjs && git diff --check"
-    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/smoke-test.mjs && git diff --check"
-    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/integration-csrf.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/integration-csrf.mjs && node scripts/smoke-test.mjs && git diff --check",
-    "test:integration": "node scripts/integration-tenancy.mjs && node scripts/integration-rbac.mjs && node scripts/integration-templates.mjs && node scripts/integration-exports.mjs && node scripts/integration-portal-lifecycle.mjs && node scripts/integration-analytics.mjs",
-    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/smoke-test.mjs && npm run test:integration && git diff --check",
-    "check:merge-main": "bash scripts/verify-main-merge.sh",
-    "check:main-parity": "bash scripts/sync-main-and-report.sh"
+    "worker": "node scripts/export-worker.mjs",
+    "reset:test-data": "node scripts/reset-test-data.mjs"
   }
 }

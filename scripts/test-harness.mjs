@@ -1,11 +1,28 @@
 import { spawn } from 'node:child_process';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+const repoRoot = resolve(new URL('..', import.meta.url).pathname);
+const serverEntrypoint = resolve(repoRoot, 'apps/api/src/server.mjs');
 
 function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
+  return new Promise((resolveWait) => setTimeout(resolveWait, ms));
 }
 
 function isCsrfExemptPath(path) {
   return ['/api/login', '/api/register', '/api/invites/accept', '/api/password-resets', '/api/password-resets/confirm'].includes(path);
+}
+
+function deterministicPort(name) {
+  const base = Number.parseInt(process.env.TEST_PORT_BASE || '3300', 10);
+  const modulo = Number.parseInt(process.env.TEST_PORT_RANGE || '300', 10);
+  const seed = `${process.env.TEST_SEED || 'klient-seed'}:${name}`;
+  let hash = 0;
+  for (let index = 0; index < seed.length; index += 1) {
+    hash = (hash * 31 + seed.charCodeAt(index)) % 1_000_000;
+  }
+  return base + (hash % modulo);
 }
 
 export function assert(condition, message) {
@@ -15,9 +32,15 @@ export function assert(condition, message) {
 }
 
 export async function createTestContext(name) {
-  const port = 3100 + Math.floor(Math.random() * 400);
-  const server = spawn(process.execPath, ['apps/api/src/server.mjs'], {
-    env: { ...process.env, PORT: String(port) },
+  const port = deterministicPort(name);
+  const resetBehavior = process.env.TEST_RESET_BEHAVIOR || 'isolated';
+  const testCwd = resetBehavior === 'isolated'
+    ? await mkdtemp(join(tmpdir(), `klient-${name}-`))
+    : resolve(process.cwd());
+
+  const server = spawn(process.execPath, [serverEntrypoint], {
+    cwd: testCwd,
+    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1' },
     stdio: ['ignore', 'pipe', 'pipe']
   });
 
@@ -32,6 +55,7 @@ export async function createTestContext(name) {
       if (response.ok) {
         return {
           port,
+          testCwd,
           csrfToken: '',
           csrfCookie: '',
           authToken: '',
@@ -68,34 +92,14 @@ export async function createTestContext(name) {
                 headers.Authorization = `Bearer ${this.authToken}`;
               }
             }
-            const responseInner = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers });
-            const data = await responseInner.json();
-            const nextCsrfToken = responseInner.headers.get('x-csrf-token');
-            const nextCookie = (responseInner.headers.get('set-cookie') || '').split(';')[0];
+            const response = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers });
+            const data = await response.json();
+            const nextCsrfToken = response.headers.get('x-csrf-token');
+            const nextCookie = (response.headers.get('set-cookie') || '').split(';')[0];
             if (nextCsrfToken) this.csrfToken = nextCsrfToken;
             if (nextCookie.startsWith('__Host-klient-csrf=')) this.csrfCookie = nextCookie;
-            if (!responseInner.ok) {
+            if (!response.ok) {
               throw new Error(`${path}: ${data.message || 'Request failed'}`);
-            }
-            return data;
-          },
-          async requestExpectError(path, options = {}, status = 400) {
-            const method = (options.method || 'GET').toUpperCase();
-            const headers = { ...(options.headers || {}) };
-            if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path.startsWith('/api/') && !isCsrfExemptPath(path)) {
-              const { csrfToken, csrfCookie } = await this.ensureCsrf();
-              headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken;
-              headers.Cookie = headers.Cookie || csrfCookie;
-              headers.Origin = headers.Origin || `http://127.0.0.1:${port}`;
-              headers.Referer = headers.Referer || `http://127.0.0.1:${port}/`;
-              if (!headers.Authorization && this.authToken) {
-                headers.Authorization = `Bearer ${this.authToken}`;
-              }
-            }
-            const responseInner = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers });
-            const data = await responseInner.json();
-            if (responseInner.status !== status) {
-              throw new Error(`${path}: expected ${status}, received ${responseInner.status}`);
             }
             return data;
           },
@@ -116,6 +120,9 @@ export async function createTestContext(name) {
           async shutdown() {
             server.kill('SIGTERM');
             await wait(120);
+            if (resetBehavior === 'isolated') {
+              await rm(testCwd, { recursive: true, force: true });
+            }
           }
         };
       }
@@ -126,5 +133,8 @@ export async function createTestContext(name) {
   }
 
   server.kill('SIGTERM');
+  if (resetBehavior === 'isolated') {
+    await rm(testCwd, { recursive: true, force: true });
+  }
   throw new Error(`Server failed to start for ${name}. ${bootError}`.trim());
 }

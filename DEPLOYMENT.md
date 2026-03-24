@@ -24,6 +24,35 @@ LOG_LEVEL=info
 - Sessions expire after 8 hours.
 - Failed login attempts are rate limited per email over a 15-minute window.
 
+## Hard release gate (required before every deploy)
+Run this command and require a **zero-exit** outcome:
+
+```bash
+npm run validate:master
+```
+
+The gate is objective and fails if any required suite fails:
+1. API contract tests (`npm run test:contract`)
+2. Integration suites (`npm run test:integration`)
+3. Migration order checks (`npm run check:migrations`)
+4. Smoke test (`npm run test:smoke`)
+5. Security checks (`npm run test:security`)
+
+## Deterministic test environment behavior
+- Use isolated test state by default (ephemeral test directories).
+- Deterministic port assignment is based on `TEST_SEED` and suite name.
+- Optional tuning knobs:
+  - `TEST_RESET_BEHAVIOR=isolated|shared` (default `isolated`)
+  - `TEST_SEED=<string>` (default `klient-seed`)
+  - `TEST_PORT_BASE=<number>` (default `3300`)
+  - `TEST_PORT_RANGE=<number>` (default `300`)
+
+If you need to reset local runtime state explicitly:
+
+```bash
+npm run reset:test-data
+```
+
 ## Local Docker run
 ```bash
 docker compose --env-file .env up --build -d
@@ -54,7 +83,6 @@ curl -H "Authorization: Bearer <token>" http://localhost:3000/api/ops/diagnostic
 ```
 
 This includes startup metadata (`bootedAt`, PID, uptime), config validation details, storage health, export status distribution, and firm audit summaries.
-`/ready` verifies SQLite access and returns query-table counts derived from the persisted state.
 
 ## Persistent data
 The app stores runtime data in `data/app.db`.
@@ -73,6 +101,30 @@ Restore from a backup file:
 node scripts/restore-db.mjs data/backup-<timestamp>.db
 ```
 
+## Deployment playbook
+1. **Pre-flight**
+   - Ensure backup created (`npm run backup`).
+   - Confirm branch parity (`npm run check:merge-main`).
+   - Run full release gate (`npm run validate:master`).
+2. **Deploy**
+   - Build and launch (`docker compose --env-file .env up --build -d`).
+   - Confirm `/health` and `/ready` are green.
+   - Login and verify key advisor flow in UI.
+3. **Post-deploy validation**
+   - Execute smoke test against deployed environment (or equivalent canary route checks).
+   - Validate export queue processing and analytics endpoints.
+
+## Rollback playbook
+Rollback is mandatory if health checks degrade, smoke fails, or security regressions are observed.
+
+1. Stop unhealthy revision and redeploy the previous known-good image/tag.
+2. Restore database only when data integrity is compromised:
+   ```bash
+   npm run restore -- data/backup-<timestamp>.db
+   ```
+3. Re-run readiness and smoke checks.
+4. Record rollback timestamp, trigger reason, and backup artifact in release notes.
+
 ## Background export processing
 Queued exports can be processed out of band with:
 
@@ -86,9 +138,6 @@ Use your container/runtime log collector to ship them to your observability stac
 The server also handles `SIGTERM`/`SIGINT` for graceful shutdown.
 
 On startup, the app emits a `server.started` log event with an embedded diagnostics snapshot. If configuration warnings exist, a `runtime.config.warnings` event is emitted; configuration errors produce `runtime.config.invalid`.
-The server emits structured JSON logs to stdout/stderr and handles `SIGTERM` / `SIGINT` for graceful shutdown.
-Ship stdout/stderr to your logging platform and use the health endpoints for orchestration probes.
-
 
 ## Build context hygiene
 A `.dockerignore` file excludes git metadata, local SQLite data, logs, and `node_modules` from image builds so Docker packages only the shipped runtime assets.
