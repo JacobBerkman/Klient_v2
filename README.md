@@ -13,6 +13,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
 - audit trail and analytics views
+- encrypted PII handling with masked responses and sensitive-read/write audit events
 - invite flow and password reset endpoints
 - internal web UI served by the backend
 - Docker + compose deployment artifacts

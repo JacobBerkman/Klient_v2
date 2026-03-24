@@ -188,7 +188,10 @@ async function renderExports() {
 
 async function renderAudit() {
   const events = await api('/api/audit');
-  view.innerHTML = '<h2>Audit</h2>' + renderItems(events, (event) => `<div class="item"><strong>${event.action}</strong><div class="muted">${event.occurredAt}</div><pre>${JSON.stringify(event.metadata, null, 2)}</pre></div>`);
+  view.innerHTML = '<h2>Audit</h2>' + renderItems(events, (event) => {
+    const sensitiveBadge = event.action.startsWith('profile.sensitive.') ? '<span class="badge">sensitive</span>' : '';
+    return `<div class="item"><div class="row between"><strong>${event.action}</strong>${sensitiveBadge}</div><div class="muted">${event.occurredAt}</div><div class="muted">${event.entityType} • ${event.entityId}</div><pre>${JSON.stringify(event.metadata, null, 2)}</pre></div>`;
+  });
 }
 
 async function renderAnalytics() {

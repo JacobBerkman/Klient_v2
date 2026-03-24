@@ -1,8 +1,8 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
 import { loadState, saveState } from './storage.mjs';
+import { createPiiService } from './services/pii-service.mjs';
 
-const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const PERMISSIONS = {
   admin: ['*'],
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
@@ -18,23 +18,6 @@ function requirePermission(user, permission) {
   if (!can(user.role, permission)) {
     throw new Error(`Missing permission: ${permission}`);
   }
-}
-
-function encryptValue(value) {
-  if (!value) return null;
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', APP_SECRET, iv);
-  const encrypted = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
-}
-
-function decryptValue(payload) {
-  if (!payload) return null;
-  const [ivHex, tagHex, dataHex] = payload.split(':');
-  const decipher = createDecipheriv('aes-256-gcm', APP_SECRET, Buffer.from(ivHex, 'hex'));
-  decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
-  return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
 }
 
 function now() {
@@ -234,6 +217,11 @@ export function createStore() {
     persist();
   }
 
+  const piiService = createPiiService({
+    secret: runtime.appSecret,
+    audit: (actor, event) => addAudit(actor.firmId, actor.id, event.entityType, event.entityId, event.action, event.metadata)
+  });
+
   return {
     state,
     register({ firmName, firstName, lastName, email, password }) {
@@ -297,7 +285,7 @@ export function createStore() {
       const createdAt = now();
       const inStage = state.profiles.filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === (input.stage || 'discovery')).length;
       const profile = {
-        pii: { maskingPolicy: 'role_based', ssnCiphertext: encryptValue(input.ssn), taxIdCiphertext: encryptValue(input.taxId) },
+        pii: { maskingPolicy: 'role_based', ssnCiphertext: null, taxIdCiphertext: null },
         id: randomUUID(),
         firmId: user.firmId,
         advisorUserId: user.id,
@@ -317,6 +305,7 @@ export function createStore() {
         createdAt,
         updatedAt: createdAt
       };
+      profile.pii = piiService.applySensitiveWrite({ actor: user, profile, input, reason: 'profile.create' });
       state.profiles.push(profile);
       if (profile.stage) {
         state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, toStage: profile.stage, changedByUserId: user.id, changedAt: createdAt });
@@ -332,14 +321,9 @@ export function createStore() {
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
       const nextPatch = { ...patch };
-      if ('ssn' in nextPatch) {
-        profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: encryptValue(nextPatch.ssn), taxIdCiphertext: profile.pii?.taxIdCiphertext || null };
-        delete nextPatch.ssn;
-      }
-      if ('taxId' in nextPatch) {
-        profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: profile.pii?.ssnCiphertext || null, taxIdCiphertext: encryptValue(nextPatch.taxId) };
-        delete nextPatch.taxId;
-      }
+      profile.pii = piiService.applySensitiveWrite({ actor: user, profile, input: nextPatch, reason: 'profile.update' });
+      delete nextPatch.ssn;
+      delete nextPatch.taxId;
       Object.assign(profile, nextPatch, { updatedAt: now() });
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) });
       persist();
@@ -680,12 +664,7 @@ export function createStore() {
       requirePermission(user, 'profiles:read');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
-      const ssn = decryptValue(profile.pii?.ssnCiphertext);
-      const taxId = decryptValue(profile.pii?.taxIdCiphertext);
-      return {
-        ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
-        taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
-      };
+      return piiService.getMaskedSensitiveData({ actor: user, profile, reason: 'profile.sensitive.endpoint' });
     }
   };
 }
