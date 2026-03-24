@@ -7,6 +7,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - persistent SQLite-backed local data storage in `data/app.db`
 - dashboard with stats and recent activity
 - prospects and clients management
+- profile detail editing for contact info, DOB, address/source metadata, custom JSON, and prospect/client conversion
 - persisted prospect pipeline board
 - households and member linking
 - dynamic form template and submission flows
@@ -39,6 +40,12 @@ Run the smoke test:
 
 ```bash
 node scripts/smoke-test.mjs
+```
+
+Run focused profile update + conversion validation:
+
+```bash
+node scripts/profile-update-conversion-test.mjs
 ```
 
 Run the broader local validation bundle:

@@ -1,4 +1,5 @@
 const state = { token: localStorage.getItem('klient-token') || '', view: 'dashboard', selectedProfileId: null };
+const stageOptions = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
 
 const view = document.querySelector('#view');
 const authStatus = document.querySelector('#auth-status');
@@ -70,7 +71,7 @@ async function renderProfiles(kind) {
       <div>Stage: ${profile.stage || '—'}</div>
       <button data-profile-id="${profile.id}">Open Profile</button>
       ${kind === 'prospect' ? `<select data-stage-id="${profile.id}">
-        ${['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'].map((stage) => `<option value="${stage}" ${profile.stage === stage ? 'selected' : ''}>${stage}</option>`).join('')}
+        ${stageOptions.map((stage) => `<option value="${stage}" ${profile.stage === stage ? 'selected' : ''}>${stage}</option>`).join('')}
       </select>` : ''}
     </div>`);
 
@@ -90,16 +91,77 @@ async function renderProfileDetail() {
   }
 
   const detail = await api(`/api/profiles/${state.selectedProfileId}`);
+  const profile = detail.profile;
+  const source = profile.source || {};
   view.innerHTML = `
     <div class="detail-header">
       <button id="back-to-dashboard">← Back</button>
-      <h2>${detail.profile.firstName} ${detail.profile.lastName}</h2>
-      <div class="muted">${detail.profile.kind} • ${detail.profile.email || 'No email'} • ${detail.profile.stage || 'No stage'}</div>
+      <h2>${profile.firstName} ${profile.lastName}</h2>
+      <div class="muted">${profile.kind} • ${profile.email || 'No email'} • ${profile.stage || 'No stage'}</div>
+    </div>
+    <div class="item">
+      <h3>Edit Profile</h3>
+      <form id="profile-edit-form" class="grid two">
+        <div>
+          <label>First Name</label>
+          <input name="firstName" value="${profile.firstName || ''}" required />
+        </div>
+        <div>
+          <label>Last Name</label>
+          <input name="lastName" value="${profile.lastName || ''}" required />
+        </div>
+        <div>
+          <label>Email</label>
+          <input name="email" type="email" value="${profile.email || ''}" />
+        </div>
+        <div>
+          <label>Phone</label>
+          <input name="phone" value="${profile.phone || ''}" />
+        </div>
+        <div>
+          <label>DOB</label>
+          <input name="dateOfBirth" type="date" value="${profile.dateOfBirth || ''}" />
+        </div>
+        <div>
+          <label>Profile Type</label>
+          <select name="kind">
+            <option value="prospect" ${profile.kind === 'prospect' ? 'selected' : ''}>Prospect</option>
+            <option value="client" ${profile.kind === 'client' ? 'selected' : ''}>Client</option>
+          </select>
+        </div>
+        <div>
+          <label>Prospect Stage</label>
+          <select name="stage">
+            <option value="">No stage</option>
+            ${stageOptions.map((stage) => `<option value="${stage}" ${profile.stage === stage ? 'selected' : ''}>${stage}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label>Address JSON</label>
+          <textarea name="address" rows="4">${JSON.stringify(profile.address || {}, null, 2)}</textarea>
+        </div>
+        <div>
+          <label>Source City/Location</label>
+          <input name="cityOrLocation" value="${source.cityOrLocation || ''}" />
+          <label>Source Venue</label>
+          <input name="venue" value="${source.venue || ''}" />
+          <label>Source Date</label>
+          <input name="occurredOn" type="date" value="${source.occurredOn || ''}" />
+        </div>
+        <div>
+          <label>Custom Profile JSON</label>
+          <textarea name="customProfile" rows="8">${JSON.stringify(profile.customProfile || {}, null, 2)}</textarea>
+        </div>
+        <div>
+          <button type="submit">Save Profile</button>
+        </div>
+      </form>
+      <p class="muted">Changing type from client ⇄ prospect will apply pipeline stage initialization/clearing automatically.</p>
     </div>
     <div class="grid two">
       <div class="item">
         <h3>Profile Summary</h3>
-        <pre>${JSON.stringify(detail.profile, null, 2)}</pre>
+        <pre>${JSON.stringify(profile, null, 2)}</pre>
       </div>
       <div class="item">
         <h3>Household</h3>
@@ -133,6 +195,41 @@ async function renderProfileDetail() {
     event.preventDefault();
     const form = new FormData(event.target);
     await api(`/api/profiles/${state.selectedProfileId}/notes`, { method: 'POST', body: JSON.stringify({ body: form.get('body') }) });
+    await renderProfileDetail();
+  });
+
+  document.querySelector('#profile-edit-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    let address;
+    let customProfile;
+    try {
+      address = JSON.parse(String(form.get('address') || '{}'));
+      customProfile = JSON.parse(String(form.get('customProfile') || '{}'));
+    } catch (error) {
+      alert(`Invalid JSON in address/custom profile: ${error.message}`);
+      return;
+    }
+    const cityOrLocation = String(form.get('cityOrLocation') || '').trim();
+    const venue = String(form.get('venue') || '').trim();
+    const occurredOn = String(form.get('occurredOn') || '').trim();
+    const source = cityOrLocation || venue || occurredOn ? { cityOrLocation, venue, occurredOn } : null;
+    await api(`/api/profiles/${state.selectedProfileId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        firstName: String(form.get('firstName') || '').trim(),
+        lastName: String(form.get('lastName') || '').trim(),
+        email: String(form.get('email') || '').trim(),
+        phone: String(form.get('phone') || '').trim(),
+        dateOfBirth: String(form.get('dateOfBirth') || '').trim(),
+        kind: String(form.get('kind')),
+        stage: String(form.get('stage') || ''),
+        address,
+        source,
+        customProfile
+      })
+    });
+    await refreshPrimaryClientOptions();
     await renderProfileDetail();
   });
 }

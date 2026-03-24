@@ -9,6 +9,7 @@ const PERMISSIONS = {
   readonly: ['profiles:read', 'analytics:read'],
   client: ['portal:read']
 };
+const PROSPECT_STAGES = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
 
 function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission);
@@ -51,6 +52,58 @@ function hash(password) {
 
 function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
+}
+
+function isObject(value) {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function normalizeOptionalText(value) {
+  if (value === undefined) return undefined;
+  if (value === null) return '';
+  return String(value).trim();
+}
+
+function normalizeDateOfBirth(value) {
+  if (value === undefined) return undefined;
+  const normalized = normalizeOptionalText(value);
+  if (!normalized) return '';
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(normalized)) throw new Error('dateOfBirth must use YYYY-MM-DD format.');
+  return normalized;
+}
+
+function normalizeSourcePatch(sourceValue) {
+  if (sourceValue === undefined) return undefined;
+  if (sourceValue === null) return null;
+  if (!isObject(sourceValue)) throw new Error('source must be an object or null.');
+  const cityOrLocation = normalizeOptionalText(sourceValue.cityOrLocation);
+  const venue = normalizeOptionalText(sourceValue.venue);
+  const occurredOn = normalizeOptionalText(sourceValue.occurredOn);
+  if (!cityOrLocation && !venue && !occurredOn) return null;
+  if (!cityOrLocation || !venue || !occurredOn) throw new Error('source requires cityOrLocation, venue, and occurredOn.');
+  return { cityOrLocation, venue, occurredOn, displayValue: sourceDisplay({ cityOrLocation, venue, occurredOn }) };
+}
+
+function normalizeAddressPatch(addressValue) {
+  if (addressValue === undefined) return undefined;
+  if (addressValue === null) return {};
+  if (!isObject(addressValue)) throw new Error('address must be an object or null.');
+  return Object.fromEntries(Object.entries(addressValue).map(([key, value]) => [key, normalizeOptionalText(value)]));
+}
+
+function normalizeCustomProfilePatch(customProfileValue) {
+  if (customProfileValue === undefined) return undefined;
+  if (customProfileValue === null) return {};
+  if (!isObject(customProfileValue)) throw new Error('customProfile must be a JSON object.');
+  return customProfileValue;
+}
+
+function normalizeStageValue(stageValue) {
+  if (stageValue === undefined) return undefined;
+  if (stageValue === null || stageValue === '') return null;
+  const normalized = String(stageValue);
+  if (!PROSPECT_STAGES.includes(normalized)) throw new Error(`Invalid stage: ${normalized}`);
+  return normalized;
 }
 
 function seedState() {
@@ -327,11 +380,41 @@ export function createStore() {
     },
     updateProfile(user, profileId, patch) {
       requirePermission(user, 'profiles:write');
-      if (patch.kind === 'client') { patch.stage = null; patch.stageOrderIndex = null; }
-      if (patch.kind === 'prospect' && !patch.stage) { patch.stage = 'discovery'; }
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
+      const previousStage = profile.stage || null;
       const nextPatch = { ...patch };
+      const nextKind = patch.kind === 'client' || patch.kind === 'prospect' ? patch.kind : profile.kind;
+      const requestedStage = normalizeStageValue(patch.stage);
+      const isConvertingToClient = profile.kind !== 'client' && nextKind === 'client';
+      const isConvertingToProspect = profile.kind !== 'prospect' && nextKind === 'prospect';
+      if (isConvertingToClient) {
+        nextPatch.stage = null;
+        nextPatch.stageOrderIndex = null;
+      } else if (isConvertingToProspect) {
+        const targetStage = requestedStage || 'discovery';
+        const inStage = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === targetStage).length;
+        nextPatch.stage = targetStage;
+        nextPatch.stageOrderIndex = inStage + 1;
+      } else if (nextKind === 'prospect' && requestedStage && requestedStage !== profile.stage) {
+        const inStage = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === requestedStage && entry.id !== profile.id).length;
+        nextPatch.stage = requestedStage;
+        nextPatch.stageOrderIndex = inStage + 1;
+      } else if (nextKind === 'client' && requestedStage) {
+        throw new Error('Clients cannot have a prospect stage.');
+      }
+
+      if ('email' in nextPatch) {
+        const normalized = normalizeOptionalText(nextPatch.email);
+        if (normalized && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(normalized)) throw new Error('Invalid email address.');
+        nextPatch.email = normalized;
+      }
+      if ('phone' in nextPatch) nextPatch.phone = normalizeOptionalText(nextPatch.phone);
+      if ('dateOfBirth' in nextPatch) nextPatch.dateOfBirth = normalizeDateOfBirth(nextPatch.dateOfBirth);
+      if ('source' in nextPatch) nextPatch.source = normalizeSourcePatch(nextPatch.source);
+      if ('address' in nextPatch) nextPatch.address = normalizeAddressPatch(nextPatch.address);
+      if ('customProfile' in nextPatch) nextPatch.customProfile = normalizeCustomProfilePatch(nextPatch.customProfile);
+
       if ('ssn' in nextPatch) {
         profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: encryptValue(nextPatch.ssn), taxIdCiphertext: profile.pii?.taxIdCiphertext || null };
         delete nextPatch.ssn;
@@ -341,6 +424,11 @@ export function createStore() {
         delete nextPatch.taxId;
       }
       Object.assign(profile, nextPatch, { updatedAt: now() });
+      if (isConvertingToProspect) {
+        state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, fromStage: null, toStage: profile.stage, changedByUserId: user.id, changedAt: profile.updatedAt });
+      } else if (isConvertingToClient && previousStage) {
+        state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, fromStage: previousStage, toStage: null, changedByUserId: user.id, changedAt: profile.updatedAt });
+      }
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) });
       persist();
       return profile;
