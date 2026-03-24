@@ -14,5 +14,8 @@
     "worker": "node scripts/export-worker.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
     "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node scripts/smoke-test.mjs && git diff --check"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.888.0"
   }
 }

@@ -1,4 +1,5 @@
-import { completeQueuedExports } from '../apps/api/src/storage.mjs';
+import { createStore } from '../apps/api/src/store.mjs';
 
-const result = completeQueuedExports();
+const store = createStore();
+const result = await store.processQueuedExports();
 console.log(JSON.stringify(result, null, 2));

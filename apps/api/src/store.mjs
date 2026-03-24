@@ -1,5 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
+import { createObjectStorage } from './object-storage.mjs';
 import { loadState, saveState } from './storage.mjs';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
@@ -47,6 +48,17 @@ function slugify(value) {
 
 function hash(password) {
   return createHash('sha256').update(password).digest('hex');
+}
+
+function decodeBase64Payload(payload) {
+  if (!payload || typeof payload !== 'string') {
+    throw new Error('contentBase64 is required.');
+  }
+  try {
+    return Buffer.from(payload, 'base64');
+  } catch {
+    throw new Error('Invalid contentBase64 payload.');
+  }
 }
 
 function sourceDisplay(source) {
@@ -196,6 +208,7 @@ function seedState() {
       updatedAt: createdAt
     }],
     exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json' }, createdAt, updatedAt: createdAt }],
+    clientDocuments: [],
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
@@ -205,6 +218,8 @@ function seedState() {
 
 export function createStore() {
   const state = loadState(seedState);
+  state.clientDocuments ||= [];
+  const objectStorage = createObjectStorage(runtime);
 
   function persist() {
     saveState(state);
@@ -456,13 +471,72 @@ export function createStore() {
       requirePermission(user, 'templates:write');
       return state.documentTemplates.filter((entry) => entry.firmId === user.firmId);
     },
-    createDocumentTemplate(user, input) {
+    async createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
+      let sourceObject = null;
+      if (input.contentBase64) {
+        sourceObject = await objectStorage.putObject({
+          namespace: 'templates',
+          firmId: user.firmId,
+          fileName: input.fileName || 'template.pdf',
+          contentType: input.contentType || 'application/pdf',
+          body: decodeBase64Payload(input.contentBase64)
+        });
+      }
+      const template = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: input.name,
+        fileName: input.fileName || 'template.pdf',
+        sourceObject,
+        blueprint: input.blueprint || { sections: [] },
+        mappings: input.mappings || [],
+        versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }],
+        status: 'draft',
+        createdAt: now(),
+        updatedAt: now()
+      };
       state.documentTemplates.push(template);
-      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
+      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name, stored: Boolean(sourceObject) });
       persist();
       return template;
+    },
+    async getTemplateFile(user, templateId) {
+      requirePermission(user, 'templates:write');
+      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Template not found.');
+      if (!template.sourceObject) throw new Error('Template has no uploaded source file.');
+      const file = await objectStorage.getObject(template.sourceObject);
+      return { fileName: template.fileName, contentType: file.contentType, contentBase64: file.content.toString('base64'), sizeBytes: file.sizeBytes };
+    },
+    listClientDocuments(user, profileId = null) {
+      requirePermission(user, 'profiles:read');
+      return state.clientDocuments.filter((entry) => entry.firmId === user.firmId).filter((entry) => !profileId || entry.profileId === profileId);
+    },
+    async uploadClientDocument(user, input) {
+      requirePermission(user, 'profiles:write');
+      const profile = state.profiles.find((entry) => entry.id === input.profileId && entry.firmId === user.firmId);
+      if (!profile) throw new Error('Profile not found.');
+      const fileName = input.fileName || 'client-document.bin';
+      const objectRef = await objectStorage.putObject({
+        namespace: 'client-documents',
+        firmId: user.firmId,
+        fileName,
+        contentType: input.contentType || 'application/octet-stream',
+        body: decodeBase64Payload(input.contentBase64)
+      });
+      const document = { id: randomUUID(), firmId: user.firmId, profileId: profile.id, fileName, contentType: objectRef.contentType, objectRef, uploadedByUserId: user.id, createdAt: now() };
+      state.clientDocuments.push(document);
+      addAudit(user.firmId, user.id, 'client_document', document.id, 'client_document.uploaded', { profileId: profile.id, fileName });
+      persist();
+      return document;
+    },
+    async getClientDocumentFile(user, documentId) {
+      requirePermission(user, 'profiles:read');
+      const document = state.clientDocuments.find((entry) => entry.id === documentId && entry.firmId === user.firmId);
+      if (!document) throw new Error('Document not found.');
+      const file = await objectStorage.getObject(document.objectRef);
+      return { id: document.id, fileName: document.fileName, contentType: file.contentType, contentBase64: file.content.toString('base64'), sizeBytes: file.sizeBytes };
     },
     updateTemplateMappings(user, templateId, mappings) {
       requirePermission(user, 'templates:write');
@@ -505,18 +579,34 @@ export function createStore() {
       persist();
       return job;
     },
-    processQueuedExports() {
+    async processQueuedExports() {
       let processed = 0;
       for (const job of state.exportJobs) {
         if (job.status === 'queued') {
+          const payload = Buffer.from(JSON.stringify({ generatedAt: now(), clientId: job.clientId, templateId: job.templateId, type: job.type }, null, 2), 'utf8');
+          const objectRef = await objectStorage.putObject({
+            namespace: 'exports',
+            firmId: job.firmId,
+            fileName: `${job.type}-${job.id}.json`,
+            contentType: 'application/json',
+            body: payload
+          });
           job.status = 'completed';
-          job.output = { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
+          job.output = { fileName: `${job.type}-${job.id}.json`, preview: { clientId: job.clientId, templateId: job.templateId }, objectRef };
           job.updatedAt = now();
           processed += 1;
         }
       }
       persist();
       return { processed };
+    },
+    async getExportFile(user, exportId) {
+      requirePermission(user, 'exports:write');
+      const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
+      if (!job) throw new Error('Export not found.');
+      if (!job.output?.objectRef) throw new Error('Export output file is not available.');
+      const file = await objectStorage.getObject(job.output.objectRef);
+      return { exportId: job.id, fileName: job.output.fileName, contentType: file.contentType, contentBase64: file.content.toString('base64'), sizeBytes: file.sizeBytes };
     },
     listAudit(user) {
       return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();
@@ -608,7 +698,7 @@ export function createStore() {
       persist();
       return { ok: true };
     },
-    autoBuildTemplate(user, input) {
+    async autoBuildTemplate(user, input) {
       requirePermission(user, 'templates:write');
       const sections = (input.fields || []).reduce((acc, field) => {
         const sectionKey = field.split('.')[0] || 'general';

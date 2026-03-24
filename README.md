@@ -12,6 +12,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - dynamic form template and submission flows
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
+- unified object storage abstraction for uploaded templates, client-uploaded documents, and generated exports
 - audit trail and analytics views
 - invite flow and password reset endpoints
 - internal web UI served by the backend
@@ -21,6 +22,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 ## Environment
 Copy `.env.example` to `.env` for deployment-oriented runs.
 In production, `APP_SECRET` must be set to a long random value.
+Object storage defaults to local filesystem in development and should be configured to S3/MinIO-compatible storage in production.
 
 ## Run locally
 ```bash
@@ -50,6 +52,7 @@ npm run test:all
 ## Data location
 All persisted demo/runtime data is stored in:
 - `data/app.db`
+- `data/storage` (when using local object storage backend)
 
 Delete that file to reseed the app.
 
@@ -86,7 +89,21 @@ node scripts/restore-db.mjs data/backup-<timestamp>.db
 node scripts/export-worker.mjs
 ```
 
-This processes queued export jobs in the SQLite-backed runtime.
+This processes queued export jobs and writes generated files via the configured object storage backend.
+
+## Object storage configuration
+Use these variables:
+
+- `OBJECT_STORAGE_BACKEND=local|s3`
+- `OBJECT_STORAGE_LOCAL_PATH` (local backend path, default `data/storage`)
+- `OBJECT_STORAGE_BUCKET` (required for `s3`)
+- `OBJECT_STORAGE_REGION` (default `us-east-1`)
+- `OBJECT_STORAGE_ENDPOINT` (optional, use for MinIO/self-hosted S3)
+- `OBJECT_STORAGE_ACCESS_KEY_ID` / `OBJECT_STORAGE_SECRET_ACCESS_KEY` (required for `s3`)
+- `OBJECT_STORAGE_FORCE_PATH_STYLE=true|false` (set `true` for most MinIO setups)
+
+### Migration expectation
+Existing rows in SQLite continue to work without backfilling object files. Newly uploaded templates, client documents, and generated exports include object references and use the configured backend. If moving from local to S3/MinIO, migrate existing files out-of-band and update object references only if you need historical file downloads.
 
 ## CI
 A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.

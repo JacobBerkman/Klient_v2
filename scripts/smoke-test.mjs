@@ -49,6 +49,19 @@ async function run() {
   const reset = await jsonFetch('/api/password-resets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'readonly@test.local' }) });
   await jsonFetch('/api/password-resets/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: reset.token, password: 'Readonly456!' }) });
 
+  const uploadedTemplate = await jsonFetch('/api/templates', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      name: 'Uploaded Intake Template',
+      fileName: 'uploaded-intake.pdf',
+      contentType: 'application/pdf',
+      contentBase64: Buffer.from('fake-pdf-content', 'utf8').toString('base64'),
+      blueprint: { sections: ['client'] },
+      mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName' }]
+    })
+  });
+  const downloadedTemplate = await jsonFetch(`/api/templates/${uploadedTemplate.id}/file`, { headers: { Authorization: `Bearer ${login.token}` } });
   const template = await jsonFetch('/api/templates/auto-build', { method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Auto Build Test', fields: ['client.name', 'client.address', 'assets.account'] }) });
   const published = await jsonFetch(`/api/templates/${template.id}/publish`, { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
 
@@ -66,11 +79,25 @@ async function run() {
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'submitted', data: { primaryGoal: 'Retire early', accounts: [{ institution: 'Vanguard', balance: '120000' }] } }) });
   const refreshedPortalData = await jsonFetch(`/api/portal/${portal.token}`);
 
+  const uploadedDocument = await jsonFetch('/api/documents', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      profileId: profile.id,
+      fileName: 'kyc-note.txt',
+      contentType: 'text/plain',
+      contentBase64: Buffer.from('client-uploaded-note', 'utf8').toString('base64')
+    })
+  });
+  const listedDocuments = await jsonFetch(`/api/documents?profileId=${profile.id}`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const downloadedDocument = await jsonFetch(`/api/documents/${uploadedDocument.id}/file`, { headers: { Authorization: `Bearer ${login.token}` } });
+
   const exportJob = await jsonFetch('/api/exports', { method: 'POST', headers: authHeaders, body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' }) });
   await jsonFetch('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
   await jsonFetch(`/api/exports/${exportJob.id}/retry`, { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
   await jsonFetch('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
   const exportsList = await jsonFetch('/api/exports', { headers: { Authorization: `Bearer ${login.token}` } });
+  const exportFile = await jsonFetch(`/api/exports/${exportJob.id}/file`, { headers: { Authorization: `Bearer ${login.token}` } });
 
   const drafts = await jsonFetch('/api/forms/drafts', { headers: { Authorization: `Bearer ${login.token}` } });
   const analytics = await jsonFetch('/api/analytics', { headers: { Authorization: `Bearer ${login.token}` } });
@@ -83,6 +110,10 @@ async function run() {
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'draft')) throw new Error('Portal draft missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'submitted')) throw new Error('Portal submission missing');
   if (!exportsList.find((job) => job.id === exportJob.id && job.status === 'completed')) throw new Error('Export processing failed');
+  if (downloadedTemplate.fileName !== 'uploaded-intake.pdf') throw new Error('Template storage retrieval failed');
+  if (!listedDocuments.find((entry) => entry.id === uploadedDocument.id)) throw new Error('Client document listing failed');
+  if (Buffer.from(downloadedDocument.contentBase64, 'base64').toString('utf8') !== 'client-uploaded-note') throw new Error('Client document storage retrieval failed');
+  if (!exportFile.fileName.endsWith('.json')) throw new Error('Export file retrieval failed');
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
@@ -92,6 +123,7 @@ async function run() {
     profileId: profile.id,
     noteId: note.id,
     inviteRole: readonlySession.user.role,
+    clientDocumentId: uploadedDocument.id,
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,

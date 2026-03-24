@@ -85,6 +85,14 @@ db.exec(`
     occurred_at TEXT NOT NULL,
     payload TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS client_documents (
+    id TEXT PRIMARY KEY,
+    firm_id TEXT NOT NULL,
+    profile_id TEXT NOT NULL,
+    file_name TEXT NOT NULL,
+    payload TEXT NOT NULL
+  );
 `);
 
 function replaceRows(tableName, rows, mapper) {
@@ -104,6 +112,7 @@ function syncQueryTables(state) {
   replaceRows('form_templates', state.formTemplates || [], (template) => [template.id, template.firmId, template.name, JSON.stringify(template)]);
   replaceRows('document_templates', state.documentTemplates || [], (template) => [template.id, template.firmId, template.name, template.status || 'draft', JSON.stringify(template)]);
   replaceRows('export_jobs', state.exportJobs || [], (job) => [job.id, job.firmId, job.clientId || null, job.type, job.status, JSON.stringify(job)]);
+  replaceRows('client_documents', state.clientDocuments || [], (document) => [document.id, document.firmId, document.profileId, document.fileName, JSON.stringify(document)]);
   replaceRows('notes', state.notes || [], (note) => [note.id, note.firmId, note.profileId, note.createdAt, JSON.stringify(note)]);
   replaceRows('audit_events', state.auditEvents || [], (event) => [event.id, event.firmId, event.action, event.occurredAt, JSON.stringify(event)]);
 }
@@ -154,7 +163,8 @@ export function readQuerySummary() {
     profiles: db.prepare('SELECT COUNT(*) AS count FROM profiles').get().count,
     households: db.prepare('SELECT COUNT(*) AS count FROM households').get().count,
     templates: db.prepare('SELECT COUNT(*) AS count FROM document_templates').get().count,
-    exports: db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get().count
+    exports: db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get().count,
+    clientDocuments: db.prepare('SELECT COUNT(*) AS count FROM client_documents').get().count
   };
 }
 
