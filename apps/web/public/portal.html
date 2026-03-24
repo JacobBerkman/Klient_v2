@@ -94,6 +94,8 @@
     </main>
 
     <script type="module">
+      import { createJsonApiClient, routes } from '/api-contract.js';
+
       const token = new URLSearchParams(window.location.search).get('token');
       const title = document.querySelector('#portal-title');
       const subtitle = document.querySelector('#portal-subtitle');
@@ -108,6 +110,8 @@
       const form = document.querySelector('#portal-form');
       const uploadForm = document.querySelector('#portal-upload-form');
       const draftButton = document.querySelector('[data-save-draft]');
+
+      const api = createJsonApiClient();
 
       const portalState = {
         token,
@@ -345,6 +349,7 @@
           return;
         }
 
+        const data = await api(routes.portal(token));
         const data = await apiRequest(`/api/portal/${token}`);
 
         portalState.data = data;
@@ -370,6 +375,7 @@
 
       async function saveSubmission(status) {
         const payload = buildPayloadFromForm();
+        await api(routes.portalSubmissions(token), {
         await apiRequest(`/api/portal/${token}/submissions`, {
           method: 'POST',
           body: JSON.stringify({ templateId: portalState.selectedTemplateId, status, data: payload })
