@@ -5,6 +5,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 ## What is included
 - admin firm bootstrap and sign-in
 - persistent SQLite-backed local data storage in `data/app.db`
+- per-entity SQLite persistence helpers (profiles, households, forms, templates, exports, and related entities) to avoid relying on one mutable global blob
 - dashboard with stats and recent activity
 - prospects and clients management
 - persisted prospect pipeline board
@@ -39,6 +40,12 @@ Run the smoke test:
 
 ```bash
 node scripts/smoke-test.mjs
+```
+
+Run the regression suite for core advisory entities:
+
+```bash
+node scripts/regression-entity-flows.mjs
 ```
 
 Run the broader local validation bundle:
