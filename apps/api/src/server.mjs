@@ -173,11 +173,15 @@ function baseHeaders() {
 
 function sendError(res, error, requestId) {
   const message = error?.message || 'Request failed';
-  const statusCode = /not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400;
+  const statusCode = Number.isInteger(error?.statusCode)
+    ? error.statusCode
+    : (/not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400);
   json(res, statusCode, {
     message,
     error: {
       message,
+      code: error?.code || null,
+      details: error?.details || null,
       statusCode,
       requestId
     }
@@ -305,7 +309,33 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/client/workspace' && req.method === 'GET') { const result = store.getClientWorkspace(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/client/forms/submissions' && req.method === 'POST') { const result = store.submitClientForm(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/client/uploads' && req.method === 'POST') { const result = store.submitClientUpload(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
-    if (pathname.startsWith('/api/forms/submissions/') && req.method === 'PATCH') { const id = pathname.split('/')[4]; const result = store.updateSubmission(requireUser(req), id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/forms/submissions/') && pathname.split('/').length === 5 && req.method === 'PATCH') { const id = pathname.split('/')[4]; const result = store.updateSubmission(requireUser(req), id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/forms/submissions/') && pathname.includes('/sections/') && pathname.endsWith('/items') && req.method === 'POST') {
+      const parts = pathname.split('/');
+      const submissionId = parts[4];
+      const sectionKey = parts[6];
+      const result = store.createSubmissionSectionItem(requireUser(req), submissionId, sectionKey, await parseBody(req));
+      finalizeLog(201);
+      return json(res, 201, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/forms/submissions/') && pathname.includes('/sections/') && pathname.includes('/items/') && req.method === 'PATCH') {
+      const parts = pathname.split('/');
+      const submissionId = parts[4];
+      const sectionKey = parts[6];
+      const itemKey = parts[8];
+      const result = store.updateSubmissionSectionItem(requireUser(req), submissionId, sectionKey, itemKey, await parseBody(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/forms/submissions/') && pathname.includes('/sections/') && pathname.includes('/items/') && req.method === 'DELETE') {
+      const parts = pathname.split('/');
+      const submissionId = parts[4];
+      const sectionKey = parts[6];
+      const itemKey = parts[8];
+      const result = store.deleteSubmissionSectionItem(requireUser(req), submissionId, sectionKey, itemKey);
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname.startsWith('/api/forms/submissions/') && req.method === 'DELETE') { const id = pathname.split('/')[4]; const result = store.deleteSubmission(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/templates' && req.method === 'GET') { const result = store.listDocumentTemplates(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/templates' && req.method === 'POST') { const result = store.createDocumentTemplate(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }

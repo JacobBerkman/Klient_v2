@@ -1,5 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
+import { createAuthService } from './auth/service.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
@@ -10,6 +12,15 @@ const PERMISSIONS = {
   readonly: ['profiles:read', 'analytics:read'],
   client: ['portal:read', 'client:write']
 };
+const ITEM_KEY_FIELD = '_itemKey';
+
+function createStoreError(message, { statusCode = 400, code = 'BAD_REQUEST', details = null } = {}) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  if (details) error.details = details;
+  return error;
+}
 
 function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission);
@@ -56,6 +67,14 @@ function assertStrongPassword(password) {
 
 function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
+}
+
+function normalizeSectionKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
 
 function seedState() {
@@ -263,6 +282,81 @@ export function createStore() {
     persist();
   }
 
+  function ensureSubmissionWithTemplate(user, submissionId) {
+    const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId);
+    if (!submission) {
+      throw createStoreError('Submission not found.', { statusCode: 404, code: 'SUBMISSION_NOT_FOUND' });
+    }
+    const template = state.formTemplates.find((entry) => entry.id === submission.templateId && entry.firmId === user.firmId);
+    if (!template) {
+      throw createStoreError('Form template not found.', { statusCode: 404, code: 'FORM_TEMPLATE_NOT_FOUND' });
+    }
+    return { submission, template };
+  }
+
+  function resolveRepeatableSection(template, sectionKey) {
+    const key = normalizeSectionKey(sectionKey);
+    const section = (template.sections || []).find((entry) => {
+      return entry.repeatable && (
+        normalizeSectionKey(entry.key) === key
+        || normalizeSectionKey(entry.title) === key
+        || normalizeSectionKey(entry.id) === key
+      );
+    });
+    if (!section) {
+      throw createStoreError('Repeatable section not found.', { statusCode: 404, code: 'REPEATABLE_SECTION_NOT_FOUND', details: { sectionKey } });
+    }
+    const dataPath = normalizeSectionKey(section.key || section.title || section.id || sectionKey);
+    return { section, dataPath };
+  }
+
+  function ensureRepeatableArray(submission, dataPath) {
+    if (!Array.isArray(submission.data[dataPath])) {
+      submission.data[dataPath] = [];
+    }
+    submission.data[dataPath] = submission.data[dataPath].map((entry) => {
+      if (entry && typeof entry === 'object' && entry[ITEM_KEY_FIELD]) return entry;
+      return { ...(entry || {}), [ITEM_KEY_FIELD]: randomUUID() };
+    });
+    return submission.data[dataPath];
+  }
+
+  function validateItem(section, item) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw createStoreError('Item payload must be an object.', { code: 'VALIDATION_ERROR', details: { path: 'item' } });
+    }
+    const allowedFields = new Set((section.fields || []).map((field) => field.key));
+    const submittedFields = Object.keys(item).filter((key) => key !== ITEM_KEY_FIELD);
+    const invalidFields = submittedFields.filter((key) => !allowedFields.has(key));
+    if (invalidFields.length) {
+      throw createStoreError('Item payload contains unknown fields.', {
+        code: 'VALIDATION_ERROR',
+        details: { invalidFields, allowedFields: Array.from(allowedFields) }
+      });
+    }
+  }
+
+  function ensureSubmissionRepeatableItemKeys(submission) {
+    const template = state.formTemplates.find((entry) => entry.id === submission.templateId && entry.firmId === submission.firmId);
+    if (!template) return;
+    let changed = false;
+    (template.sections || []).forEach((section) => {
+      if (!section.repeatable) return;
+      const dataPath = normalizeSectionKey(section.key || section.title || section.id);
+      const items = submission.data?.[dataPath];
+      if (!Array.isArray(items)) return;
+      submission.data[dataPath] = items.map((entry) => {
+        if (entry && typeof entry === 'object' && entry[ITEM_KEY_FIELD]) return entry;
+        changed = true;
+        return { ...(entry || {}), [ITEM_KEY_FIELD]: randomUUID() };
+      });
+    });
+    if (changed) {
+      submission.updatedAt = now();
+      persist();
+    }
+  }
+
   function requireClientProfile(user) {
     requirePermission(user, 'portal:read');
     const profile = state.profiles.find((entry) =>
@@ -333,6 +427,7 @@ export function createStore() {
       const household = profile.householdId ? state.households.find((entry) => entry.id === profile.householdId && entry.firmId === user.firmId) : null;
       const householdMembers = household ? state.householdMembers.filter((entry) => entry.householdId === household.id && entry.firmId === user.firmId) : [];
       const submissions = state.formSubmissions.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
+      submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const stageHistory = state.stageChanges.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
       const notes = state.notes.filter((entry) => entry.profileId === profile.id && entry.firmId === user.firmId).slice().reverse();
       return { profile, household, householdMembers, submissions, stageHistory, notes };
@@ -485,11 +580,13 @@ export function createStore() {
     },
     listFormSubmissions(user, status = null) {
       requirePermission(user, 'profiles:read');
-      return state.formSubmissions
+      const submissions = state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || entry.status === status)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      submissions.forEach(ensureSubmissionRepeatableItemKeys);
+      return submissions;
     },
     getClientWorkspace(user) {
       const profile = requireClientProfile(user);
@@ -497,6 +594,7 @@ export function createStore() {
         .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const templates = state.formTemplates
         .filter((entry) => entry.firmId === user.firmId)
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
@@ -723,6 +821,65 @@ export function createStore() {
       persist();
       return submission;
     },
+    createSubmissionSectionItem(user, submissionId, sectionKey, payload) {
+      requirePermission(user, 'forms:write');
+      const { submission, template } = ensureSubmissionWithTemplate(user, submissionId);
+      const { section, dataPath } = resolveRepeatableSection(template, sectionKey);
+      validateItem(section, payload?.item);
+      const items = ensureRepeatableArray(submission, dataPath);
+      const createdItem = { ...payload.item, [ITEM_KEY_FIELD]: randomUUID() };
+      items.push(createdItem);
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.item_created', {
+        path: `data.${dataPath}[${items.length - 1}]`,
+        sectionKey,
+        itemKey: createdItem[ITEM_KEY_FIELD],
+        changedFields: Object.keys(payload.item || {})
+      });
+      persist();
+      return { submission, item: createdItem };
+    },
+    updateSubmissionSectionItem(user, submissionId, sectionKey, itemKey, payload) {
+      requirePermission(user, 'forms:write');
+      const { submission, template } = ensureSubmissionWithTemplate(user, submissionId);
+      const { section, dataPath } = resolveRepeatableSection(template, sectionKey);
+      validateItem(section, payload?.item || {});
+      const items = ensureRepeatableArray(submission, dataPath);
+      const itemIndex = items.findIndex((entry) => entry?.[ITEM_KEY_FIELD] === itemKey);
+      if (itemIndex < 0) {
+        throw createStoreError('Repeatable item not found.', { statusCode: 404, code: 'REPEATABLE_ITEM_NOT_FOUND', details: { sectionKey, itemKey } });
+      }
+      const nextItem = { ...items[itemIndex], ...payload.item, [ITEM_KEY_FIELD]: itemKey };
+      items[itemIndex] = nextItem;
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.item_updated', {
+        path: `data.${dataPath}[${itemIndex}]`,
+        sectionKey,
+        itemKey,
+        changedFields: Object.keys(payload.item || {})
+      });
+      persist();
+      return { submission, item: nextItem };
+    },
+    deleteSubmissionSectionItem(user, submissionId, sectionKey, itemKey) {
+      requirePermission(user, 'forms:write');
+      const { submission, template } = ensureSubmissionWithTemplate(user, submissionId);
+      const { dataPath } = resolveRepeatableSection(template, sectionKey);
+      const items = ensureRepeatableArray(submission, dataPath);
+      const itemIndex = items.findIndex((entry) => entry?.[ITEM_KEY_FIELD] === itemKey);
+      if (itemIndex < 0) {
+        throw createStoreError('Repeatable item not found.', { statusCode: 404, code: 'REPEATABLE_ITEM_NOT_FOUND', details: { sectionKey, itemKey } });
+      }
+      items.splice(itemIndex, 1);
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.item_deleted', {
+        path: `data.${dataPath}[${itemIndex}]`,
+        sectionKey,
+        itemKey
+      });
+      persist();
+      return { submission, ok: true };
+    },
     deleteSubmission(user, submissionId) {
       requirePermission(user, 'forms:write');
       state.formSubmissions = state.formSubmissions.filter((entry) => !(entry.id === submissionId && entry.firmId === user.firmId));
@@ -755,6 +912,7 @@ export function createStore() {
         .filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const availableTemplates = state.formTemplates
         .filter((entry) => entry.firmId === link.firmId)
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
