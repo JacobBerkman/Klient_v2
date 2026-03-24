@@ -4,9 +4,6 @@ import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTic
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
-const LOGIN_WINDOW_MS = 1000 * 60 * 15;
-const MAX_LOGIN_ATTEMPTS = 5;
-
 const PERMISSIONS = {
   admin: ['*'],
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
@@ -43,10 +40,6 @@ function decryptValue(payload) {
 
 function now() {
   return new Date().toISOString();
-}
-
-function slugify(value) {
-  return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
 function hash(password) {
@@ -252,22 +245,6 @@ export function createStore() {
     }
   }
 
-  function recordLoginAttempt(email, ok) {
-    const normalizedEmail = String(email || '').toLowerCase();
-    const entry = { id: randomUUID(), email: normalizedEmail, ok, createdAt: now() };
-    state.authAttempts = (state.authAttempts || []).filter((attempt) => Date.now() - new Date(attempt.createdAt).getTime() <= LOGIN_WINDOW_MS);
-    state.authAttempts.push(entry);
-    persist();
-  }
-
-  function ensureLoginAllowed(email) {
-    const normalizedEmail = String(email || '').toLowerCase();
-    const attempts = (state.authAttempts || []).filter((attempt) => attempt.email === normalizedEmail && !attempt.ok && Date.now() - new Date(attempt.createdAt).getTime() <= LOGIN_WINDOW_MS);
-    if (attempts.length >= MAX_LOGIN_ATTEMPTS) {
-      throw new Error('Too many failed login attempts. Please wait 15 minutes and try again.');
-    }
-  }
-
   function publicUser(user) {
     return { id: user.id, firmId: user.firmId, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role };
   }
@@ -298,33 +275,27 @@ export function createStore() {
     return profile;
   }
 
+  function createAuthProvider() {
+    if (runtime.authProvider === 'local') {
+      return createLocalAuthProvider({ state, persist, createSession, addAudit });
+    }
+    throw new Error(`Unsupported auth provider: ${runtime.authProvider}.`);
+  }
+
+  const auth = createAuthService({ provider: createAuthProvider() });
+
   return {
     state,
     assertPermission(user, permission) {
       requirePermission(user, permission);
       return true;
     },
-    register({ firmName, firstName, lastName, email, password }) {
-      assertStrongPassword(password);
-      const normalizedEmail = email.toLowerCase();
-      if (state.users.some((user) => user.email === normalizedEmail)) throw new Error('An account with this email already exists.');
-      const firm = { id: randomUUID(), name: firmName, slug: slugify(firmName), createdAt: now() };
-      const user = { id: randomUUID(), firmId: firm.id, email: normalizedEmail, passwordHash: hash(password), firstName, lastName, role: 'admin', createdAt: now() };
-      state.firms.push(firm);
-      state.users.push(user);
-      addAudit(firm.id, user.id, 'firm', firm.id, 'firm.created', { name: firm.name });
-      return createSession(user);
+    auth,
+    register(input) {
+      return auth.register(input);
     },
-    login({ email, password }) {
-      const normalizedEmail = email.toLowerCase();
-      ensureLoginAllowed(normalizedEmail);
-      const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password));
-      if (!user) {
-        recordLoginAttempt(normalizedEmail, false);
-        throw new Error('Invalid email or password.');
-      }
-      recordLoginAttempt(normalizedEmail, true);
-      return createSession(user);
+    login(input) {
+      return auth.login(input);
     },
     requireUser,
     getDashboard(user) {
@@ -710,23 +681,10 @@ export function createStore() {
       return createSession(user);
     },
     requestPasswordReset(email) {
-      const user = state.users.find((entry) => entry.email === email.toLowerCase());
-      if (!user) return { ok: true };
-      const reset = { id: randomUUID(), userId: user.id, token: randomUUID(), createdAt: now() };
-      state.passwordResets.push(reset);
-      persist();
-      return reset;
+      return auth.requestReset({ email });
     },
     resetPassword(input) {
-      assertStrongPassword(input.password);
-      const reset = state.passwordResets.find((entry) => entry.token === input.token);
-      if (!reset) throw new Error('Reset token not found.');
-      const user = state.users.find((entry) => entry.id === reset.userId);
-      if (!user) throw new Error('User not found.');
-      user.passwordHash = hash(input.password);
-      state.passwordResets = state.passwordResets.filter((entry) => entry.id !== reset.id);
-      persist();
-      return { ok: true };
+      return auth.resetPassword(input);
     },
     removeHouseholdMember(user, householdId, clientId) {
       requirePermission(user, 'households:write');
