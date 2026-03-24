@@ -1,3 +1,4 @@
+// @ts-nocheck
 import { hostname } from 'node:os';
 
 function normalizeNodeEnv(value) {

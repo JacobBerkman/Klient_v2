@@ -1,16 +1,17 @@
+// @ts-nocheck
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { SqliteReadRepository } from './repositories/sqlite-read-repository.mjs';
-import { runtime, log } from './runtime.mjs';
-import { ensureDatabaseReady, closeDatabase, readQuerySummary } from './storage.mjs';
-import { createStore } from './store.mjs';
+import { SqliteReadRepository } from './repositories/sqlite-read-repository.js';
+import { runtime, log } from './runtime.js';
+import { ensureDatabaseReady, closeDatabase, readQuerySummary } from './storage.js';
+import { createStore } from './store.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const publicDir = resolve(__dirname, '../../web/public');
+const publicDir = resolve(__dirname, '../../web/dist');
 const store = createStore();
 const reads = new SqliteReadRepository();
 

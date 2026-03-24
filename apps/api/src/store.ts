@@ -1,6 +1,7 @@
+// @ts-nocheck
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
-import { runtime } from './runtime.mjs';
-import { loadState, saveState } from './storage.mjs';
+import { runtime } from './runtime.js';
+import { loadState, saveState } from './storage.js';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const PERMISSIONS = {

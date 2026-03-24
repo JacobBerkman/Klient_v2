@@ -1,5 +1,6 @@
+// @ts-nocheck
 import { DatabaseSync } from 'node:sqlite';
-import { DB_PATH } from '../storage.mjs';
+import { DB_PATH } from '../storage.js';
 
 const db = new DatabaseSync(DB_PATH);
 

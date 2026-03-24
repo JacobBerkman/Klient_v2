@@ -1,7 +1,7 @@
 import { copyFileSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 
-import { DB_PATH } from '../apps/api/src/storage.mjs';
+import { DB_PATH } from '../apps/api/dist/storage.js';
 
 const sourcePath = process.argv[2];
 if (!sourcePath) {

@@ -1,0 +1,13 @@
+declare module 'node:http';
+declare module 'node:crypto';
+declare module 'node:fs';
+declare module 'node:fs/promises';
+declare module 'node:path';
+declare module 'node:url';
+declare module 'node:assert/strict';
+declare module 'node:test';
+declare module 'node:process';
+declare const process: any;
+declare const Buffer: any;
+declare const __dirname: string;
+declare function setTimeout(handler: (...args: any[]) => void, timeout?: number, ...args: any[]): any;

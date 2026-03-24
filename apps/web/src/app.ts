@@ -1,3 +1,4 @@
+// @ts-nocheck
 const state = { token: localStorage.getItem('klient-token') || '', view: 'dashboard', selectedProfileId: null };
 
 const view = document.querySelector('#view');

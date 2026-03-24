@@ -24,7 +24,7 @@ In production, `APP_SECRET` must be set to a long random value.
 
 ## Run locally
 ```bash
-node apps/api/src/server.mjs
+npm run dev
 ```
 
 Then open:

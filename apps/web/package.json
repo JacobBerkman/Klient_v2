@@ -2,5 +2,8 @@
   "name": "@klient/web",
   "private": true,
   "version": "0.3.0",
-  "type": "module"
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && mkdir -p dist && cp public/index.html public/portal.html public/styles.css dist/"
+  }
 }
