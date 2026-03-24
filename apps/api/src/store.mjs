@@ -1,10 +1,15 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
+import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { createAuthService } from './auth/service.mjs';
+import { createAuthService } from './auth/service.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
 import { createAuthService } from './auth/service.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs';
 
-const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const CSRF_TOKEN_TTL_MS = 1000 * 60 * 15;
 const PERMISSIONS = {
@@ -12,6 +17,33 @@ const PERMISSIONS = {
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
   readonly: ['profiles:read', 'analytics:read'],
   client: ['portal:read', 'client:write']
+};
+const ITEM_KEY_FIELD = '_itemKey';
+
+function createStoreError(message, { statusCode = 400, code = 'BAD_REQUEST', details = null } = {}) {
+  const error = new Error(message);
+  error.statusCode = statusCode;
+  error.code = code;
+  if (details) error.details = details;
+  return error;
+}
+const BOARD_COLUMNS = ['discovery', 'gather_oi', 'analysis', 'advisor_proposal_meeting', 'intake', 'on_boarding', 'investment_strategy', 'completed', 'drop_dead_lead', 'drop_nurture'];
+
+
+const SENSITIVE_ACCESS_POLICY = {
+  admin: {
+    profile_view: { allowMasked: true, allowUnmasked: false },
+    compliance_review: { allowMasked: true, allowUnmasked: true },
+    audit_investigation: { allowMasked: true, allowUnmasked: true }
+  },
+  advisor: {
+    profile_view: { allowMasked: true, allowUnmasked: false },
+    client_support: { allowMasked: true, allowUnmasked: true }
+  },
+  readonly: {
+    profile_view: { allowMasked: true, allowUnmasked: false }
+  },
+  client: {}
 };
 
 function can(role, permission) {
@@ -24,25 +56,162 @@ function requirePermission(user, permission) {
   }
 }
 
-function encryptValue(value) {
-  if (!value) return null;
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', APP_SECRET, iv);
-  const encrypted = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
-}
-
-function decryptValue(payload) {
-  if (!payload) return null;
-  const [ivHex, tagHex, dataHex] = payload.split(':');
-  const decipher = createDecipheriv('aes-256-gcm', APP_SECRET, Buffer.from(ivHex, 'hex'));
-  decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
-  return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
-}
-
 function now() {
   return new Date().toISOString();
+}
+
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function toKey(item) {
+  return JSON.stringify(item ?? null);
+}
+
+function summarizeArrayDiff(previous = [], next = []) {
+  const prevMap = new Map(previous.map((item) => [toKey(item), item]));
+  const nextMap = new Map(next.map((item) => [toKey(item), item]));
+  const added = [];
+  const removed = [];
+  for (const [key, value] of nextMap.entries()) {
+    if (!prevMap.has(key)) added.push(value);
+  }
+  for (const [key, value] of prevMap.entries()) {
+    if (!nextMap.has(key)) removed.push(value);
+  }
+  return { added, removed, changed: added.length > 0 || removed.length > 0 };
+}
+
+function summarizeBlueprintDiff(previousBlueprint = { sections: [] }, nextBlueprint = { sections: [] }) {
+  const previousSections = Array.isArray(previousBlueprint?.sections) ? previousBlueprint.sections : [];
+  const nextSections = Array.isArray(nextBlueprint?.sections) ? nextBlueprint.sections : [];
+  const sectionDiff = summarizeArrayDiff(previousSections, nextSections);
+  return {
+    changed: sectionDiff.changed,
+    previousSectionCount: previousSections.length,
+    nextSectionCount: nextSections.length,
+    addedSections: sectionDiff.added,
+    removedSections: sectionDiff.removed
+  };
+}
+
+function createTemplateVersion(template, event, { blueprint, mappings, publishState, diff, actorUserId }) {
+  return {
+    version: (template.versions?.length || 0) + 1,
+    event,
+    blueprint: deepClone(blueprint || template.blueprint || { sections: [] }),
+    mappings: deepClone(mappings || template.mappings || []),
+    formSchema: deepClone(template.formSchema || { sections: [] }),
+    publishState: publishState || template.publishState || 'draft',
+    diff: diff || null,
+    actorUserId: actorUserId || null,
+    createdAt: now()
+  };
+}
+
+function normalizeTemplateAggregate(template, fallbackKind = 'document') {
+  const baseBlueprint = template.blueprint || { sections: [] };
+  const baseMappings = template.mappings || template.mappingRules || [];
+  const basePublishState = template.publishState || template.status || 'draft';
+  const baseFormSchema = template.formSchema || { sections: template.sections || [] };
+  const normalized = {
+    id: template.id,
+    firmId: template.firmId,
+    kind: template.kind || fallbackKind,
+    name: template.name,
+    description: template.description || '',
+    documentMetadata: template.documentMetadata || { fileName: template.fileName || null },
+    extractedFields: template.extractedFields || [],
+    formSchema: baseFormSchema,
+    blueprint: baseBlueprint,
+    mappings: baseMappings,
+    mappingRules: baseMappings,
+    publishState: basePublishState,
+    status: basePublishState,
+    versions: (template.versions || []).map((entry, index) => ({
+      version: entry.version || index + 1,
+      event: entry.event || 'snapshot',
+      blueprint: deepClone(entry.blueprint || baseBlueprint),
+      mappings: deepClone(entry.mappings || baseMappings),
+      formSchema: deepClone(entry.formSchema || baseFormSchema),
+      publishState: entry.publishState || basePublishState,
+      diff: entry.diff || null,
+      actorUserId: entry.actorUserId || null,
+      createdAt: entry.createdAt || template.updatedAt || template.createdAt || now()
+    })),
+    publishTransitions: template.publishTransitions || [],
+    createdAt: template.createdAt || now(),
+    updatedAt: template.updatedAt || template.createdAt || now(),
+    legacy: template.legacy || null
+  };
+  if (!normalized.versions.length) {
+    normalized.versions.push(createTemplateVersion(normalized, 'created', {
+      blueprint: normalized.blueprint,
+      mappings: normalized.mappings,
+      publishState: normalized.publishState
+    }));
+  }
+  return normalized;
+}
+
+function migrateTemplateSystems(state) {
+  state.templateAggregates ||= [];
+  if (state.templateAggregates.length === 0) {
+    const migratedForms = (state.formTemplates || []).map((template) => normalizeTemplateAggregate({
+      ...template,
+      kind: 'form',
+      formSchema: { sections: template.sections || [] },
+      blueprint: { sections: [] },
+      mappings: [],
+      publishState: 'draft',
+      legacy: { source: 'formTemplates', id: template.id }
+    }, 'form'));
+    const migratedDocuments = (state.documentTemplates || []).map((template) => normalizeTemplateAggregate({
+      ...template,
+      kind: 'document',
+      formSchema: { sections: [] },
+      blueprint: template.blueprint || { sections: [] },
+      mappings: template.mappings || [],
+      publishState: template.status || 'draft',
+      legacy: { source: 'documentTemplates', id: template.id }
+    }, 'document'));
+    state.templateAggregates = [...migratedForms, ...migratedDocuments];
+  } else {
+    state.templateAggregates = state.templateAggregates.map((entry) => normalizeTemplateAggregate(entry, entry.kind || 'document'));
+  }
+  state.formTemplates = state.templateAggregates
+    .filter((entry) => entry.kind === 'form')
+    .map((entry) => ({
+      id: entry.id,
+      firmId: entry.firmId,
+      name: entry.name,
+      description: entry.description || '',
+      sections: deepClone(entry.formSchema?.sections || []),
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt
+    }));
+  state.documentTemplates = state.templateAggregates
+    .filter((entry) => entry.kind !== 'form')
+    .map((entry) => ({
+      id: entry.id,
+      firmId: entry.firmId,
+      name: entry.name,
+      fileName: entry.documentMetadata?.fileName || 'template.pdf',
+      blueprint: deepClone(entry.blueprint || { sections: [] }),
+      mappings: deepClone(entry.mappings || []),
+      versions: deepClone(entry.versions || []),
+      status: entry.publishState || 'draft',
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt
+    }));
+function parseIso(value) {
+  const time = new Date(value || '').getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
 function hash(password) {
@@ -57,8 +226,33 @@ function assertStrongPassword(password) {
   }
 }
 
+
+function sanitizeFileName(value = 'file.bin') {
+  return String(value || 'file.bin').replace(/[^a-zA-Z0-9._-]+/g, '-').replace(/-{2,}/g, '-').slice(0, 120) || 'file.bin';
+}
+
+function daysBetween(thenIso, nowMs) {
+  const thenMs = new Date(thenIso || 0).getTime();
+  if (!Number.isFinite(thenMs) || thenMs <= 0) return 0;
+  return Math.floor((nowMs - thenMs) / (1000 * 60 * 60 * 24));
+}
+
 function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
+}
+
+function normalizeSectionKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+function pipelineConflict(message, details = {}) {
+  const error = new Error(message);
+  error.statusCode = 409;
+  error.code = 'PIPELINE_ORDER_CONFLICT';
+  error.details = details;
+  return error;
 }
 
 function seedState() {
@@ -137,6 +331,7 @@ function seedState() {
         phone: '555-111-3333',
         stage: 'discovery',
         stageOrderIndex: 1,
+        pipelineVersion: 1,
         source: { cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10', displayValue: sourceDisplay({ cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10' }) },
         address: { city: 'Austin', state: 'TX' },
         customProfile: {},
@@ -154,6 +349,7 @@ function seedState() {
         phone: '555-111-4444',
         stage: 'analysis',
         stageOrderIndex: 1,
+        pipelineVersion: 1,
         source: { cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15', displayValue: sourceDisplay({ cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15' }) },
         address: { city: 'Houston', state: 'TX' },
         customProfile: {},
@@ -205,7 +401,7 @@ function seedState() {
       createdAt,
       updatedAt: createdAt
     }],
-    exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json' }, createdAt, updatedAt: createdAt }],
+    exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json', object: { bucket: defaultObjectStorage.bucketExports, key: `${firmId}/exports/client-intake-demo.json`, checksum: null, contentType: 'application/json', retentionClass: 'export_artifact' } }, createdAt, updatedAt: createdAt }],
     documentUploads: [{
       id: documentUploadId,
       firmId,
@@ -215,23 +411,201 @@ function seedState() {
       visibility: 'shared',
       status: 'uploaded',
       uploadedBy: 'advisor',
+      object: { bucket: defaultObjectStorage.bucketDocuments, key: `${firmId}/documents/${clientId}/driver-license-demo.pdf`, checksum: null, contentType: 'application/pdf', retentionClass: 'uploaded_document' },
       createdAt,
       updatedAt: createdAt
     }],
+    pendingUploadIntents: [],
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
     portalLinks: [],
-    authAttempts: []
+    authAttempts: [],
+    boardVersions: { [firmId]: 1 }
   };
 }
 
-export function createStore() {
+export function createStore(options = {}) {
+  const state = loadState(seedState);
+  const piiCrypto = new PiiCryptoService({
+    keyProvider: createKeyProvider(runtime, { kmsAdapter: options.kmsAdapter }),
+    legacyKeyId: process.env.PII_LEGACY_KEY_ID || 'legacy-app-secret-v1'
+  });
+export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   const state = loadState(seedState);
   if (!Array.isArray(state.csrfTokens)) state.csrfTokens = [];
+  migrateTemplateSystems(state);
+  saveState(state);
 
   function persist() {
+    migrateTemplateSystems(state);
+  state.pendingUploadIntents ||= [];
+
+  function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
+    return {
+      bucket: metadata.bucket,
+      key: metadata.key,
+      checksum: metadata.checksum || null,
+      contentType: metadata.contentType || 'application/octet-stream',
+      retentionClass: metadata.retentionClass || defaultRetentionClass
+    };
+  }
+
+  function createUploadIntent({ firmId, clientId, fileName, contentType, checksum, category, source }) {
+    const id = randomUUID();
+    const key = `${firmId}/documents/${clientId}/${Date.now()}-${id}-${sanitizeFileName(fileName || 'upload.bin')}`;
+    const object = normalizeObjectMetadata({
+      bucket: objectStorage.bucketDocuments,
+      key,
+      checksum: checksum || null,
+      contentType: contentType || 'application/octet-stream',
+      retentionClass: 'uploaded_document'
+    });
+    const intent = {
+      id,
+      firmId,
+      clientId,
+      category: category || 'general',
+      source: source || 'client',
+      fileName: fileName || 'upload.bin',
+      object,
+      createdAt: now(),
+      expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
+    };
+    state.pendingUploadIntents.push(intent);
+    return intent;
+  }
+
+  async function applyLifecyclePolicies() {
+    const policy = objectStorage.retentionPolicies;
+    const nowMs = Date.now();
+
+    for (const upload of state.documentUploads) {
+      const object = upload.object;
+      if (!object?.bucket || !object?.key) continue;
+      const ageDays = daysBetween(upload.createdAt, nowMs);
+      if (ageDays >= policy.uploaded_document.purgeAfterDays) {
+        await objectStorage.deleteObject(object).catch(() => null);
+        upload.status = 'purged';
+        upload.purgedAt = now();
+      } else if (ageDays >= policy.uploaded_document.archiveAfterDays && upload.status !== 'archived') {
+        upload.status = 'archived';
+        upload.archivedAt = now();
+      }
+    }
+
+    for (const job of state.exportJobs) {
+      const object = job.output?.object;
+      if (!object?.bucket || !object?.key) continue;
+      const ageDays = daysBetween(job.updatedAt || job.createdAt, nowMs);
+      if (ageDays >= policy.export_artifact.purgeAfterDays) {
+        await objectStorage.deleteObject(object).catch(() => null);
+        job.status = job.status === 'completed' ? 'purged' : job.status;
+        job.output = { ...job.output, purgedAt: now() };
+      } else if (ageDays >= policy.export_artifact.archiveAfterDays && !job.output.archivedAt) {
+        job.output = { ...job.output, archivedAt: now() };
+      }
+    }
+
+    persist();
+  }
+  let testHooks = {};
+
+  function persist() {
+    if (typeof testHooks.beforePersist === 'function') {
+      testHooks.beforePersist(state);
+    }
     saveState(state);
+  }
+
+  function getBoardVersion(firmId) {
+    if (!state.boardVersions || typeof state.boardVersions !== 'object') {
+      state.boardVersions = {};
+    }
+    if (!state.boardVersions[firmId]) {
+      state.boardVersions[firmId] = 1;
+    }
+    return state.boardVersions[firmId];
+  }
+
+  function bumpBoardVersion(firmId) {
+    const current = getBoardVersion(firmId);
+    state.boardVersions[firmId] = current + 1;
+    return state.boardVersions[firmId];
+  }
+
+  function listProspectsByStage(firmId, stage, excludedProfileId = null) {
+    return state.profiles
+      .filter((profile) => profile.firmId === firmId && profile.kind === 'prospect' && profile.stage === stage && profile.id !== excludedProfileId)
+      .sort((a, b) => {
+        const indexDiff = (a.stageOrderIndex || Number.MAX_SAFE_INTEGER) - (b.stageOrderIndex || Number.MAX_SAFE_INTEGER);
+        if (indexDiff !== 0) return indexDiff;
+        const updatedDiff = new Date(a.updatedAt || a.createdAt || 0).getTime() - new Date(b.updatedAt || b.createdAt || 0).getTime();
+        if (updatedDiff !== 0) return updatedDiff;
+        return a.id.localeCompare(b.id);
+      });
+  }
+
+  function compactStageIndices(firmId, stage) {
+    const cards = listProspectsByStage(firmId, stage);
+    let changed = false;
+    cards.forEach((card, index) => {
+      const nextIndex = index + 1;
+      if (card.stageOrderIndex !== nextIndex) {
+        card.stageOrderIndex = nextIndex;
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+  function normalizePipelineIndices(firmId, stage = null) {
+    const stages = stage ? [stage] : BOARD_COLUMNS;
+    const normalizedStages = [];
+    for (const currentStage of stages) {
+      if (compactStageIndices(firmId, currentStage)) {
+        normalizedStages.push(currentStage);
+      }
+    }
+    return normalizedStages;
+  }
+
+  function buildBoardPayload(user, conflict = null) {
+    const columns = BOARD_COLUMNS.map((stage) => ({
+      stage,
+      orderingVersion: getBoardVersion(user.firmId),
+      cards: listProspectsByStage(user.firmId, stage)
+    }));
+    return {
+      boardVersion: getBoardVersion(user.firmId),
+      generatedAt: now(),
+      ordering: {
+        mode: 'sequential_stage_index',
+        normalized: true
+      },
+      conflict,
+      columns
+    };
+  }
+
+  function executePipelineTransaction(mutator) {
+    const snapshot = {
+      profiles: state.profiles.map((profile) => ({ ...profile })),
+      stageChangesLength: state.stageChanges.length,
+      auditEventsLength: state.auditEvents.length,
+      boardVersions: { ...(state.boardVersions || {}) }
+    };
+    try {
+      const result = mutator();
+      persist();
+      return result;
+    } catch (error) {
+      state.profiles = snapshot.profiles;
+      state.stageChanges = state.stageChanges.slice(0, snapshot.stageChangesLength);
+      state.auditEvents = state.auditEvents.slice(0, snapshot.auditEventsLength);
+      state.boardVersions = snapshot.boardVersions;
+      throw error;
+    }
   }
 
   function createSession(user) {
@@ -277,9 +651,86 @@ export function createStore() {
     return publicUser(user);
   }
 
-  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}) {
+  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}, options = {}) {
     state.auditEvents.push({ id: randomUUID(), firmId, actorUserId, entityType, entityId, action, occurredAt: now(), metadata });
-    persist();
+    if (options.persist !== false) {
+      persist();
+    }
+  }
+
+  function ensureSubmissionWithTemplate(user, submissionId) {
+    const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId);
+    if (!submission) {
+      throw createStoreError('Submission not found.', { statusCode: 404, code: 'SUBMISSION_NOT_FOUND' });
+    }
+    const template = state.formTemplates.find((entry) => entry.id === submission.templateId && entry.firmId === user.firmId);
+    if (!template) {
+      throw createStoreError('Form template not found.', { statusCode: 404, code: 'FORM_TEMPLATE_NOT_FOUND' });
+    }
+    return { submission, template };
+  }
+
+  function resolveRepeatableSection(template, sectionKey) {
+    const key = normalizeSectionKey(sectionKey);
+    const section = (template.sections || []).find((entry) => {
+      return entry.repeatable && (
+        normalizeSectionKey(entry.key) === key
+        || normalizeSectionKey(entry.title) === key
+        || normalizeSectionKey(entry.id) === key
+      );
+    });
+    if (!section) {
+      throw createStoreError('Repeatable section not found.', { statusCode: 404, code: 'REPEATABLE_SECTION_NOT_FOUND', details: { sectionKey } });
+    }
+    const dataPath = normalizeSectionKey(section.key || section.title || section.id || sectionKey);
+    return { section, dataPath };
+  }
+
+  function ensureRepeatableArray(submission, dataPath) {
+    if (!Array.isArray(submission.data[dataPath])) {
+      submission.data[dataPath] = [];
+    }
+    submission.data[dataPath] = submission.data[dataPath].map((entry) => {
+      if (entry && typeof entry === 'object' && entry[ITEM_KEY_FIELD]) return entry;
+      return { ...(entry || {}), [ITEM_KEY_FIELD]: randomUUID() };
+    });
+    return submission.data[dataPath];
+  }
+
+  function validateItem(section, item) {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) {
+      throw createStoreError('Item payload must be an object.', { code: 'VALIDATION_ERROR', details: { path: 'item' } });
+    }
+    const allowedFields = new Set((section.fields || []).map((field) => field.key));
+    const submittedFields = Object.keys(item).filter((key) => key !== ITEM_KEY_FIELD);
+    const invalidFields = submittedFields.filter((key) => !allowedFields.has(key));
+    if (invalidFields.length) {
+      throw createStoreError('Item payload contains unknown fields.', {
+        code: 'VALIDATION_ERROR',
+        details: { invalidFields, allowedFields: Array.from(allowedFields) }
+      });
+    }
+  }
+
+  function ensureSubmissionRepeatableItemKeys(submission) {
+    const template = state.formTemplates.find((entry) => entry.id === submission.templateId && entry.firmId === submission.firmId);
+    if (!template) return;
+    let changed = false;
+    (template.sections || []).forEach((section) => {
+      if (!section.repeatable) return;
+      const dataPath = normalizeSectionKey(section.key || section.title || section.id);
+      const items = submission.data?.[dataPath];
+      if (!Array.isArray(items)) return;
+      submission.data[dataPath] = items.map((entry) => {
+        if (entry && typeof entry === 'object' && entry[ITEM_KEY_FIELD]) return entry;
+        changed = true;
+        return { ...(entry || {}), [ITEM_KEY_FIELD]: randomUUID() };
+      });
+    });
+    if (changed) {
+      submission.updatedAt = now();
+      persist();
+    }
   }
 
   function requireClientProfile(user) {
@@ -302,6 +753,54 @@ export function createStore() {
   }
 
   const auth = createAuthService({ provider: createAuthProvider() });
+
+  function getSensitivePolicy(role, purpose = 'profile_view') {
+    return SENSITIVE_ACCESS_POLICY[role]?.[purpose] || null;
+  }
+
+  function maskSsn(value) {
+    return value ? `***-**-${value.slice(-4)}` : null;
+  }
+
+  function maskTaxId(value) {
+    return value ? `**-${value.slice(-4)}` : null;
+  }
+
+  function readSensitiveRecord(profile, field) {
+    if (!profile?.pii) return null;
+    const envelopeField = `${field}Encrypted`;
+    if (profile.pii[envelopeField]) return profile.pii[envelopeField];
+    const legacyField = `${field}Ciphertext`;
+    return profile.pii[legacyField] || null;
+  }
+
+  function writeSensitiveRecord(profile, field, value) {
+    profile.pii ||= { maskingPolicy: 'role_based' };
+    profile.pii[`${field}Encrypted`] = piiCrypto.encrypt(value);
+    delete profile.pii[`${field}Ciphertext`];
+  }
+
+  function reencryptProfilePii(profile) {
+    if (!profile?.pii) return { changed: false, fields: [] };
+    const fields = ['ssn', 'taxId'];
+    const changedFields = [];
+    fields.forEach((field) => {
+      const current = readSensitiveRecord(profile, field);
+      if (!current) return;
+      if (!piiCrypto.needsReencryption(current)) {
+        if (typeof current === 'string') {
+          profile.pii[`${field}Encrypted`] = piiCrypto.encrypt(piiCrypto.decrypt(current));
+          delete profile.pii[`${field}Ciphertext`];
+          changedFields.push(field);
+        }
+        return;
+      }
+      profile.pii[`${field}Encrypted`] = piiCrypto.reencrypt(current);
+      delete profile.pii[`${field}Ciphertext`];
+      changedFields.push(field);
+    });
+    return { changed: changedFields.length > 0, fields: changedFields };
+  }
 
   return {
     state,
@@ -370,6 +869,7 @@ export function createStore() {
       persist();
       return { ok: true, nextToken };
     },
+    _internal: { piiCrypto },
     getDashboard(user) {
       requirePermission(user, 'profiles:read');
       const profiles = state.profiles.filter((profile) => profile.firmId === user.firmId);
@@ -405,6 +905,7 @@ export function createStore() {
       const household = profile.householdId ? state.households.find((entry) => entry.id === profile.householdId && entry.firmId === user.firmId) : null;
       const householdMembers = household ? state.householdMembers.filter((entry) => entry.householdId === household.id && entry.firmId === user.firmId) : [];
       const submissions = state.formSubmissions.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
+      submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const stageHistory = state.stageChanges.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
       const notes = state.notes.filter((entry) => entry.profileId === profile.id && entry.firmId === user.firmId).slice().reverse();
       return { profile, household, householdMembers, submissions, stageHistory, notes };
@@ -414,7 +915,7 @@ export function createStore() {
       const createdAt = now();
       const inStage = state.profiles.filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === (input.stage || 'discovery')).length;
       const profile = {
-        pii: { maskingPolicy: 'role_based', ssnCiphertext: encryptValue(input.ssn), taxIdCiphertext: encryptValue(input.taxId) },
+        pii: { maskingPolicy: 'role_based', ssnEncrypted: piiCrypto.encrypt(input.ssn), taxIdEncrypted: piiCrypto.encrypt(input.taxId) },
         id: randomUUID(),
         firmId: user.firmId,
         advisorUserId: user.id,
@@ -427,6 +928,7 @@ export function createStore() {
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
         stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
+        pipelineVersion: input.kind === 'prospect' ? 1 : null,
         address: input.address || {},
         customProfile: input.customProfile || {},
         householdId: input.householdId || null,
@@ -450,11 +952,11 @@ export function createStore() {
       if (!profile) throw new Error('Profile not found.');
       const nextPatch = { ...patch };
       if ('ssn' in nextPatch) {
-        profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: encryptValue(nextPatch.ssn), taxIdCiphertext: profile.pii?.taxIdCiphertext || null };
+        writeSensitiveRecord(profile, 'ssn', nextPatch.ssn);
         delete nextPatch.ssn;
       }
       if ('taxId' in nextPatch) {
-        profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: profile.pii?.ssnCiphertext || null, taxIdCiphertext: encryptValue(nextPatch.taxId) };
+        writeSensitiveRecord(profile, 'taxId', nextPatch.taxId);
         delete nextPatch.taxId;
       }
       Object.assign(profile, nextPatch, { updatedAt: now() });
@@ -463,37 +965,118 @@ export function createStore() {
       return profile;
     },
     moveProfileStage(user, profileId, stage, beforeProfileId = null) {
+      return this.reorderBoard(user, { profileId, toStage: stage, beforeProfileId });
+    },
+    reorderBoard(user, input) {
       requirePermission(user, 'pipeline:write');
-      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
-      const sameStage = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === stage && entry.id !== profileId).sort((a,b)=>(a.stageOrderIndex||0)-(b.stageOrderIndex||0));
-      const previousStage = profile.stage || null;
-      let nextIndex = sameStage.length + 1;
-      if (beforeProfileId) {
-        const before = sameStage.find((entry) => entry.id === beforeProfileId);
-        if (before) {
-          nextIndex = before.stageOrderIndex || 1;
-          sameStage.filter((entry) => (entry.stageOrderIndex || 0) >= nextIndex).forEach((entry) => { entry.stageOrderIndex = (entry.stageOrderIndex || 0) + 1; });
-        }
+      const { profileId, toStage, beforeProfileId = null, expectedVersion = null, expectedUpdatedAt = null, expectedBoardVersion = null } = input || {};
+      if (!profileId || !toStage) {
+        throw new Error('Reorder payload must include profileId and toStage.');
       }
-      profile.kind = 'prospect';
-      profile.stage = stage;
-      profile.stageOrderIndex = nextIndex;
-      profile.updatedAt = now();
-      state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, fromStage: previousStage, toStage: stage, changedByUserId: user.id, changedAt: profile.updatedAt });
-      addAudit(user.firmId, user.id, 'profile', profile.id, 'pipeline.stage_changed', { fromStage: previousStage, toStage: stage });
-      persist();
-      return profile;
+      if (!BOARD_COLUMNS.includes(toStage)) {
+        throw new Error(`Unknown stage: ${toStage}.`);
+      }
+
+      try {
+        return executePipelineTransaction(() => {
+          const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
+          if (!profile) throw new Error('Profile not found.');
+
+          const currentVersion = Number(profile.pipelineVersion || 1);
+          if (expectedVersion !== null && Number(expectedVersion) !== currentVersion) {
+            throw pipelineConflict('Profile ordering version mismatch.', {
+              profileId,
+              expectedVersion: Number(expectedVersion),
+              actualVersion: currentVersion,
+              profileUpdatedAt: profile.updatedAt
+            });
+          }
+          if (expectedUpdatedAt && String(expectedUpdatedAt) !== String(profile.updatedAt)) {
+            throw pipelineConflict('Profile updatedAt mismatch.', {
+              profileId,
+              expectedUpdatedAt,
+              actualUpdatedAt: profile.updatedAt
+            });
+          }
+          const boardVersion = getBoardVersion(user.firmId);
+          if (expectedBoardVersion !== null && Number(expectedBoardVersion) !== Number(boardVersion)) {
+            throw pipelineConflict('Board version mismatch.', {
+              expectedBoardVersion: Number(expectedBoardVersion),
+              actualBoardVersion: Number(boardVersion)
+            });
+          }
+
+          const destinationCards = listProspectsByStage(user.firmId, toStage, profile.id);
+          let insertIndex = destinationCards.length;
+          if (beforeProfileId) {
+            insertIndex = destinationCards.findIndex((entry) => entry.id === beforeProfileId);
+            if (insertIndex < 0) {
+              throw new Error('beforeProfileId was not found in the destination stage.');
+            }
+          }
+
+          const previousStage = profile.stage || null;
+          const movedAt = now();
+          profile.kind = 'prospect';
+          profile.stage = toStage;
+          profile.updatedAt = movedAt;
+          profile.pipelineVersion = currentVersion + 1;
+
+          destinationCards.splice(insertIndex, 0, profile);
+          destinationCards.forEach((card, index) => {
+            card.stageOrderIndex = index + 1;
+          });
+
+          if (previousStage && previousStage !== toStage) {
+            compactStageIndices(user.firmId, previousStage);
+          }
+
+          normalizePipelineIndices(user.firmId, toStage);
+          const normalized = normalizePipelineIndices(user.firmId, previousStage);
+          if (normalized.length > 0) {
+            addAudit(user.firmId, user.id, 'pipeline', profile.id, 'pipeline.indices_normalized', { stages: normalized }, { persist: false });
+          }
+          bumpBoardVersion(user.firmId);
+          state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, fromStage: previousStage, toStage, changedByUserId: user.id, changedAt: movedAt });
+          addAudit(user.firmId, user.id, 'profile', profile.id, 'pipeline.stage_changed', { fromStage: previousStage, toStage, beforeProfileId }, { persist: false });
+          return {
+            moved: profile,
+            board: buildBoardPayload(user),
+            conflict: null
+          };
+        });
+      } catch (error) {
+        if (error?.code === 'PIPELINE_ORDER_CONFLICT') {
+          error.details = {
+            ...(error.details || {}),
+            serverBoard: buildBoardPayload(user, {
+              code: error.code,
+              message: error.message
+            })
+          };
+        }
+        throw error;
+      }
+    },
+    normalizeBoardOrdering(user) {
+      requirePermission(user, 'pipeline:write');
+      return executePipelineTransaction(() => {
+        const normalizedStages = normalizePipelineIndices(user.firmId);
+        if (normalizedStages.length > 0) {
+          bumpBoardVersion(user.firmId);
+          addAudit(user.firmId, user.id, 'pipeline', user.firmId, 'pipeline.indices_normalized', { stages: normalizedStages }, { persist: false });
+        }
+        return {
+          normalizedStages,
+          board: buildBoardPayload(user),
+          changed: normalizedStages.length > 0
+        };
+      });
     },
     getBoard(user) {
       requirePermission(user, 'profiles:read');
-      const columns = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
-      return columns.map((stage) => ({
-        stage,
-        cards: state.profiles
-          .filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === stage)
-          .sort((a, b) => (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0))
-      }));
+      normalizePipelineIndices(user.firmId);
+      return buildBoardPayload(user);
     },
     listStageHistory(user, profileId) {
       requirePermission(user, 'profiles:read');
@@ -545,23 +1128,68 @@ export function createStore() {
     },
     listFormTemplates(user) {
       requirePermission(user, 'profiles:read');
-      return state.formTemplates.filter((entry) => entry.firmId === user.firmId);
+      return state.templateAggregates
+        .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
+        .map((entry) => ({
+          id: entry.id,
+          firmId: entry.firmId,
+          name: entry.name,
+          description: entry.description || '',
+          sections: entry.formSchema?.sections || [],
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt
+        }));
     },
     createFormTemplate(user, input) {
       requirePermission(user, 'forms:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, description: input.description || '', sections: input.sections || [], createdAt: now(), updatedAt: now() };
-      state.formTemplates.push(template);
-      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.created', { name: template.name });
+      const createdAt = now();
+      const template = normalizeTemplateAggregate({
+        id: randomUUID(),
+        firmId: user.firmId,
+        kind: 'form',
+        name: input.name,
+        description: input.description || '',
+        documentMetadata: { fileName: null },
+        extractedFields: [],
+        formSchema: { sections: input.sections || [] },
+        blueprint: { sections: [] },
+        mappings: [],
+        publishState: 'draft',
+        versions: [{
+          version: 1,
+          event: 'created',
+          blueprint: { sections: [] },
+          mappings: [],
+          formSchema: { sections: input.sections || [] },
+          publishState: 'draft',
+          createdAt
+        }],
+        publishTransitions: [],
+        createdAt,
+        updatedAt: createdAt
+      }, 'form');
+      state.templateAggregates.push(template);
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'form_template.created', { name: template.name });
       persist();
-      return template;
+      return { id: template.id, firmId: template.firmId, name: template.name, description: template.description, sections: template.formSchema.sections, createdAt, updatedAt: createdAt };
     },
     listFormSubmissions(user, status = null) {
       requirePermission(user, 'profiles:read');
+      const submissions = state.formSubmissions
+      const currentTime = Date.now();
       return state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || entry.status === status)
+        .map((entry) => {
+          if (entry.lock && parseIso(entry.lock.expiresAt) <= currentTime) {
+            return { ...entry, lock: null };
+          }
+          return entry;
+        })
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      submissions.forEach(ensureSubmissionRepeatableItemKeys);
+      return submissions;
     },
     getClientWorkspace(user) {
       const profile = requireClientProfile(user);
@@ -569,6 +1197,10 @@ export function createStore() {
         .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      const templates = state.templateAggregates
+        .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
+        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.formSchema?.sections || [] }));
+      submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const templates = state.formTemplates
         .filter((entry) => entry.firmId === user.firmId)
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
@@ -590,7 +1222,7 @@ export function createStore() {
     submitClientForm(user, input) {
       requirePermission(user, 'client:write');
       const profile = requireClientProfile(user);
-      const template = state.formTemplates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId);
+      const template = state.templateAggregates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId && entry.kind === 'form');
       if (!template) throw new Error('Form template not found.');
       const status = input.status === 'draft' ? 'draft' : 'submitted';
       const submission = {
@@ -601,6 +1233,7 @@ export function createStore() {
         status,
         data: input.data && typeof input.data === 'object' ? input.data : {},
         source: 'client_portal',
+        createdByUserId: user.id,
         createdAt: now(),
         updatedAt: now()
       };
@@ -609,69 +1242,292 @@ export function createStore() {
       persist();
       return submission;
     },
+    async createClientUploadPresign(user, input) {
+      requirePermission(user, 'client:write');
+      const profile = requireClientProfile(user);
+      const intent = createUploadIntent({
+        firmId: user.firmId,
+        clientId: profile.id,
+        fileName: input.fileName,
+        contentType: input.contentType,
+        checksum: input.checksum,
+        category: input.category,
+        source: 'client'
+      });
+      const presigned = await objectStorage.createPresignedUploadUrl({ ...intent.object, expiresInSeconds: Number(input.expiresInSeconds || 900) });
+      persist();
+      return { uploadId: intent.id, object: intent.object, presigned };
+    },
     submitClientUpload(user, input) {
       requirePermission(user, 'client:write');
       const profile = requireClientProfile(user);
+      const intent = input.uploadId ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === user.firmId) : null;
+      const object = normalizeObjectMetadata(input.object || intent?.object || {}, 'uploaded_document');
       const upload = {
         id: randomUUID(),
         firmId: user.firmId,
         clientId: profile.id,
-        name: input.name || 'Client upload',
-        category: input.category || 'general',
+        name: input.name || input.fileName || intent?.fileName || 'Client upload',
+        category: input.category || intent?.category || 'general',
         visibility: 'shared',
         status: 'uploaded',
         uploadedBy: 'client',
         notes: input.notes || '',
+        object,
         createdAt: now(),
         updatedAt: now()
       };
+      state.pendingUploadIntents = state.pendingUploadIntents.filter((entry) => entry.id !== input.uploadId);
       state.documentUploads.push(upload);
-      addAudit(user.firmId, user.id, 'document_upload', upload.id, 'client.document_upload.created', { category: upload.category });
+      addAudit(user.firmId, user.id, 'document_upload', upload.id, 'client.document_upload.created', { category: upload.category, key: upload.object.key });
       persist();
       return upload;
+    },
+    async createClientUploadDownloadUrl(user, uploadId) {
+      requirePermission(user, 'client:write');
+      const profile = requireClientProfile(user);
+      const upload = state.documentUploads.find((entry) => entry.id === uploadId && entry.firmId === user.firmId && entry.clientId === profile.id);
+      if (!upload) throw new Error('Upload not found.');
+      return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 });
     },
     listFormDrafts(user) {
       return this.listFormSubmissions(user, 'draft');
     },
     createFormSubmission(user, input) {
       requirePermission(user, 'forms:write');
-      const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status: input.status || 'draft', data: input.data || {}, createdAt: now(), updatedAt: now() };
+      const status = input.status || 'draft';
+      const createdAt = now();
+      const submission = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        clientId: input.clientId,
+        templateId: input.templateId,
+        status,
+        data: input.data || {},
+        createdByUserId: user.id,
+        createdAt,
+        updatedAt: createdAt,
+        revisionId: status === 'draft' ? 1 : null,
+        lock: null
+      };
       state.formSubmissions.push(submission);
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', { templateId: input.templateId, clientId: input.clientId });
       persist();
       return submission;
     },
+    acquireDraftLock(user, submissionId, input = {}) {
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft');
+      if (!submission) throw new Error('Draft submission not found.');
+
+      const nowTime = Date.now();
+      const leaseMs = Math.max(5_000, Math.min(120_000, Number(input.leaseMs || 30_000)));
+      const existing = submission.lock;
+      const active = existing && parseIso(existing.expiresAt) > nowTime;
+      const force = input.force === true;
+      if (active && existing.holderUserId !== user.id && !force) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft is currently locked by another advisor.',
+          lock: existing,
+          revisionId: submission.revisionId || 1
+        };
+      }
+
+      const lock = {
+        leaseId: randomUUID(),
+        holderUserId: user.id,
+        acquiredAt: now(),
+        expiresAt: new Date(nowTime + leaseMs).toISOString(),
+        leaseMs
+      };
+      submission.lock = lock;
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.lock_acquired', { leaseMs, force });
+      persist();
+      return { ok: true, lock, revisionId: submission.revisionId || 1 };
+    },
+    releaseDraftLock(user, submissionId, leaseId = '') {
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft');
+      if (!submission) throw new Error('Draft submission not found.');
+      const existing = submission.lock;
+      if (!existing) return { ok: true, released: false };
+      if (existing.holderUserId !== user.id && leaseId && existing.leaseId !== leaseId) {
+        throw new Error('Cannot release lock held by another advisor.');
+      }
+      submission.lock = null;
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.lock_released', {});
+      persist();
+      return { ok: true, released: true };
+    },
+    reviseDraftSubmission(user, submissionId, input = {}) {
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft');
+      if (!submission) throw new Error('Draft submission not found.');
+
+      const currentRevision = Number(submission.revisionId || 1);
+      const expectedRevision = Number(input.expectedRevisionId || 0);
+      if (!Number.isFinite(expectedRevision) || expectedRevision < 1) {
+        throw new Error('expectedRevisionId is required.');
+      }
+
+      const lock = submission.lock;
+      const lockActive = lock && parseIso(lock.expiresAt) > Date.now();
+      if (!lockActive || lock.holderUserId !== user.id || lock.leaseId !== input.leaseId) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft lease is missing, expired, or held by another advisor.',
+          mergePrompt: {
+            type: 'lease_conflict',
+            localRevisionId: expectedRevision,
+            serverRevisionId: currentRevision,
+            suggestion: 'Refresh draft, compare changes, and reacquire lock before saving.'
+          },
+          serverDraft: submission
+        };
+      }
+
+      if (expectedRevision !== currentRevision) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft has changed since your last load.',
+          mergePrompt: {
+            type: 'revision_conflict',
+            localRevisionId: expectedRevision,
+            serverRevisionId: currentRevision,
+            suggestion: 'Show merge preview and choose keep-local, keep-server, or manual merge.'
+          },
+          serverDraft: submission
+        };
+      }
+
+      submission.data = input.data && typeof input.data === 'object' ? input.data : {};
+      submission.revisionId = currentRevision + 1;
+      submission.updatedAt = now();
+      if (input.status === 'submitted') {
+        submission.status = 'submitted';
+        submission.lock = null;
+      } else {
+        submission.lock = {
+          ...lock,
+          expiresAt: new Date(Date.now() + Number(lock.leaseMs || 30_000)).toISOString()
+        };
+      }
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.draft_revised', {
+        revisionId: submission.revisionId,
+        submitted: submission.status === 'submitted'
+      });
+      persist();
+      return { ok: true, submission };
+    },
     listDocumentTemplates(user) {
       requirePermission(user, 'templates:write');
-      return state.documentTemplates.filter((entry) => entry.firmId === user.firmId);
+      return state.templateAggregates
+        .filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form')
+        .map((entry) => ({
+          id: entry.id,
+          firmId: entry.firmId,
+          name: entry.name,
+          fileName: entry.documentMetadata?.fileName || 'template.pdf',
+          blueprint: entry.blueprint || { sections: [] },
+          mappings: entry.mappings || [],
+          versions: entry.versions || [],
+          status: entry.publishState || 'draft',
+          publishState: entry.publishState || 'draft',
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt
+        }));
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
-      state.documentTemplates.push(template);
-      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
+      const createdAt = now();
+      const template = normalizeTemplateAggregate({
+        id: randomUUID(),
+        firmId: user.firmId,
+        kind: 'document',
+        name: input.name,
+        description: input.description || '',
+        documentMetadata: { fileName: input.fileName || 'template.pdf' },
+        extractedFields: input.fields || [],
+        formSchema: { sections: input.formSections || [] },
+        blueprint: input.blueprint || { sections: [] },
+        mappings: input.mappings || [],
+        publishState: 'draft',
+        versions: [{
+          version: 1,
+          event: 'created',
+          blueprint: input.blueprint || { sections: [] },
+          mappings: input.mappings || [],
+          formSchema: { sections: input.formSections || [] },
+          publishState: 'draft',
+          createdAt,
+          actorUserId: user.id
+        }],
+        publishTransitions: [],
+        createdAt,
+        updatedAt: createdAt
+      }, 'document');
+      state.templateAggregates.push(template);
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.created', { name: template.name });
       persist();
-      return template;
+      return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
     },
     updateTemplateMappings(user, templateId, mappings) {
       requirePermission(user, 'templates:write');
-      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
-      template.mappings = mappings;
-      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
+      const nextMappings = mappings || [];
+      const prevMappings = template.mappings || [];
+      const mappingDiff = summarizeArrayDiff(prevMappings, nextMappings);
+      template.mappings = nextMappings;
+      template.mappingRules = nextMappings;
       template.updatedAt = now();
-      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.mappings_updated', { count: mappings.length });
+      template.versions.push(createTemplateVersion(template, 'mappings_updated', {
+        mappings: nextMappings,
+        blueprint: template.blueprint,
+        actorUserId: user.id,
+        diff: { mappings: mappingDiff, blueprint: summarizeBlueprintDiff(template.blueprint, template.blueprint) }
+      }));
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.mappings_updated', { count: nextMappings.length });
       persist();
-      return template;
+      return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
     },
     publishTemplate(user, templateId) {
       requirePermission(user, 'templates:write');
-      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
+      const previousState = template.publishState || 'draft';
+      template.publishState = 'published';
       template.status = 'published';
       template.updatedAt = now();
+      template.publishTransitions ||= [];
+      template.publishTransitions.push({ from: previousState, to: 'published', at: template.updatedAt, actorUserId: user.id });
+      template.versions.push(createTemplateVersion(template, 'published', {
+        mappings: template.mappings,
+        blueprint: template.blueprint,
+        publishState: 'published',
+        actorUserId: user.id,
+        diff: { publishTransition: { from: previousState, to: 'published' } }
+      }));
       persist();
-      return template;
+      return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
+    },
+    listTemplateVersions(user, templateId) {
+      requirePermission(user, 'templates:write');
+      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
+      if (!template) throw new Error('Template not found.');
+      return template.versions || [];
+    },
+    listPublishTransitions(user, templateId) {
+      requirePermission(user, 'templates:write');
+      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
+      if (!template) throw new Error('Template not found.');
+      return template.publishTransitions || [];
     },
     listExports(user) {
       requirePermission(user, 'exports:write');
@@ -705,7 +1561,7 @@ export function createStore() {
       persist();
       return updated;
     },
-    processQueuedExports() {
+    async processQueuedExports() {
       const result = processExportQueueTick({
         workerId: 'api-process-endpoint',
         limit: 10,
@@ -716,7 +1572,9 @@ export function createStore() {
             job.metadata.simulateFailuresRemaining = failCount - 1;
             throw new Error(`Simulated export failure for ${job.id}`);
           }
-          return { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
+          const fileName = `${job.type}-${Date.now()}.json`;
+          const key = `${job.firmId}/exports/${fileName}`;
+          return { fileName, preview: { clientId: job.clientId, templateId: job.templateId }, object: { bucket: objectStorage.bucketExports, key, checksum: null, contentType: 'application/json', retentionClass: 'export_artifact' } };
         }
       });
       return { processed: result.processed, leased: result.leased, failed: result.failed };
@@ -759,6 +1617,7 @@ export function createStore() {
     resetPassword(input) {
       return auth.resetPassword(input);
     },
+    objectStorage,
     removeHouseholdMember(user, householdId, clientId) {
       requirePermission(user, 'households:write');
       state.householdMembers = state.householdMembers.filter((entry) => !(entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId));
@@ -796,6 +1655,65 @@ export function createStore() {
       persist();
       return submission;
     },
+    createSubmissionSectionItem(user, submissionId, sectionKey, payload) {
+      requirePermission(user, 'forms:write');
+      const { submission, template } = ensureSubmissionWithTemplate(user, submissionId);
+      const { section, dataPath } = resolveRepeatableSection(template, sectionKey);
+      validateItem(section, payload?.item);
+      const items = ensureRepeatableArray(submission, dataPath);
+      const createdItem = { ...payload.item, [ITEM_KEY_FIELD]: randomUUID() };
+      items.push(createdItem);
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.item_created', {
+        path: `data.${dataPath}[${items.length - 1}]`,
+        sectionKey,
+        itemKey: createdItem[ITEM_KEY_FIELD],
+        changedFields: Object.keys(payload.item || {})
+      });
+      persist();
+      return { submission, item: createdItem };
+    },
+    updateSubmissionSectionItem(user, submissionId, sectionKey, itemKey, payload) {
+      requirePermission(user, 'forms:write');
+      const { submission, template } = ensureSubmissionWithTemplate(user, submissionId);
+      const { section, dataPath } = resolveRepeatableSection(template, sectionKey);
+      validateItem(section, payload?.item || {});
+      const items = ensureRepeatableArray(submission, dataPath);
+      const itemIndex = items.findIndex((entry) => entry?.[ITEM_KEY_FIELD] === itemKey);
+      if (itemIndex < 0) {
+        throw createStoreError('Repeatable item not found.', { statusCode: 404, code: 'REPEATABLE_ITEM_NOT_FOUND', details: { sectionKey, itemKey } });
+      }
+      const nextItem = { ...items[itemIndex], ...payload.item, [ITEM_KEY_FIELD]: itemKey };
+      items[itemIndex] = nextItem;
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.item_updated', {
+        path: `data.${dataPath}[${itemIndex}]`,
+        sectionKey,
+        itemKey,
+        changedFields: Object.keys(payload.item || {})
+      });
+      persist();
+      return { submission, item: nextItem };
+    },
+    deleteSubmissionSectionItem(user, submissionId, sectionKey, itemKey) {
+      requirePermission(user, 'forms:write');
+      const { submission, template } = ensureSubmissionWithTemplate(user, submissionId);
+      const { dataPath } = resolveRepeatableSection(template, sectionKey);
+      const items = ensureRepeatableArray(submission, dataPath);
+      const itemIndex = items.findIndex((entry) => entry?.[ITEM_KEY_FIELD] === itemKey);
+      if (itemIndex < 0) {
+        throw createStoreError('Repeatable item not found.', { statusCode: 404, code: 'REPEATABLE_ITEM_NOT_FOUND', details: { sectionKey, itemKey } });
+      }
+      items.splice(itemIndex, 1);
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.item_deleted', {
+        path: `data.${dataPath}[${itemIndex}]`,
+        sectionKey,
+        itemKey
+      });
+      persist();
+      return { submission, ok: true };
+    },
     deleteSubmission(user, submissionId) {
       requirePermission(user, 'forms:write');
       state.formSubmissions = state.formSubmissions.filter((entry) => !(entry.id === submissionId && entry.firmId === user.firmId));
@@ -828,6 +1746,10 @@ export function createStore() {
         .filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      const availableTemplates = state.templateAggregates
+        .filter((entry) => entry.firmId === link.firmId && entry.kind === 'form')
+        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.formSchema?.sections || [] }));
+      submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const availableTemplates = state.formTemplates
         .filter((entry) => entry.firmId === link.firmId)
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
@@ -841,7 +1763,7 @@ export function createStore() {
       const link = state.portalLinks.find((entry) => entry.token === token);
       if (!link) throw new Error('Portal link not found.');
       const templateId = input.templateId || 'portal';
-      const template = templateId === 'portal' ? null : state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === link.firmId);
+      const template = templateId === 'portal' ? null : state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === link.firmId && entry.kind === 'form');
       if (templateId !== 'portal' && !template) throw new Error('Form template not found.');
       const status = input.status === 'draft' ? 'draft' : 'submitted';
       const submission = {
@@ -851,6 +1773,7 @@ export function createStore() {
         templateId,
         status,
         data: input.data && typeof input.data === 'object' ? input.data : {},
+        createdByUserId: null,
         createdAt: now(),
         updatedAt: now(),
         source: 'portal'
@@ -859,51 +1782,218 @@ export function createStore() {
       persist();
       return submission;
     },
+    async createPortalUploadPresign(token, input) {
+      const link = state.portalLinks.find((entry) => entry.token === token);
+      if (!link) throw new Error('Portal link not found.');
+      const intent = createUploadIntent({
+        firmId: link.firmId,
+        clientId: link.profileId,
+        fileName: input.fileName,
+        contentType: input.contentType,
+        checksum: input.checksum,
+        category: input.category,
+        source: 'portal'
+      });
+      const presigned = await objectStorage.createPresignedUploadUrl({ ...intent.object, expiresInSeconds: Number(input.expiresInSeconds || 900) });
+      persist();
+      return { uploadId: intent.id, object: intent.object, presigned };
+    },
     portalUpload(token, input) {
       const link = state.portalLinks.find((entry) => entry.token === token);
       if (!link) throw new Error('Portal link not found.');
+      const intent = input.uploadId ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === link.firmId) : null;
+      const object = normalizeObjectMetadata(input.object || intent?.object || {}, 'uploaded_document');
       const upload = {
         id: randomUUID(),
         firmId: link.firmId,
         clientId: link.profileId,
-        name: input.name || 'Portal upload',
-        category: input.category || 'general',
+        name: input.name || input.fileName || intent?.fileName || 'Portal upload',
+        category: input.category || intent?.category || 'general',
         visibility: 'shared',
         status: 'uploaded',
         uploadedBy: 'portal',
         notes: input.notes || '',
+        object,
         createdAt: now(),
         updatedAt: now()
       };
+      state.pendingUploadIntents = state.pendingUploadIntents.filter((entry) => entry.id !== input.uploadId);
       state.documentUploads.push(upload);
       persist();
       return upload;
     },
+    async createPortalUploadDownloadUrl(token, uploadId) {
+      const link = state.portalLinks.find((entry) => entry.token === token);
+      if (!link) throw new Error('Portal link not found.');
+      const upload = state.documentUploads.find((entry) => entry.id === uploadId && entry.firmId === link.firmId && entry.clientId === link.profileId);
+      if (!upload) throw new Error('Upload not found.');
+      return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 });
+    },
     getAnalytics(user) {
       requirePermission(user, 'analytics:read');
-      const prospects = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect');
+      const firmProfiles = state.profiles.filter((entry) => entry.firmId === user.firmId);
+      const prospects = firmProfiles.filter((entry) => entry.kind === 'prospect');
       const stageCounts = prospects.reduce((acc, profile) => {
-        acc[profile.stage || 'unassigned'] = (acc[profile.stage || 'unassigned'] || 0) + 1;
+        const stage = profile.stage || 'unassigned';
+        acc[stage] = (acc[stage] || 0) + 1;
         return acc;
       }, {});
+      const totalProspects = prospects.length || 1;
+      const stageOrder = ['discovery', 'gather_oi', 'analysis', 'advisor_proposal_meeting', 'intake', 'on_boarding', 'investment_strategy', 'completed'];
+      const funnel = stageOrder.map((stage) => {
+        const count = stageCounts[stage] || 0;
+        return { stage, count, conversionRate: Number((count / totalProspects).toFixed(4)) };
+      });
+      const firstStage = stageCounts[stageOrder[0]] || 0;
+      const lastStage = stageCounts.completed || 0;
+
+      const stageEvents = state.stageChanges
+        .filter((entry) => entry.firmId === user.firmId)
+        .slice()
+        .sort((a, b) => parseIso(a.changedAt) - parseIso(b.changedAt));
+      const stageEntryTimes = new Map();
+      stageEvents.forEach((event) => {
+        const key = `${event.clientId}:${event.toStage || 'unassigned'}`;
+        if (!stageEntryTimes.has(key)) stageEntryTimes.set(key, parseIso(event.changedAt));
+      });
+      const stageAging = Object.fromEntries(stageOrder.map((stage) => [stage, { count: 0, avgDays: 0 }]));
+      const nowTime = Date.now();
+      prospects.forEach((profile) => {
+        const stage = profile.stage || 'unassigned';
+        if (!stageAging[stage]) stageAging[stage] = { count: 0, avgDays: 0 };
+        const enteredAt = stageEntryTimes.get(`${profile.id}:${stage}`) || parseIso(profile.createdAt);
+        const ageDays = Math.max(0, (nowTime - enteredAt) / 86_400_000);
+        stageAging[stage].count += 1;
+        stageAging[stage].avgDays += ageDays;
+      });
+      Object.values(stageAging).forEach((entry) => {
+        if (entry.count) entry.avgDays = Number((entry.avgDays / entry.count).toFixed(2));
+      });
+
+      const templateIds = new Set(state.formTemplates.filter((entry) => entry.firmId === user.firmId).map((entry) => entry.id));
+      const formsByTemplate = {};
+      templateIds.forEach((templateId) => {
+        formsByTemplate[templateId] = { templateId, drafts: 0, submitted: 0, completionRate: 0 };
+      });
+      state.formSubmissions
+        .filter((entry) => entry.firmId === user.firmId)
+        .forEach((submission) => {
+          formsByTemplate[submission.templateId] ||= { templateId: submission.templateId, drafts: 0, submitted: 0, completionRate: 0 };
+          if (submission.status === 'submitted') formsByTemplate[submission.templateId].submitted += 1;
+          else formsByTemplate[submission.templateId].drafts += 1;
+        });
+      Object.values(formsByTemplate).forEach((entry) => {
+        const total = entry.drafts + entry.submitted;
+        entry.completionRate = total ? Number((entry.submitted / total).toFixed(4)) : 0;
+      });
+
+      const advisors = state.users.filter((entry) => entry.firmId === user.firmId && ['advisor', 'admin'].includes(entry.role));
+      const advisorProductivity = advisors.map((advisor) => {
+        const assignedProfiles = firmProfiles.filter((entry) => entry.advisorUserId === advisor.id);
+        const notesCount = state.notes.filter((entry) => entry.firmId === user.firmId && entry.createdByUserId === advisor.id).length;
+        const stageMoves = state.stageChanges.filter((entry) => entry.firmId === user.firmId && entry.changedByUserId === advisor.id).length;
+        const submissions = state.formSubmissions.filter((entry) => entry.firmId === user.firmId && entry.createdByUserId === advisor.id).length;
+        return {
+          advisorUserId: advisor.id,
+          advisorName: `${advisor.firstName} ${advisor.lastName}`,
+          profilesManaged: assignedProfiles.length,
+          notesAuthored: notesCount,
+          stageMoves,
+          formSubmissionsAuthored: submissions,
+          productivityScore: assignedProfiles.length + notesCount + stageMoves + submissions
+        };
+      });
+
       return {
         stageCounts,
-        profileCount: state.profiles.filter((entry) => entry.firmId === user.firmId).length,
+        funnel,
+        overallConversionRate: firstStage ? Number((lastStage / firstStage).toFixed(4)) : 0,
+        stageAging,
+        formCompletionRates: Object.values(formsByTemplate),
+        advisorProductivity,
+        profileCount: firmProfiles.length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
-        templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length
+        templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form').length
+        templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length,
+        avgProspectStageAgeDays: Number(average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2))
       };
     },
-    getMaskedSensitiveData(user, profileId) {
+
+    async createExportDownloadUrl(user, exportId) {
+      requirePermission(user, 'exports:write');
+      const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
+      if (!job) throw new Error('Export not found.');
+      const object = job.output?.object;
+      if (!object) throw new Error('Export output object not available.');
+      return objectStorage.createPresignedDownloadUrl({ ...object, expiresInSeconds: 900 });
+    },
+    async runLifecyclePolicies(user) {
+      requirePermission(user, 'exports:write');
+      await applyLifecyclePolicies();
+      return {
+        uploads: state.documentUploads.filter((entry) => entry.firmId === user.firmId),
+        exports: state.exportJobs.filter((entry) => entry.firmId === user.firmId),
+        retention: objectStorage.retentionPolicies
+      };
+    },
+    getMaskedSensitiveData(user, profileId, options = {}) {
       requirePermission(user, 'profiles:read');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
-      const ssn = decryptValue(profile.pii?.ssnCiphertext);
-      const taxId = decryptValue(profile.pii?.taxIdCiphertext);
-      return {
-        ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
-        taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
+      const purpose = options.purpose || 'profile_view';
+      const requestedUnmask = Boolean(options.unmask);
+      const policy = getSensitivePolicy(user.role, purpose);
+      if (!policy?.allowMasked || (requestedUnmask && !policy.allowUnmasked)) {
+        addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', { purpose, requestedUnmask, role: user.role });
+        throw new Error('Sensitive data access denied for role/purpose combination.');
+      }
+      const ssn = piiCrypto.decrypt(readSensitiveRecord(profile, 'ssn'));
+      const taxId = piiCrypto.decrypt(readSensitiveRecord(profile, 'taxId'));
+      const response = {
+        ssnMasked: maskSsn(ssn),
+        taxIdMasked: maskTaxId(taxId)
       };
+      if (requestedUnmask) {
+        response.ssn = ssn;
+        response.taxId = taxId;
+      }
+      addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
+        purpose,
+        requestedUnmask,
+        grantedUnmask: requestedUnmask,
+        role: user.role,
+        fields: requestedUnmask ? ['ssn', 'taxId'] : ['ssnMasked', 'taxIdMasked']
+      });
+      return response;
+    },
+    reencryptSensitiveData(options = {}) {
+      const profiles = state.profiles.filter((entry) => entry.firmId === options.firmId || !options.firmId);
+      let rotatedProfiles = 0;
+      let rotatedFields = 0;
+      profiles.forEach((profile) => {
+        const result = reencryptProfilePii(profile);
+        if (result.changed) {
+          rotatedProfiles += 1;
+          rotatedFields += result.fields.length;
+          profile.updatedAt = now();
+        }
+      });
+      const actorUserId = options.actorUserId || 'system';
+      const actorFirmId = options.firmId || profiles[0]?.firmId || 'system';
+      addAudit(actorFirmId, actorUserId, 'pii', 'rotation', 'pii.rotation.completed', {
+        rotatedProfiles,
+        rotatedFields,
+        activeKeyId: piiCrypto.keyProvider.getActiveKey().keyId
+      });
+      persist();
+      return { rotatedProfiles, rotatedFields };
+    },
+    __setTestHooks(hooks = {}) {
+      testHooks = { ...hooks };
+    },
+    __clearTestHooks() {
+      testHooks = {};
     }
   };
 }
