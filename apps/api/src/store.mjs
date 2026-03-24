@@ -205,6 +205,14 @@ function seedState() {
 
 export function createStore() {
   const state = loadState(seedState);
+  const authSecurityActions = new Set([
+    'auth.login',
+    'auth.logout',
+    'auth.password_reset.requested',
+    'auth.password_reset.completed',
+    'auth.invite.accepted'
+  ]);
+  const sensitiveEntities = new Set(['sensitive_profile_data']);
 
   function persist() {
     saveState(state);
@@ -250,6 +258,7 @@ export function createStore() {
       const normalizedEmail = email.toLowerCase();
       const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password));
       if (!user) throw new Error('Invalid email or password.');
+      addAudit(user.firmId, user.id, 'session', user.id, 'auth.login', { email: user.email });
       return createSession(user);
     },
     requireUser,
@@ -518,10 +527,38 @@ export function createStore() {
       persist();
       return { processed };
     },
-    listAudit(user) {
-      return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();
+    listAudit(user, filters = {}) {
+      const actorUserId = String(filters.actorUserId || '').trim();
+      const entityType = String(filters.entityType || '').trim();
+      const action = String(filters.action || '').trim();
+      const fromDate = String(filters.fromDate || '').trim();
+      const toDate = String(filters.toDate || '').trim();
+      const sensitiveOnly = filters.sensitiveOnly === true;
+      const authSecurityOnly = filters.authSecurityOnly === true;
+      const fromTimestamp = fromDate ? Date.parse(fromDate) : null;
+      const toTimestamp = toDate ? Date.parse(toDate.length <= 10 ? `${toDate}T23:59:59.999Z` : toDate) : null;
+
+      return state.auditEvents
+        .filter((entry) => entry.firmId === user.firmId)
+        .filter((entry) => !actorUserId || entry.actorUserId === actorUserId)
+        .filter((entry) => !entityType || entry.entityType === entityType)
+        .filter((entry) => !action || entry.action === action)
+        .filter((entry) => {
+          if (!fromTimestamp) return true;
+          return Date.parse(entry.occurredAt) >= fromTimestamp;
+        })
+        .filter((entry) => {
+          if (!toTimestamp) return true;
+          return Date.parse(entry.occurredAt) <= toTimestamp;
+        })
+        .filter((entry) => !sensitiveOnly || sensitiveEntities.has(entry.entityType) || entry.action.includes('sensitive'))
+        .filter((entry) => !authSecurityOnly || authSecurityActions.has(entry.action) || entry.action.startsWith('security.'))
+        .slice()
+        .reverse();
     },
     logout(token) {
+      const session = state.sessions.find((entry) => entry.token === token);
+      if (session) addAudit(session.firmId, session.userId, 'session', session.userId, 'auth.logout', {});
       state.sessions = state.sessions.filter((entry) => entry.token !== token);
       persist();
       return { ok: true };
@@ -544,6 +581,7 @@ export function createStore() {
       const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hash(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, createdAt: now() };
       state.users.push(user);
       state.invites = state.invites.filter((entry) => entry.id !== invite.id);
+      addAudit(user.firmId, user.id, 'invite', invite.id, 'auth.invite.accepted', { email: user.email, role: user.role });
       persist();
       return createSession(user);
     },
@@ -552,6 +590,7 @@ export function createStore() {
       if (!user) return { ok: true };
       const reset = { id: randomUUID(), userId: user.id, token: randomUUID(), createdAt: now() };
       state.passwordResets.push(reset);
+      addAudit(user.firmId, user.id, 'password_reset', reset.id, 'auth.password_reset.requested', { email: user.email });
       persist();
       return reset;
     },
@@ -562,6 +601,7 @@ export function createStore() {
       if (!user) throw new Error('User not found.');
       user.passwordHash = hash(input.password);
       state.passwordResets = state.passwordResets.filter((entry) => entry.id !== reset.id);
+      addAudit(user.firmId, user.id, 'password_reset', reset.id, 'auth.password_reset.completed', {});
       persist();
       return { ok: true };
     },
@@ -682,6 +722,7 @@ export function createStore() {
       if (!profile) throw new Error('Profile not found.');
       const ssn = decryptValue(profile.pii?.ssnCiphertext);
       const taxId = decryptValue(profile.pii?.taxIdCiphertext);
+      addAudit(user.firmId, user.id, 'sensitive_profile_data', profile.id, 'profile.sensitive_accessed', { fields: ['ssn', 'taxId'] });
       return {
         ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
         taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null

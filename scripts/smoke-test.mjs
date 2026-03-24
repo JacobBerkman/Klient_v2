@@ -75,6 +75,14 @@ async function run() {
   const drafts = await jsonFetch('/api/forms/drafts', { headers: { Authorization: `Bearer ${login.token}` } });
   const analytics = await jsonFetch('/api/analytics', { headers: { Authorization: `Bearer ${login.token}` } });
   const detail = await jsonFetch(`/api/profiles/${profile.id}`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const sensitiveRead = await jsonFetch(`/api/profiles/${profile.id}/sensitive`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const today = new Date().toISOString().slice(0, 10);
+  const actorFilteredAudit = await jsonFetch(`/api/audit?actor=${encodeURIComponent(login.user.id)}`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const entityFilteredAudit = await jsonFetch('/api/audit?entityType=sensitive_profile_data', { headers: { Authorization: `Bearer ${login.token}` } });
+  const actionFilteredAudit = await jsonFetch('/api/audit?action=profile.sensitive_accessed', { headers: { Authorization: `Bearer ${login.token}` } });
+  const dateRangeAudit = await jsonFetch(`/api/audit?from=${today}&to=${today}`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const sensitiveAudit = await jsonFetch('/api/audit?sensitiveOnly=true', { headers: { Authorization: `Bearer ${login.token}` } });
+  const authSecurityAudit = await jsonFetch('/api/audit?authSecurityOnly=true', { headers: { Authorization: `Bearer ${login.token}` } });
   const dashboard = await jsonFetch('/api/dashboard', { headers: { Authorization: `Bearer ${login.token}` } });
   await jsonFetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
 
@@ -86,6 +94,13 @@ async function run() {
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
+  if (!sensitiveRead.ssnMasked) throw new Error('Sensitive read response missing');
+  if (!actorFilteredAudit.every((event) => event.actorUserId === login.user.id)) throw new Error('Actor filter failed');
+  if (!entityFilteredAudit.length || !entityFilteredAudit.every((event) => event.entityType === 'sensitive_profile_data')) throw new Error('Entity type filter failed');
+  if (!actionFilteredAudit.length || !actionFilteredAudit.every((event) => event.action === 'profile.sensitive_accessed')) throw new Error('Action filter failed');
+  if (!dateRangeAudit.length || !dateRangeAudit.every((event) => event.occurredAt.startsWith(today))) throw new Error('Date range filter failed');
+  if (!sensitiveAudit.find((event) => event.action === 'profile.sensitive_accessed')) throw new Error('Sensitive-only filter failed');
+  if (!authSecurityAudit.find((event) => event.action === 'auth.login')) throw new Error('Auth/security filter failed');
 
   console.log(JSON.stringify({
     login: login.user.email,
@@ -95,7 +110,15 @@ async function run() {
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,
-    templateStatus: published.status
+    templateStatus: published.status,
+    filteredAuditCounts: {
+      actor: actorFilteredAudit.length,
+      entity: entityFilteredAudit.length,
+      action: actionFilteredAudit.length,
+      dateRange: dateRangeAudit.length,
+      sensitive: sensitiveAudit.length,
+      authSecurity: authSecurityAudit.length
+    }
   }, null, 2));
 }
 

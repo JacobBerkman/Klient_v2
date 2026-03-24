@@ -12,7 +12,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - dynamic form template and submission flows
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
-- audit trail and analytics views
+- audit trail and analytics views, including audit filters for actor/entity/action/date range plus sensitive and auth/security event scopes
 - invite flow and password reset endpoints
 - internal web UI served by the backend
 - Docker + compose deployment artifacts

@@ -1,4 +1,9 @@
-const state = { token: localStorage.getItem('klient-token') || '', view: 'dashboard', selectedProfileId: null };
+const state = {
+  token: localStorage.getItem('klient-token') || '',
+  view: 'dashboard',
+  selectedProfileId: null,
+  auditFilters: { actor: '', entityType: '', action: '', from: '', to: '', sensitiveOnly: false, authSecurityOnly: false }
+};
 
 const view = document.querySelector('#view');
 const authStatus = document.querySelector('#auth-status');
@@ -187,8 +192,77 @@ async function renderExports() {
 }
 
 async function renderAudit() {
-  const events = await api('/api/audit');
-  view.innerHTML = '<h2>Audit</h2>' + renderItems(events, (event) => `<div class="item"><strong>${event.action}</strong><div class="muted">${event.occurredAt}</div><pre>${JSON.stringify(event.metadata, null, 2)}</pre></div>`);
+  const allEvents = await api('/api/audit');
+  const uniqueActors = [...new Set(allEvents.map((event) => event.actorUserId).filter(Boolean))];
+  const uniqueEntities = [...new Set(allEvents.map((event) => event.entityType).filter(Boolean))];
+  const uniqueActions = [...new Set(allEvents.map((event) => event.action).filter(Boolean))];
+  const query = new URLSearchParams();
+  if (state.auditFilters.actor) query.set('actor', state.auditFilters.actor);
+  if (state.auditFilters.entityType) query.set('entityType', state.auditFilters.entityType);
+  if (state.auditFilters.action) query.set('action', state.auditFilters.action);
+  if (state.auditFilters.from) query.set('from', state.auditFilters.from);
+  if (state.auditFilters.to) query.set('to', state.auditFilters.to);
+  if (state.auditFilters.sensitiveOnly) query.set('sensitiveOnly', 'true');
+  if (state.auditFilters.authSecurityOnly) query.set('authSecurityOnly', 'true');
+  const events = await api(`/api/audit${query.size ? `?${query.toString()}` : ''}`);
+
+  view.innerHTML = `
+    <h2>Audit</h2>
+    <form id="audit-filter-form" class="item">
+      <div class="grid two compact-grid">
+        <label>Actor
+          <select name="actor">
+            <option value="">All actors</option>
+            ${uniqueActors.map((actor) => `<option value="${actor}" ${state.auditFilters.actor === actor ? 'selected' : ''}>${actor}</option>`).join('')}
+          </select>
+        </label>
+        <label>Entity type
+          <select name="entityType">
+            <option value="">All entities</option>
+            ${uniqueEntities.map((type) => `<option value="${type}" ${state.auditFilters.entityType === type ? 'selected' : ''}>${type}</option>`).join('')}
+          </select>
+        </label>
+        <label>Action
+          <select name="action">
+            <option value="">All actions</option>
+            ${uniqueActions.map((action) => `<option value="${action}" ${state.auditFilters.action === action ? 'selected' : ''}>${action}</option>`).join('')}
+          </select>
+        </label>
+        <label>From date <input name="from" type="date" value="${state.auditFilters.from || ''}" /></label>
+        <label>To date <input name="to" type="date" value="${state.auditFilters.to || ''}" /></label>
+      </div>
+      <div class="row">
+        <label><input type="checkbox" name="sensitiveOnly" ${state.auditFilters.sensitiveOnly ? 'checked' : ''} /> Sensitive-data events</label>
+        <label><input type="checkbox" name="authSecurityOnly" ${state.auditFilters.authSecurityOnly ? 'checked' : ''} /> Auth/security events</label>
+      </div>
+      <div class="actions-row">
+        <button type="submit">Apply filters</button>
+        <button type="button" id="clear-audit-filters">Clear</button>
+        <span class="muted">${events.length} matching event(s)</span>
+      </div>
+    </form>
+    ${renderItems(events, (event) => `<div class="item"><strong>${event.action}</strong><div class="muted">${event.occurredAt} • actor ${event.actorUserId} • ${event.entityType}:${event.entityId}</div><pre>${JSON.stringify(event.metadata, null, 2)}</pre></div>`)}
+  `;
+
+  document.querySelector('#audit-filter-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    state.auditFilters = {
+      actor: String(form.get('actor') || ''),
+      entityType: String(form.get('entityType') || ''),
+      action: String(form.get('action') || ''),
+      from: String(form.get('from') || ''),
+      to: String(form.get('to') || ''),
+      sensitiveOnly: form.get('sensitiveOnly') === 'on',
+      authSecurityOnly: form.get('authSecurityOnly') === 'on'
+    };
+    await renderAudit();
+  });
+
+  document.querySelector('#clear-audit-filters').addEventListener('click', async () => {
+    state.auditFilters = { actor: '', entityType: '', action: '', from: '', to: '', sensitiveOnly: false, authSecurityOnly: false };
+    await renderAudit();
+  });
 }
 
 async function renderAnalytics() {
