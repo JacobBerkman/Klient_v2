@@ -6,6 +6,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - admin firm bootstrap and sign-in
 - persistent SQLite-backed local data storage in `data/app.db`
 - dashboard with stats and recent activity
+- dashboard analytics highlights (funnel conversion, bottlenecks, form/export completion, advisor activity)
 - prospects and clients management
 - persisted prospect pipeline board
 - households and member linking
@@ -13,6 +14,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
 - audit trail and analytics views
+- analytics view with prospect funnel conversion, stage aging, bottleneck reporting, form completion rates, export usage, and advisor activity
 - invite flow and password reset endpoints
 - internal web UI served by the backend
 - Docker + compose deployment artifacts

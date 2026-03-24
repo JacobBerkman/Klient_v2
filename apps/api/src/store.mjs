@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
 import { loadState, saveState } from './storage.mjs';
+import { buildAnalyticsSummary } from './analytics.mjs';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const PERMISSIONS = {
@@ -258,6 +259,17 @@ export function createStore() {
       const profiles = state.profiles.filter((profile) => profile.firmId === user.firmId);
       const prospects = profiles.filter((profile) => profile.kind === 'prospect');
       const clients = profiles.filter((profile) => profile.kind === 'client');
+      const analytics = buildAnalyticsSummary({
+        prospects,
+        profiles,
+        households: state.households.filter((household) => household.firmId === user.firmId),
+        documentTemplates: state.documentTemplates.filter((template) => template.firmId === user.firmId),
+        formSubmissions: state.formSubmissions.filter((submission) => submission.firmId === user.firmId),
+        exportJobs: state.exportJobs.filter((job) => job.firmId === user.firmId),
+        stageChanges: state.stageChanges.filter((entry) => entry.firmId === user.firmId),
+        auditEvents: state.auditEvents.filter((event) => event.firmId === user.firmId),
+        users: state.users.filter((entry) => entry.firmId === user.firmId)
+      });
       return {
         firm: state.firms.find((firm) => firm.id === user.firmId),
         stats: {
@@ -267,6 +279,13 @@ export function createStore() {
           households: state.households.filter((household) => household.firmId === user.firmId).length,
           forms: state.formSubmissions.filter((submission) => submission.firmId === user.firmId).length,
           exports: state.exportJobs.filter((job) => job.firmId === user.firmId).length
+        },
+        analyticsHighlights: {
+          completionRatePct: analytics.funnel.completionRatePct,
+          bottleneckCount: analytics.bottlenecks.count,
+          formCompletionRatePct: analytics.formCompletion.completionRatePct,
+          exportCompletionRatePct: analytics.exportUsage.completionRatePct,
+          activeAdvisors: analytics.advisorActivity.totalActiveAdvisors
         },
         recentProfiles: profiles.slice(-5).reverse(),
         recentAuditEvents: state.auditEvents.filter((event) => event.firmId === user.firmId).slice(-10).reverse()
@@ -502,6 +521,7 @@ export function createStore() {
       if (!job) throw new Error('Export not found.');
       job.status = 'queued';
       job.updatedAt = now();
+      addAudit(user.firmId, user.id, 'export_job', job.id, 'export_job.retried', { type: job.type, clientId: job.clientId });
       persist();
       return job;
     },
@@ -664,17 +684,17 @@ export function createStore() {
     getAnalytics(user) {
       requirePermission(user, 'analytics:read');
       const prospects = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect');
-      const stageCounts = prospects.reduce((acc, profile) => {
-        acc[profile.stage || 'unassigned'] = (acc[profile.stage || 'unassigned'] || 0) + 1;
-        return acc;
-      }, {});
-      return {
-        stageCounts,
-        profileCount: state.profiles.filter((entry) => entry.firmId === user.firmId).length,
-        householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
-        exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
-        templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length
-      };
+      return buildAnalyticsSummary({
+        prospects,
+        profiles: state.profiles.filter((entry) => entry.firmId === user.firmId),
+        households: state.households.filter((entry) => entry.firmId === user.firmId),
+        documentTemplates: state.documentTemplates.filter((entry) => entry.firmId === user.firmId),
+        formSubmissions: state.formSubmissions.filter((entry) => entry.firmId === user.firmId),
+        exportJobs: state.exportJobs.filter((entry) => entry.firmId === user.firmId),
+        stageChanges: state.stageChanges.filter((entry) => entry.firmId === user.firmId),
+        auditEvents: state.auditEvents.filter((entry) => entry.firmId === user.firmId),
+        users: state.users.filter((entry) => entry.firmId === user.firmId)
+      });
     },
     getMaskedSensitiveData(user, profileId) {
       requirePermission(user, 'profiles:read');

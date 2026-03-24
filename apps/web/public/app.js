@@ -25,6 +25,10 @@ function renderItems(items, render) {
   return `<div class="list">${items.map(render).join('')}</div>`;
 }
 
+function pct(value) {
+  return `${Number(value || 0).toFixed(1)}%`;
+}
+
 async function refreshPrimaryClientOptions() {
   try {
     const clients = await api('/api/profiles?kind=client');
@@ -49,10 +53,19 @@ function wireProfileButtons() {
 
 async function renderDashboard() {
   const data = await api('/api/dashboard');
+  const highlights = data.analyticsHighlights || {};
   view.innerHTML = `
     <h2>Dashboard</h2>
     <div class="stat-grid">
       ${Object.entries(data.stats).map(([key, value]) => `<div class="stat"><strong>${value}</strong><div class="muted">${key}</div></div>`).join('')}
+    </div>
+    <h3>Analytics Highlights</h3>
+    <div class="stat-grid">
+      <div class="stat"><strong>${pct(highlights.completionRatePct)}</strong><div class="muted">prospect funnel completion</div></div>
+      <div class="stat"><strong>${highlights.bottleneckCount || 0}</strong><div class="muted">pipeline bottlenecks</div></div>
+      <div class="stat"><strong>${pct(highlights.formCompletionRatePct)}</strong><div class="muted">form completion</div></div>
+      <div class="stat"><strong>${pct(highlights.exportCompletionRatePct)}</strong><div class="muted">export completion</div></div>
+      <div class="stat"><strong>${highlights.activeAdvisors || 0}</strong><div class="muted">active advisors</div></div>
     </div>
     <h3>Recent Profiles</h3>
     ${renderItems(data.recentProfiles, (profile) => `<div class="item"><strong>${profile.firstName} ${profile.lastName}</strong> <span class="badge">${profile.kind}</span><div class="muted">${profile.source?.displayValue || 'No source'}</div><button data-profile-id="${profile.id}">Open Profile</button></div>`)}
@@ -193,7 +206,78 @@ async function renderAudit() {
 
 async function renderAnalytics() {
   const analytics = await api('/api/analytics');
-  view.innerHTML = `<h2>Analytics</h2><pre>${JSON.stringify(analytics, null, 2)}</pre>`;
+  const summary = analytics.summary || {};
+  const stageAging = summary.stageAging?.perStage || [];
+  const bottlenecks = summary.bottlenecks?.stages || [];
+  const formCompletion = summary.formCompletion || {};
+  const exportUsage = summary.exportUsage || {};
+  const advisorActivity = summary.advisorActivity?.advisors || [];
+
+  view.innerHTML = `
+    <h2>Analytics</h2>
+    <div class="grid two">
+      <div class="item">
+        <h3>Prospect Funnel Conversion</h3>
+        <div class="muted">Completed ${summary.funnel?.completed || 0} of ${summary.funnel?.entered || 0} (${pct(summary.funnel?.completionRatePct)})</div>
+        ${renderItems(summary.funnel?.byStage || [], (stage) => `
+          <div class="item compact">
+            <strong>${stage.stage}</strong>
+            <div class="muted">Count: ${stage.count}</div>
+            <div class="muted">${stage.nextStage ? `To ${stage.nextStage}: ${pct(stage.conversionToNextPct)}` : 'Final stage'}</div>
+          </div>
+        `)}
+      </div>
+      <div class="item">
+        <h3>Stage Aging</h3>
+        <div class="muted">Average age across all active prospects: ${summary.stageAging?.overallAverageAgeDays || 0} days</div>
+        ${renderItems(stageAging, (entry) => `
+          <div class="item compact">
+            <strong>${entry.stage}</strong>
+            <div class="muted">Prospects: ${entry.prospectCount}</div>
+            <div class="muted">Avg age: ${entry.averageAgeDays} days • Oldest: ${entry.oldestAgeDays} days</div>
+          </div>
+        `)}
+      </div>
+      <div class="item">
+        <h3>Bottlenecks</h3>
+        ${bottlenecks.length ? renderItems(bottlenecks, (entry) => `
+          <div class="item compact">
+            <strong>${entry.stage}</strong> <span class="badge subtle">${entry.severity}</span>
+            <div class="muted">${entry.prospectCount} prospects • ${entry.averageAgeDays} avg days</div>
+          </div>
+        `) : '<div class="item compact muted">No bottlenecks detected.</div>'}
+      </div>
+      <div class="item">
+        <h3>Form Completion Rates</h3>
+        <div class="muted">Submitted ${formCompletion.submittedCount || 0} / ${((formCompletion.submittedCount || 0) + (formCompletion.draftCount || 0))} (${pct(formCompletion.completionRatePct)})</div>
+        ${renderItems(formCompletion.byTemplate || [], (template) => `
+          <div class="item compact">
+            <strong>${template.templateId}</strong>
+            <div class="muted">Drafts: ${template.draftCount} • Submitted: ${template.submittedCount}</div>
+            <div class="muted">Completion: ${pct(template.completionRatePct)}</div>
+          </div>
+        `)}
+      </div>
+      <div class="item">
+        <h3>Export Usage</h3>
+        <div class="muted">Completed ${exportUsage.completedExports || 0}/${exportUsage.totalExports || 0} (${pct(exportUsage.completionRatePct)})</div>
+        <div class="muted">Queued: ${exportUsage.queuedExports || 0} • Retries: ${exportUsage.retryCount || 0}</div>
+        ${renderItems(Object.entries(exportUsage.byType || {}), ([type, count]) => `
+          <div class="item compact"><strong>${type.toUpperCase()}</strong><div class="muted">${count} jobs</div></div>
+        `)}
+      </div>
+      <div class="item">
+        <h3>Advisor Activity</h3>
+        ${renderItems(advisorActivity, (advisor) => `
+          <div class="item compact">
+            <strong>${advisor.advisor}</strong> <span class="badge subtle">${advisor.role}</span>
+            <div class="muted">Events: ${advisor.totalEvents} • Last 30 days: ${advisor.last30DaysEvents}</div>
+            <div class="muted">Last activity: ${advisor.lastActivityAt || 'No activity'}</div>
+          </div>
+        `)}
+      </div>
+    </div>
+  `;
 }
 
 async function renderBoard() {

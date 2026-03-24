@@ -79,6 +79,7 @@ async function run() {
   await jsonFetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
 
   if (!analytics.stageCounts) throw new Error('Analytics missing');
+  if (!analytics.summary?.funnel || !analytics.summary?.stageAging || !analytics.summary?.exportUsage) throw new Error('Advanced analytics missing');
   if (!portalData.availableTemplates.find((entry) => entry.id === portalTemplate.id)) throw new Error('Portal templates missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'draft')) throw new Error('Portal draft missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'submitted')) throw new Error('Portal submission missing');
