@@ -1,3 +1,8 @@
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createAuthService } from './auth/service.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { createOidcAuthProvider } from './auth/oidc-provider.mjs';
+import { createSamlAuthProvider } from './auth/saml-provider.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
 import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs';
@@ -13,6 +18,8 @@ import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs';
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const ALLOWED_INVITE_ROLES = new Set(['advisor', 'readonly', 'client']);
 const ROLE_POLICY_MATRIX = {
   admin: {
     profiles: { read: 'firm', write: 'firm', sensitiveRead: 'firm' },
@@ -362,6 +369,7 @@ function seedState() {
       firstName: 'Demo',
       lastName: 'Admin',
       role: 'admin',
+      mfa: { enabled: false, totpSecret: null, backupCodes: [] },
       createdAt
     }],
     sessions: [],
@@ -501,8 +509,11 @@ function seedState() {
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
+    passwordResetAttempts: [],
     portalLinks: [],
     authAttempts: [],
+    mfaChallenges: [],
+    mfaEnrollments: []
     boardVersions: { [firmId]: 1 }
   };
 }
@@ -855,6 +866,12 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     if (runtime.authProvider === 'local') {
       return createLocalAuthProvider({ state, persist, createSession, addAudit });
     }
+    if (runtime.authProvider === 'oidc') {
+      return createOidcAuthProvider();
+    }
+    if (runtime.authProvider === 'saml') {
+      return createSamlAuthProvider();
+    }
     throw new Error(`Unsupported auth provider: ${runtime.authProvider}.`);
   }
 
@@ -921,6 +938,21 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     login(input) {
       return auth.login(input);
+    },
+    startTotpEnrollment(user) {
+      return auth.startTotpEnrollment(user);
+    },
+    confirmTotpEnrollment(user, input) {
+      return auth.confirmTotpEnrollment(user, input);
+    },
+    createMfaChallenge(user) {
+      return auth.createMfaChallenge(user);
+    },
+    verifyMfaChallenge(user, input) {
+      return auth.verifyMfaChallenge(user, input);
+    },
+    rotateBackupCodes(user) {
+      return auth.rotateBackupCodes(user);
     },
     requireUser,
     getSession(token) {
@@ -1751,6 +1783,21 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return state.users.filter((entry) => entry.firmId === user.firmId).map(publicUser);
     },
     inviteUser(user, input) {
+      requirePermission(user, 'profiles:write');
+      const role = input.role || 'advisor';
+      if (!ALLOWED_INVITE_ROLES.has(role)) throw new Error('Invalid invite role.');
+      if (role === 'client' && user.role !== 'admin') throw new Error('Only admins can invite client users.');
+      const invite = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        email: input.email.toLowerCase(),
+        role,
+        invitedByUserId: user.id,
+        token: randomUUID(),
+        createdAt: now(),
+        expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
+        consumedAt: null
+      };
       authorize(user, 'users:write');
       const invite = { id: randomUUID(), firmId: user.firmId, email: input.email.toLowerCase(), role: input.role || 'advisor', invitedByUserId: user.id, token: randomUUID(), createdAt: now() };
       state.invites.push(invite);
@@ -1762,14 +1809,36 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       assertStrongPassword(input.password);
       const invite = state.invites.find((entry) => entry.token === input.token);
       if (!invite) throw new Error('Invite not found.');
-      const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hash(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, createdAt: now() };
+      if (invite.consumedAt) throw new Error('Invite already consumed.');
+      if (new Date(invite.expiresAt).getTime() <= Date.now()) {
+        addAudit(invite.firmId, null, 'invite', invite.id, 'invite.expired', { email: invite.email });
+        state.invites = state.invites.filter((entry) => entry.id !== invite.id);
+        persist();
+        throw new Error('Invite expired.');
+      }
+      if (state.users.some((entry) => entry.email === invite.email && entry.firmId === invite.firmId)) {
+        throw new Error('An account with this email already exists.');
+      }
+      const user = {
+        id: randomUUID(),
+        firmId: invite.firmId,
+        email: invite.email,
+        passwordHash: hash(input.password),
+        firstName: input.firstName,
+        lastName: input.lastName,
+        role: invite.role,
+        mfa: { enabled: false, totpSecret: null, backupCodes: [] },
+        createdAt: now()
+      };
       state.users.push(user);
+      invite.consumedAt = now();
       state.invites = state.invites.filter((entry) => entry.id !== invite.id);
+      addAudit(invite.firmId, user.id, 'invite', invite.id, 'invite.accepted', { email: invite.email, role: invite.role });
       persist();
       return createSession(user);
     },
     requestPasswordReset(email) {
-      return auth.requestReset({ email });
+      return auth.requestReset({ email, ipAddress: 'internal-call' });
     },
     resetPassword(input) {
       return auth.resetPassword(input);

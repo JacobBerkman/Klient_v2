@@ -15,6 +15,21 @@ export function createAuthService({ provider }) {
     },
     resetPassword(input) {
       return authProvider.resetPassword(input);
+    },
+    startTotpEnrollment(user) {
+      return authProvider.startTotpEnrollment(user);
+    },
+    confirmTotpEnrollment(user, input) {
+      return authProvider.confirmTotpEnrollment(user, input);
+    },
+    createMfaChallenge(user) {
+      return authProvider.createMfaChallenge(user);
+    },
+    verifyMfaChallenge(user, input) {
+      return authProvider.verifyMfaChallenge(user, input);
+    },
+    rotateBackupCodes(user) {
+      return authProvider.rotateBackupCodes(user);
     }
   };
 }

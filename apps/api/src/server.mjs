@@ -254,6 +254,11 @@ function requireUser(req) {
   return store.requireUser(getToken(req));
 }
 
+function getClientIp(req) {
+  const forwarded = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+  return forwarded || req.socket?.remoteAddress || 'unknown';
+}
+
 function serveStatic(pathname, res, requestId) {
   const filePath = pathname === '/' ? resolve(publicDir, 'index.html') : resolve(publicDir, pathname.slice(1));
   const publicDirRoot = `${publicDir}${sep}`;
@@ -421,11 +426,50 @@ const server = createServer(async (req, res) => {
       return;
     }
     if (pathname === '/api/register' && req.method === 'POST') { const result = store.auth.register(await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
-    if (pathname === '/api/login' && req.method === 'POST') { const result = store.auth.login(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/login' && req.method === 'POST') {
+      const result = store.auth.login(await parseBody(req));
+      finalizeLog(result.mfaRequired ? 202 : 200);
+      return json(res, result.mfaRequired ? 202 : 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/login/mfa' && req.method === 'POST') {
+      const result = store.auth.login(await parseBody(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname === '/api/invites' && req.method === 'POST') { const result = store.inviteUser(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/invites/accept' && req.method === 'POST') { const result = store.acceptInvite(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-    if (pathname === '/api/password-resets' && req.method === 'POST') { const result = store.auth.requestReset(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/password-resets' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const result = store.auth.requestReset({ ...body, ipAddress: getClientIp(req) });
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname === '/api/password-resets/confirm' && req.method === 'POST') { const result = store.auth.resetPassword(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/mfa/totp/enroll' && req.method === 'POST') {
+      const result = store.startTotpEnrollment(requireUser(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/mfa/totp/confirm' && req.method === 'POST') {
+      const result = store.confirmTotpEnrollment(requireUser(req), await parseBody(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/mfa/challenges' && req.method === 'POST') {
+      const result = store.createMfaChallenge(requireUser(req));
+      finalizeLog(201);
+      return json(res, 201, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/mfa/challenges/verify' && req.method === 'POST') {
+      const result = store.verifyMfaChallenge(requireUser(req), await parseBody(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/mfa/backup-codes/rotate' && req.method === 'POST') {
+      const result = store.rotateBackupCodes(requireUser(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname === '/api/users' && req.method === 'GET') { const result = store.listUsers(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/session' && req.method === 'GET') { const result = { user: requireUser(req) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/logout' && req.method === 'POST') { const result = store.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
