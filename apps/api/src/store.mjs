@@ -20,6 +20,12 @@ function requirePermission(user, permission) {
   }
 }
 
+function requireFirmAdmin(user) {
+  if (user.role !== 'admin') {
+    throw new Error('Admin permission required.');
+  }
+}
+
 function encryptValue(value) {
   if (!value) return null;
   const iv = randomBytes(12);
@@ -77,6 +83,7 @@ function seedState() {
       firstName: 'Demo',
       lastName: 'Admin',
       role: 'admin',
+      isActive: true,
       createdAt
     }],
     sessions: [],
@@ -218,7 +225,16 @@ export function createStore() {
   }
 
   function publicUser(user) {
-    return { id: user.id, firmId: user.firmId, email: user.email, firstName: user.firstName, lastName: user.lastName, role: user.role };
+    return {
+      id: user.id,
+      firmId: user.firmId,
+      email: user.email,
+      firstName: user.firstName,
+      lastName: user.lastName,
+      role: user.role,
+      isActive: user.isActive !== false,
+      createdAt: user.createdAt
+    };
   }
 
   function requireUser(token) {
@@ -226,6 +242,7 @@ export function createStore() {
     if (!session) throw new Error('Authentication required.');
     const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId);
     if (!user) throw new Error('Authentication required.');
+    if (user.isActive === false) throw new Error('Authentication required.');
     return publicUser(user);
   }
 
@@ -240,7 +257,7 @@ export function createStore() {
       const normalizedEmail = email.toLowerCase();
       if (state.users.some((user) => user.email === normalizedEmail)) throw new Error('An account with this email already exists.');
       const firm = { id: randomUUID(), name: firmName, slug: slugify(firmName), createdAt: now() };
-      const user = { id: randomUUID(), firmId: firm.id, email: normalizedEmail, passwordHash: hash(password), firstName, lastName, role: 'admin', createdAt: now() };
+      const user = { id: randomUUID(), firmId: firm.id, email: normalizedEmail, passwordHash: hash(password), firstName, lastName, role: 'admin', isActive: true, createdAt: now() };
       state.firms.push(firm);
       state.users.push(user);
       addAudit(firm.id, user.id, 'firm', firm.id, 'firm.created', { name: firm.name });
@@ -250,6 +267,7 @@ export function createStore() {
       const normalizedEmail = email.toLowerCase();
       const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password));
       if (!user) throw new Error('Invalid email or password.');
+      if (user.isActive === false) throw new Error('User is deactivated.');
       return createSession(user);
     },
     requireUser,
@@ -527,12 +545,13 @@ export function createStore() {
       return { ok: true };
     },
     listUsers(user) {
-      requirePermission(user, 'analytics:read');
+      requireFirmAdmin(user);
       return state.users.filter((entry) => entry.firmId === user.firmId).map(publicUser);
     },
     inviteUser(user, input) {
-      requirePermission(user, 'profiles:write');
-      const invite = { id: randomUUID(), firmId: user.firmId, email: input.email.toLowerCase(), role: input.role || 'advisor', invitedByUserId: user.id, token: randomUUID(), createdAt: now() };
+      requireFirmAdmin(user);
+      const role = ['admin', 'advisor', 'readonly', 'client'].includes(input.role) ? input.role : 'advisor';
+      const invite = { id: randomUUID(), firmId: user.firmId, email: input.email.toLowerCase(), role, invitedByUserId: user.id, token: randomUUID(), createdAt: now() };
       state.invites.push(invite);
       addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role });
       persist();
@@ -541,11 +560,70 @@ export function createStore() {
     acceptInvite(input) {
       const invite = state.invites.find((entry) => entry.token === input.token);
       if (!invite) throw new Error('Invite not found.');
-      const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hash(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, createdAt: now() };
+      const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hash(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, isActive: true, createdAt: now() };
       state.users.push(user);
       state.invites = state.invites.filter((entry) => entry.id !== invite.id);
       persist();
       return createSession(user);
+    },
+    createFirmUser(user, input) {
+      requireFirmAdmin(user);
+      const normalizedEmail = (input.email || '').toLowerCase().trim();
+      if (!normalizedEmail) throw new Error('Email is required.');
+      if (state.users.some((entry) => entry.email === normalizedEmail)) throw new Error('An account with this email already exists.');
+      const role = ['admin', 'advisor', 'readonly', 'client'].includes(input.role) ? input.role : 'advisor';
+      const createdUser = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        email: normalizedEmail,
+        passwordHash: hash(input.password || 'ChangeMe123!'),
+        firstName: input.firstName || '',
+        lastName: input.lastName || '',
+        role,
+        isActive: true,
+        createdAt: now()
+      };
+      state.users.push(createdUser);
+      addAudit(user.firmId, user.id, 'user', createdUser.id, 'user.created', { email: createdUser.email, role: createdUser.role });
+      persist();
+      return publicUser(createdUser);
+    },
+    updateFirmUserRole(user, targetUserId, role) {
+      requireFirmAdmin(user);
+      if (!['admin', 'advisor', 'readonly', 'client'].includes(role)) throw new Error('Invalid role.');
+      const target = state.users.find((entry) => entry.id === targetUserId && entry.firmId === user.firmId);
+      if (!target) throw new Error('User not found.');
+      target.role = role;
+      addAudit(user.firmId, user.id, 'user', target.id, 'user.role_updated', { role });
+      persist();
+      return publicUser(target);
+    },
+    setFirmUserActive(user, targetUserId, isActive) {
+      requireFirmAdmin(user);
+      const target = state.users.find((entry) => entry.id === targetUserId && entry.firmId === user.firmId);
+      if (!target) throw new Error('User not found.');
+      if (target.id === user.id && isActive === false) throw new Error('Cannot deactivate your own account.');
+      target.isActive = Boolean(isActive);
+      if (!target.isActive) {
+        state.sessions = state.sessions.filter((entry) => entry.userId !== target.id);
+      }
+      addAudit(user.firmId, user.id, 'user', target.id, target.isActive ? 'user.reactivated' : 'user.deactivated', { isActive: target.isActive });
+      persist();
+      return publicUser(target);
+    },
+    getFirmSettings(user) {
+      requireFirmAdmin(user);
+      const firm = state.firms.find((entry) => entry.id === user.firmId);
+      if (!firm) throw new Error('Firm not found.');
+      const totalUsers = state.users.filter((entry) => entry.firmId === user.firmId).length;
+      const activeUsers = state.users.filter((entry) => entry.firmId === user.firmId && entry.isActive !== false).length;
+      return {
+        id: firm.id,
+        name: firm.name,
+        slug: firm.slug,
+        createdAt: firm.createdAt,
+        userCounts: { total: totalUsers, active: activeUsers, inactive: totalUsers - activeUsers }
+      };
     },
     requestPasswordReset(email) {
       const user = state.users.find((entry) => entry.email === email.toLowerCase());

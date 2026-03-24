@@ -1,4 +1,4 @@
-const state = { token: localStorage.getItem('klient-token') || '', view: 'dashboard', selectedProfileId: null };
+const state = { token: localStorage.getItem('klient-token') || '', view: 'dashboard', selectedProfileId: null, user: null };
 
 const view = document.querySelector('#view');
 const authStatus = document.querySelector('#auth-status');
@@ -6,6 +6,8 @@ const householdPrimary = document.querySelector('select[name="primaryClientId"]'
 const portalProfileSelect = document.querySelector('select[name="profileId"]');
 
 const headers = () => state.token ? { Authorization: `Bearer ${state.token}` } : {};
+
+const ROLE_OPTIONS = ['admin', 'advisor', 'readonly', 'client'];
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -23,6 +25,24 @@ async function api(path, options = {}) {
 
 function renderItems(items, render) {
   return `<div class="list">${items.map(render).join('')}</div>`;
+}
+
+async function syncSession() {
+  if (!state.token) {
+    state.user = null;
+    authStatus.textContent = '';
+    return;
+  }
+  try {
+    const session = await api('/api/session');
+    state.user = session.user;
+    authStatus.textContent = JSON.stringify(session.user, null, 2);
+  } catch {
+    state.user = null;
+    state.token = '';
+    localStorage.removeItem('klient-token');
+    authStatus.textContent = '';
+  }
 }
 
 async function refreshPrimaryClientOptions() {
@@ -196,6 +216,99 @@ async function renderAnalytics() {
   view.innerHTML = `<h2>Analytics</h2><pre>${JSON.stringify(analytics, null, 2)}</pre>`;
 }
 
+async function renderAdmin() {
+  if (state.user?.role !== 'admin') {
+    view.innerHTML = '<h2>Admin</h2><div class="item">Admin access is required.</div>';
+    return;
+  }
+
+  const [users, settings] = await Promise.all([
+    api('/api/admin/users'),
+    api('/api/admin/firm-settings')
+  ]);
+
+  view.innerHTML = `
+    <div class="section-header">
+      <div>
+        <h2>Firm Admin</h2>
+        <p class="muted">Manage firm users and review firm settings.</p>
+      </div>
+    </div>
+    <div class="grid two">
+      <form id="admin-create-user-form" class="item">
+        <h3>Create User</h3>
+        <input name="firstName" placeholder="First name" required />
+        <input name="lastName" placeholder="Last name" required />
+        <input name="email" type="email" placeholder="Email" required />
+        <input name="password" type="password" placeholder="Temporary password" required />
+        <select name="role">${ROLE_OPTIONS.map((role) => `<option value="${role}">${role}</option>`).join('')}</select>
+        <button type="submit">Create User</button>
+      </form>
+      <form id="admin-invite-user-form" class="item">
+        <h3>Invite User</h3>
+        <input name="email" type="email" placeholder="Email" required />
+        <select name="role">${ROLE_OPTIONS.map((role) => `<option value="${role}">${role}</option>`).join('')}</select>
+        <button type="submit">Create Invite</button>
+      </form>
+    </div>
+    <div class="item">
+      <h3>Firm Settings</h3>
+      <pre>${JSON.stringify(settings, null, 2)}</pre>
+    </div>
+    <div class="item">
+      <h3>Firm Users</h3>
+      <div class="list">
+        ${users.map((user) => `
+          <div class="item">
+            <div class="row between">
+              <div>
+                <strong>${user.firstName} ${user.lastName}</strong>
+                <div class="muted">${user.email}</div>
+              </div>
+              <span class="badge ${user.isActive ? '' : 'subtle'}">${user.isActive ? 'active' : 'inactive'}</span>
+            </div>
+            <div class="row between">
+              <select data-admin-role-user-id="${user.id}">
+                ${ROLE_OPTIONS.map((role) => `<option value="${role}" ${user.role === role ? 'selected' : ''}>${role}</option>`).join('')}
+              </select>
+              <button data-admin-status-user-id="${user.id}" data-next-status="${user.isActive ? 'false' : 'true'}">${user.isActive ? 'Deactivate' : 'Reactivate'}</button>
+            </div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+  `;
+
+  document.querySelector('#admin-create-user-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    await api('/api/admin/users', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+    await renderAdmin();
+  });
+
+  document.querySelector('#admin-invite-user-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const invite = await api('/api/admin/users/invite', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+    alert(`Invite token: ${invite.token}`);
+    await renderAdmin();
+  });
+
+  document.querySelectorAll('[data-admin-role-user-id]').forEach((select) => {
+    select.addEventListener('change', async (event) => {
+      await api(`/api/admin/users/${event.target.dataset.adminRoleUserId}/role`, { method: 'PATCH', body: JSON.stringify({ role: event.target.value }) });
+      await renderAdmin();
+    });
+  });
+
+  document.querySelectorAll('[data-admin-status-user-id]').forEach((button) => {
+    button.addEventListener('click', async (event) => {
+      await api(`/api/admin/users/${event.target.dataset.adminStatusUserId}/status`, { method: 'PATCH', body: JSON.stringify({ isActive: event.target.dataset.nextStatus === 'true' }) });
+      await renderAdmin();
+    });
+  });
+}
+
 async function renderBoard() {
   const columns = await api('/api/board');
   view.innerHTML = `<h2>Prospect Board</h2><div class="columns">${columns.map((column) => `<div class="column"><h3>${column.stage}</h3>${column.cards.map((card) => `<div class="item"><strong>${card.firstName} ${card.lastName}</strong><div class="muted">#${card.stageOrderIndex}</div><button data-profile-id="${card.id}">Open Profile</button></div>`).join('')}</div>`).join('')}</div>`;
@@ -217,6 +330,7 @@ async function renderCurrentView() {
   if (state.view === 'exports') return renderExports();
   if (state.view === 'analytics') return renderAnalytics();
   if (state.view === 'audit') return renderAudit();
+  if (state.view === 'admin') return renderAdmin();
 }
 
 document.querySelectorAll('[data-view]').forEach((button) => {
@@ -230,7 +344,7 @@ document.querySelector('#demo-login').addEventListener('click', async () => {
   const session = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' }) });
   state.token = session.token;
   localStorage.setItem('klient-token', state.token);
-  authStatus.textContent = JSON.stringify(session.user, null, 2);
+  await syncSession();
   await refreshPrimaryClientOptions();
   await renderCurrentView();
 });
@@ -242,7 +356,7 @@ document.querySelector('#register-form').addEventListener('submit', async (event
   const session = await api('/api/register', { method: 'POST', body: JSON.stringify(payload) });
   state.token = session.token;
   localStorage.setItem('klient-token', state.token);
-  authStatus.textContent = JSON.stringify(session.user, null, 2);
+  await syncSession();
   await refreshPrimaryClientOptions();
   await renderCurrentView();
 });
@@ -253,7 +367,7 @@ document.querySelector('#login-form').addEventListener('submit', async (event) =
   const session = await api('/api/login', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
   state.token = session.token;
   localStorage.setItem('klient-token', state.token);
-  authStatus.textContent = JSON.stringify(session.user, null, 2);
+  await syncSession();
   await refreshPrimaryClientOptions();
   await renderCurrentView();
 });
@@ -294,14 +408,13 @@ document.querySelector('#doc-template-form').addEventListener('submit', async (e
   await renderCurrentView();
 });
 
-refreshPrimaryClientOptions();
-renderCurrentView();
+syncSession().then(() => refreshPrimaryClientOptions()).then(() => renderCurrentView());
 
 
 document.querySelector('#invite-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  const invite = await api('/api/invites', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+  const invite = await api('/api/admin/users/invite', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
   alert(`Invite token: ${invite.token}`);
   event.target.reset();
 });

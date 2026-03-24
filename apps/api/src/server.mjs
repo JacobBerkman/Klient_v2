@@ -68,7 +68,13 @@ function serveStatic(pathname, res, requestId) {
 
 function sendError(res, error, requestId) {
   const message = error?.message || 'Request failed';
-  const statusCode = /not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400;
+  const statusCode = /not found/i.test(message)
+    ? 404
+    : /authentication required/i.test(message)
+      ? 401
+      : /permission/i.test(message)
+        ? 403
+        : 400;
   json(res, statusCode, { message }, { 'X-Request-Id': requestId });
 }
 
@@ -109,6 +115,12 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/password-resets' && req.method === 'POST') { const result = store.requestPasswordReset((await parseBody(req)).email || ''); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/password-resets/confirm' && req.method === 'POST') { const result = store.resetPassword(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/users' && req.method === 'GET') { const result = store.listUsers(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/admin/users' && req.method === 'GET') { const result = store.listUsers(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/admin/users' && req.method === 'POST') { const result = store.createFirmUser(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/admin/users/invite' && req.method === 'POST') { const result = store.inviteUser(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/admin/users/') && pathname.endsWith('/role') && req.method === 'PATCH') { const id = pathname.split('/')[4]; const body = await parseBody(req); const result = store.updateFirmUserRole(requireUser(req), id, body.role); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/admin/users/') && pathname.endsWith('/status') && req.method === 'PATCH') { const id = pathname.split('/')[4]; const body = await parseBody(req); const result = store.setFirmUserActive(requireUser(req), id, body.isActive); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/admin/firm-settings' && req.method === 'GET') { const result = store.getFirmSettings(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/session' && req.method === 'GET') { const result = { user: requireUser(req) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/logout' && req.method === 'POST') { const result = store.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/dashboard' && req.method === 'GET') { const result = store.getDashboard(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }

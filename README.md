@@ -14,6 +14,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - document template and export job foundations
 - audit trail and analytics views
 - invite flow and password reset endpoints
+- internal admin user management (list users, create users, invites, role changes, activate/deactivate) with firm settings view
 - internal web UI served by the backend
 - Docker + compose deployment artifacts
 - backup, restore, and export worker scripts

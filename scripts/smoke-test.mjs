@@ -17,8 +17,20 @@ async function jsonFetch(path, options = {}) {
   return data;
 }
 
+async function jsonFetchExpect(path, expectedStatus, options = {}) {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, options);
+  const data = await response.json();
+  if (response.status !== expectedStatus) {
+    throw new Error(`${path}: expected ${expectedStatus}, got ${response.status} (${data.message || 'Request failed'})`);
+  }
+  return data;
+}
+
 async function run() {
   await wait(700);
+  const unique = Date.now();
+  const advisorEmail = `alex.advisor+${unique}@test.local`;
+  const readonlyEmail = `readonly+${unique}@test.local`;
   const ready = await jsonFetch('/ready');
   if (!ready.querySummary) throw new Error('Readiness summary missing');
 
@@ -29,6 +41,21 @@ async function run() {
   });
 
   const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${login.token}` };
+  const createdAdvisor = await jsonFetch('/api/admin/users', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ firstName: 'Alex', lastName: 'Advisor', email: advisorEmail, password: 'Advisor123!', role: 'advisor' })
+  });
+  const adminUsers = await jsonFetch('/api/admin/users', { headers: { Authorization: `Bearer ${login.token}` } });
+  const firmSettings = await jsonFetch('/api/admin/firm-settings', { headers: { Authorization: `Bearer ${login.token}` } });
+
+  const advisorLogin = await jsonFetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ email: advisorEmail, password: 'Advisor123!' })
+  });
+  await jsonFetchExpect('/api/admin/users', 403, { headers: { Authorization: `Bearer ${advisorLogin.token}` } });
+
   const profile = await jsonFetch('/api/profiles', {
     method: 'POST',
     headers: authHeaders,
@@ -44,9 +71,14 @@ async function run() {
     body: JSON.stringify({ body: 'Smoke test note' })
   });
 
-  const invite = await jsonFetch('/api/invites', { method: 'POST', headers: authHeaders, body: JSON.stringify({ email: 'readonly@test.local', role: 'readonly' }) });
+  const invite = await jsonFetch('/api/admin/users/invite', { method: 'POST', headers: authHeaders, body: JSON.stringify({ email: readonlyEmail, role: 'readonly' }) });
   const readonlySession = await jsonFetch('/api/invites/accept', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: invite.token, firstName: 'Read', lastName: 'Only', password: 'Readonly123!' }) });
-  const reset = await jsonFetch('/api/password-resets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: 'readonly@test.local' }) });
+  await jsonFetch(`/api/admin/users/${readonlySession.user.id}/role`, { method: 'PATCH', headers: authHeaders, body: JSON.stringify({ role: 'advisor' }) });
+  await jsonFetch(`/api/admin/users/${readonlySession.user.id}/status`, { method: 'PATCH', headers: authHeaders, body: JSON.stringify({ isActive: false }) });
+  await jsonFetchExpect('/api/login', 400, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: readonlyEmail, password: 'Readonly123!' }) });
+  await jsonFetch(`/api/admin/users/${readonlySession.user.id}/status`, { method: 'PATCH', headers: authHeaders, body: JSON.stringify({ isActive: true }) });
+  const reactivatedLogin = await jsonFetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: readonlyEmail, password: 'Readonly123!' }) });
+  const reset = await jsonFetch('/api/password-resets', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: readonlyEmail }) });
   await jsonFetch('/api/password-resets/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: reset.token, password: 'Readonly456!' }) });
 
   const template = await jsonFetch('/api/templates/auto-build', { method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Auto Build Test', fields: ['client.name', 'client.address', 'assets.account'] }) });
@@ -86,12 +118,16 @@ async function run() {
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
+  if (!adminUsers.find((entry) => entry.id === createdAdvisor.id)) throw new Error('Admin user creation failed');
+  if (!firmSettings.userCounts || firmSettings.userCounts.total < 2) throw new Error('Firm settings user counts missing');
+  if (reactivatedLogin.user.isActive !== true) throw new Error('User reactivation failed');
 
   console.log(JSON.stringify({
     login: login.user.email,
     profileId: profile.id,
     noteId: note.id,
     inviteRole: readonlySession.user.role,
+    adminUserCount: adminUsers.length,
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,
