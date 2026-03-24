@@ -12,6 +12,7 @@ const PERMISSIONS = {
   readonly: ['profiles:read', 'analytics:read'],
   client: ['portal:read', 'client:write']
 };
+const BOARD_COLUMNS = ['discovery', 'gather_oi', 'analysis', 'advisor_proposal_meeting', 'intake', 'on_boarding', 'investment_strategy', 'completed', 'drop_dead_lead', 'drop_nurture'];
 
 function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission);
@@ -68,6 +69,14 @@ function assertStrongPassword(password) {
 
 function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
+}
+
+function pipelineConflict(message, details = {}) {
+  const error = new Error(message);
+  error.statusCode = 409;
+  error.code = 'PIPELINE_ORDER_CONFLICT';
+  error.details = details;
+  return error;
 }
 
 function seedState() {
@@ -145,6 +154,7 @@ function seedState() {
         phone: '555-111-3333',
         stage: 'discovery',
         stageOrderIndex: 1,
+        pipelineVersion: 1,
         source: { cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10', displayValue: sourceDisplay({ cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10' }) },
         address: { city: 'Austin', state: 'TX' },
         customProfile: {},
@@ -162,6 +172,7 @@ function seedState() {
         phone: '555-111-4444',
         stage: 'analysis',
         stageOrderIndex: 1,
+        pipelineVersion: 1,
         source: { cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15', displayValue: sourceDisplay({ cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15' }) },
         address: { city: 'Houston', state: 'TX' },
         customProfile: {},
@@ -230,15 +241,110 @@ function seedState() {
     invites: [],
     passwordResets: [],
     portalLinks: [],
-    authAttempts: []
+    authAttempts: [],
+    boardVersions: { [firmId]: 1 }
   };
 }
 
 export function createStore() {
   const state = loadState(seedState);
+  let testHooks = {};
 
   function persist() {
+    if (typeof testHooks.beforePersist === 'function') {
+      testHooks.beforePersist(state);
+    }
     saveState(state);
+  }
+
+  function getBoardVersion(firmId) {
+    if (!state.boardVersions || typeof state.boardVersions !== 'object') {
+      state.boardVersions = {};
+    }
+    if (!state.boardVersions[firmId]) {
+      state.boardVersions[firmId] = 1;
+    }
+    return state.boardVersions[firmId];
+  }
+
+  function bumpBoardVersion(firmId) {
+    const current = getBoardVersion(firmId);
+    state.boardVersions[firmId] = current + 1;
+    return state.boardVersions[firmId];
+  }
+
+  function listProspectsByStage(firmId, stage, excludedProfileId = null) {
+    return state.profiles
+      .filter((profile) => profile.firmId === firmId && profile.kind === 'prospect' && profile.stage === stage && profile.id !== excludedProfileId)
+      .sort((a, b) => {
+        const indexDiff = (a.stageOrderIndex || Number.MAX_SAFE_INTEGER) - (b.stageOrderIndex || Number.MAX_SAFE_INTEGER);
+        if (indexDiff !== 0) return indexDiff;
+        const updatedDiff = new Date(a.updatedAt || a.createdAt || 0).getTime() - new Date(b.updatedAt || b.createdAt || 0).getTime();
+        if (updatedDiff !== 0) return updatedDiff;
+        return a.id.localeCompare(b.id);
+      });
+  }
+
+  function compactStageIndices(firmId, stage) {
+    const cards = listProspectsByStage(firmId, stage);
+    let changed = false;
+    cards.forEach((card, index) => {
+      const nextIndex = index + 1;
+      if (card.stageOrderIndex !== nextIndex) {
+        card.stageOrderIndex = nextIndex;
+        changed = true;
+      }
+    });
+    return changed;
+  }
+
+  function normalizePipelineIndices(firmId, stage = null) {
+    const stages = stage ? [stage] : BOARD_COLUMNS;
+    const normalizedStages = [];
+    for (const currentStage of stages) {
+      if (compactStageIndices(firmId, currentStage)) {
+        normalizedStages.push(currentStage);
+      }
+    }
+    return normalizedStages;
+  }
+
+  function buildBoardPayload(user, conflict = null) {
+    const columns = BOARD_COLUMNS.map((stage) => ({
+      stage,
+      orderingVersion: getBoardVersion(user.firmId),
+      cards: listProspectsByStage(user.firmId, stage)
+    }));
+    return {
+      boardVersion: getBoardVersion(user.firmId),
+      generatedAt: now(),
+      ordering: {
+        mode: 'sequential_stage_index',
+        normalized: true
+      },
+      conflict,
+      columns
+    };
+  }
+
+  function executePipelineTransaction(mutator) {
+    const snapshot = {
+      profiles: state.profiles.map((profile) => ({ ...profile })),
+      stageChangesLength: state.stageChanges.length,
+      auditEventsLength: state.auditEvents.length,
+      boardVersions: { ...(state.boardVersions || {}) }
+    };
+    try {
+      const result = mutator();
+      persist();
+      return result;
+    } catch (error) {
+      state.profiles = snapshot.profiles;
+      state.stageChanges = state.stageChanges.slice(0, snapshot.stageChangesLength);
+      state.auditEvents = state.auditEvents.slice(0, snapshot.auditEventsLength);
+      state.boardVersions = snapshot.boardVersions;
+      throw error;
+    }
   }
 
   function createSession(user) {
@@ -270,9 +376,11 @@ export function createStore() {
     return publicUser(user);
   }
 
-  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}) {
+  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}, options = {}) {
     state.auditEvents.push({ id: randomUUID(), firmId, actorUserId, entityType, entityId, action, occurredAt: now(), metadata });
-    persist();
+    if (options.persist !== false) {
+      persist();
+    }
   }
 
   function requireClientProfile(user) {
@@ -367,6 +475,7 @@ export function createStore() {
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
         stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
+        pipelineVersion: input.kind === 'prospect' ? 1 : null,
         address: input.address || {},
         customProfile: input.customProfile || {},
         householdId: input.householdId || null,
@@ -403,37 +512,118 @@ export function createStore() {
       return profile;
     },
     moveProfileStage(user, profileId, stage, beforeProfileId = null) {
+      return this.reorderBoard(user, { profileId, toStage: stage, beforeProfileId });
+    },
+    reorderBoard(user, input) {
       requirePermission(user, 'pipeline:write');
-      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
-      const sameStage = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === stage && entry.id !== profileId).sort((a,b)=>(a.stageOrderIndex||0)-(b.stageOrderIndex||0));
-      const previousStage = profile.stage || null;
-      let nextIndex = sameStage.length + 1;
-      if (beforeProfileId) {
-        const before = sameStage.find((entry) => entry.id === beforeProfileId);
-        if (before) {
-          nextIndex = before.stageOrderIndex || 1;
-          sameStage.filter((entry) => (entry.stageOrderIndex || 0) >= nextIndex).forEach((entry) => { entry.stageOrderIndex = (entry.stageOrderIndex || 0) + 1; });
-        }
+      const { profileId, toStage, beforeProfileId = null, expectedVersion = null, expectedUpdatedAt = null, expectedBoardVersion = null } = input || {};
+      if (!profileId || !toStage) {
+        throw new Error('Reorder payload must include profileId and toStage.');
       }
-      profile.kind = 'prospect';
-      profile.stage = stage;
-      profile.stageOrderIndex = nextIndex;
-      profile.updatedAt = now();
-      state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, fromStage: previousStage, toStage: stage, changedByUserId: user.id, changedAt: profile.updatedAt });
-      addAudit(user.firmId, user.id, 'profile', profile.id, 'pipeline.stage_changed', { fromStage: previousStage, toStage: stage });
-      persist();
-      return profile;
+      if (!BOARD_COLUMNS.includes(toStage)) {
+        throw new Error(`Unknown stage: ${toStage}.`);
+      }
+
+      try {
+        return executePipelineTransaction(() => {
+          const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
+          if (!profile) throw new Error('Profile not found.');
+
+          const currentVersion = Number(profile.pipelineVersion || 1);
+          if (expectedVersion !== null && Number(expectedVersion) !== currentVersion) {
+            throw pipelineConflict('Profile ordering version mismatch.', {
+              profileId,
+              expectedVersion: Number(expectedVersion),
+              actualVersion: currentVersion,
+              profileUpdatedAt: profile.updatedAt
+            });
+          }
+          if (expectedUpdatedAt && String(expectedUpdatedAt) !== String(profile.updatedAt)) {
+            throw pipelineConflict('Profile updatedAt mismatch.', {
+              profileId,
+              expectedUpdatedAt,
+              actualUpdatedAt: profile.updatedAt
+            });
+          }
+          const boardVersion = getBoardVersion(user.firmId);
+          if (expectedBoardVersion !== null && Number(expectedBoardVersion) !== Number(boardVersion)) {
+            throw pipelineConflict('Board version mismatch.', {
+              expectedBoardVersion: Number(expectedBoardVersion),
+              actualBoardVersion: Number(boardVersion)
+            });
+          }
+
+          const destinationCards = listProspectsByStage(user.firmId, toStage, profile.id);
+          let insertIndex = destinationCards.length;
+          if (beforeProfileId) {
+            insertIndex = destinationCards.findIndex((entry) => entry.id === beforeProfileId);
+            if (insertIndex < 0) {
+              throw new Error('beforeProfileId was not found in the destination stage.');
+            }
+          }
+
+          const previousStage = profile.stage || null;
+          const movedAt = now();
+          profile.kind = 'prospect';
+          profile.stage = toStage;
+          profile.updatedAt = movedAt;
+          profile.pipelineVersion = currentVersion + 1;
+
+          destinationCards.splice(insertIndex, 0, profile);
+          destinationCards.forEach((card, index) => {
+            card.stageOrderIndex = index + 1;
+          });
+
+          if (previousStage && previousStage !== toStage) {
+            compactStageIndices(user.firmId, previousStage);
+          }
+
+          normalizePipelineIndices(user.firmId, toStage);
+          const normalized = normalizePipelineIndices(user.firmId, previousStage);
+          if (normalized.length > 0) {
+            addAudit(user.firmId, user.id, 'pipeline', profile.id, 'pipeline.indices_normalized', { stages: normalized }, { persist: false });
+          }
+          bumpBoardVersion(user.firmId);
+          state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, fromStage: previousStage, toStage, changedByUserId: user.id, changedAt: movedAt });
+          addAudit(user.firmId, user.id, 'profile', profile.id, 'pipeline.stage_changed', { fromStage: previousStage, toStage, beforeProfileId }, { persist: false });
+          return {
+            moved: profile,
+            board: buildBoardPayload(user),
+            conflict: null
+          };
+        });
+      } catch (error) {
+        if (error?.code === 'PIPELINE_ORDER_CONFLICT') {
+          error.details = {
+            ...(error.details || {}),
+            serverBoard: buildBoardPayload(user, {
+              code: error.code,
+              message: error.message
+            })
+          };
+        }
+        throw error;
+      }
+    },
+    normalizeBoardOrdering(user) {
+      requirePermission(user, 'pipeline:write');
+      return executePipelineTransaction(() => {
+        const normalizedStages = normalizePipelineIndices(user.firmId);
+        if (normalizedStages.length > 0) {
+          bumpBoardVersion(user.firmId);
+          addAudit(user.firmId, user.id, 'pipeline', user.firmId, 'pipeline.indices_normalized', { stages: normalizedStages }, { persist: false });
+        }
+        return {
+          normalizedStages,
+          board: buildBoardPayload(user),
+          changed: normalizedStages.length > 0
+        };
+      });
     },
     getBoard(user) {
       requirePermission(user, 'profiles:read');
-      const columns = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
-      return columns.map((stage) => ({
-        stage,
-        cards: state.profiles
-          .filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === stage)
-          .sort((a, b) => (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0))
-      }));
+      normalizePipelineIndices(user.firmId);
+      return buildBoardPayload(user);
     },
     listStageHistory(user, profileId) {
       requirePermission(user, 'profiles:read');
@@ -1050,6 +1240,12 @@ export function createStore() {
         ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
         taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
       };
+    },
+    __setTestHooks(hooks = {}) {
+      testHooks = { ...hooks };
+    },
+    __clearTestHooks() {
+      testHooks = {};
     }
   };
 }

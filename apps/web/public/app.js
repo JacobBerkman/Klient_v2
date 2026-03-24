@@ -201,6 +201,121 @@ async function renderFallback(title) {
   viewEl.innerHTML = `${flashMarkup()}<h2>${escapeHtml(title)}</h2><p class="muted">This view remains functional in API workflows and can be expanded with richer cards later.</p>`;
 }
 
+async function renderBoard() {
+  const board = await api(routes.board());
+  const columns = board.columns || [];
+  view.innerHTML = `<h2>Prospect Board</h2><div class="muted">Board version: ${board.boardVersion || 'n/a'}</div><div class="columns">${columns.map((column) => `<div class="column"><h3>${column.stage}</h3>${column.cards.map((card) => `<div class="item"><strong>${card.firstName} ${card.lastName}</strong><div class="muted">#${card.stageOrderIndex}</div><button data-profile-id="${card.id}">Open Profile</button></div>`).join('')}</div>`).join('')}</div>`;
+  const templates = await api('/api/templates');
+  view.innerHTML = `<h2>Templates</h2>${renderItems(templates, (item) => `<div class="item"><strong>${escapeHtml(item.name)}</strong><div class="muted">${escapeHtml(item.fileName)}</div><pre>${escapeHtml(JSON.stringify(item.mappings, null, 2))}</pre></div>`, 'No document templates yet.')}`;
+}
+
+async function renderExports() {
+  const exportsList = await api('/api/exports');
+  view.innerHTML = `<h2>Exports</h2>${renderItems(exportsList, (item) => `<div class="item"><strong>${escapeHtml(item.type.toUpperCase())}</strong><div class="muted">${escapeHtml(item.status)}</div><pre>${escapeHtml(JSON.stringify(item.output, null, 2))}</pre></div>`, 'No export jobs yet.')}`;
+}
+
+async function renderAudit() {
+  const events = await api('/api/audit');
+  view.innerHTML = `<h2>Audit</h2>${renderItems(events, (event) => `<div class="item"><strong>${escapeHtml(event.action)}</strong><div class="muted">${new Date(event.occurredAt).toLocaleString()}</div><pre>${escapeHtml(JSON.stringify(event.metadata, null, 2))}</pre></div>`, 'No audit events yet.')}`;
+}
+
+async function renderAnalytics() {
+  const analytics = await api('/api/analytics');
+  view.innerHTML = `<h2>Analytics</h2><pre>${escapeHtml(JSON.stringify(analytics, null, 2))}</pre>`;
+}
+
+async function renderBoard() {
+  const board = await api('/api/board');
+  const columns = board.columns || [];
+  const conflictBanner = board.conflict ? `<div class="item"><strong>Ordering conflict:</strong> ${escapeHtml(board.conflict.message || 'refresh required')}</div>` : '';
+  view.innerHTML = `<div class="section-header"><div><h2>Prospect Board</h2><p class="muted">Track persisted per-stage ordering and quickly open prospect details.</p><p class="muted">Board version ${escapeHtml(String(board.boardVersion || 'n/a'))}</p></div><button id="open-all-profiles">Open searchable list</button></div>${conflictBanner}<div class="columns">${columns.map((column) => `<div class="column"><h3>${escapeHtml(column.stage)}</h3>${column.cards.length ? column.cards.map((card) => `<div class="item"><strong>${escapeHtml(profileName(card))}</strong><div class="muted">#${card.stageOrderIndex} • v${card.pipelineVersion || 1}</div><button data-profile-id="${card.id}">Open Profile</button></div>`).join('') : '<div class="item compact muted">No cards</div>'}</div>`).join('')}</div>`;
+  document.querySelector('#open-all-profiles').addEventListener('click', async () => {
+    state.view = 'profiles';
+    state.profileFilter = 'prospect';
+    await renderProfiles('prospect');
+  });
+  wireProfileButtons();
+}
+
+function workspaceTemplateSection(templates, progress) {
+  if (!templates.length) return '<div class="item compact muted">Your advisor has not shared any forms yet.</div>';
+  const progressMap = new Map(progress.map((entry) => [entry.templateId, entry.status]));
+  return renderItems(templates, (template) => `<div class="item"><div class="row between"><strong>${template.name}</strong><span class="badge ${progressMap.get(template.id) === 'submitted' ? '' : 'subtle'}">${progressMap.get(template.id) || 'not_started'}</span></div><div class="muted">${template.description || ''}</div></div>`);
+}
+
+async function renderClientWorkspace() {
+  const workspace = await api('/api/client/workspace');
+  view.innerHTML = `
+    <div class="section-header">
+      <div>
+        <h2>My Client Workspace</h2>
+        <p class="muted">Secure, client-only portal experience. Advisor/admin operations are intentionally hidden.</p>
+      </div>
+      <span class="badge">${workspace.profile.firstName} ${workspace.profile.lastName}</span>
+    </div>
+    <section class="grid two">
+      <article class="item">
+        <h3>Profile</h3>
+        <div class="muted">${workspace.profile.email || 'No email'}</div>
+        <div class="muted">${workspace.profile.phone || 'No phone'}</div>
+      </article>
+      <article class="item">
+        <h3>Document Upload Visibility</h3>
+        ${workspace.uploads.length ? renderItems(workspace.uploads, (upload) => `<div class="item compact"><div class="row between"><strong>${upload.name}</strong><span class="badge">${upload.status}</span></div><div class="muted">${upload.category} • ${upload.uploadedBy}</div></div>`) : '<div class="item compact muted">No documents uploaded yet.</div>'}
+      </article>
+    </section>
+    <h3>Form Completion Visibility</h3>
+    ${workspaceTemplateSection(workspace.templates, workspace.templateProgress)}
+    <section class="grid two">
+      <form id="client-form-submission" class="card inner">
+        <h3>Submit Form</h3>
+        <select name="templateId" required>
+          <option value="">Select template</option>
+          ${workspace.templates.map((template) => `<option value="${template.id}">${template.name}</option>`).join('')}
+        </select>
+        <select name="status"><option value="draft">Save draft</option><option value="submitted">Submit</option></select>
+        <textarea name="data" rows="4" placeholder='JSON payload, e.g. {"goals":"Retire"}' required></textarea>
+        <button type="submit">Save Form</button>
+      </form>
+      <form id="client-upload" class="card inner">
+        <h3>Log Document Upload</h3>
+        <input name="name" placeholder="Document name" required />
+        <input name="category" placeholder="Category (tax, ID, etc.)" value="general" />
+        <textarea name="notes" rows="4" placeholder="Optional notes"></textarea>
+        <button type="submit">Log Upload</button>
+      </form>
+    </section>
+    <h3>Recent Submission History</h3>
+    ${workspace.submissions.length ? renderItems(workspace.submissions, (submission) => `<div class="item"><div class="row between"><strong>${submission.templateId}</strong><span class="badge ${submission.status === 'submitted' ? '' : 'subtle'}">${submission.status}</span></div><pre>${JSON.stringify(submission.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No submissions yet.</div>'}
+  `;
+
+  document.querySelector('#client-form-submission')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const raw = String(form.get('data') || '{}').trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(raw || '{}');
+    } catch {
+      alert('Submission data must be valid JSON.');
+      return;
+    }
+    await api('/api/client/forms/submissions', {
+      method: 'POST',
+      body: JSON.stringify({ templateId: form.get('templateId'), status: form.get('status'), data: parsed })
+    });
+    await renderClientWorkspace();
+  });
+
+  document.querySelector('#client-upload')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    await api('/api/client/uploads', {
+      method: 'POST',
+      body: JSON.stringify(Object.fromEntries(form.entries()))
+    });
+    await renderClientWorkspace();
+  });
 async function renderCurrentView() {
   if (!state.user) {
     viewEl.innerHTML = `${flashMarkup()}<h2>Sign in to continue</h2>`;

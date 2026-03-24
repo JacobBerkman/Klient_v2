@@ -174,11 +174,13 @@ function baseHeaders() {
 
 function sendError(res, error, requestId) {
   const message = error?.message || 'Request failed';
-  const statusCode = /not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400;
+  const statusCode = error?.statusCode || (/not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400);
   json(res, statusCode, {
     message,
     error: {
       message,
+      code: error?.code || null,
+      details: error?.details || null,
       statusCode,
       requestId
     }
@@ -289,7 +291,30 @@ const server = createServer(async (req, res) => {
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.listNotes(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'POST') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.addNote(requireUser(req), id, body.body || ''); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/profiles/') && pathname.split('/').length === 4 && req.method === 'GET') { const id = pathname.split('/')[3]; const user = requireUser(req); const result = { ...store.getProfileDetail(user, id), profileRecord: reads.getProfileDetail(user.firmId, id) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-    if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage') && req.method === 'PATCH') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.moveProfileStage(requireUser(req), id, body.stage, body.beforeProfileId || null); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage') && req.method === 'PATCH') {
+      const id = pathname.split('/')[3];
+      const body = await parseBody(req);
+      const result = store.reorderBoard(requireUser(req), {
+        profileId: id,
+        toStage: body.stage,
+        beforeProfileId: body.beforeProfileId || null,
+        expectedVersion: body.expectedVersion ?? null,
+        expectedUpdatedAt: body.expectedUpdatedAt ?? null,
+        expectedBoardVersion: body.expectedBoardVersion ?? null
+      });
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/board/reorder' && req.method === 'POST') {
+      const result = store.reorderBoard(requireUser(req), await parseBody(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/board/normalize' && req.method === 'POST') {
+      const result = store.normalizeBoardOrdering(requireUser(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname.startsWith('/api/profiles/') && req.method === 'PATCH') { const id = pathname.split('/')[3]; const result = store.updateProfile(requireUser(req), id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/board' && req.method === 'GET') { const result = store.getBoard(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/households' && req.method === 'GET') { const result = store.listHouseholds(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
@@ -364,7 +389,8 @@ const server = createServer(async (req, res) => {
     return serveStatic(pathname, res, requestId);
   } catch (error) {
     log('error', 'request.failed', { requestId, method: req.method, path: req.url, error: error.message || String(error) });
-    finalizeLog(/not found/i.test(error?.message || '') ? 404 : 400);
+    const statusCode = error?.statusCode || (/not found/i.test(error?.message || '') ? 404 : 400);
+    finalizeLog(statusCode);
     return sendError(res, error, requestId);
   }
 });
