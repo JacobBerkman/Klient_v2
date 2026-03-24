@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "node src/server.mjs",
-    "start": "node src/server.mjs"
+    "start": "node src/server.mjs",
+    "test:contract": "node ../../scripts/api-contract-test.mjs"
   }
 }

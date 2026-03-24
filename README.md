@@ -1,6 +1,6 @@
 # Kinetic Klient Rebuild
 
-This repository contains a **single-command runnable advisory onboarding app** with persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and smoke-test coverage for the main user flows.
+This repository contains a **single-command runnable advisory onboarding app** with a plain Node.js HTTP server as the production backend, persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and end-to-end contract coverage for the main user flows.
 
 ## What is included
 - admin firm bootstrap and sign-in
@@ -75,6 +75,13 @@ Open:
 - Sensitive identifiers are stored encrypted and only returned in masked form.
 
 ## Testing
+Run the production server contract test:
+
+```bash
+npm run test:contract
+```
+
+Run the smoke test:
 Smoke test the full runtime:
 
 ```bash
@@ -106,6 +113,14 @@ Authenticated operational diagnostics:
 curl -H "Authorization: Bearer <token>" http://localhost:3000/api/ops/diagnostics
 ```
 
+## API shape
+The supported runtime API is the plain Node server mounted under `/api`, for example:
+
+```bash
+curl -X POST http://localhost:3000/api/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@demo.test","password":"ChangeMe123!"}'
+```
 `/ready` now includes config validation output, SQLite quick-check results, export worker status summary, and audit event counts. `/api/ops/diagnostics` adds richer startup/runtime metadata for on-call troubleshooting.
 
 ## Portal view
