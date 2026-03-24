@@ -37,6 +37,7 @@ Use:
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
+curl -I http://localhost:3000/health
 ```
 
 `/ready` verifies SQLite access and returns query-table counts derived from the persisted state.

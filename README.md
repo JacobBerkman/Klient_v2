@@ -67,6 +67,7 @@ npm run test:all
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
+curl -I http://localhost:3000/health
 ```
 
 ## Data location
