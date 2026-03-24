@@ -1,6 +1,6 @@
 # Kinetic Klient Rebuild
 
-This repository contains a **single-command runnable advisory onboarding app** with persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and smoke-test coverage for the main user flows.
+This repository contains a **single-command runnable advisory onboarding app** with persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and layered test coverage (fast smoke + focused integration suites) for the main user flows.
 
 ## What is included
 - admin firm bootstrap and sign-in
@@ -35,17 +35,31 @@ Then open:
 - `ChangeMe123!`
 
 ## Testing
-Run the smoke test:
+Run the fast smoke path:
 
 ```bash
-node scripts/smoke-test.mjs
+npm run test:smoke
 ```
 
-Run the broader local validation bundle:
+Run all focused integration suites:
+
+```bash
+npm run test:integration
+```
+
+Run the full local validation bundle:
 
 ```bash
 npm run test:all
 ```
+
+Available integration suites:
+- `npm run test:integration:tenancy`
+- `npm run test:integration:rbac`
+- `npm run test:integration:exports`
+- `npm run test:integration:templates`
+- `npm run test:integration:portal-lifecycle`
+- `npm run test:integration:analytics`
 
 ## Data location
 All persisted demo/runtime data is stored in:
@@ -89,4 +103,4 @@ node scripts/export-worker.mjs
 This processes queued export jobs in the SQLite-backed runtime.
 
 ## CI
-A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.
+GitHub Actions keeps quick feedback via the smoke job, then fans out domain integration suites (`tenancy`, `rbac`, `exports`, `templates`, `portal lifecycle`, `analytics`) in parallel using `.github/workflows/smoke.yml`.
