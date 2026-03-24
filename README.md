@@ -41,7 +41,14 @@ Run the smoke test:
 node scripts/smoke-test.mjs
 ```
 
-Run the broader local validation bundle:
+Run browser end-to-end coverage against the real shipped Node runtime (`apps/api/src/server.mjs`):
+
+```bash
+pnpm exec playwright install chromium
+pnpm run test:e2e
+```
+
+Run the broader local validation bundle (syntax checks + smoke + browser E2E):
 
 ```bash
 npm run test:all

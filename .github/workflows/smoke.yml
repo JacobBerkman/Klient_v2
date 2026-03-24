@@ -12,6 +12,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: corepack enable
+      - run: pnpm install --frozen-lockfile
       - run: node --check apps/api/src/runtime.mjs
       - run: node --check apps/api/src/storage.mjs
       - run: node --check apps/api/src/server.mjs
@@ -22,4 +24,6 @@ jobs:
       - run: node --check scripts/restore-db.mjs
       - run: node --check scripts/smoke-test.mjs
       - run: node scripts/smoke-test.mjs
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm run test:e2e
       - run: git diff --check
