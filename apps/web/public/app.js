@@ -25,6 +25,15 @@ function renderItems(items, render) {
   return `<div class="list">${items.map(render).join('')}</div>`;
 }
 
+function formatDateTime(value) {
+  if (!value) return '—';
+  return new Date(value).toLocaleString();
+}
+
+function portalStatusBadgeClass(status) {
+  return status === 'active' ? 'badge' : 'badge subtle';
+}
+
 async function refreshPrimaryClientOptions() {
   try {
     const clients = await api('/api/profiles?kind=client');
@@ -113,6 +122,22 @@ async function renderProfileDetail() {
         <h3>Form Submissions</h3>
         <pre>${JSON.stringify(detail.submissions, null, 2)}</pre>
       </div>
+      <div class="item">
+        <h3>Portal Links</h3>
+        ${detail.portalLinks?.length ? detail.portalLinks.map((link) => `
+          <article class="item compact">
+            <div class="row between">
+              <strong>${link.profileName}</strong>
+              <span class="${portalStatusBadgeClass(link.status)}">${link.status}</span>
+            </div>
+            <div class="muted">Created: ${formatDateTime(link.createdAt)}</div>
+            <div class="muted">Expires: ${formatDateTime(link.expiresAt)}</div>
+            <div class="muted">Last accessed: ${formatDateTime(link.lastAccessedAt)}</div>
+            <div class="muted">Token: ${link.token}</div>
+            ${link.status === 'active' ? `<button type="button" data-revoke-portal-link="${link.id}">Revoke link</button>` : ''}
+          </article>
+        `).join('') : '<div class="item compact muted">No portal links created yet.</div>'}
+      </div>
     </div>
     <div class="item">
       <h3>Notes</h3>
@@ -134,6 +159,13 @@ async function renderProfileDetail() {
     const form = new FormData(event.target);
     await api(`/api/profiles/${state.selectedProfileId}/notes`, { method: 'POST', body: JSON.stringify({ body: form.get('body') }) });
     await renderProfileDetail();
+  });
+
+  document.querySelectorAll('[data-revoke-portal-link]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await api(`/api/portal-links/${button.dataset.revokePortalLink}/revoke`, { method: 'POST' });
+      await renderProfileDetail();
+    });
   });
 }
 
@@ -310,5 +342,5 @@ document.querySelector('#portal-form').addEventListener('submit', async (event) 
   event.preventDefault();
   const form = new FormData(event.target);
   const link = await api('/api/portal-links', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
-  alert(`Portal token: ${link.token}`);
+  alert(`Portal token: ${link.token}\nStatus: ${link.status}\nExpires: ${formatDateTime(link.expiresAt)}`);
 });

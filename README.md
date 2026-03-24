@@ -69,6 +69,13 @@ curl http://localhost:3000/ready
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
 
+Portal links now support:
+- automatic expiration (default 7 days, configurable at creation)
+- advisor revocation
+- last-accessed tracking
+- user-friendly invalid/revoked/expired messaging in the public portal view
+- advisor-visible status + access metadata in profile detail and portal link APIs
+
 ## Backup
 ```bash
 node scripts/backup-db.mjs

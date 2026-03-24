@@ -41,6 +41,12 @@ function now() {
   return new Date().toISOString();
 }
 
+function toIsoDate(value) {
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
+}
+
 function slugify(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
@@ -205,6 +211,7 @@ function seedState() {
 
 export function createStore() {
   const state = loadState(seedState);
+  const DEFAULT_PORTAL_TTL_HOURS = 24 * 7;
 
   function persist() {
     saveState(state);
@@ -232,6 +239,31 @@ export function createStore() {
   function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}) {
     state.auditEvents.push({ id: randomUUID(), firmId, actorUserId, entityType, entityId, action, occurredAt: now(), metadata });
     persist();
+  }
+
+  function getPortalLinkStatus(link) {
+    if (link.revokedAt) return 'revoked';
+    if (link.expiresAt && new Date(link.expiresAt).getTime() < Date.now()) return 'expired';
+    return 'active';
+  }
+
+  function portalLinkSummary(link) {
+    const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId);
+    return {
+      ...link,
+      status: getPortalLinkStatus(link),
+      profileName: profile ? `${profile.firstName} ${profile.lastName}` : 'Unknown profile'
+    };
+  }
+
+  function requireActivePortalLinkByToken(token) {
+    const link = state.portalLinks.find((entry) => entry.token === token);
+    if (!link) throw new Error('This portal link is invalid. Please request a new link from your advisor.');
+    if (link.revokedAt) throw new Error('This portal link has been revoked. Please contact your advisor for a new link.');
+    if (link.expiresAt && new Date(link.expiresAt).getTime() < Date.now()) {
+      throw new Error('This portal link has expired. Please request a fresh link from your advisor.');
+    }
+    return link;
   }
 
   return {
@@ -290,7 +322,11 @@ export function createStore() {
       const submissions = state.formSubmissions.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
       const stageHistory = state.stageChanges.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
       const notes = state.notes.filter((entry) => entry.profileId === profile.id && entry.firmId === user.firmId).slice().reverse();
-      return { profile, household, householdMembers, submissions, stageHistory, notes };
+      const portalLinks = state.portalLinks
+        .filter((entry) => entry.profileId === profile.id && entry.firmId === user.firmId)
+        .map(portalLinkSummary)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      return { profile, household, householdMembers, submissions, stageHistory, notes, portalLinks };
     },
     createProfile(user, input) {
       requirePermission(user, 'profiles:write');
@@ -618,18 +654,60 @@ export function createStore() {
       }, {});
       return this.createDocumentTemplate(user, { name: input.name, fileName: input.fileName || 'uploaded.pdf', blueprint: { sections }, mappings: (input.fields || []).map((field) => ({ pdfField: field, sourcePath: field.replace(/\s+/g, '_').toLowerCase() })) });
     },
-    createPortalLink(user, profileId) {
+    createPortalLink(user, input = {}) {
       requirePermission(user, 'profiles:read');
-      const link = { id: randomUUID(), firmId: user.firmId, profileId, token: randomUUID(), createdAt: now() };
+      const profileId = input.profileId;
+      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
+      if (!profile) throw new Error('Profile not found.');
+      const createdAt = now();
+      const ttlHours = Number(input.expiresInHours);
+      const defaultExpiry = new Date(Date.now() + DEFAULT_PORTAL_TTL_HOURS * 60 * 60 * 1000).toISOString();
+      const requestedExpiry = toIsoDate(input.expiresAt);
+      const ttlExpiry = Number.isFinite(ttlHours) && ttlHours > 0
+        ? new Date(Date.now() + ttlHours * 60 * 60 * 1000).toISOString()
+        : null;
+      const expiresAt = requestedExpiry || ttlExpiry || defaultExpiry;
+      const link = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        profileId,
+        token: randomUUID(),
+        createdAt,
+        expiresAt,
+        revokedAt: null,
+        revokedByUserId: null,
+        lastAccessedAt: null
+      };
       state.portalLinks.push(link);
+      addAudit(user.firmId, user.id, 'portalLink', link.id, 'portal-link.created', { profileId, expiresAt });
       persist();
-      return link;
+      return portalLinkSummary(link);
+    },
+    listPortalLinks(user, profileId = null) {
+      requirePermission(user, 'profiles:read');
+      return state.portalLinks
+        .filter((entry) => entry.firmId === user.firmId)
+        .filter((entry) => !profileId || entry.profileId === profileId)
+        .map(portalLinkSummary)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+    },
+    revokePortalLink(user, linkId) {
+      requirePermission(user, 'profiles:read');
+      const link = state.portalLinks.find((entry) => entry.id === linkId && entry.firmId === user.firmId);
+      if (!link) throw new Error('Portal link not found.');
+      if (!link.revokedAt) {
+        link.revokedAt = now();
+        link.revokedByUserId = user.id;
+        addAudit(user.firmId, user.id, 'portalLink', link.id, 'portal-link.revoked', { profileId: link.profileId });
+        persist();
+      }
+      return portalLinkSummary(link);
     },
     getPortalData(token) {
-      const link = state.portalLinks.find((entry) => entry.token === token);
-      if (!link) throw new Error('Portal link not found.');
+      const link = requireActivePortalLinkByToken(token);
       const firm = state.firms.find((entry) => entry.id === link.firmId) || null;
       const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId);
+      link.lastAccessedAt = now();
       const submissions = state.formSubmissions
         .filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId)
         .slice()
@@ -637,11 +715,11 @@ export function createStore() {
       const availableTemplates = state.formTemplates
         .filter((entry) => entry.firmId === link.firmId)
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
-      return { firm, profile, submissions, availableTemplates };
+      persist();
+      return { firm, profile, submissions, availableTemplates, link: portalLinkSummary(link) };
     },
     portalSubmit(token, input) {
-      const link = state.portalLinks.find((entry) => entry.token === token);
-      if (!link) throw new Error('Portal link not found.');
+      const link = requireActivePortalLinkByToken(token);
       const templateId = input.templateId || 'portal';
       const template = templateId === 'portal' ? null : state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === link.firmId);
       if (templateId !== 'portal' && !template) throw new Error('Form template not found.');
@@ -657,6 +735,7 @@ export function createStore() {
         updatedAt: now(),
         source: 'portal'
       };
+      link.lastAccessedAt = now();
       state.formSubmissions.push(submission);
       persist();
       return submission;

@@ -73,7 +73,8 @@
         token,
         data: null,
         selectedTemplateId: '',
-        sectionRepeats: new Map()
+        sectionRepeats: new Map(),
+        isAccessible: false
       };
 
       const fieldTypeToInput = {
@@ -96,6 +97,25 @@
         target.innerHTML = `<div class="item compact muted">${escapeHtml(message)}</div>`;
       }
 
+      function disablePortalActions(message) {
+        statusBadge.textContent = message;
+        statusBadge.className = 'badge subtle';
+        form.querySelectorAll('button, input, select, textarea').forEach((element) => {
+          element.disabled = true;
+        });
+      }
+
+      function renderPortalError(message) {
+        portalState.isAccessible = false;
+        title.textContent = 'Client Portal';
+        subtitle.textContent = message;
+        renderEmptyState(profileTarget, message);
+        renderEmptyState(submissionsTarget, 'Form history is unavailable while this portal link is inactive.');
+        renderEmptyState(fieldsTarget, 'Please request a new portal link from your advisor.');
+        templatePicker.innerHTML = '<option value="">Unavailable</option>';
+        disablePortalActions('Portal unavailable');
+      }
+
       function selectedTemplate() {
         return portalState.data?.availableTemplates?.find((template) => template.id === portalState.selectedTemplateId) || null;
       }
@@ -107,6 +127,7 @@
         }
         title.textContent = `${firm?.name || 'Kinetic Klient'} Portal`;
         subtitle.textContent = `Welcome ${profile.firstName} ${profile.lastName}. Review your information and complete any requested forms below.`;
+        const linkMeta = portalState.data?.link;
         profileTarget.innerHTML = `
           <div class="item compact">
             <strong>${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</strong>
@@ -117,6 +138,7 @@
             <div class="item compact"><strong>Household</strong><div class="muted">${escapeHtml(profile.householdId || 'Not linked yet')}</div></div>
             <div class="item compact"><strong>Address</strong><div class="muted">${escapeHtml([profile.address?.city, profile.address?.state].filter(Boolean).join(', ') || 'Not provided')}</div></div>
           </div>
+          ${linkMeta ? `<div class="item compact"><strong>Portal Link Status</strong><div class="muted">${escapeHtml(linkMeta.status)} • Expires ${escapeHtml(new Date(linkMeta.expiresAt).toLocaleString())}</div></div>` : ''}
         `;
       }
 
@@ -247,6 +269,7 @@
           renderEmptyState(fieldsTarget, 'A portal token is required to load forms.');
           templatePicker.innerHTML = '<option value="">Missing token</option>';
           draftButton.disabled = true;
+          portalState.isAccessible = false;
           return;
         }
 
@@ -255,8 +278,12 @@
         if (!response.ok) throw new Error(data.message || 'Unable to load portal data.');
 
         portalState.data = data;
+        portalState.isAccessible = true;
         portalState.selectedTemplateId = data.availableTemplates?.[0]?.id || '';
         portalState.sectionRepeats = new Map();
+        form.querySelectorAll('button, input, select, textarea').forEach((element) => {
+          element.disabled = false;
+        });
 
         templatePicker.innerHTML = data.availableTemplates?.length
           ? data.availableTemplates.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`).join('')
@@ -274,6 +301,7 @@
       });
 
       async function saveSubmission(status) {
+        if (!portalState.isAccessible) throw new Error('Portal access is currently unavailable.');
         const payload = buildPayloadFromForm();
         const response = await fetch(`/api/portal/${token}/submissions`, {
           method: 'POST',
@@ -308,10 +336,7 @@
       });
 
       loadPortal().catch((error) => {
-        subtitle.textContent = error.message || 'Unable to load portal data.';
-        renderEmptyState(profileTarget, 'Unable to load portal data.');
-        renderEmptyState(submissionsTarget, 'Unable to load submission history.');
-        renderEmptyState(fieldsTarget, 'Unable to load form fields.');
+        renderPortalError(error.message || 'Unable to load portal data.');
       });
     </script>
   </body>

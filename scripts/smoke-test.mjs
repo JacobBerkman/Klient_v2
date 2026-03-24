@@ -17,6 +17,12 @@ async function jsonFetch(path, options = {}) {
   return data;
 }
 
+async function fetchWithStatus(path, options = {}) {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, options);
+  const data = await response.json();
+  return { status: response.status, data };
+}
+
 async function run() {
   await wait(700);
   const ready = await jsonFetch('/ready');
@@ -52,7 +58,11 @@ async function run() {
   const template = await jsonFetch('/api/templates/auto-build', { method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Auto Build Test', fields: ['client.name', 'client.address', 'assets.account'] }) });
   const published = await jsonFetch(`/api/templates/${template.id}/publish`, { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
 
-  const portal = await jsonFetch('/api/portal-links', { method: 'POST', headers: authHeaders, body: JSON.stringify({ profileId: profile.id }) });
+  const portal = await jsonFetch('/api/portal-links', { method: 'POST', headers: authHeaders, body: JSON.stringify({ profileId: profile.id, expiresInHours: 24 }) });
+  const expiredPortal = await jsonFetch('/api/portal-links', { method: 'POST', headers: authHeaders, body: JSON.stringify({ profileId: profile.id, expiresAt: '2020-01-01T00:00:00.000Z' }) });
+  const revokedPortal = await jsonFetch('/api/portal-links', { method: 'POST', headers: authHeaders, body: JSON.stringify({ profileId: profile.id, expiresInHours: 24 }) });
+  await jsonFetch(`/api/portal-links/${revokedPortal.id}/revoke`, { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
+  const portalLinks = await jsonFetch(`/api/portal-links?profileId=${profile.id}`, { headers: { Authorization: `Bearer ${login.token}` } });
   const portalTemplate = await jsonFetch('/api/forms/templates', { method: 'POST', headers: authHeaders, body: JSON.stringify({
     name: 'Portal Intake',
     description: 'Client-completed discovery questions',
@@ -62,6 +72,8 @@ async function run() {
     ]
   }) });
   const portalData = await jsonFetch(`/api/portal/${portal.token}`);
+  const revokedData = await fetchWithStatus(`/api/portal/${revokedPortal.token}`);
+  const expiredData = await fetchWithStatus(`/api/portal/${expiredPortal.token}`);
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'draft', data: { primaryGoal: 'Retire early' } }) });
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'submitted', data: { primaryGoal: 'Retire early', accounts: [{ institution: 'Vanguard', balance: '120000' }] } }) });
   const refreshedPortalData = await jsonFetch(`/api/portal/${portal.token}`);
@@ -80,10 +92,14 @@ async function run() {
 
   if (!analytics.stageCounts) throw new Error('Analytics missing');
   if (!portalData.availableTemplates.find((entry) => entry.id === portalTemplate.id)) throw new Error('Portal templates missing');
+  if (!portalLinks.length || !portalLinks.some((entry) => entry.status === 'revoked') || !portalLinks.some((entry) => entry.status === 'expired')) throw new Error('Portal status visibility failed');
+  if (revokedData.status !== 400 || !/revoked/i.test(revokedData.data.message || '')) throw new Error('Revoked portal handling failed');
+  if (expiredData.status !== 400 || !/expired/i.test(expiredData.data.message || '')) throw new Error('Expired portal handling failed');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'draft')) throw new Error('Portal draft missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'submitted')) throw new Error('Portal submission missing');
+  if (!refreshedPortalData.link.lastAccessedAt) throw new Error('Portal last accessed tracking failed');
   if (!exportsList.find((job) => job.id === exportJob.id && job.status === 'completed')) throw new Error('Export processing failed');
-  if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
+  if (!detail.notes.length || !detail.profileRecord || !detail.portalLinks?.length) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
 
