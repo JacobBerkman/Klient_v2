@@ -85,7 +85,7 @@ async function run() {
   if (!exportsList.find((job) => job.id === exportJob.id && job.status === 'completed')) throw new Error('Export processing failed');
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
-  if (published.status !== 'published') throw new Error('Template publish failed');
+  if (published.status !== 'approved') throw new Error('Template approval failed');
 
   console.log(JSON.stringify({
     login: login.user.email,

@@ -10,6 +10,8 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - persisted prospect pipeline board
 - households and member linking
 - dynamic form template and submission flows
+- PDF field scan auto-build for template blueprints with repeatable section detection
+- template blueprint review/approval workflow with version history
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
 - audit trail and analytics views
@@ -45,6 +47,12 @@ Run the broader local validation bundle:
 
 ```bash
 npm run test:all
+```
+
+Run the blueprint-specific regression:
+
+```bash
+npm run test:blueprint
 ```
 
 ## Data location

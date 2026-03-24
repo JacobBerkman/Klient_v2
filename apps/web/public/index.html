@@ -83,6 +83,14 @@
             <input name="fileName" placeholder="File name" value="template.pdf" />
             <button type="submit">Create Template</button>
           </form>
+
+          <form id="auto-build-form" class="card">
+            <h3>Auto-Build Blueprint</h3>
+            <input name="name" placeholder="Blueprint name" required />
+            <input name="fileName" placeholder="Uploaded PDF name" value="auto-uploaded.pdf" />
+            <textarea name="pdfFields" rows="4" placeholder="One PDF field per line (e.g. client.firstName&#10;asset_1_value)" required></textarea>
+            <button type="submit">Scan + Build</button>
+          </form>
         </section>
 
         <section class="actions grid two">

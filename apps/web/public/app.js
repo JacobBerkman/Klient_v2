@@ -178,7 +178,48 @@ async function renderForms() {
 
 async function renderTemplates() {
   const templates = await api('/api/templates');
-  view.innerHTML = '<h2>Templates</h2>' + renderItems(templates, (item) => `<div class="item"><strong>${item.name}</strong><div class="muted">${item.fileName}</div><pre>${JSON.stringify(item.mappings, null, 2)}</pre></div>`);
+  view.innerHTML = '<h2>Templates</h2>' + renderItems(templates, (item) => `<div class="item">
+    <div class="row between">
+      <strong>${item.name}</strong>
+      <span class="badge ${item.status === 'approved' ? '' : 'subtle'}">${item.status || 'draft'}</span>
+    </div>
+    <div class="muted">${item.fileName}</div>
+    <div class="muted">Extracted fields: ${(item.extractedFields || []).length} • Versions: ${(item.versions || []).length}</div>
+    <details>
+      <summary>Review blueprint + mappings</summary>
+      <pre>${JSON.stringify({ blueprint: item.blueprint, mappings: item.mappings }, null, 2)}</pre>
+    </details>
+    <div class="row">
+      <button data-approve-template="${item.id}" ${item.status === 'approved' ? 'disabled' : ''}>Approve Blueprint</button>
+      <button data-add-review-field="${item.id}">Add Review Field</button>
+    </div>
+  </div>`);
+
+  document.querySelectorAll('[data-approve-template]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await api(`/api/templates/${button.dataset.approveTemplate}/publish`, { method: 'POST' });
+      await renderTemplates();
+    });
+  });
+
+  document.querySelectorAll('[data-add-review-field]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const templateId = button.dataset.addReviewField;
+      const templatesNow = await api('/api/templates');
+      const template = templatesNow.find((entry) => entry.id === templateId);
+      if (!template) return;
+      const currentSections = template.blueprint?.sections || [];
+      if (!currentSections.length) {
+        currentSections.push({ id: crypto.randomUUID(), key: 'review', title: 'Review', order: 1, fields: [] });
+      }
+      const firstSection = currentSections[0];
+      const nextFieldIndex = (firstSection.fields || []).length + 1;
+      firstSection.fields ||= [];
+      firstSection.fields.push({ key: `review_field_${nextFieldIndex}`, label: `Review Field ${nextFieldIndex}`, type: 'text', order: nextFieldIndex, pdfFieldName: `review_field_${nextFieldIndex}` });
+      await api(`/api/templates/${templateId}/blueprint`, { method: 'POST', body: JSON.stringify({ blueprint: { ...template.blueprint, sections: currentSections } }) });
+      await renderTemplates();
+    });
+  });
 }
 
 async function renderExports() {
@@ -289,6 +330,26 @@ document.querySelector('#doc-template-form').addEventListener('submit', async (e
   event.preventDefault();
   const form = new FormData(event.target);
   await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), blueprint: { sections: [] }, mappings: [] }) });
+  event.target.reset();
+  state.view = 'templates';
+  await renderCurrentView();
+});
+
+document.querySelector('#auto-build-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  const pdfFields = String(form.get('pdfFields') || '')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  await api('/api/templates/auto-build', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: form.get('name'),
+      fileName: form.get('fileName'),
+      pdfFields
+    })
+  });
   event.target.reset();
   state.view = 'templates';
   await renderCurrentView();

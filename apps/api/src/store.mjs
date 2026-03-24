@@ -53,6 +53,113 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
 }
 
+function normalizeFieldName(fieldName) {
+  return String(fieldName || '')
+    .trim()
+    .replace(/\[[0-9]+\]/g, '_$1')
+    .replace(/[^a-zA-Z0-9]+/g, '_')
+    .replace(/_+/g, '_')
+    .replace(/^_|_$/g, '')
+    .toLowerCase();
+}
+
+function splitFieldTokens(fieldName) {
+  return normalizeFieldName(fieldName).split('_').filter(Boolean);
+}
+
+function looksRepeatable(fieldName) {
+  return /\d/.test(fieldName) || /(beneficiary|asset|account|owner|member|employer|dependent|income|liability|property)/i.test(fieldName);
+}
+
+function sectionFromTokens(tokens = []) {
+  const candidates = ['household', 'client', 'spouse', 'beneficiary', 'asset', 'liability', 'employment', 'income', 'property', 'contact', 'advisor'];
+  const found = candidates.find((candidate) => tokens.includes(candidate));
+  return found || (tokens[0] || 'general');
+}
+
+function inferInputType(fieldName) {
+  if (/(date|dob|birth)/i.test(fieldName)) return 'date';
+  if (/(amount|balance|value|income|rate|percent|number|num|age|years?)/i.test(fieldName)) return 'number';
+  if (/(email)/i.test(fieldName)) return 'email';
+  if (/(phone|mobile|fax)/i.test(fieldName)) return 'tel';
+  if (/(address|street)/i.test(fieldName)) return 'textarea';
+  return 'text';
+}
+
+function labelFromField(fieldName) {
+  return normalizeFieldName(fieldName)
+    .split('_')
+    .filter(Boolean)
+    .map((part) => `${part[0]?.toUpperCase() || ''}${part.slice(1)}`)
+    .join(' ');
+}
+
+function buildBlueprintFromPdfFields(fields = []) {
+  const normalizedFields = fields
+    .map((entry) => (typeof entry === 'string' ? { name: entry } : entry))
+    .filter((entry) => entry?.name)
+    .map((entry) => ({ ...entry, normalizedName: normalizeFieldName(entry.name) }));
+
+  const grouped = normalizedFields.reduce((acc, field) => {
+    const tokens = splitFieldTokens(field.name);
+    const sectionKey = sectionFromTokens(tokens);
+    acc[sectionKey] ||= [];
+    acc[sectionKey].push({
+      key: field.normalizedName || randomUUID(),
+      pdfFieldName: field.name,
+      label: labelFromField(field.name),
+      type: inferInputType(field.name),
+      repeatableHint: looksRepeatable(field.name)
+    });
+    return acc;
+  }, {});
+
+  const sections = Object.entries(grouped).map(([sectionKey, sectionFields], index) => {
+    const repeatable = sectionFields.filter((field) => field.repeatableHint).length >= Math.max(2, Math.ceil(sectionFields.length / 2));
+    return {
+      id: randomUUID(),
+      key: sectionKey,
+      title: sectionKey.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase()),
+      order: index + 1,
+      repeatable,
+      fields: sectionFields.map((field, fieldIndex) => ({
+        key: field.key,
+        label: field.label,
+        type: field.type,
+        order: fieldIndex + 1,
+        pdfFieldName: field.pdfFieldName
+      }))
+    };
+  });
+
+  const repeatableGroups = sections
+    .filter((section) => section.repeatable)
+    .map((section) => ({
+      id: randomUUID(),
+      sectionKey: section.key,
+      rowLabel: `${section.title} Entry`,
+      fieldKeys: section.fields.map((field) => field.key)
+    }));
+
+  const mappings = normalizedFields.map((field) => {
+    const tokens = splitFieldTokens(field.name);
+    const sectionKey = sectionFromTokens(tokens);
+    return {
+      pdfField: field.name,
+      sourcePath: `blueprint.${sectionKey}.${field.normalizedName || 'field'}`,
+      transform: inferInputType(field.name) === 'date' ? 'isoDate' : undefined
+    };
+  });
+
+  return {
+    sections,
+    repeatableGroups,
+    mappings,
+    extractedFieldCount: normalizedFields.length,
+    extractionConfidence: normalizedFields.length ? 0.84 : 0
+  };
+}
+
 function seedState() {
   const createdAt = now();
   const firmId = randomUUID();
@@ -190,8 +297,19 @@ function seedState() {
       firmId,
       name: 'Client Intake PDF Template',
       fileName: 'client-intake.pdf',
-      blueprint: { sections: ['client', 'household', 'assets'] },
+      blueprint: { sections: [{ id: randomUUID(), key: 'client', title: 'Client', order: 1, fields: [{ key: 'client_name', label: 'Client Name', type: 'text', order: 1, pdfFieldName: 'client_name' }] }] },
       mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName' }],
+      extractedFields: [{ name: 'client_name', page: 1 }],
+      versions: [{
+        version: 1,
+        status: 'approved',
+        source: 'manual',
+        blueprint: { sections: [{ id: randomUUID(), key: 'client', title: 'Client', order: 1, fields: [{ key: 'client_name', label: 'Client Name', type: 'text', order: 1, pdfFieldName: 'client_name' }] }] },
+        mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName' }],
+        extractedFields: [{ name: 'client_name', page: 1 }],
+        createdAt
+      }],
+      status: 'approved',
       createdAt,
       updatedAt: createdAt
     }],
@@ -458,9 +576,52 @@ export function createStore() {
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
+      const createdAt = now();
+      const initialBlueprint = input.blueprint || { sections: [] };
+      const initialMappings = input.mappings || [];
+      const template = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: input.name,
+        fileName: input.fileName || 'template.pdf',
+        blueprint: initialBlueprint,
+        mappings: initialMappings,
+        extractedFields: input.extractedFields || [],
+        versions: [{
+          version: 1,
+          status: input.status || 'draft',
+          source: input.source || 'manual',
+          blueprint: initialBlueprint,
+          mappings: initialMappings,
+          extractedFields: input.extractedFields || [],
+          createdAt
+        }],
+        status: input.status || 'draft',
+        createdAt,
+        updatedAt: createdAt
+      };
       state.documentTemplates.push(template);
       addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
+      persist();
+      return template;
+    },
+    updateTemplateBlueprint(user, templateId, blueprint) {
+      requirePermission(user, 'templates:write');
+      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Template not found.');
+      template.blueprint = blueprint || { sections: [] };
+      template.updatedAt = now();
+      template.status = 'in_review';
+      template.versions.push({
+        version: template.versions.length + 1,
+        status: 'in_review',
+        source: 'manual_edit',
+        blueprint: template.blueprint,
+        mappings: template.mappings,
+        extractedFields: template.extractedFields || [],
+        createdAt: template.updatedAt
+      });
+      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.blueprint_updated', { sectionCount: (template.blueprint.sections || []).length });
       persist();
       return template;
     },
@@ -469,8 +630,9 @@ export function createStore() {
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
       template.mappings = mappings;
-      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
       template.updatedAt = now();
+      template.status = 'in_review';
+      template.versions.push({ version: template.versions.length + 1, status: 'in_review', source: 'mapping_edit', blueprint: template.blueprint, mappings, extractedFields: template.extractedFields || [], createdAt: template.updatedAt });
       addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.mappings_updated', { count: mappings.length });
       persist();
       return template;
@@ -479,8 +641,18 @@ export function createStore() {
       requirePermission(user, 'templates:write');
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
-      template.status = 'published';
+      template.status = 'approved';
       template.updatedAt = now();
+      template.versions.push({
+        version: template.versions.length + 1,
+        status: 'approved',
+        source: 'approval',
+        blueprint: template.blueprint,
+        mappings: template.mappings,
+        extractedFields: template.extractedFields || [],
+        createdAt: template.updatedAt
+      });
+      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.approved', { version: template.versions.length });
       persist();
       return template;
     },
@@ -610,13 +782,32 @@ export function createStore() {
     },
     autoBuildTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const sections = (input.fields || []).reduce((acc, field) => {
-        const sectionKey = field.split('.')[0] || 'general';
-        acc[sectionKey] ||= [];
-        acc[sectionKey].push(field);
-        return acc;
-      }, {});
-      return this.createDocumentTemplate(user, { name: input.name, fileName: input.fileName || 'uploaded.pdf', blueprint: { sections }, mappings: (input.fields || []).map((field) => ({ pdfField: field, sourcePath: field.replace(/\s+/g, '_').toLowerCase() })) });
+      const fields = input.pdfFields || input.fields || [];
+      const generated = buildBlueprintFromPdfFields(fields);
+      const template = this.createDocumentTemplate(user, {
+        name: input.name,
+        fileName: input.fileName || 'uploaded.pdf',
+        blueprint: { sections: generated.sections, repeatableGroups: generated.repeatableGroups },
+        mappings: generated.mappings,
+        extractedFields: fields.map((entry) => (typeof entry === 'string' ? { name: entry } : entry)),
+        source: 'auto_build',
+        status: 'in_review'
+      });
+      template.status = 'in_review';
+      template.updatedAt = now();
+      template.versions[template.versions.length - 1] = {
+        ...template.versions[template.versions.length - 1],
+        status: 'in_review',
+        source: 'auto_build',
+        metadata: { extractedFieldCount: generated.extractedFieldCount, extractionConfidence: generated.extractionConfidence }
+      };
+      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.auto_built', {
+        extractedFieldCount: generated.extractedFieldCount,
+        sectionCount: generated.sections.length,
+        repeatableGroupCount: generated.repeatableGroups.length
+      });
+      persist();
+      return template;
     },
     createPortalLink(user, profileId) {
       requirePermission(user, 'profiles:read');
