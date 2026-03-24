@@ -109,7 +109,8 @@ test('production Node server contract supports auth and profile workflows', asyn
     body: JSON.stringify({ stage: 'analysis' })
   });
   assert.equal(moveResponse.status, 200);
-  assert.equal(moved.stage, 'analysis');
+  assert.equal(moved.moved.stage, 'analysis');
+  assert.ok(typeof moved.board.boardVersion === 'number');
 
   const { response: historyResponse, data: history } = await jsonFetch(port, `/api/profiles/${profile.id}/stage-history`, {
     headers: { Authorization: `Bearer ${login.token}` }

@@ -10,9 +10,10 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - persisted prospect pipeline board
 - households and member linking
 - dynamic form template and submission flows
+- collaborative draft editing with revision IDs, lock leases, and conflict prompts
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
-- audit trail and analytics views
+- audit trail plus advisor-facing analytics panels (funnel conversion, stage aging, form completion, productivity)
 - invite flow and password reset endpoints
 - internal web UI served by the backend
 - operational diagnostics for runtime config, storage health, export worker queue, and audit counts
