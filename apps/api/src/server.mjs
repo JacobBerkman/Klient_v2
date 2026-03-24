@@ -231,7 +231,8 @@ const server = createServer(async (req, res) => {
           bootedAt,
           uptimeSeconds: Math.round(process.uptime()),
           pid: process.pid,
-          runtime: startupDiagnostics
+          runtime: startupDiagnostics,
+          auth: { provider: runtime.authProvider }
         },
         data: {
           querySummary: readQuerySummary(),
@@ -261,12 +262,12 @@ const server = createServer(async (req, res) => {
         return json(res, csrfError.statusCode, csrfError.body, csrfError.headers);
       }
     }
-    if (pathname === '/api/register' && req.method === 'POST') { const result = store.register(await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
-    if (pathname === '/api/login' && req.method === 'POST') { const result = store.login(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/register' && req.method === 'POST') { const result = store.auth.register(await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/login' && req.method === 'POST') { const result = store.auth.login(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/invites' && req.method === 'POST') { const result = store.inviteUser(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/invites/accept' && req.method === 'POST') { const result = store.acceptInvite(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-    if (pathname === '/api/password-resets' && req.method === 'POST') { const result = store.requestPasswordReset((await parseBody(req)).email || ''); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-    if (pathname === '/api/password-resets/confirm' && req.method === 'POST') { const result = store.resetPassword(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/password-resets' && req.method === 'POST') { const result = store.auth.requestReset(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/password-resets/confirm' && req.method === 'POST') { const result = store.auth.resetPassword(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/users' && req.method === 'GET') { const result = store.listUsers(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/session' && req.method === 'GET') { const result = { user: requireUser(req) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/logout' && req.method === 'POST') { const result = store.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
