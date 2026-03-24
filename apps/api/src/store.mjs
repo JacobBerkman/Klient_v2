@@ -1,5 +1,8 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
+import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { createAuthService } from './auth/service.mjs';
 import { createAuthService } from './auth/service.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
@@ -7,7 +10,6 @@ import { createAuthService } from './auth/service.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs';
 
-const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const PERMISSIONS = {
   admin: ['*'],
@@ -26,6 +28,23 @@ function createStoreError(message, { statusCode = 400, code = 'BAD_REQUEST', det
 }
 const BOARD_COLUMNS = ['discovery', 'gather_oi', 'analysis', 'advisor_proposal_meeting', 'intake', 'on_boarding', 'investment_strategy', 'completed', 'drop_dead_lead', 'drop_nurture'];
 
+
+const SENSITIVE_ACCESS_POLICY = {
+  admin: {
+    profile_view: { allowMasked: true, allowUnmasked: false },
+    compliance_review: { allowMasked: true, allowUnmasked: true },
+    audit_investigation: { allowMasked: true, allowUnmasked: true }
+  },
+  advisor: {
+    profile_view: { allowMasked: true, allowUnmasked: false },
+    client_support: { allowMasked: true, allowUnmasked: true }
+  },
+  readonly: {
+    profile_view: { allowMasked: true, allowUnmasked: false }
+  },
+  client: {}
+};
+
 function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission);
 }
@@ -34,23 +53,6 @@ function requirePermission(user, permission) {
   if (!can(user.role, permission)) {
     throw new Error(`Missing permission: ${permission}`);
   }
-}
-
-function encryptValue(value) {
-  if (!value) return null;
-  const iv = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', APP_SECRET, iv);
-  const encrypted = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]);
-  const tag = cipher.getAuthTag();
-  return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
-}
-
-function decryptValue(payload) {
-  if (!payload) return null;
-  const [ivHex, tagHex, dataHex] = payload.split(':');
-  const decipher = createDecipheriv('aes-256-gcm', APP_SECRET, Buffer.from(ivHex, 'hex'));
-  decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
-  return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
 }
 
 function now() {
@@ -421,6 +423,12 @@ function seedState() {
   };
 }
 
+export function createStore(options = {}) {
+  const state = loadState(seedState);
+  const piiCrypto = new PiiCryptoService({
+    keyProvider: createKeyProvider(runtime, { kmsAdapter: options.kmsAdapter }),
+    legacyKeyId: process.env.PII_LEGACY_KEY_ID || 'legacy-app-secret-v1'
+  });
 export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   const state = loadState(seedState);
   migrateTemplateSystems(state);
@@ -729,6 +737,54 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
 
   const auth = createAuthService({ provider: createAuthProvider() });
 
+  function getSensitivePolicy(role, purpose = 'profile_view') {
+    return SENSITIVE_ACCESS_POLICY[role]?.[purpose] || null;
+  }
+
+  function maskSsn(value) {
+    return value ? `***-**-${value.slice(-4)}` : null;
+  }
+
+  function maskTaxId(value) {
+    return value ? `**-${value.slice(-4)}` : null;
+  }
+
+  function readSensitiveRecord(profile, field) {
+    if (!profile?.pii) return null;
+    const envelopeField = `${field}Encrypted`;
+    if (profile.pii[envelopeField]) return profile.pii[envelopeField];
+    const legacyField = `${field}Ciphertext`;
+    return profile.pii[legacyField] || null;
+  }
+
+  function writeSensitiveRecord(profile, field, value) {
+    profile.pii ||= { maskingPolicy: 'role_based' };
+    profile.pii[`${field}Encrypted`] = piiCrypto.encrypt(value);
+    delete profile.pii[`${field}Ciphertext`];
+  }
+
+  function reencryptProfilePii(profile) {
+    if (!profile?.pii) return { changed: false, fields: [] };
+    const fields = ['ssn', 'taxId'];
+    const changedFields = [];
+    fields.forEach((field) => {
+      const current = readSensitiveRecord(profile, field);
+      if (!current) return;
+      if (!piiCrypto.needsReencryption(current)) {
+        if (typeof current === 'string') {
+          profile.pii[`${field}Encrypted`] = piiCrypto.encrypt(piiCrypto.decrypt(current));
+          delete profile.pii[`${field}Ciphertext`];
+          changedFields.push(field);
+        }
+        return;
+      }
+      profile.pii[`${field}Encrypted`] = piiCrypto.reencrypt(current);
+      delete profile.pii[`${field}Ciphertext`];
+      changedFields.push(field);
+    });
+    return { changed: changedFields.length > 0, fields: changedFields };
+  }
+
   return {
     state,
     assertPermission(user, permission) {
@@ -743,6 +799,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return auth.login(input);
     },
     requireUser,
+    _internal: { piiCrypto },
     getDashboard(user) {
       requirePermission(user, 'profiles:read');
       const profiles = state.profiles.filter((profile) => profile.firmId === user.firmId);
@@ -788,7 +845,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       const createdAt = now();
       const inStage = state.profiles.filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === (input.stage || 'discovery')).length;
       const profile = {
-        pii: { maskingPolicy: 'role_based', ssnCiphertext: encryptValue(input.ssn), taxIdCiphertext: encryptValue(input.taxId) },
+        pii: { maskingPolicy: 'role_based', ssnEncrypted: piiCrypto.encrypt(input.ssn), taxIdEncrypted: piiCrypto.encrypt(input.taxId) },
         id: randomUUID(),
         firmId: user.firmId,
         advisorUserId: user.id,
@@ -825,11 +882,11 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       if (!profile) throw new Error('Profile not found.');
       const nextPatch = { ...patch };
       if ('ssn' in nextPatch) {
-        profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: encryptValue(nextPatch.ssn), taxIdCiphertext: profile.pii?.taxIdCiphertext || null };
+        writeSensitiveRecord(profile, 'ssn', nextPatch.ssn);
         delete nextPatch.ssn;
       }
       if ('taxId' in nextPatch) {
-        profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: profile.pii?.ssnCiphertext || null, taxIdCiphertext: encryptValue(nextPatch.taxId) };
+        writeSensitiveRecord(profile, 'taxId', nextPatch.taxId);
         delete nextPatch.taxId;
       }
       Object.assign(profile, nextPatch, { updatedAt: now() });
@@ -1809,16 +1866,57 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         retention: objectStorage.retentionPolicies
       };
     },
-    getMaskedSensitiveData(user, profileId) {
+    getMaskedSensitiveData(user, profileId, options = {}) {
       requirePermission(user, 'profiles:read');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
-      const ssn = decryptValue(profile.pii?.ssnCiphertext);
-      const taxId = decryptValue(profile.pii?.taxIdCiphertext);
-      return {
-        ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
-        taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
+      const purpose = options.purpose || 'profile_view';
+      const requestedUnmask = Boolean(options.unmask);
+      const policy = getSensitivePolicy(user.role, purpose);
+      if (!policy?.allowMasked || (requestedUnmask && !policy.allowUnmasked)) {
+        addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', { purpose, requestedUnmask, role: user.role });
+        throw new Error('Sensitive data access denied for role/purpose combination.');
+      }
+      const ssn = piiCrypto.decrypt(readSensitiveRecord(profile, 'ssn'));
+      const taxId = piiCrypto.decrypt(readSensitiveRecord(profile, 'taxId'));
+      const response = {
+        ssnMasked: maskSsn(ssn),
+        taxIdMasked: maskTaxId(taxId)
       };
+      if (requestedUnmask) {
+        response.ssn = ssn;
+        response.taxId = taxId;
+      }
+      addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
+        purpose,
+        requestedUnmask,
+        grantedUnmask: requestedUnmask,
+        role: user.role,
+        fields: requestedUnmask ? ['ssn', 'taxId'] : ['ssnMasked', 'taxIdMasked']
+      });
+      return response;
+    },
+    reencryptSensitiveData(options = {}) {
+      const profiles = state.profiles.filter((entry) => entry.firmId === options.firmId || !options.firmId);
+      let rotatedProfiles = 0;
+      let rotatedFields = 0;
+      profiles.forEach((profile) => {
+        const result = reencryptProfilePii(profile);
+        if (result.changed) {
+          rotatedProfiles += 1;
+          rotatedFields += result.fields.length;
+          profile.updatedAt = now();
+        }
+      });
+      const actorUserId = options.actorUserId || 'system';
+      const actorFirmId = options.firmId || profiles[0]?.firmId || 'system';
+      addAudit(actorFirmId, actorUserId, 'pii', 'rotation', 'pii.rotation.completed', {
+        rotatedProfiles,
+        rotatedFields,
+        activeKeyId: piiCrypto.keyProvider.getActiveKey().keyId
+      });
+      persist();
+      return { rotatedProfiles, rotatedFields };
     },
     __setTestHooks(hooks = {}) {
       testHooks = { ...hooks };

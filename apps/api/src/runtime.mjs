@@ -42,6 +42,14 @@ function readAuthProvider(value) {
   return normalized;
 }
 
+function readPiiKeyProvider(value) {
+  const normalized = String(value || 'env').toLowerCase();
+  if (!['env', 'kms'].includes(normalized)) {
+    throw new Error(`Invalid PII_KEY_PROVIDER: ${normalized}.`);
+  }
+  return normalized;
+}
+
 const nodeEnv = normalizeNodeEnv(process.env.NODE_ENV || 'development');
 const appSecret = process.env.APP_SECRET || 'kinetic-klient-dev-secret';
 
@@ -56,6 +64,7 @@ export const runtime = {
   port: readNumber('PORT', 3000),
   appSecret,
   authProvider: readAuthProvider(process.env.AUTH_PROVIDER),
+  piiKeyProvider: readPiiKeyProvider(process.env.PII_KEY_PROVIDER),
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',
   instanceId: process.env.INSTANCE_ID || hostname(),
@@ -101,6 +110,7 @@ export function validateRuntimeConfig() {
       port: runtime.port,
       logLevel: runtime.logLevel,
       authProvider: runtime.authProvider,
+      piiKeyProvider: runtime.piiKeyProvider,
       serviceName: runtime.serviceName,
       instanceId: runtime.instanceId,
       storageProvider: runtime.storageProvider,
