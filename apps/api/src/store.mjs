@@ -3,11 +3,15 @@ import { runtime } from './runtime.mjs';
 import { loadState, saveState } from './storage.mjs';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
+const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const LOGIN_WINDOW_MS = 1000 * 60 * 15;
+const MAX_LOGIN_ATTEMPTS = 5;
+
 const PERMISSIONS = {
   admin: ['*'],
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
   readonly: ['profiles:read', 'analytics:read'],
-  client: ['portal:read']
+  client: ['portal:read', 'client:write']
 };
 
 function can(role, permission) {
@@ -49,6 +53,14 @@ function hash(password) {
   return createHash('sha256').update(password).digest('hex');
 }
 
+function assertStrongPassword(password) {
+  const value = String(password || '');
+  if (value.length < 12) throw new Error('Password must be at least 12 characters long.');
+  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value)) {
+    throw new Error('Password must include uppercase, lowercase, and numeric characters.');
+  }
+}
+
 function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
 }
@@ -66,6 +78,7 @@ function seedState() {
   const formTemplateId = randomUUID();
   const submissionId = randomUUID();
   const exportId = randomUUID();
+  const documentUploadId = randomUUID();
 
   return {
     firms: [{ id: firmId, name: 'Demo Advisory Group', slug: 'demo-advisory-group', createdAt }],
@@ -196,10 +209,23 @@ function seedState() {
       updatedAt: createdAt
     }],
     exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json' }, createdAt, updatedAt: createdAt }],
+    documentUploads: [{
+      id: documentUploadId,
+      firmId,
+      clientId,
+      name: 'Driver License - Morgan',
+      category: 'identification',
+      visibility: 'shared',
+      status: 'uploaded',
+      uploadedBy: 'advisor',
+      createdAt,
+      updatedAt: createdAt
+    }],
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
-    portalLinks: []
+    portalLinks: [],
+    authAttempts: []
   };
 }
 
@@ -212,9 +238,34 @@ export function createStore() {
 
   function createSession(user) {
     const token = randomUUID();
-    state.sessions.push({ token, userId: user.id, firmId: user.firmId, createdAt: now(), expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 8).toISOString() });
+    state.sessions.push({ token, userId: user.id, firmId: user.firmId, createdAt: now(), expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString() });
     persist();
     return { token, user: publicUser(user) };
+  }
+
+  function pruneExpiredSessions() {
+    const cutoff = Date.now();
+    const nextSessions = state.sessions.filter((entry) => new Date(entry.expiresAt).getTime() > cutoff);
+    if (nextSessions.length !== state.sessions.length) {
+      state.sessions = nextSessions;
+      persist();
+    }
+  }
+
+  function recordLoginAttempt(email, ok) {
+    const normalizedEmail = String(email || '').toLowerCase();
+    const entry = { id: randomUUID(), email: normalizedEmail, ok, createdAt: now() };
+    state.authAttempts = (state.authAttempts || []).filter((attempt) => Date.now() - new Date(attempt.createdAt).getTime() <= LOGIN_WINDOW_MS);
+    state.authAttempts.push(entry);
+    persist();
+  }
+
+  function ensureLoginAllowed(email) {
+    const normalizedEmail = String(email || '').toLowerCase();
+    const attempts = (state.authAttempts || []).filter((attempt) => attempt.email === normalizedEmail && !attempt.ok && Date.now() - new Date(attempt.createdAt).getTime() <= LOGIN_WINDOW_MS);
+    if (attempts.length >= MAX_LOGIN_ATTEMPTS) {
+      throw new Error('Too many failed login attempts. Please wait 15 minutes and try again.');
+    }
   }
 
   function publicUser(user) {
@@ -222,6 +273,7 @@ export function createStore() {
   }
 
   function requireUser(token) {
+    pruneExpiredSessions();
     const session = state.sessions.find((entry) => entry.token === token);
     if (!session) throw new Error('Authentication required.');
     const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId);
@@ -234,9 +286,26 @@ export function createStore() {
     persist();
   }
 
+  function requireClientProfile(user) {
+    requirePermission(user, 'portal:read');
+    const profile = state.profiles.find((entry) =>
+      entry.firmId === user.firmId
+      && entry.kind === 'client'
+      && entry.email
+      && entry.email.toLowerCase() === user.email.toLowerCase()
+    );
+    if (!profile) throw new Error('Client profile not found.');
+    return profile;
+  }
+
   return {
     state,
+    assertPermission(user, permission) {
+      requirePermission(user, permission);
+      return true;
+    },
     register({ firmName, firstName, lastName, email, password }) {
+      assertStrongPassword(password);
       const normalizedEmail = email.toLowerCase();
       if (state.users.some((user) => user.email === normalizedEmail)) throw new Error('An account with this email already exists.');
       const firm = { id: randomUUID(), name: firmName, slug: slugify(firmName), createdAt: now() };
@@ -248,8 +317,13 @@ export function createStore() {
     },
     login({ email, password }) {
       const normalizedEmail = email.toLowerCase();
+      ensureLoginAllowed(normalizedEmail);
       const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password));
-      if (!user) throw new Error('Invalid email or password.');
+      if (!user) {
+        recordLoginAttempt(normalizedEmail, false);
+        throw new Error('Invalid email or password.');
+      }
+      recordLoginAttempt(normalizedEmail, true);
       return createSession(user);
     },
     requireUser,
@@ -369,6 +443,7 @@ export function createStore() {
       return profile;
     },
     getBoard(user) {
+      requirePermission(user, 'profiles:read');
       const columns = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
       return columns.map((stage) => ({
         stage,
@@ -378,6 +453,7 @@ export function createStore() {
       }));
     },
     listStageHistory(user, profileId) {
+      requirePermission(user, 'profiles:read');
       return state.stageChanges.filter((entry) => entry.firmId === user.firmId && entry.clientId === profileId);
     },
     createHousehold(user, input) {
@@ -411,6 +487,7 @@ export function createStore() {
       }));
     },
     listNotes(user, profileId) {
+      requirePermission(user, 'profiles:read');
       return state.notes.filter((entry) => entry.firmId === user.firmId && entry.profileId === profileId).slice().reverse();
     },
     addNote(user, profileId, body) {
@@ -424,6 +501,7 @@ export function createStore() {
       return note;
     },
     listFormTemplates(user) {
+      requirePermission(user, 'profiles:read');
       return state.formTemplates.filter((entry) => entry.firmId === user.firmId);
     },
     createFormTemplate(user, input) {
@@ -435,11 +513,79 @@ export function createStore() {
       return template;
     },
     listFormSubmissions(user, status = null) {
+      requirePermission(user, 'profiles:read');
       return state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || entry.status === status)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+    },
+    getClientWorkspace(user) {
+      const profile = requireClientProfile(user);
+      const submissions = state.formSubmissions
+        .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      const templates = state.formTemplates
+        .filter((entry) => entry.firmId === user.firmId)
+        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
+      const uploads = state.documentUploads
+        .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      const submissionByTemplate = new Map();
+      submissions.forEach((submission) => {
+        if (!submissionByTemplate.has(submission.templateId)) submissionByTemplate.set(submission.templateId, submission.status);
+      });
+      const templateProgress = templates.map((template) => ({
+        templateId: template.id,
+        templateName: template.name,
+        status: submissionByTemplate.get(template.id) || 'not_started'
+      }));
+      return { profile, submissions, templates, templateProgress, uploads };
+    },
+    submitClientForm(user, input) {
+      requirePermission(user, 'client:write');
+      const profile = requireClientProfile(user);
+      const template = state.formTemplates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Form template not found.');
+      const status = input.status === 'draft' ? 'draft' : 'submitted';
+      const submission = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        clientId: profile.id,
+        templateId: input.templateId,
+        status,
+        data: input.data && typeof input.data === 'object' ? input.data : {},
+        source: 'client_portal',
+        createdAt: now(),
+        updatedAt: now()
+      };
+      state.formSubmissions.push(submission);
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'client.form_submission.created', { templateId: input.templateId, status });
+      persist();
+      return submission;
+    },
+    submitClientUpload(user, input) {
+      requirePermission(user, 'client:write');
+      const profile = requireClientProfile(user);
+      const upload = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        clientId: profile.id,
+        name: input.name || 'Client upload',
+        category: input.category || 'general',
+        visibility: 'shared',
+        status: 'uploaded',
+        uploadedBy: 'client',
+        notes: input.notes || '',
+        createdAt: now(),
+        updatedAt: now()
+      };
+      state.documentUploads.push(upload);
+      addAudit(user.firmId, user.id, 'document_upload', upload.id, 'client.document_upload.created', { category: upload.category });
+      persist();
+      return upload;
     },
     listFormDrafts(user) {
       return this.listFormSubmissions(user, 'draft');
@@ -519,6 +665,7 @@ export function createStore() {
       return { processed };
     },
     listAudit(user) {
+      requirePermission(user, 'profiles:read');
       return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();
     },
     logout(token) {
@@ -539,6 +686,7 @@ export function createStore() {
       return invite;
     },
     acceptInvite(input) {
+      assertStrongPassword(input.password);
       const invite = state.invites.find((entry) => entry.token === input.token);
       if (!invite) throw new Error('Invite not found.');
       const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hash(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, createdAt: now() };
@@ -556,6 +704,7 @@ export function createStore() {
       return reset;
     },
     resetPassword(input) {
+      assertStrongPassword(input.password);
       const reset = state.passwordResets.find((entry) => entry.token === input.token);
       if (!reset) throw new Error('Reset token not found.');
       const user = state.users.find((entry) => entry.id === reset.userId);
@@ -637,7 +786,11 @@ export function createStore() {
       const availableTemplates = state.formTemplates
         .filter((entry) => entry.firmId === link.firmId)
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
-      return { firm, profile, submissions, availableTemplates };
+      const uploads = state.documentUploads
+        .filter((entry) => entry.firmId === link.firmId && entry.clientId === link.profileId)
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      return { firm, profile, submissions, availableTemplates, uploads };
     },
     portalSubmit(token, input) {
       const link = state.portalLinks.find((entry) => entry.token === token);
@@ -660,6 +813,26 @@ export function createStore() {
       state.formSubmissions.push(submission);
       persist();
       return submission;
+    },
+    portalUpload(token, input) {
+      const link = state.portalLinks.find((entry) => entry.token === token);
+      if (!link) throw new Error('Portal link not found.');
+      const upload = {
+        id: randomUUID(),
+        firmId: link.firmId,
+        clientId: link.profileId,
+        name: input.name || 'Portal upload',
+        category: input.category || 'general',
+        visibility: 'shared',
+        status: 'uploaded',
+        uploadedBy: 'portal',
+        notes: input.notes || '',
+        createdAt: now(),
+        updatedAt: now()
+      };
+      state.documentUploads.push(upload);
+      persist();
+      return upload;
     },
     getAnalytics(user) {
       requirePermission(user, 'analytics:read');
