@@ -25,6 +25,23 @@ function renderItems(items, render) {
   return `<div class="list">${items.map(render).join('')}</div>`;
 }
 
+function escapeHtml(value) {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&#39;');
+}
+
+function sectionDataKey(section) {
+  return (section.dataKey || section.title || '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
 async function refreshPrimaryClientOptions() {
   try {
     const clients = await api('/api/profiles?kind=client');
@@ -90,6 +107,41 @@ async function renderProfileDetail() {
   }
 
   const detail = await api(`/api/profiles/${state.selectedProfileId}`);
+  const templates = await api('/api/forms/templates');
+  const templateMap = new Map(templates.map((template) => [template.id, template]));
+  const renderRepeatableEditors = (submission) => {
+    const template = templateMap.get(submission.templateId);
+    if (!template) return '<div class="muted">Template unavailable for this submission.</div>';
+    const repeatableSections = (template.sections || []).filter((section) => section.repeatable);
+    if (!repeatableSections.length) return '<div class="muted">No repeatable sections in this submission.</div>';
+    return repeatableSections.map((section) => {
+      const dataKey = sectionDataKey(section);
+      const items = Array.isArray(submission.data?.[dataKey]) ? submission.data[dataKey] : [];
+      if (!items.length) {
+        return `<div class="item compact"><strong>${escapeHtml(section.title)}</strong><div class="muted">No items submitted.</div></div>`;
+      }
+      return `
+        <div class="item compact">
+          <strong>${escapeHtml(section.title)}</strong>
+          ${items.map((item, index) => `
+            <form class="repeatable-edit-form" data-submission-id="${submission.id}" data-section-key="${dataKey}" data-item-index="${index}">
+              <div class="muted">Item ${index + 1}</div>
+              ${(section.fields || []).map((field) => `
+                <label>
+                  ${escapeHtml(field.label || field.key)}
+                  <input name="${escapeHtml(field.key)}" type="${field.type === 'number' ? 'number' : 'text'}" value="${escapeHtml(item?.[field.key] ?? '')}" ${field.type === 'number' ? 'step="any"' : ''} required>
+                </label>
+              `).join('')}
+              <div class="row">
+                <button type="submit">Save Item</button>
+                <span class="muted" data-save-status></span>
+              </div>
+            </form>
+          `).join('')}
+        </div>
+      `;
+    }).join('');
+  };
   view.innerHTML = `
     <div class="detail-header">
       <button id="back-to-dashboard">← Back</button>
@@ -111,7 +163,20 @@ async function renderProfileDetail() {
       </div>
       <div class="item">
         <h3>Form Submissions</h3>
-        <pre>${JSON.stringify(detail.submissions, null, 2)}</pre>
+        ${detail.submissions.length ? detail.submissions.map((submission) => `
+          <div class="item compact">
+            <div class="row between">
+              <strong>${escapeHtml(submission.templateId)}</strong>
+              <span class="badge">${escapeHtml(submission.status || 'submitted')}</span>
+            </div>
+            <div class="muted">Updated ${escapeHtml(submission.updatedAt || submission.createdAt || '')}</div>
+            ${renderRepeatableEditors(submission)}
+            <details>
+              <summary>Raw submission JSON</summary>
+              <pre>${escapeHtml(JSON.stringify(submission.data, null, 2))}</pre>
+            </details>
+          </div>
+        `).join('') : '<div class="muted">No form submissions for this profile.</div>'}
       </div>
     </div>
     <div class="item">
@@ -134,6 +199,27 @@ async function renderProfileDetail() {
     const form = new FormData(event.target);
     await api(`/api/profiles/${state.selectedProfileId}/notes`, { method: 'POST', body: JSON.stringify({ body: form.get('body') }) });
     await renderProfileDetail();
+  });
+
+  document.querySelectorAll('.repeatable-edit-form').forEach((formElement) => {
+    formElement.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const target = event.currentTarget;
+      const formData = new FormData(target);
+      const payload = Object.fromEntries(formData.entries());
+      const statusNode = target.querySelector('[data-save-status]');
+      statusNode.textContent = 'Saving...';
+      try {
+        await api(`/api/forms/submissions/${target.dataset.submissionId}/repeatable-items/${target.dataset.sectionKey}/${target.dataset.itemIndex}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ item: payload })
+        });
+        statusNode.textContent = 'Saved';
+        await renderProfileDetail();
+      } catch (error) {
+        statusNode.textContent = error.message;
+      }
+    });
   });
 }
 

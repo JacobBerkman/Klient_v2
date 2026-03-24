@@ -45,6 +45,15 @@ function slugify(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
 
+function normalizeSectionDataKey(section = {}) {
+  if (section.dataKey && typeof section.dataKey === 'string') return section.dataKey;
+  return String(section.title || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
 function hash(password) {
   return createHash('sha256').update(password).digest('hex');
 }
@@ -601,6 +610,38 @@ export function createStore() {
       Object.assign(submission, patch, { updatedAt: now() });
       persist();
       return submission;
+    },
+    updateSubmissionRepeatableItem(user, submissionId, sectionKey, itemIndex, itemPatch) {
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId);
+      if (!submission) throw new Error('Submission not found.');
+      const template = state.formTemplates.find((entry) => entry.id === submission.templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Form template not found.');
+      const repeatableSection = (template.sections || []).find((section) => section.repeatable && normalizeSectionDataKey(section) === sectionKey);
+      if (!repeatableSection) throw new Error('Repeatable section not found.');
+
+      const sectionItems = submission.data?.[sectionKey];
+      if (!Array.isArray(sectionItems)) throw new Error('Repeatable section data is missing.');
+      if (!Number.isInteger(itemIndex) || itemIndex < 0 || itemIndex >= sectionItems.length) throw new Error('Repeatable item index is out of range.');
+      if (!itemPatch || typeof itemPatch !== 'object' || Array.isArray(itemPatch)) throw new Error('Repeatable item payload must be an object.');
+
+      const validatedItem = {};
+      for (const field of (repeatableSection.fields || [])) {
+        const value = itemPatch[field.key];
+        if (value === undefined || value === null || String(value).trim() === '') throw new Error(`Field "${field.label || field.key}" is required.`);
+        if (field.type === 'number') {
+          const parsedValue = Number(value);
+          if (!Number.isFinite(parsedValue)) throw new Error(`Field "${field.label || field.key}" must be a number.`);
+          validatedItem[field.key] = parsedValue;
+        } else {
+          validatedItem[field.key] = String(value).trim();
+        }
+      }
+
+      sectionItems[itemIndex] = validatedItem;
+      submission.updatedAt = now();
+      persist();
+      return { submission, item: validatedItem };
     },
     deleteSubmission(user, submissionId) {
       requirePermission(user, 'forms:write');

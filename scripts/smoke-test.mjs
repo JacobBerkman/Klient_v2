@@ -35,6 +35,48 @@ async function run() {
     body: JSON.stringify({ kind: 'prospect', firstName: 'Smoke', lastName: 'Test', email: 'smoke@example.com', stage: 'discovery', ssn: '123456789' })
   });
 
+  const repeatableTemplate = await jsonFetch('/api/forms/templates', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      name: 'Repeatable Edit Smoke',
+      description: 'Template used for repeatable edit coverage',
+      sections: [{ title: 'Assets', repeatable: true, fields: [{ key: 'accountName', label: 'Account Name', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }] }]
+    })
+  });
+  const repeatableSubmission = await jsonFetch('/api/forms/submissions', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ clientId: profile.id, templateId: repeatableTemplate.id, status: 'submitted', data: { assets: [{ accountName: 'Brokerage', value: 5000 }] } })
+  });
+  const profileWithSubmission = await jsonFetch(`/api/profiles/${profile.id}`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const loadedSubmission = profileWithSubmission.submissions.find((entry) => entry.id === repeatableSubmission.id);
+  const existingAsset = loadedSubmission?.data?.assets?.[0];
+  if (!existingAsset?.accountName) throw new Error('Could not load existing repeatable item');
+
+  const editedAsset = { accountName: `${existingAsset.accountName}-edited`, value: Number(existingAsset.value) + 1 };
+  const editResponse = await jsonFetch(`/api/forms/submissions/${repeatableSubmission.id}/repeatable-items/assets/0`, {
+    method: 'PATCH',
+    headers: authHeaders,
+    body: JSON.stringify({ item: editedAsset })
+  });
+  if (editResponse.item.accountName !== editedAsset.accountName) throw new Error('Repeatable item edit failed');
+
+  const invalidEdit = await fetch(`http://127.0.0.1:${port}/api/forms/submissions/${repeatableSubmission.id}/repeatable-items/assets/0`, {
+    method: 'PATCH',
+    headers: authHeaders,
+    body: JSON.stringify({ item: { accountName: 'Invalid number', value: 'not-a-number' } })
+  });
+  if (invalidEdit.status !== 400) throw new Error('Repeatable item validation did not reject bad numeric value');
+
+  const updatedProfileDetail = await jsonFetch(`/api/profiles/${profile.id}`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const updatedSubmission = updatedProfileDetail.submissions.find((entry) => entry.id === repeatableSubmission.id);
+  if (updatedSubmission.data.assets[0].accountName !== editedAsset.accountName) throw new Error('Profile detail did not reflect edited repeatable item');
+
+  const allSubmissions = await jsonFetch('/api/forms/submissions', { headers: { Authorization: `Bearer ${login.token}` } });
+  const persistedSubmission = allSubmissions.find((entry) => entry.id === repeatableSubmission.id);
+  if (persistedSubmission.data.assets[0].value !== editedAsset.value) throw new Error('Submission list did not persist edited repeatable item');
+
   const foundProfiles = await jsonFetch('/api/profiles?search=Smoke', { headers: { Authorization: `Bearer ${login.token}` } });
   if (!foundProfiles.find((entry) => entry.id === profile.id)) throw new Error('Search failed');
 
@@ -90,6 +132,7 @@ async function run() {
   console.log(JSON.stringify({
     login: login.user.email,
     profileId: profile.id,
+    editedSubmissionId: repeatableSubmission.id,
     noteId: note.id,
     inviteRole: readonlySession.user.role,
     draftCount: drafts.length,

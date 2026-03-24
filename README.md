@@ -10,6 +10,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - persisted prospect pipeline board
 - households and member linking
 - dynamic form template and submission flows
+- inline editing of repeatable submission items from the profile detail view
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
 - audit trail and analytics views
@@ -40,6 +41,8 @@ Run the smoke test:
 ```bash
 node scripts/smoke-test.mjs
 ```
+
+Smoke coverage now includes loading an existing repeatable submission item, editing it, saving it through the dedicated API route, and verifying persistence through profile detail plus form submission views.
 
 Run the broader local validation bundle:
 
