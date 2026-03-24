@@ -7,6 +7,14 @@ try {
   const ready = await context.request('/ready');
   const login = await context.login();
 
+async function run() {
+  await wait(700);
+  const ready = await jsonFetch('/ready');
+  if (!ready.querySummary) throw new Error('Readiness summary missing');
+  if (!ready.storageHealth?.connected) throw new Error('Storage health missing');
+  if (!ready.exportWorker) throw new Error('Export worker diagnostics missing');
+
+  const login = await jsonFetch('/api/login', {
   const headers = context.authHeaders(login.token);
   const profile = await context.request('/api/profiles', {
     method: 'POST',
@@ -88,6 +96,7 @@ try {
   const households = await jsonFetch('/api/households', { headers: { Authorization: `Bearer ${login.token}` } });
   const masked = await jsonFetch(`/api/profiles/${client.id}/sensitive`, { headers: { Authorization: `Bearer ${login.token}` } });
   const dashboard = await jsonFetch('/api/dashboard', { headers: { Authorization: `Bearer ${login.token}` } });
+  const diagnostics = await jsonFetch('/api/ops/diagnostics', { headers: { Authorization: `Bearer ${login.token}` } });
   await jsonFetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
 
   if (!analytics.stageCounts) throw new Error('Analytics missing');
@@ -103,6 +112,8 @@ try {
   if (clientSession.user.role !== 'client') throw new Error('Client invite acceptance failed');
   if (!clientWorkspace.templateProgress.some((entry) => entry.templateId === portalTemplate.id)) throw new Error('Client workspace missing template progress');
   if (published.status !== 'published') throw new Error('Template publish failed');
+  if (!diagnostics.data?.audit?.total) throw new Error('Ops diagnostics audit summary missing');
+  if (!diagnostics.data?.storageHealth?.connected) throw new Error('Ops diagnostics storage summary missing');
 
   console.log(JSON.stringify({
     suite: 'smoke',
@@ -116,7 +127,8 @@ try {
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,
-    templateStatus: published.status
+    templateStatus: published.status,
+    diagnosticsAuditTotal: diagnostics.data.audit.total
   }, null, 2));
 } finally {
   await context.shutdown();

@@ -11,12 +11,11 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - households and member linking
 - dynamic form template and submission flows
 - guided client portal for draft and submitted onboarding responses
-- role-isolated client workspace for authenticated client users (`/api/client/workspace`)
-- portal/client document upload visibility and upload logging
 - document template and export job foundations
 - audit trail and analytics views
 - invite flow and password reset endpoints
 - internal web UI served by the backend
+- operational diagnostics for runtime config, storage health, export worker queue, and audit counts
 - Docker + compose deployment artifacts
 - backup, restore, and export worker scripts
 
@@ -95,14 +94,16 @@ curl http://localhost:3000/ready
 curl -I http://localhost:3000/health
 ```
 
+Authenticated operational diagnostics:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:3000/api/ops/diagnostics
+```
+
+`/ready` now includes config validation output, SQLite quick-check results, export worker status summary, and audit event counts. `/api/ops/diagnostics` adds richer startup/runtime metadata for on-call troubleshooting.
+
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
-
-## Client role experience
-- Invite a user with role `client` using the internal app.
-- The client can sign in to the main app and is routed to a restricted **My Portal** workspace.
-- Client users can only access their own profile-aligned form visibility/submissions and upload visibility.
-- Advisor/admin controls (prospects, households, templates, exports, audit) are hidden from clients in the UI and blocked by API permissions.
 
 ## Backup
 ```bash

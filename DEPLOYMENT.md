@@ -40,6 +40,20 @@ curl http://localhost:3000/ready
 curl -I http://localhost:3000/health
 ```
 
+`/ready` verifies SQLite connectivity and returns:
+- table query counts
+- storage diagnostics (file path, size, quick check, latency)
+- export worker queue status
+- audit event totals/latest record
+- runtime config validation (issues/warnings)
+
+For deeper runtime diagnostics per tenant, call:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:3000/api/ops/diagnostics
+```
+
+This includes startup metadata (`bootedAt`, PID, uptime), config validation details, storage health, export status distribution, and firm audit summaries.
 `/ready` verifies SQLite access and returns query-table counts derived from the persisted state.
 
 ## Persistent data
@@ -67,6 +81,11 @@ node scripts/export-worker.mjs
 ```
 
 ## Logs and shutdown
+The API emits structured JSON logs to stdout/stderr.
+Use your container/runtime log collector to ship them to your observability stack.
+The server also handles `SIGTERM`/`SIGINT` for graceful shutdown.
+
+On startup, the app emits a `server.started` log event with an embedded diagnostics snapshot. If configuration warnings exist, a `runtime.config.warnings` event is emitted; configuration errors produce `runtime.config.invalid`.
 The server emits structured JSON logs to stdout/stderr and handles `SIGTERM` / `SIGINT` for graceful shutdown.
 Ship stdout/stderr to your logging platform and use the health endpoints for orchestration probes.
 
