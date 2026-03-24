@@ -25,6 +25,15 @@ function renderItems(items, render) {
   return `<div class="list">${items.map(render).join('')}</div>`;
 }
 
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('Unable to read PDF file.'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function refreshPrimaryClientOptions() {
   try {
     const clients = await api('/api/profiles?kind=client');
@@ -178,7 +187,14 @@ async function renderForms() {
 
 async function renderTemplates() {
   const templates = await api('/api/templates');
-  view.innerHTML = '<h2>Templates</h2>' + renderItems(templates, (item) => `<div class="item"><strong>${item.name}</strong><div class="muted">${item.fileName}</div><pre>${JSON.stringify(item.mappings, null, 2)}</pre></div>`);
+  view.innerHTML = '<h2>Templates</h2>' + renderItems(templates, (item) => `
+    <div class="item">
+      <strong>${item.name}</strong>
+      <div class="muted">${item.fileName}</div>
+      <div class="muted">Scanned fields: ${item.fieldInventory?.fieldCount || 0}</div>
+      ${(item.fieldInventory?.fields || []).length ? `<pre>${JSON.stringify(item.fieldInventory.fields, null, 2)}</pre>` : '<div class="muted">No scanned PDF fields yet.</div>'}
+    </div>
+  `);
 }
 
 async function renderExports() {
@@ -288,7 +304,19 @@ document.querySelector('#form-template-form').addEventListener('submit', async (
 document.querySelector('#doc-template-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), blueprint: { sections: [] }, mappings: [] }) });
+  const pdfFile = form.get('pdfFile');
+  if (!(pdfFile instanceof File) || !pdfFile.size) throw new Error('Select a PDF file first.');
+  const pdfBase64 = await readFileAsDataUrl(pdfFile);
+  await api('/api/templates/upload-scan', {
+    method: 'POST',
+    body: JSON.stringify({
+      name: String(form.get('name') || ''),
+      fileName: String(form.get('fileName') || pdfFile.name || 'template.pdf'),
+      pdfBase64,
+      blueprint: { sections: [] },
+      mappings: []
+    })
+  });
   event.target.reset();
   state.view = 'templates';
   await renderCurrentView();

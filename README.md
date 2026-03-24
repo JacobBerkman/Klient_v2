@@ -12,6 +12,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - dynamic form template and submission flows
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
+- PDF template upload + AcroForm field inventory extraction/review
 - audit trail and analytics views
 - invite flow and password reset endpoints
 - internal web UI served by the backend
@@ -21,6 +22,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 ## Environment
 Copy `.env.example` to `.env` for deployment-oriented runs.
 In production, `APP_SECRET` must be set to a long random value.
+`MAX_JSON_BODY_BYTES` controls the maximum JSON upload payload size (defaults to 10MB) and should be increased if your PDF templates are larger.
 
 ## Run locally
 ```bash
@@ -50,6 +52,8 @@ npm run test:all
 ## Data location
 All persisted demo/runtime data is stored in:
 - `data/app.db`
+
+Document template records now include uploaded PDF artifact metadata, base64 content, and extracted field inventory in SQLite JSON blobs, so storage size grows with template uploads.
 
 Delete that file to reseed the app.
 

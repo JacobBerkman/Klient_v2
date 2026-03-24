@@ -24,6 +24,7 @@ export const runtime = {
   isProduction: nodeEnv === 'production',
   host: process.env.HOST || '0.0.0.0',
   port: readNumber('PORT', 3000),
+  maxJsonBodyBytes: readNumber('MAX_JSON_BODY_BYTES', 10 * 1024 * 1024),
   appSecret,
   logLevel: process.env.LOG_LEVEL || (nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { SqliteReadRepository } from './repositories/sqlite-read-repository.mjs';
 import { runtime, log } from './runtime.mjs';
 import { ensureDatabaseReady, closeDatabase, readQuerySummary } from './storage.mjs';
+import { scanTemplatePdf } from './pdf-template-scanner.mjs';
 import { createStore } from './store.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
@@ -28,7 +29,7 @@ function parseBody(req) {
     let data = '';
     req.on('data', (chunk) => {
       data += chunk;
-      if (data.length > 1_000_000) {
+      if (data.length > runtime.maxJsonBodyBytes) {
         reject(new Error('Payload too large'));
       }
     });
@@ -136,6 +137,21 @@ const server = createServer(async (req, res) => {
     if (pathname.startsWith('/api/forms/submissions/') && req.method === 'DELETE') { const id = pathname.split('/')[4]; const result = store.deleteSubmission(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/templates' && req.method === 'GET') { const result = store.listDocumentTemplates(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/templates' && req.method === 'POST') { const result = store.createDocumentTemplate(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/templates/upload-scan' && req.method === 'POST') {
+      const body = await parseBody(req);
+      const scan = await scanTemplatePdf(body);
+      const result = store.createDocumentTemplate(requireUser(req), {
+        name: body.name,
+        fileName: body.fileName || scan.artifact.fileName,
+        blueprint: body.blueprint || { sections: [] },
+        mappings: body.mappings || [],
+        artifact: scan.artifact,
+        artifactContentBase64: scan.pdfBase64,
+        fieldInventory: scan.fieldInventory
+      });
+      finalizeLog(201, { templateId: result.id, scannedFields: scan.fieldInventory.fieldCount });
+      return json(res, 201, result, { 'X-Request-Id': requestId });
+    }
     if (pathname === '/api/templates/auto-build' && req.method === 'POST') { const result = store.autoBuildTemplate(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/templates/') && pathname.endsWith('/publish') && req.method === 'POST') { const id = pathname.split('/')[3]; const result = store.publishTemplate(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/templates/') && pathname.endsWith('/mappings') && req.method === 'POST') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.updateTemplateMappings(requireUser(req), id, body.mappings || []); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }

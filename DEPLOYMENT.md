@@ -9,6 +9,7 @@ NODE_ENV=production
 PORT=3000
 HOST=0.0.0.0
 LOG_LEVEL=info
+MAX_JSON_BODY_BYTES=10485760
 ```
 
 `APP_SECRET` is required in production and should be a long random value.
@@ -33,6 +34,7 @@ curl http://localhost:3000/ready
 ## Persistent data
 The app stores seeded and runtime data in `data/app.db`.
 Mount `./data` into the container to persist changes across restarts.
+Uploaded PDF templates are stored in SQLite as base64 JSON payloads plus extracted field inventories; monitor disk growth and include `data/` in your backup strategy.
 
 ## Backup and restore
 Create a backup:

@@ -78,10 +78,11 @@
           </form>
 
           <form id="doc-template-form" class="card">
-            <h3>Create Document Template</h3>
+            <h3>Upload + Scan PDF Template</h3>
             <input name="name" placeholder="Document template name" required />
             <input name="fileName" placeholder="File name" value="template.pdf" />
-            <button type="submit">Create Template</button>
+            <input name="pdfFile" type="file" accept="application/pdf,.pdf" required />
+            <button type="submit">Upload + Scan Template</button>
           </form>
         </section>
 

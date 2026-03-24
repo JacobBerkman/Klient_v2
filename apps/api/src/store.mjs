@@ -190,6 +190,9 @@ function seedState() {
       firmId,
       name: 'Client Intake PDF Template',
       fileName: 'client-intake.pdf',
+      artifact: { fileName: 'client-intake.pdf', mimeType: 'application/pdf', sizeBytes: 0, sha256: null, uploadedAt: createdAt, source: 'seed', encoding: 'base64' },
+      artifactContentBase64: '',
+      fieldInventory: { scannedAt: createdAt, fieldCount: 1, fields: [{ name: 'client_name', type: 'text', isReadOnly: false, isRequired: false, options: [] }] },
       blueprint: { sections: ['client', 'household', 'assets'] },
       mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName' }],
       createdAt,
@@ -454,13 +457,36 @@ export function createStore() {
     },
     listDocumentTemplates(user) {
       requirePermission(user, 'templates:write');
-      return state.documentTemplates.filter((entry) => entry.firmId === user.firmId);
+      return state.documentTemplates
+        .filter((entry) => entry.firmId === user.firmId)
+        .map(({ artifactContentBase64, ...template }) => template);
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
+      const createdAt = now();
+      const template = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: input.name,
+        fileName: input.fileName || 'template.pdf',
+        artifact: input.artifact || { fileName: input.fileName || 'template.pdf', mimeType: 'application/pdf', sizeBytes: 0, sha256: null, uploadedAt: createdAt, source: 'manual', encoding: 'base64' },
+        artifactContentBase64: input.artifactContentBase64 || '',
+        fieldInventory: input.fieldInventory || { scannedAt: null, fieldCount: 0, fields: [] },
+        blueprint: input.blueprint || { sections: [] },
+        mappings: input.mappings || [],
+        versions: [{
+          version: 1,
+          blueprint: input.blueprint || { sections: [] },
+          mappings: input.mappings || [],
+          fieldInventory: input.fieldInventory || { scannedAt: null, fieldCount: 0, fields: [] },
+          createdAt
+        }],
+        status: 'draft',
+        createdAt,
+        updatedAt: createdAt
+      };
       state.documentTemplates.push(template);
-      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
+      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name, scannedFields: template.fieldInventory.fieldCount || 0 });
       persist();
       return template;
     },
@@ -469,7 +495,7 @@ export function createStore() {
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
       template.mappings = mappings;
-      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
+      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, fieldInventory: template.fieldInventory || { scannedAt: null, fieldCount: 0, fields: [] }, createdAt: now() });
       template.updatedAt = now();
       addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.mappings_updated', { count: mappings.length });
       persist();

@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { PDFDocument } from 'pdf-lib';
 
 const port = 3010;
 const server = spawn(process.execPath, ['apps/api/src/server.mjs'], {
@@ -29,6 +30,16 @@ async function run() {
   });
 
   const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${login.token}` };
+  const pdfDoc = await PDFDocument.create();
+  const page = pdfDoc.addPage([600, 800]);
+  const form = pdfDoc.getForm();
+  const nameField = form.createTextField('client_name');
+  nameField.addToPage(page, { x: 50, y: 700, width: 240, height: 24 });
+  const choiceField = form.createDropdown('risk_profile');
+  choiceField.addOptions(['Conservative', 'Moderate', 'Aggressive']);
+  choiceField.addToPage(page, { x: 50, y: 650, width: 240, height: 24 });
+  const pdfBase64 = Buffer.from(await pdfDoc.save()).toString('base64');
+
   const profile = await jsonFetch('/api/profiles', {
     method: 'POST',
     headers: authHeaders,
@@ -50,6 +61,11 @@ async function run() {
   await jsonFetch('/api/password-resets/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: reset.token, password: 'Readonly456!' }) });
 
   const template = await jsonFetch('/api/templates/auto-build', { method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Auto Build Test', fields: ['client.name', 'client.address', 'assets.account'] }) });
+  const uploadedTemplate = await jsonFetch('/api/templates/upload-scan', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ name: 'Smoke PDF Upload', fileName: 'smoke.pdf', pdfBase64, blueprint: { sections: [] }, mappings: [] })
+  });
   const published = await jsonFetch(`/api/templates/${template.id}/publish`, { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
 
   const portal = await jsonFetch('/api/portal-links', { method: 'POST', headers: authHeaders, body: JSON.stringify({ profileId: profile.id }) });
@@ -86,6 +102,8 @@ async function run() {
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
+  if (uploadedTemplate.fieldInventory.fieldCount !== 2) throw new Error('Template upload scan failed');
+  if (!uploadedTemplate.fieldInventory.fields.find((entry) => entry.name === 'client_name')) throw new Error('PDF field extraction missing');
 
   console.log(JSON.stringify({
     login: login.user.email,
@@ -95,7 +113,8 @@ async function run() {
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,
-    templateStatus: published.status
+    templateStatus: published.status,
+    scannedTemplateFields: uploadedTemplate.fieldInventory.fieldCount
   }, null, 2));
 }
 
