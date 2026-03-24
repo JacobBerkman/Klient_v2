@@ -8,6 +8,7 @@ import { SqliteReadRepository } from './repositories/sqlite-read-repository.mjs'
 import { runtime, log } from './runtime.mjs';
 import { ensureDatabaseReady, closeDatabase, readQuerySummary } from './storage.mjs';
 import { createStore } from './store.mjs';
+import { appError, normalizeError } from './application-error.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(__dirname, '../../web/public');
@@ -29,14 +30,14 @@ function parseBody(req) {
     req.on('data', (chunk) => {
       data += chunk;
       if (data.length > 1_000_000) {
-        reject(new Error('Payload too large'));
+        reject(appError(413, 'Payload too large', 'PAYLOAD_TOO_LARGE'));
       }
     });
     req.on('end', () => {
       try {
         resolveBody(data ? JSON.parse(data) : {});
       } catch {
-        reject(new Error('Invalid JSON payload'));
+        reject(appError(400, 'Invalid JSON payload', 'INVALID_JSON_PAYLOAD'));
       }
     });
     req.on('error', reject);
@@ -67,9 +68,8 @@ function serveStatic(pathname, res, requestId) {
 }
 
 function sendError(res, error, requestId) {
-  const message = error?.message || 'Request failed';
-  const statusCode = /not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400;
-  json(res, statusCode, { message }, { 'X-Request-Id': requestId });
+  const normalized = normalizeError(error);
+  json(res, normalized.statusCode, { message: normalized.message, code: normalized.code }, { 'X-Request-Id': requestId });
 }
 
 function requestLogger(req, requestId) {
@@ -154,9 +154,10 @@ const server = createServer(async (req, res) => {
     finalizeLog(200, { static: true });
     return serveStatic(pathname, res, requestId);
   } catch (error) {
-    log('error', 'request.failed', { requestId, method: req.method, path: req.url, error: error.message || String(error) });
-    finalizeLog(/not found/i.test(error?.message || '') ? 404 : 400);
-    return sendError(res, error, requestId);
+    const normalized = normalizeError(error);
+    log('error', 'request.failed', { requestId, method: req.method, path: req.url, error: normalized.message || String(error), code: normalized.code, statusCode: normalized.statusCode });
+    finalizeLog(normalized.statusCode, { errorCode: normalized.code });
+    return sendError(res, normalized, requestId);
   }
 });
 

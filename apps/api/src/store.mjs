@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
 import { loadState, saveState } from './storage.mjs';
+import { appError } from './application-error.mjs';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const PERMISSIONS = {
@@ -16,7 +17,7 @@ function can(role, permission) {
 
 function requirePermission(user, permission) {
   if (!can(user.role, permission)) {
-    throw new Error(`Missing permission: ${permission}`);
+    throw appError(403, `Missing permission: ${permission}`, 'MISSING_PERMISSION');
   }
 }
 
@@ -223,9 +224,9 @@ export function createStore() {
 
   function requireUser(token) {
     const session = state.sessions.find((entry) => entry.token === token);
-    if (!session) throw new Error('Authentication required.');
+    if (!session) throw appError(401, 'Authentication required.', 'AUTH_REQUIRED');
     const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId);
-    if (!user) throw new Error('Authentication required.');
+    if (!user) throw appError(401, 'Authentication required.', 'AUTH_REQUIRED');
     return publicUser(user);
   }
 
@@ -238,7 +239,7 @@ export function createStore() {
     state,
     register({ firmName, firstName, lastName, email, password }) {
       const normalizedEmail = email.toLowerCase();
-      if (state.users.some((user) => user.email === normalizedEmail)) throw new Error('An account with this email already exists.');
+      if (state.users.some((user) => user.email === normalizedEmail)) throw appError(409, 'An account with this email already exists.', 'EMAIL_ALREADY_EXISTS');
       const firm = { id: randomUUID(), name: firmName, slug: slugify(firmName), createdAt: now() };
       const user = { id: randomUUID(), firmId: firm.id, email: normalizedEmail, passwordHash: hash(password), firstName, lastName, role: 'admin', createdAt: now() };
       state.firms.push(firm);
@@ -249,7 +250,7 @@ export function createStore() {
     login({ email, password }) {
       const normalizedEmail = email.toLowerCase();
       const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password));
-      if (!user) throw new Error('Invalid email or password.');
+      if (!user) throw appError(401, 'Invalid email or password.', 'INVALID_CREDENTIALS');
       return createSession(user);
     },
     requireUser,
@@ -284,7 +285,7 @@ export function createStore() {
     getProfileDetail(user, profileId) {
       requirePermission(user, 'profiles:read');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
+      if (!profile) throw appError(404, 'Profile not found.', 'PROFILE_NOT_FOUND');
       const household = profile.householdId ? state.households.find((entry) => entry.id === profile.householdId && entry.firmId === user.firmId) : null;
       const householdMembers = household ? state.householdMembers.filter((entry) => entry.householdId === household.id && entry.firmId === user.firmId) : [];
       const submissions = state.formSubmissions.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
@@ -330,7 +331,7 @@ export function createStore() {
       if (patch.kind === 'client') { patch.stage = null; patch.stageOrderIndex = null; }
       if (patch.kind === 'prospect' && !patch.stage) { patch.stage = 'discovery'; }
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
+      if (!profile) throw appError(404, 'Profile not found.', 'PROFILE_NOT_FOUND');
       const nextPatch = { ...patch };
       if ('ssn' in nextPatch) {
         profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: encryptValue(nextPatch.ssn), taxIdCiphertext: profile.pii?.taxIdCiphertext || null };
@@ -348,7 +349,7 @@ export function createStore() {
     moveProfileStage(user, profileId, stage, beforeProfileId = null) {
       requirePermission(user, 'pipeline:write');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
+      if (!profile) throw appError(404, 'Profile not found.', 'PROFILE_NOT_FOUND');
       const sameStage = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === stage && entry.id !== profileId).sort((a,b)=>(a.stageOrderIndex||0)-(b.stageOrderIndex||0));
       const previousStage = profile.stage || null;
       let nextIndex = sameStage.length + 1;
@@ -394,7 +395,7 @@ export function createStore() {
     addHouseholdMember(user, householdId, input) {
       requirePermission(user, 'households:write');
       const household = state.households.find((entry) => entry.id === householdId && entry.firmId === user.firmId);
-      if (!household) throw new Error('Household not found.');
+      if (!household) throw appError(404, 'Household not found.', 'HOUSEHOLD_NOT_FOUND');
       const member = { householdId, clientId: input.clientId, role: input.role, firmId: user.firmId, createdAt: now() };
       state.householdMembers.push(member);
       const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId);
@@ -416,7 +417,7 @@ export function createStore() {
     addNote(user, profileId, body) {
       requirePermission(user, 'profiles:write');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
+      if (!profile) throw appError(404, 'Profile not found.', 'PROFILE_NOT_FOUND');
       const note = { id: randomUUID(), firmId: user.firmId, profileId, body, createdByUserId: user.id, createdAt: now() };
       state.notes.push(note);
       addAudit(user.firmId, user.id, 'profile_note', note.id, 'profile.note_added', { profileId });
@@ -467,7 +468,7 @@ export function createStore() {
     updateTemplateMappings(user, templateId, mappings) {
       requirePermission(user, 'templates:write');
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
-      if (!template) throw new Error('Template not found.');
+      if (!template) throw appError(404, 'Template not found.', 'TEMPLATE_NOT_FOUND');
       template.mappings = mappings;
       template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
       template.updatedAt = now();
@@ -478,7 +479,7 @@ export function createStore() {
     publishTemplate(user, templateId) {
       requirePermission(user, 'templates:write');
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
-      if (!template) throw new Error('Template not found.');
+      if (!template) throw appError(404, 'Template not found.', 'TEMPLATE_NOT_FOUND');
       template.status = 'published';
       template.updatedAt = now();
       persist();
@@ -499,7 +500,7 @@ export function createStore() {
     retryExport(user, exportId) {
       requirePermission(user, 'exports:write');
       const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
-      if (!job) throw new Error('Export not found.');
+      if (!job) throw appError(404, 'Export not found.', 'EXPORT_NOT_FOUND');
       job.status = 'queued';
       job.updatedAt = now();
       persist();
@@ -540,7 +541,7 @@ export function createStore() {
     },
     acceptInvite(input) {
       const invite = state.invites.find((entry) => entry.token === input.token);
-      if (!invite) throw new Error('Invite not found.');
+      if (!invite) throw appError(404, 'Invite not found.', 'INVITE_NOT_FOUND');
       const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hash(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, createdAt: now() };
       state.users.push(user);
       state.invites = state.invites.filter((entry) => entry.id !== invite.id);
@@ -557,9 +558,9 @@ export function createStore() {
     },
     resetPassword(input) {
       const reset = state.passwordResets.find((entry) => entry.token === input.token);
-      if (!reset) throw new Error('Reset token not found.');
+      if (!reset) throw appError(404, 'Reset token not found.', 'RESET_TOKEN_NOT_FOUND');
       const user = state.users.find((entry) => entry.id === reset.userId);
-      if (!user) throw new Error('User not found.');
+      if (!user) throw appError(404, 'User not found.', 'USER_NOT_FOUND');
       user.passwordHash = hash(input.password);
       state.passwordResets = state.passwordResets.filter((entry) => entry.id !== reset.id);
       persist();
@@ -577,7 +578,7 @@ export function createStore() {
       requirePermission(user, 'households:write');
       const primary = state.profiles.find((entry) => entry.id === primaryClientId && entry.firmId === user.firmId);
       const spouse = state.profiles.find((entry) => entry.id === spouseClientId && entry.firmId === user.firmId);
-      if (!primary || !spouse) throw new Error('Profile not found.');
+      if (!primary || !spouse) throw appError(404, 'Profile not found.', 'PROFILE_NOT_FOUND');
       primary.spouseClientId = spouse.id;
       spouse.spouseClientId = primary.id;
       let householdId = primary.householdId;
@@ -597,7 +598,7 @@ export function createStore() {
     updateSubmission(user, submissionId, patch) {
       requirePermission(user, 'forms:write');
       const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId);
-      if (!submission) throw new Error('Submission not found.');
+      if (!submission) throw appError(404, 'Submission not found.', 'SUBMISSION_NOT_FOUND');
       Object.assign(submission, patch, { updatedAt: now() });
       persist();
       return submission;
@@ -627,7 +628,7 @@ export function createStore() {
     },
     getPortalData(token) {
       const link = state.portalLinks.find((entry) => entry.token === token);
-      if (!link) throw new Error('Portal link not found.');
+      if (!link) throw appError(404, 'Portal link not found.', 'PORTAL_LINK_NOT_FOUND');
       const firm = state.firms.find((entry) => entry.id === link.firmId) || null;
       const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId);
       const submissions = state.formSubmissions
@@ -641,10 +642,10 @@ export function createStore() {
     },
     portalSubmit(token, input) {
       const link = state.portalLinks.find((entry) => entry.token === token);
-      if (!link) throw new Error('Portal link not found.');
+      if (!link) throw appError(404, 'Portal link not found.', 'PORTAL_LINK_NOT_FOUND');
       const templateId = input.templateId || 'portal';
       const template = templateId === 'portal' ? null : state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === link.firmId);
-      if (templateId !== 'portal' && !template) throw new Error('Form template not found.');
+      if (templateId !== 'portal' && !template) throw appError(404, 'Form template not found.', 'FORM_TEMPLATE_NOT_FOUND');
       const status = input.status === 'draft' ? 'draft' : 'submitted';
       const submission = {
         id: randomUUID(),
@@ -679,7 +680,7 @@ export function createStore() {
     getMaskedSensitiveData(user, profileId) {
       requirePermission(user, 'profiles:read');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
+      if (!profile) throw appError(404, 'Profile not found.', 'PROFILE_NOT_FOUND');
       const ssn = decryptValue(profile.pii?.ssnCiphertext);
       const taxId = decryptValue(profile.pii?.taxIdCiphertext);
       return {

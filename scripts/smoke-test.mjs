@@ -17,10 +17,23 @@ async function jsonFetch(path, options = {}) {
   return data;
 }
 
+async function expectError(path, options, expectedStatus, expectedCode) {
+  const response = await fetch(`http://127.0.0.1:${port}${path}`, options);
+  const data = await response.json();
+  if (response.status !== expectedStatus) {
+    throw new Error(`Expected ${expectedStatus} for ${path}, received ${response.status}`);
+  }
+  if (data.code !== expectedCode) {
+    throw new Error(`Expected code ${expectedCode} for ${path}, received ${data.code}`);
+  }
+}
+
 async function run() {
   await wait(700);
   const ready = await jsonFetch('/ready');
   if (!ready.querySummary) throw new Error('Readiness summary missing');
+  await expectError('/api/dashboard', undefined, 401, 'AUTH_REQUIRED');
+  await expectError('/api/portal/missing-token', undefined, 404, 'PORTAL_LINK_NOT_FOUND');
 
   const login = await jsonFetch('/api/login', {
     method: 'POST',

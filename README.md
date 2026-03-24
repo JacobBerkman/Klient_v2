@@ -66,6 +66,18 @@ curl http://localhost:3000/health
 curl http://localhost:3000/ready
 ```
 
+## API error format
+Application errors now return a consistent JSON response with:
+
+```json
+{
+  "message": "Human readable safe message",
+  "code": "MACHINE_READABLE_CODE"
+}
+```
+
+Status codes are derived from structured application errors (for example: `401 AUTH_REQUIRED`, `403 MISSING_PERMISSION`, `404 *_NOT_FOUND`, `409 EMAIL_ALREADY_EXISTS`).
+
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
 
