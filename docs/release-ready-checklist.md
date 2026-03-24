@@ -1,0 +1,36 @@
+# Release-Ready Checklist
+
+Use this checklist as a strict go/no-go control for production releases.
+A release is **ready** only when every check is an objective **PASS**.
+
+## Gate command
+Run the hard gate:
+
+```bash
+npm run validate:master
+```
+
+## Objective pass/fail criteria
+
+| Area | Evidence command | PASS criteria | FAIL criteria |
+|---|---|---|---|
+| API contract | `npm run test:contract` | Exit code `0`; contract script prints success payload with required API workflow coverage. | Non-zero exit, transport error, or missing expected workflow assertions. |
+| Integration suites | `npm run test:integration` | Exit code `0`; all ordered integration scripts pass. | Any integration script exits non-zero or times out. |
+| Migration checks | `npm run check:migrations` | Exit code `0`; migration order and idempotency checks pass for template aggregate + PII re-encryption path. | Migration output indicates non-idempotent behavior, missing template aggregates, or invalid PII rotation metrics. |
+| Smoke | `npm run test:smoke` | Exit code `0`; login, profile, template publish, and export flow succeed end-to-end. | Any smoke API step fails or required artifact/record is missing. |
+| Security checks | `npm run test:security` | Exit code `0`; auth policy and PII crypto tests pass. | Any security-oriented test fails. |
+| Branch parity | `npm run check:merge-main` | Exit code `0`; branch is merge-compatible with `main`. | Conflicts or parity checks fail. |
+| Backup present | `npm run backup` | New timestamped backup artifact exists in `data/`. | Backup command fails or artifact is missing. |
+| Runtime health after deploy | `curl http://<host>/health` + `curl http://<host>/ready` | Both endpoints return HTTP `200` and readiness `status=ready`. | Any non-200 response or degraded readiness payload. |
+
+## Release decision rubric
+- **GO**: Every row above is PASS with captured command output.
+- **NO-GO**: Any row FAILS, is skipped, or has inconclusive evidence.
+
+## Evidence capture
+For every release candidate, store:
+1. Commit SHA and build artifact/tag.
+2. Terminal output for all gate commands.
+3. Backup filename used for rollback.
+4. Deployment start/end UTC timestamps.
+5. Rollback trigger conditions (if invoked).

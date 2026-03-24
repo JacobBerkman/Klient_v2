@@ -1,22 +1,19 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createAuthService } from './auth/service.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { createOidcAuthProvider } from './auth/oidc-provider.mjs';
 import { createSamlAuthProvider } from './auth/saml-provider.mjs';
-import { createHash, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
 import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs';
-import { createLocalAuthProvider } from './auth/local-provider.mjs';
-import { createAuthService } from './auth/service.mjs';
-import { createAuthService } from './auth/service.mjs';
-import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
-import { createLocalAuthProvider } from './auth/local-provider.mjs';
-import { createAuthService } from './auth/service.mjs';
+import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { runtime } from './runtime.mjs';
+import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
 import { createAuthService } from './auth/service.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs';
 
+const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
 const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
 const ALLOWED_INVITE_ROLES = new Set(['advisor', 'readonly', 'client']);
@@ -97,6 +94,7 @@ const OPERATION_TO_POLICY = {
   'portal:read': ['portal', 'read'],
   'portal:write': ['portal', 'write'],
   'client:write': ['client', 'write']
+};
 const CSRF_TOKEN_TTL_MS = 1000 * 60 * 15;
 const PERMISSIONS = {
   admin: ['*'],
@@ -104,17 +102,11 @@ const PERMISSIONS = {
   readonly: ['profiles:read', 'analytics:read'],
   client: ['portal:read', 'client:write']
 };
-const ITEM_KEY_FIELD = '_itemKey';
-
-function createStoreError(message, { statusCode = 400, code = 'BAD_REQUEST', details = null } = {}) {
-  const error = new Error(message);
-  error.statusCode = statusCode;
-  error.code = code;
-  if (details) error.details = details;
-  return error;
-}
 const BOARD_COLUMNS = ['discovery', 'gather_oi', 'analysis', 'advisor_proposal_meeting', 'intake', 'on_boarding', 'investment_strategy', 'completed', 'drop_dead_lead', 'drop_nurture'];
 
+function can(role, permission) {
+  return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission);
+}
 
 const SENSITIVE_ACCESS_POLICY = {
   admin: {
@@ -131,168 +123,45 @@ const SENSITIVE_ACCESS_POLICY = {
   },
   client: {}
 };
-
-function can(role, operation) {
-  const policy = OPERATION_TO_POLICY[operation];
-  if (!policy) return false;
-  const [resource, action] = policy;
-  return Boolean(ROLE_POLICY_MATRIX[role]?.[resource]?.[action]);
+const SENSITIVE_READ_REASON_CODES = new Set([
+  'customer_request',
+  'fraud_investigation',
+  'regulatory_review',
+  'support_escalation',
+  'compliance_review'
+]);
+const REQUIRED_UNMASK_POLICY = 'privileged_sensitive_read_v1';
+function requirePermission(user, permission) {
+  if (!can(user.role, permission)) {
+    throw new Error(`Missing permission: ${permission}`);
+  }
 }
 
-function authorize(user, operation) {
-  if (!can(user.role, operation)) {
-    throw new Error(`Missing permission: ${operation}`);
-  }
+function encryptValue(value) {
+  if (!value) return null;
+  const iv = randomBytes(12);
+  const cipher = createCipheriv('aes-256-gcm', APP_SECRET, iv);
+  const encrypted = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]);
+  const tag = cipher.getAuthTag();
+  return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`;
+}
+
+function decryptValue(payload) {
+  if (!payload) return null;
+  const [ivHex, tagHex, dataHex] = payload.split(':');
+  const decipher = createDecipheriv('aes-256-gcm', APP_SECRET, Buffer.from(ivHex, 'hex'));
+  decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
+  return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
+}
+
+function requirePermission(user, operation) {
+  return authorize(user, operation);
 }
 
 function now() {
   return new Date().toISOString();
 }
 
-function deepClone(value) {
-  return JSON.parse(JSON.stringify(value));
-}
-
-function toKey(item) {
-  return JSON.stringify(item ?? null);
-}
-
-function summarizeArrayDiff(previous = [], next = []) {
-  const prevMap = new Map(previous.map((item) => [toKey(item), item]));
-  const nextMap = new Map(next.map((item) => [toKey(item), item]));
-  const added = [];
-  const removed = [];
-  for (const [key, value] of nextMap.entries()) {
-    if (!prevMap.has(key)) added.push(value);
-  }
-  for (const [key, value] of prevMap.entries()) {
-    if (!nextMap.has(key)) removed.push(value);
-  }
-  return { added, removed, changed: added.length > 0 || removed.length > 0 };
-}
-
-function summarizeBlueprintDiff(previousBlueprint = { sections: [] }, nextBlueprint = { sections: [] }) {
-  const previousSections = Array.isArray(previousBlueprint?.sections) ? previousBlueprint.sections : [];
-  const nextSections = Array.isArray(nextBlueprint?.sections) ? nextBlueprint.sections : [];
-  const sectionDiff = summarizeArrayDiff(previousSections, nextSections);
-  return {
-    changed: sectionDiff.changed,
-    previousSectionCount: previousSections.length,
-    nextSectionCount: nextSections.length,
-    addedSections: sectionDiff.added,
-    removedSections: sectionDiff.removed
-  };
-}
-
-function createTemplateVersion(template, event, { blueprint, mappings, publishState, diff, actorUserId }) {
-  return {
-    version: (template.versions?.length || 0) + 1,
-    event,
-    blueprint: deepClone(blueprint || template.blueprint || { sections: [] }),
-    mappings: deepClone(mappings || template.mappings || []),
-    formSchema: deepClone(template.formSchema || { sections: [] }),
-    publishState: publishState || template.publishState || 'draft',
-    diff: diff || null,
-    actorUserId: actorUserId || null,
-    createdAt: now()
-  };
-}
-
-function normalizeTemplateAggregate(template, fallbackKind = 'document') {
-  const baseBlueprint = template.blueprint || { sections: [] };
-  const baseMappings = template.mappings || template.mappingRules || [];
-  const basePublishState = template.publishState || template.status || 'draft';
-  const baseFormSchema = template.formSchema || { sections: template.sections || [] };
-  const normalized = {
-    id: template.id,
-    firmId: template.firmId,
-    kind: template.kind || fallbackKind,
-    name: template.name,
-    description: template.description || '',
-    documentMetadata: template.documentMetadata || { fileName: template.fileName || null },
-    extractedFields: template.extractedFields || [],
-    formSchema: baseFormSchema,
-    blueprint: baseBlueprint,
-    mappings: baseMappings,
-    mappingRules: baseMappings,
-    publishState: basePublishState,
-    status: basePublishState,
-    versions: (template.versions || []).map((entry, index) => ({
-      version: entry.version || index + 1,
-      event: entry.event || 'snapshot',
-      blueprint: deepClone(entry.blueprint || baseBlueprint),
-      mappings: deepClone(entry.mappings || baseMappings),
-      formSchema: deepClone(entry.formSchema || baseFormSchema),
-      publishState: entry.publishState || basePublishState,
-      diff: entry.diff || null,
-      actorUserId: entry.actorUserId || null,
-      createdAt: entry.createdAt || template.updatedAt || template.createdAt || now()
-    })),
-    publishTransitions: template.publishTransitions || [],
-    createdAt: template.createdAt || now(),
-    updatedAt: template.updatedAt || template.createdAt || now(),
-    legacy: template.legacy || null
-  };
-  if (!normalized.versions.length) {
-    normalized.versions.push(createTemplateVersion(normalized, 'created', {
-      blueprint: normalized.blueprint,
-      mappings: normalized.mappings,
-      publishState: normalized.publishState
-    }));
-  }
-  return normalized;
-}
-
-function migrateTemplateSystems(state) {
-  state.templateAggregates ||= [];
-  if (state.templateAggregates.length === 0) {
-    const migratedForms = (state.formTemplates || []).map((template) => normalizeTemplateAggregate({
-      ...template,
-      kind: 'form',
-      formSchema: { sections: template.sections || [] },
-      blueprint: { sections: [] },
-      mappings: [],
-      publishState: 'draft',
-      legacy: { source: 'formTemplates', id: template.id }
-    }, 'form'));
-    const migratedDocuments = (state.documentTemplates || []).map((template) => normalizeTemplateAggregate({
-      ...template,
-      kind: 'document',
-      formSchema: { sections: [] },
-      blueprint: template.blueprint || { sections: [] },
-      mappings: template.mappings || [],
-      publishState: template.status || 'draft',
-      legacy: { source: 'documentTemplates', id: template.id }
-    }, 'document'));
-    state.templateAggregates = [...migratedForms, ...migratedDocuments];
-  } else {
-    state.templateAggregates = state.templateAggregates.map((entry) => normalizeTemplateAggregate(entry, entry.kind || 'document'));
-  }
-  state.formTemplates = state.templateAggregates
-    .filter((entry) => entry.kind === 'form')
-    .map((entry) => ({
-      id: entry.id,
-      firmId: entry.firmId,
-      name: entry.name,
-      description: entry.description || '',
-      sections: deepClone(entry.formSchema?.sections || []),
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt
-    }));
-  state.documentTemplates = state.templateAggregates
-    .filter((entry) => entry.kind !== 'form')
-    .map((entry) => ({
-      id: entry.id,
-      firmId: entry.firmId,
-      name: entry.name,
-      fileName: entry.documentMetadata?.fileName || 'template.pdf',
-      blueprint: deepClone(entry.blueprint || { sections: [] }),
-      mappings: deepClone(entry.mappings || []),
-      versions: deepClone(entry.versions || []),
-      status: entry.publishState || 'draft',
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt
-    }));
 function parseIso(value) {
   const time = new Date(value || '').getTime();
   return Number.isFinite(time) ? time : 0;
@@ -330,12 +199,187 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
 }
 
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function createTemplateVersion(template, event, overrides = {}) {
+  return {
+    version: (template.versions?.length || 0) + 1,
+    event,
+    blueprint: deepClone(overrides.blueprint || template.blueprint || { sections: [] }),
+    mappings: deepClone(overrides.mappings || template.mappings || []),
+    formSchema: deepClone(overrides.formSchema || template.formSchema || { sections: [] }),
+    publishState: overrides.publishState || template.publishState || 'draft',
+    diff: overrides.diff || null,
+    actorUserId: overrides.actorUserId || null,
+    createdAt: now()
+  };
+}
+
+function normalizeTemplateAggregate(template, fallbackKind = 'document') {
+  const kind = template.kind || fallbackKind;
+  const formSchema = template.formSchema || { sections: template.sections || [] };
+  const blueprint = template.blueprint || { sections: [] };
+  const mappings = template.mappings || template.mappingRules || [];
+  const publishState = template.publishState || template.status || 'draft';
+  const normalized = {
+    id: template.id,
+    firmId: template.firmId,
+    kind,
+    name: template.name,
+    description: template.description || '',
+    documentMetadata: template.documentMetadata || { fileName: template.fileName || null },
+    formSchema,
+    blueprint,
+    mappings,
+    mappingRules: mappings,
+    extractedFields: template.extractedFields || [],
+    publishState,
+    status: publishState, // deprecated internal alias for compatibility payloads
+    versions: (template.versions || []).map((entry, index) => ({
+      version: entry.version || index + 1,
+      event: entry.event || 'snapshot',
+      blueprint: deepClone(entry.blueprint || blueprint),
+      mappings: deepClone(entry.mappings || mappings),
+      formSchema: deepClone(entry.formSchema || formSchema),
+      publishState: entry.publishState || publishState,
+      diff: entry.diff || null,
+      actorUserId: entry.actorUserId || null,
+      createdAt: entry.createdAt || template.updatedAt || template.createdAt || now()
+    })),
+    publishTransitions: template.publishTransitions || [],
+    createdAt: template.createdAt || now(),
+    updatedAt: template.updatedAt || template.createdAt || now(),
+    legacy: template.legacy || null
+  };
+  if (!normalized.versions.length) {
+    normalized.versions.push(createTemplateVersion(normalized, 'created'));
+  }
+  return normalized;
+}
+
+function formTemplateAdapter(entry) {
+  return {
+    id: entry.id,
+    firmId: entry.firmId,
+    name: entry.name,
+    description: entry.description || '',
+    sections: deepClone(entry.formSchema?.sections || []),
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt
+  };
+}
+
+function documentTemplateAdapter(entry) {
+  return {
+    id: entry.id,
+    firmId: entry.firmId,
+    name: entry.name,
+    fileName: entry.documentMetadata?.fileName || 'template.pdf',
+    blueprint: deepClone(entry.blueprint || { sections: [] }),
+    mappings: deepClone(entry.mappings || []),
+    versions: deepClone(entry.versions || []),
+    status: entry.publishState || 'draft',
+    publishState: entry.publishState || 'draft',
+    createdAt: entry.createdAt,
+    updatedAt: entry.updatedAt
+  };
+}
+
+function migrateTemplateSystems(state) {
+  state.templateAggregates ||= [];
+  if (state.templateAggregates.length === 0) {
+    const forms = (state.formTemplates || []).map((entry) => normalizeTemplateAggregate({
+      ...entry,
+      kind: 'form',
+      publishState: 'draft',
+      blueprint: { sections: [] },
+      mappings: [],
+      legacy: { source: 'formTemplates', id: entry.id }
+    }, 'form'));
+    const documents = (state.documentTemplates || []).map((entry) => normalizeTemplateAggregate({
+      ...entry,
+      kind: 'document',
+      legacy: { source: 'documentTemplates', id: entry.id }
+    }, 'document'));
+    state.templateAggregates = [...forms, ...documents];
+  } else {
+    state.templateAggregates = state.templateAggregates.map((entry) => normalizeTemplateAggregate(entry, entry.kind || 'document'));
+  }
+  state.formTemplates = state.templateAggregates
+    .filter((entry) => entry.kind === 'form')
+    .map((entry) => ({
+      id: entry.id,
+      firmId: entry.firmId,
+      name: entry.name,
+      description: entry.description || '',
+      sections: deepClone(entry.formSchema?.sections || []),
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt
+    }));
+  state.documentTemplates = state.templateAggregates
+    .filter((entry) => entry.kind !== 'form')
+    .map((entry) => ({
+      id: entry.id,
+      firmId: entry.firmId,
+      name: entry.name,
+      fileName: entry.documentMetadata?.fileName || 'template.pdf',
+      blueprint: deepClone(entry.blueprint || { sections: [] }),
+      mappings: deepClone(entry.mappings || []),
+      versions: deepClone(entry.versions || []),
+      status: entry.publishState || 'draft',
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt
+    }));
+}
+
+function parseIso(value) {
+  const time = new Date(value || '').getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function hash(password) {
+  return createHash('sha256').update(password).digest('hex');
+}
+
+function assertStrongPassword(password) {
+  const value = String(password || '');
+  if (value.length < 12) throw new Error('Password must be at least 12 characters long.');
+  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value)) {
+    throw new Error('Password must include uppercase, lowercase, and numeric characters.');
+  }
+}
+
+
+  // Deprecated compatibility projections for persistence only; do not read internally.
+  state.formTemplates = state.templateAggregates.filter((entry) => entry.kind === 'form').map(formTemplateAdapter);
+  state.documentTemplates = state.templateAggregates.filter((entry) => entry.kind !== 'form').map(documentTemplateAdapter);
+}
+
+function daysBetween(thenIso, nowMs) {
+  const thenMs = new Date(thenIso || 0).getTime();
+  if (!Number.isFinite(thenMs) || thenMs <= 0) return 0;
+  return Math.floor((nowMs - thenMs) / (1000 * 60 * 60 * 24));
+}
+
+function sourceDisplay(source) {
+  return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
+}
+
 function normalizeSectionKey(value) {
   return String(value || '')
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+}
+
 function pipelineConflict(message, details = {}) {
   const error = new Error(message);
   error.statusCode = 409;
@@ -369,11 +413,9 @@ function seedState() {
       firstName: 'Demo',
       lastName: 'Admin',
       role: 'admin',
-      mfa: { enabled: false, totpSecret: null, backupCodes: [] },
       createdAt
     }],
     sessions: [],
-    csrfTokens: [],
     profiles: [
       {
         id: clientId,
@@ -509,29 +551,25 @@ function seedState() {
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
-    passwordResetAttempts: [],
     portalLinks: [],
     authAttempts: [],
     mfaChallenges: [],
-    mfaEnrollments: []
+    mfaEnrollments: [],
     boardVersions: { [firmId]: 1 }
   };
 }
 
-export function createStore(options = {}) {
+export function createStore({ objectStorage = defaultObjectStorage, kmsAdapter } = {}) {
   const state = loadState(seedState);
   const piiCrypto = new PiiCryptoService({
-    keyProvider: createKeyProvider(runtime, { kmsAdapter: options.kmsAdapter }),
+    keyProvider: createKeyProvider(runtime, { kmsAdapter }),
     legacyKeyId: process.env.PII_LEGACY_KEY_ID || 'legacy-app-secret-v1'
   });
+  if (!Array.isArray(state.csrfTokens)) state.csrfTokens = [];
 export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   const state = loadState(seedState);
-  if (!Array.isArray(state.csrfTokens)) state.csrfTokens = [];
   migrateTemplateSystems(state);
   saveState(state);
-
-  function persist() {
-    migrateTemplateSystems(state);
   state.pendingUploadIntents ||= [];
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
@@ -605,6 +643,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   let testHooks = {};
 
   function persist() {
+    migrateTemplateSystems(state);
     if (typeof testHooks.beforePersist === 'function') {
       testHooks.beforePersist(state);
     }
@@ -708,25 +747,11 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     return { token, user: publicUser(user) };
   }
 
-  function pruneExpiredCsrfTokens(persistChanges = true) {
-    const cutoff = Date.now();
-    const activeSessionTokens = new Set(state.sessions.map((entry) => entry.token));
-    const nextTokens = state.csrfTokens.filter((entry) => {
-      const expiresAt = new Date(entry.expiresAt).getTime();
-      return activeSessionTokens.has(entry.sessionToken) && Number.isFinite(expiresAt) && expiresAt > cutoff;
-    });
-    if (nextTokens.length !== state.csrfTokens.length) {
-      state.csrfTokens = nextTokens;
-      if (persistChanges) persist();
-    }
-  }
-
   function pruneExpiredSessions() {
     const cutoff = Date.now();
     const nextSessions = state.sessions.filter((entry) => new Date(entry.expiresAt).getTime() > cutoff);
     if (nextSessions.length !== state.sessions.length) {
       state.sessions = nextSessions;
-      pruneExpiredCsrfTokens(false);
       persist();
     }
   }
@@ -767,91 +792,25 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     return assertFirmScopedRecord(template, user, entityName);
   }
 
-  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}) {
   function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}, options = {}) {
-    state.auditEvents.push({ id: randomUUID(), firmId, actorUserId, entityType, entityId, action, occurredAt: now(), metadata });
+    const immutableMetadata = Object.freeze(deepClone(metadata));
+    state.auditEvents.push(Object.freeze({
+      id: randomUUID(),
+      firmId,
+      actorUserId,
+      entityType,
+      entityId,
+      action,
+      occurredAt: now(),
+      metadata: immutableMetadata
+    }));
     if (options.persist !== false) {
       persist();
     }
   }
 
-  function ensureSubmissionWithTemplate(user, submissionId) {
-    const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId);
-    if (!submission) {
-      throw createStoreError('Submission not found.', { statusCode: 404, code: 'SUBMISSION_NOT_FOUND' });
-    }
-    const template = state.formTemplates.find((entry) => entry.id === submission.templateId && entry.firmId === user.firmId);
-    if (!template) {
-      throw createStoreError('Form template not found.', { statusCode: 404, code: 'FORM_TEMPLATE_NOT_FOUND' });
-    }
-    return { submission, template };
-  }
-
-  function resolveRepeatableSection(template, sectionKey) {
-    const key = normalizeSectionKey(sectionKey);
-    const section = (template.sections || []).find((entry) => {
-      return entry.repeatable && (
-        normalizeSectionKey(entry.key) === key
-        || normalizeSectionKey(entry.title) === key
-        || normalizeSectionKey(entry.id) === key
-      );
-    });
-    if (!section) {
-      throw createStoreError('Repeatable section not found.', { statusCode: 404, code: 'REPEATABLE_SECTION_NOT_FOUND', details: { sectionKey } });
-    }
-    const dataPath = normalizeSectionKey(section.key || section.title || section.id || sectionKey);
-    return { section, dataPath };
-  }
-
-  function ensureRepeatableArray(submission, dataPath) {
-    if (!Array.isArray(submission.data[dataPath])) {
-      submission.data[dataPath] = [];
-    }
-    submission.data[dataPath] = submission.data[dataPath].map((entry) => {
-      if (entry && typeof entry === 'object' && entry[ITEM_KEY_FIELD]) return entry;
-      return { ...(entry || {}), [ITEM_KEY_FIELD]: randomUUID() };
-    });
-    return submission.data[dataPath];
-  }
-
-  function validateItem(section, item) {
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      throw createStoreError('Item payload must be an object.', { code: 'VALIDATION_ERROR', details: { path: 'item' } });
-    }
-    const allowedFields = new Set((section.fields || []).map((field) => field.key));
-    const submittedFields = Object.keys(item).filter((key) => key !== ITEM_KEY_FIELD);
-    const invalidFields = submittedFields.filter((key) => !allowedFields.has(key));
-    if (invalidFields.length) {
-      throw createStoreError('Item payload contains unknown fields.', {
-        code: 'VALIDATION_ERROR',
-        details: { invalidFields, allowedFields: Array.from(allowedFields) }
-      });
-    }
-  }
-
-  function ensureSubmissionRepeatableItemKeys(submission) {
-    const template = state.formTemplates.find((entry) => entry.id === submission.templateId && entry.firmId === submission.firmId);
-    if (!template) return;
-    let changed = false;
-    (template.sections || []).forEach((section) => {
-      if (!section.repeatable) return;
-      const dataPath = normalizeSectionKey(section.key || section.title || section.id);
-      const items = submission.data?.[dataPath];
-      if (!Array.isArray(items)) return;
-      submission.data[dataPath] = items.map((entry) => {
-        if (entry && typeof entry === 'object' && entry[ITEM_KEY_FIELD]) return entry;
-        changed = true;
-        return { ...(entry || {}), [ITEM_KEY_FIELD]: randomUUID() };
-      });
-    });
-    if (changed) {
-      submission.updatedAt = now();
-      persist();
-    }
-  }
-
   function requireClientProfile(user) {
-    authorize(user, 'portal:read');
+    requirePermission(user, 'portal:read');
     const profile = state.profiles.find((entry) =>
       entry.firmId === user.firmId
       && entry.kind === 'client'
@@ -866,12 +825,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     if (runtime.authProvider === 'local') {
       return createLocalAuthProvider({ state, persist, createSession, addAudit });
     }
-    if (runtime.authProvider === 'oidc') {
-      return createOidcAuthProvider();
-    }
-    if (runtime.authProvider === 'saml') {
-      return createSamlAuthProvider();
-    }
     throw new Error(`Unsupported auth provider: ${runtime.authProvider}.`);
   }
 
@@ -879,6 +832,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
 
   function getSensitivePolicy(role, purpose = 'profile_view') {
     return SENSITIVE_ACCESS_POLICY[role]?.[purpose] || null;
+  }
+
+  function normalizeSensitiveReason(input) {
+    return String(input || '').trim().toLowerCase();
   }
 
   function maskSsn(value) {
@@ -927,9 +884,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
 
   return {
     state,
-    policyMatrix: ROLE_POLICY_MATRIX,
     assertPermission(user, permission) {
-      authorize(user, permission);
+      requirePermission(user, permission);
       return true;
     },
     auth,
@@ -939,78 +895,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     login(input) {
       return auth.login(input);
     },
-    startTotpEnrollment(user) {
-      return auth.startTotpEnrollment(user);
-    },
-    confirmTotpEnrollment(user, input) {
-      return auth.confirmTotpEnrollment(user, input);
-    },
-    createMfaChallenge(user) {
-      return auth.createMfaChallenge(user);
-    },
-    verifyMfaChallenge(user, input) {
-      return auth.verifyMfaChallenge(user, input);
-    },
-    rotateBackupCodes(user) {
-      return auth.rotateBackupCodes(user);
-    },
     requireUser,
-    getSession(token) {
-      pruneExpiredSessions();
-      const session = state.sessions.find((entry) => entry.token === token);
-      if (!session) return null;
-      return { ...session };
-    },
-    issueCsrfToken(sessionToken) {
-      pruneExpiredSessions();
-      const session = state.sessions.find((entry) => entry.token === sessionToken);
-      if (!session) throw new Error('Authentication required.');
-      const issuedAt = now();
-      const record = {
-        id: randomUUID(),
-        sessionToken,
-        token: randomUUID(),
-        issuedAt,
-        expiresAt: new Date(Date.now() + CSRF_TOKEN_TTL_MS).toISOString()
-      };
-      state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== sessionToken);
-      state.csrfTokens.push(record);
-      persist();
-      return { ...record };
-    },
-    validateCsrfToken(sessionToken, csrfTokenId, csrfToken) {
-      pruneExpiredSessions();
-      const session = state.sessions.find((entry) => entry.token === sessionToken);
-      if (!session) {
-        return { ok: false, reason: 'Missing or expired authenticated session.' };
-      }
-      const record = state.csrfTokens.find((entry) => entry.sessionToken === sessionToken && entry.id === csrfTokenId);
-      if (!record) {
-        return { ok: false, reason: 'Missing CSRF session.' };
-      }
-      if (new Date(record.expiresAt).getTime() <= Date.now()) {
-        state.csrfTokens = state.csrfTokens.filter((entry) => entry.id !== record.id);
-        persist();
-        return { ok: false, reason: 'Stale CSRF token.' };
-      }
-      if (!csrfToken || record.token !== csrfToken) {
-        return { ok: false, reason: 'Invalid or missing CSRF token.' };
-      }
-      const nextToken = {
-        id: randomUUID(),
-        sessionToken,
-        token: randomUUID(),
-        issuedAt: now(),
-        expiresAt: new Date(Date.now() + CSRF_TOKEN_TTL_MS).toISOString()
-      };
-      state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== sessionToken);
-      state.csrfTokens.push(nextToken);
-      persist();
-      return { ok: true, nextToken };
-    },
-    _internal: { piiCrypto },
     getDashboard(user) {
-      authorize(user, 'profiles:read');
+      requirePermission(user, 'profiles:read');
       const profiles = state.profiles.filter((profile) => profile.firmId === user.firmId);
       const prospects = profiles.filter((profile) => profile.kind === 'prospect');
       const clients = profiles.filter((profile) => profile.kind === 'client');
@@ -1029,7 +916,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       };
     },
     listProfiles(user, kind, search = '') {
-      authorize(user, 'profiles:read');
+      requirePermission(user, 'profiles:read');
       const q = String(search || '').toLowerCase();
       return state.profiles
         .filter((profile) => profile.firmId === user.firmId)
@@ -1038,25 +925,22 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .sort((a, b) => (a.stage === b.stage ? (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0) : a.lastName.localeCompare(b.lastName)));
     },
     getProfileDetail(user, profileId) {
-      authorize(user, 'profiles:read');
+      requirePermission(user, 'profiles:read');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
       const household = profile.householdId ? state.households.find((entry) => entry.id === profile.householdId && entry.firmId === user.firmId) : null;
       const householdMembers = household ? state.householdMembers.filter((entry) => entry.householdId === household.id && entry.firmId === user.firmId) : [];
       const submissions = state.formSubmissions.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
-      submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const stageHistory = state.stageChanges.filter((entry) => entry.clientId === profile.id && entry.firmId === user.firmId);
       const notes = state.notes.filter((entry) => entry.profileId === profile.id && entry.firmId === user.firmId).slice().reverse();
       return { profile, household, householdMembers, submissions, stageHistory, notes };
     },
     createProfile(user, input) {
-      authorize(user, 'profiles:write');
-      if (input.householdId) requireFirmHousehold(user, input.householdId);
-      if (input.spouseClientId) requireFirmProfile(user, input.spouseClientId);
+      requirePermission(user, 'profiles:write');
       const createdAt = now();
       const inStage = state.profiles.filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === (input.stage || 'discovery')).length;
       const profile = {
-        pii: { maskingPolicy: 'role_based', ssnEncrypted: piiCrypto.encrypt(input.ssn), taxIdEncrypted: piiCrypto.encrypt(input.taxId) },
+        pii: { maskingPolicy: 'role_based', ssnCiphertext: encryptValue(input.ssn), taxIdCiphertext: encryptValue(input.taxId) },
         id: randomUUID(),
         firmId: user.firmId,
         advisorUserId: user.id,
@@ -1086,18 +970,18 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return profile;
     },
     updateProfile(user, profileId, patch) {
-      authorize(user, 'profiles:write');
+      requirePermission(user, 'profiles:write');
       if (patch.kind === 'client') { patch.stage = null; patch.stageOrderIndex = null; }
       if (patch.kind === 'prospect' && !patch.stage) { patch.stage = 'discovery'; }
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
       const nextPatch = { ...patch };
       if ('ssn' in nextPatch) {
-        writeSensitiveRecord(profile, 'ssn', nextPatch.ssn);
+        profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: encryptValue(nextPatch.ssn), taxIdCiphertext: profile.pii?.taxIdCiphertext || null };
         delete nextPatch.ssn;
       }
       if ('taxId' in nextPatch) {
-        writeSensitiveRecord(profile, 'taxId', nextPatch.taxId);
+        profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: profile.pii?.ssnCiphertext || null, taxIdCiphertext: encryptValue(nextPatch.taxId) };
         delete nextPatch.taxId;
       }
       Object.assign(profile, nextPatch, { updatedAt: now() });
@@ -1106,17 +990,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return profile;
     },
     moveProfileStage(user, profileId, stage, beforeProfileId = null) {
-      authorize(user, 'pipeline:write');
-      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
-      const sameStage = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === stage && entry.id !== profileId).sort((a,b)=>(a.stageOrderIndex||0)-(b.stageOrderIndex||0));
-      const previousStage = profile.stage || null;
-      let nextIndex = sameStage.length + 1;
-      if (beforeProfileId) {
-        const before = sameStage.find((entry) => entry.id === beforeProfileId);
-        if (before) {
-          nextIndex = before.stageOrderIndex || 1;
-          sameStage.filter((entry) => (entry.stageOrderIndex || 0) >= nextIndex).forEach((entry) => { entry.stageOrderIndex = (entry.stageOrderIndex || 0) + 1; });
       return this.reorderBoard(user, { profileId, toStage: stage, beforeProfileId });
     },
     reorderBoard(user, input) {
@@ -1226,25 +1099,16 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       });
     },
     getBoard(user) {
-      authorize(user, 'profiles:read');
-      const columns = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
-      return columns.map((stage) => ({
-        stage,
-        cards: state.profiles
-          .filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === stage)
-          .sort((a, b) => (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0))
-      }));
       requirePermission(user, 'profiles:read');
       normalizePipelineIndices(user.firmId);
       return buildBoardPayload(user);
     },
     listStageHistory(user, profileId) {
-      authorize(user, 'profiles:read');
+      requirePermission(user, 'profiles:read');
       return state.stageChanges.filter((entry) => entry.firmId === user.firmId && entry.clientId === profileId);
     },
     createHousehold(user, input) {
-      authorize(user, 'households:write');
-      requireFirmProfile(user, input.primaryClientId);
+      requirePermission(user, 'households:write');
       const household = { id: randomUUID(), firmId: user.firmId, name: input.name, primaryClientId: input.primaryClientId, createdAt: now() };
       state.households.push(household);
       state.householdMembers.push({ householdId: household.id, clientId: input.primaryClientId, role: 'primary', firmId: user.firmId, createdAt: household.createdAt });
@@ -1255,9 +1119,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return household;
     },
     addHouseholdMember(user, householdId, input) {
-      authorize(user, 'households:write');
-      const household = requireFirmHousehold(user, householdId);
-      requireFirmProfile(user, input.clientId);
+      requirePermission(user, 'households:write');
+      const household = state.households.find((entry) => entry.id === householdId && entry.firmId === user.firmId);
+      if (!household) throw new Error('Household not found.');
       const member = { householdId, clientId: input.clientId, role: input.role, firmId: user.firmId, createdAt: now() };
       state.householdMembers.push(member);
       const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId);
@@ -1267,19 +1131,20 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return member;
     },
     listHouseholds(user) {
-      authorize(user, 'profiles:read');
+      requirePermission(user, 'profiles:read');
       return state.households.filter((entry) => entry.firmId === user.firmId).map((household) => ({
         ...household,
         members: state.householdMembers.filter((member) => member.firmId === user.firmId && member.householdId === household.id)
       }));
     },
     listNotes(user, profileId) {
-      authorize(user, 'profiles:read');
+      requirePermission(user, 'profiles:read');
       return state.notes.filter((entry) => entry.firmId === user.firmId && entry.profileId === profileId).slice().reverse();
     },
     addNote(user, profileId, body) {
-      authorize(user, 'profiles:write');
-      const profile = requireFirmProfile(user, profileId);
+      requirePermission(user, 'profiles:write');
+      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
+      if (!profile) throw new Error('Profile not found.');
       const note = { id: randomUUID(), firmId: user.firmId, profileId, body, createdByUserId: user.id, createdAt: now() };
       state.notes.push(note);
       addAudit(user.firmId, user.id, 'profile_note', note.id, 'profile.note_added', { profileId });
@@ -1287,26 +1152,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return note;
     },
     listFormTemplates(user) {
-      authorize(user, 'profiles:read');
-      return state.formTemplates.filter((entry) => entry.firmId === user.firmId);
-    },
-    createFormTemplate(user, input) {
-      authorize(user, 'forms:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, description: input.description || '', sections: input.sections || [], createdAt: now(), updatedAt: now() };
-      state.formTemplates.push(template);
-      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.created', { name: template.name });
       requirePermission(user, 'profiles:read');
       return state.templateAggregates
         .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
-        .map((entry) => ({
-          id: entry.id,
-          firmId: entry.firmId,
-          name: entry.name,
-          description: entry.description || '',
-          sections: entry.formSchema?.sections || [],
-          createdAt: entry.createdAt,
-          updatedAt: entry.updatedAt
-        }));
+        .map(formTemplateAdapter);
     },
     createFormTemplate(user, input) {
       requirePermission(user, 'forms:write');
@@ -1317,36 +1166,23 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         kind: 'form',
         name: input.name,
         description: input.description || '',
-        documentMetadata: { fileName: null },
-        extractedFields: [],
         formSchema: { sections: input.sections || [] },
         blueprint: { sections: [] },
         mappings: [],
         publishState: 'draft',
-        versions: [{
-          version: 1,
-          event: 'created',
-          blueprint: { sections: [] },
-          mappings: [],
-          formSchema: { sections: input.sections || [] },
-          publishState: 'draft',
-          createdAt
-        }],
-        publishTransitions: [],
+        versions: [{ version: 1, event: 'created', formSchema: { sections: input.sections || [] }, blueprint: { sections: [] }, mappings: [], publishState: 'draft', createdAt }],
         createdAt,
         updatedAt: createdAt
       }, 'form');
       state.templateAggregates.push(template);
       addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'form_template.created', { name: template.name });
       persist();
-      return { id: template.id, firmId: template.firmId, name: template.name, description: template.description, sections: template.formSchema.sections, createdAt, updatedAt: createdAt };
+      return formTemplateAdapter(template);
     },
     listFormSubmissions(user, status = null) {
-      authorize(user, 'profiles:read');
       requirePermission(user, 'profiles:read');
-      const submissions = state.formSubmissions
       const currentTime = Date.now();
-      return state.formSubmissions
+      const submissions = state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || entry.status === status)
         .map((entry) => {
@@ -1357,8 +1193,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         })
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
-      submissions.forEach(ensureSubmissionRepeatableItemKeys);
-      return submissions;
     },
     getClientWorkspace(user) {
       const profile = requireClientProfile(user);
@@ -1366,13 +1200,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
-      const templates = state.templateAggregates
+      const templatesFromAggregates = state.templateAggregates
         .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.formSchema?.sections || [] }));
       submissions.forEach(ensureSubmissionRepeatableItemKeys);
-      const templates = state.formTemplates
-        .filter((entry) => entry.firmId === user.firmId)
-        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
       const uploads = state.documentUploads
         .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
         .slice()
@@ -1381,17 +1212,16 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       submissions.forEach((submission) => {
         if (!submissionByTemplate.has(submission.templateId)) submissionByTemplate.set(submission.templateId, submission.status);
       });
-      const templateProgress = templates.map((template) => ({
+      const templateProgress = templatesFromAggregates.map((template) => ({
         templateId: template.id,
         templateName: template.name,
         status: submissionByTemplate.get(template.id) || 'not_started'
       }));
-      return { profile, submissions, templates, templateProgress, uploads };
+      return { profile, submissions, templates: templatesFromAggregates, templateProgress, uploads };
     },
     submitClientForm(user, input) {
-      authorize(user, 'client:write');
+      requirePermission(user, 'client:write');
       const profile = requireClientProfile(user);
-      requireFirmTemplate(user, input.templateId, 'Form template');
       const template = state.templateAggregates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId && entry.kind === 'form');
       if (!template) throw new Error('Form template not found.');
       const status = input.status === 'draft' ? 'draft' : 'submitted';
@@ -1429,7 +1259,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { uploadId: intent.id, object: intent.object, presigned };
     },
     submitClientUpload(user, input) {
-      authorize(user, 'client:write');
+      requirePermission(user, 'client:write');
       const profile = requireClientProfile(user);
       const intent = input.uploadId ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === user.firmId) : null;
       const object = normalizeObjectMetadata(input.object || intent?.object || {}, 'uploaded_document');
@@ -1464,10 +1294,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return this.listFormSubmissions(user, 'draft');
     },
     createFormSubmission(user, input) {
-      authorize(user, 'forms:write');
       requireFirmProfile(user, input.clientId);
       requireFirmTemplate(user, input.templateId, 'Form template');
-      const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status: input.status || 'draft', data: input.data || {}, createdAt: now(), updatedAt: now() };
       requirePermission(user, 'forms:write');
       const status = input.status || 'draft';
       const createdAt = now();
@@ -1600,30 +1428,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { ok: true, submission };
     },
     listDocumentTemplates(user) {
-      authorize(user, 'templates:read');
-      return state.documentTemplates.filter((entry) => entry.firmId === user.firmId);
-    },
-    createDocumentTemplate(user, input) {
-      authorize(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
-      state.documentTemplates.push(template);
-      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
       requirePermission(user, 'templates:write');
       return state.templateAggregates
         .filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form')
-        .map((entry) => ({
-          id: entry.id,
-          firmId: entry.firmId,
-          name: entry.name,
-          fileName: entry.documentMetadata?.fileName || 'template.pdf',
-          blueprint: entry.blueprint || { sections: [] },
-          mappings: entry.mappings || [],
-          versions: entry.versions || [],
-          status: entry.publishState || 'draft',
-          publishState: entry.publishState || 'draft',
-          createdAt: entry.createdAt,
-          updatedAt: entry.updatedAt
-        }));
+        .map(documentTemplateAdapter);
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
@@ -1635,75 +1443,51 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         name: input.name,
         description: input.description || '',
         documentMetadata: { fileName: input.fileName || 'template.pdf' },
-        extractedFields: input.fields || [],
-        formSchema: { sections: input.formSections || [] },
         blueprint: input.blueprint || { sections: [] },
         mappings: input.mappings || [],
         publishState: 'draft',
-        versions: [{
-          version: 1,
-          event: 'created',
-          blueprint: input.blueprint || { sections: [] },
-          mappings: input.mappings || [],
-          formSchema: { sections: input.formSections || [] },
-          publishState: 'draft',
-          createdAt,
-          actorUserId: user.id
-        }],
-        publishTransitions: [],
+        versions: [{ version: 1, event: 'created', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], publishState: 'draft', createdAt, actorUserId: user.id }],
         createdAt,
         updatedAt: createdAt
       }, 'document');
       state.templateAggregates.push(template);
       addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.created', { name: template.name });
       persist();
-      return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
+      return documentTemplateAdapter(template);
     },
     updateTemplateMappings(user, templateId, mappings) {
-      authorize(user, 'templates:write');
-      const template = assertFirmScopedRecord(state.documentTemplates.find((entry) => entry.id === templateId), user, 'Template');
-      template.mappings = mappings;
-      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
       requirePermission(user, 'templates:write');
       const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
-      const nextMappings = mappings || [];
-      const prevMappings = template.mappings || [];
-      const mappingDiff = summarizeArrayDiff(prevMappings, nextMappings);
-      template.mappings = nextMappings;
-      template.mappingRules = nextMappings;
-      template.updatedAt = now();
+      template.mappings = mappings || [];
+      template.mappingRules = template.mappings;
       template.versions.push(createTemplateVersion(template, 'mappings_updated', {
-        mappings: nextMappings,
-        blueprint: template.blueprint,
-        actorUserId: user.id,
-        diff: { mappings: mappingDiff, blueprint: summarizeBlueprintDiff(template.blueprint, template.blueprint) }
+        mappings: template.mappings,
+        diff: { mappings: { changed: true } },
+        actorUserId: user.id
       }));
-      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.mappings_updated', { count: nextMappings.length });
+      template.updatedAt = now();
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.mappings_updated', { count: template.mappings.length });
       persist();
-      return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
+      return documentTemplateAdapter(template);
     },
     publishTemplate(user, templateId) {
-      authorize(user, 'templates:publish');
-      const template = assertFirmScopedRecord(state.documentTemplates.find((entry) => entry.id === templateId), user, 'Template');
       requirePermission(user, 'templates:write');
       const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
       const previousState = template.publishState || 'draft';
       template.publishState = 'published';
       template.status = 'published';
-      template.updatedAt = now();
       template.publishTransitions ||= [];
-      template.publishTransitions.push({ from: previousState, to: 'published', at: template.updatedAt, actorUserId: user.id });
+      template.publishTransitions.push({ from: previousState, to: 'published', at: now(), actorUserId: user.id });
       template.versions.push(createTemplateVersion(template, 'published', {
-        mappings: template.mappings,
-        blueprint: template.blueprint,
         publishState: 'published',
-        actorUserId: user.id,
-        diff: { publishTransition: { from: previousState, to: 'published' } }
+        diff: { publishTransition: { from: previousState, to: 'published' } },
+        actorUserId: user.id
       }));
+      template.updatedAt = now();
       persist();
-      return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
+      return documentTemplateAdapter(template);
     },
     listTemplateVersions(user, templateId) {
       requirePermission(user, 'templates:write');
@@ -1718,7 +1502,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return template.publishTransitions || [];
     },
     listExports(user) {
-      authorize(user, 'exports:write');
+      requirePermission(user, 'exports:write');
       state.exportJobs = listExportQueueJobs();
       return state.exportJobs.filter((entry) => entry.firmId === user.firmId);
     },
@@ -1727,6 +1511,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       requireFirmProfile(user, input.clientId);
       assertFirmScopedRecord(state.documentTemplates.find((entry) => entry.id === input.templateId), user, 'Template');
       const idempotencyKey = (input.idempotencyKey || '').trim() || null;
+      requirePermission(user, 'exports:write');
+      const template = state.templateAggregates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId && entry.kind !== 'form');
+      if (!template) throw new Error('Template not found.');
       const queued = enqueueExportJob({
         id: randomUUID(),
         firmId: user.firmId,
@@ -1747,8 +1534,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return queued;
     },
     retryExport(user, exportId) {
-      authorize(user, 'exports:write');
-      const job = assertFirmScopedRecord(state.exportJobs.find((entry) => entry.id === exportId), user, 'Export');
+      requirePermission(user, 'exports:write');
+      const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
+      if (!job) throw new Error('Export not found.');
       const updated = requeueExportJob(exportId);
       if (!updated) throw new Error('Export not found.');
       state.exportJobs = state.exportJobs.map((entry) => (entry.id === exportId ? updated : entry));
@@ -1774,17 +1562,16 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { processed: result.processed, leased: result.leased, failed: result.failed };
     },
     listAudit(user) {
-      authorize(user, 'profiles:read');
+      requirePermission(user, 'profiles:read');
       return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();
     },
     logout(token) {
       state.sessions = state.sessions.filter((entry) => entry.token !== token);
-      state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== token);
       persist();
       return { ok: true };
     },
     listUsers(user) {
-      authorize(user, 'users:read');
+      requirePermission(user, 'analytics:read');
       return state.users.filter((entry) => entry.firmId === user.firmId).map(publicUser);
     },
     inviteUser(user, input) {
@@ -1803,7 +1590,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
         consumedAt: null
       };
-      authorize(user, 'users:write');
       const invite = { id: randomUUID(), firmId: user.firmId, email: input.email.toLowerCase(), role: input.role || 'advisor', invitedByUserId: user.id, token: randomUUID(), createdAt: now() };
       state.invites.push(invite);
       addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role });
@@ -1814,45 +1600,21 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       assertStrongPassword(input.password);
       const invite = state.invites.find((entry) => entry.token === input.token);
       if (!invite) throw new Error('Invite not found.');
-      if (invite.consumedAt) throw new Error('Invite already consumed.');
-      if (new Date(invite.expiresAt).getTime() <= Date.now()) {
-        addAudit(invite.firmId, null, 'invite', invite.id, 'invite.expired', { email: invite.email });
-        state.invites = state.invites.filter((entry) => entry.id !== invite.id);
-        persist();
-        throw new Error('Invite expired.');
-      }
-      if (state.users.some((entry) => entry.email === invite.email && entry.firmId === invite.firmId)) {
-        throw new Error('An account with this email already exists.');
-      }
-      const user = {
-        id: randomUUID(),
-        firmId: invite.firmId,
-        email: invite.email,
-        passwordHash: hash(input.password),
-        firstName: input.firstName,
-        lastName: input.lastName,
-        role: invite.role,
-        mfa: { enabled: false, totpSecret: null, backupCodes: [] },
-        createdAt: now()
-      };
+      const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hash(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, createdAt: now() };
       state.users.push(user);
-      invite.consumedAt = now();
       state.invites = state.invites.filter((entry) => entry.id !== invite.id);
-      addAudit(invite.firmId, user.id, 'invite', invite.id, 'invite.accepted', { email: invite.email, role: invite.role });
       persist();
       return createSession(user);
     },
     requestPasswordReset(email) {
-      return auth.requestReset({ email, ipAddress: 'internal-call' });
+      return auth.requestReset({ email });
     },
     resetPassword(input) {
       return auth.resetPassword(input);
     },
     objectStorage,
     removeHouseholdMember(user, householdId, clientId) {
-      authorize(user, 'households:write');
-      requireFirmHousehold(user, householdId);
-      requireFirmProfile(user, clientId);
+      requirePermission(user, 'households:write');
       state.householdMembers = state.householdMembers.filter((entry) => !(entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId));
       const profile = state.profiles.find((entry) => entry.id === clientId && entry.firmId === user.firmId);
       if (profile) profile.householdId = null;
@@ -1860,9 +1622,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { ok: true };
     },
     linkSpouse(user, primaryClientId, spouseClientId) {
-      authorize(user, 'households:write');
-      const primary = requireFirmProfile(user, primaryClientId);
-      const spouse = requireFirmProfile(user, spouseClientId);
+      requirePermission(user, 'households:write');
+      const primary = state.profiles.find((entry) => entry.id === primaryClientId && entry.firmId === user.firmId);
+      const spouse = state.profiles.find((entry) => entry.id === spouseClientId && entry.firmId === user.firmId);
+      if (!primary || !spouse) throw new Error('Profile not found.');
       primary.spouseClientId = spouse.id;
       spouse.spouseClientId = primary.id;
       let householdId = primary.householdId;
@@ -1880,80 +1643,21 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return spouse;
     },
     updateSubmission(user, submissionId, patch) {
-      authorize(user, 'forms:write');
-      const submission = assertFirmScopedRecord(state.formSubmissions.find((entry) => entry.id === submissionId), user, 'Submission');
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId);
+      if (!submission) throw new Error('Submission not found.');
       Object.assign(submission, patch, { updatedAt: now() });
       persist();
       return submission;
     },
-    createSubmissionSectionItem(user, submissionId, sectionKey, payload) {
-      requirePermission(user, 'forms:write');
-      const { submission, template } = ensureSubmissionWithTemplate(user, submissionId);
-      const { section, dataPath } = resolveRepeatableSection(template, sectionKey);
-      validateItem(section, payload?.item);
-      const items = ensureRepeatableArray(submission, dataPath);
-      const createdItem = { ...payload.item, [ITEM_KEY_FIELD]: randomUUID() };
-      items.push(createdItem);
-      submission.updatedAt = now();
-      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.item_created', {
-        path: `data.${dataPath}[${items.length - 1}]`,
-        sectionKey,
-        itemKey: createdItem[ITEM_KEY_FIELD],
-        changedFields: Object.keys(payload.item || {})
-      });
-      persist();
-      return { submission, item: createdItem };
-    },
-    updateSubmissionSectionItem(user, submissionId, sectionKey, itemKey, payload) {
-      requirePermission(user, 'forms:write');
-      const { submission, template } = ensureSubmissionWithTemplate(user, submissionId);
-      const { section, dataPath } = resolveRepeatableSection(template, sectionKey);
-      validateItem(section, payload?.item || {});
-      const items = ensureRepeatableArray(submission, dataPath);
-      const itemIndex = items.findIndex((entry) => entry?.[ITEM_KEY_FIELD] === itemKey);
-      if (itemIndex < 0) {
-        throw createStoreError('Repeatable item not found.', { statusCode: 404, code: 'REPEATABLE_ITEM_NOT_FOUND', details: { sectionKey, itemKey } });
-      }
-      const nextItem = { ...items[itemIndex], ...payload.item, [ITEM_KEY_FIELD]: itemKey };
-      items[itemIndex] = nextItem;
-      submission.updatedAt = now();
-      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.item_updated', {
-        path: `data.${dataPath}[${itemIndex}]`,
-        sectionKey,
-        itemKey,
-        changedFields: Object.keys(payload.item || {})
-      });
-      persist();
-      return { submission, item: nextItem };
-    },
-    deleteSubmissionSectionItem(user, submissionId, sectionKey, itemKey) {
-      requirePermission(user, 'forms:write');
-      const { submission, template } = ensureSubmissionWithTemplate(user, submissionId);
-      const { dataPath } = resolveRepeatableSection(template, sectionKey);
-      const items = ensureRepeatableArray(submission, dataPath);
-      const itemIndex = items.findIndex((entry) => entry?.[ITEM_KEY_FIELD] === itemKey);
-      if (itemIndex < 0) {
-        throw createStoreError('Repeatable item not found.', { statusCode: 404, code: 'REPEATABLE_ITEM_NOT_FOUND', details: { sectionKey, itemKey } });
-      }
-      items.splice(itemIndex, 1);
-      submission.updatedAt = now();
-      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.item_deleted', {
-        path: `data.${dataPath}[${itemIndex}]`,
-        sectionKey,
-        itemKey
-      });
-      persist();
-      return { submission, ok: true };
-    },
     deleteSubmission(user, submissionId) {
-      authorize(user, 'forms:write');
-      assertFirmScopedRecord(state.formSubmissions.find((entry) => entry.id === submissionId), user, 'Submission');
+      requirePermission(user, 'forms:write');
       state.formSubmissions = state.formSubmissions.filter((entry) => !(entry.id === submissionId && entry.firmId === user.firmId));
       persist();
       return { ok: true };
     },
     autoBuildTemplate(user, input) {
-      authorize(user, 'templates:write');
+      requirePermission(user, 'templates:write');
       const sections = (input.fields || []).reduce((acc, field) => {
         const sectionKey = field.split('.')[0] || 'general';
         acc[sectionKey] ||= [];
@@ -1963,8 +1667,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return this.createDocumentTemplate(user, { name: input.name, fileName: input.fileName || 'uploaded.pdf', blueprint: { sections }, mappings: (input.fields || []).map((field) => ({ pdfField: field, sourcePath: field.replace(/\s+/g, '_').toLowerCase() })) });
     },
     createPortalLink(user, profileId) {
-      authorize(user, 'profiles:read');
-      requireFirmProfile(user, profileId);
+      requirePermission(user, 'profiles:read');
       const link = { id: randomUUID(), firmId: user.firmId, profileId, token: randomUUID(), createdAt: now() };
       state.portalLinks.push(link);
       persist();
@@ -1983,9 +1686,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .filter((entry) => entry.firmId === link.firmId && entry.kind === 'form')
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.formSchema?.sections || [] }));
       submissions.forEach(ensureSubmissionRepeatableItemKeys);
-      const availableTemplates = state.formTemplates
-        .filter((entry) => entry.firmId === link.firmId)
-        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
       const uploads = state.documentUploads
         .filter((entry) => entry.firmId === link.firmId && entry.clientId === link.profileId)
         .slice()
@@ -2063,8 +1763,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 });
     },
     getAnalytics(user) {
-      authorize(user, 'analytics:read');
-      const prospects = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect');
       requirePermission(user, 'analytics:read');
       const firmProfiles = state.profiles.filter((entry) => entry.firmId === user.firmId);
       const prospects = firmProfiles.filter((entry) => entry.kind === 'prospect');
@@ -2105,7 +1803,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         if (entry.count) entry.avgDays = Number((entry.avgDays / entry.count).toFixed(2));
       });
 
-      const templateIds = new Set(state.formTemplates.filter((entry) => entry.firmId === user.firmId).map((entry) => entry.id));
+      const templateIds = new Set(state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind === 'form').map((entry) => entry.id));
       const formsByTemplate = {};
       templateIds.forEach((templateId) => {
         formsByTemplate[templateId] = { templateId, drafts: 0, submitted: 0, completionRate: 0 };
@@ -2149,19 +1847,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         profileCount: firmProfiles.length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
-        templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form').length
         templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length,
         avgProspectStageAgeDays: Number(average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2))
       };
     },
-    getMaskedSensitiveData(user, profileId) {
-      authorize(user, 'profiles:sensitive:read');
-      const profile = requireFirmProfile(user, profileId);
-      const ssn = decryptValue(profile.pii?.ssnCiphertext);
-      const taxId = decryptValue(profile.pii?.taxIdCiphertext);
-      return {
-        ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
-        taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
+        templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form').length,
+        avgProspectStageAgeDays: Number(average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2))
+      };
+    },
 
     async createExportDownloadUrl(user, exportId) {
       requirePermission(user, 'exports:write');
@@ -2180,15 +1873,34 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         retention: objectStorage.retentionPolicies
       };
     },
-    getMaskedSensitiveData(user, profileId, options = {}) {
+    getMaskedSensitiveData(user, profileId) {
       requirePermission(user, 'profiles:read');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
       const purpose = options.purpose || 'profile_view';
       const requestedUnmask = Boolean(options.unmask);
+      const reasonCode = normalizeSensitiveReason(options.reasonCode);
+      const justification = String(options.justification || '').trim();
+      if (!reasonCode || !SENSITIVE_READ_REASON_CODES.has(reasonCode)) {
+        throw new Error('Sensitive read reasonCode is required and must be an approved code.');
+      }
+      if (requestedUnmask && !justification) {
+        throw new Error('Sensitive unmask reads require non-empty justification.');
+      }
+      if (requestedUnmask && options.privilegedPolicy !== REQUIRED_UNMASK_POLICY) {
+        throw new Error('Sensitive unmask reads require explicit privileged policy acknowledgement.');
+      }
       const policy = getSensitivePolicy(user.role, purpose);
       if (!policy?.allowMasked || (requestedUnmask && !policy.allowUnmasked)) {
-        addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', { purpose, requestedUnmask, role: user.role });
+        addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', {
+          immutable: true,
+          policy: REQUIRED_UNMASK_POLICY,
+          actor: { userId: user.id, role: user.role },
+          reason: { code: reasonCode, justification },
+          profile: { id: profileId, purpose },
+          requestedUnmask,
+          fieldScope: requestedUnmask ? ['ssn', 'taxId'] : ['ssnMasked', 'taxIdMasked']
+        });
         throw new Error('Sensitive data access denied for role/purpose combination.');
       }
       const ssn = piiCrypto.decrypt(readSensitiveRecord(profile, 'ssn'));
@@ -2202,11 +1914,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         response.taxId = taxId;
       }
       addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
-        purpose,
+        immutable: true,
+        policy: REQUIRED_UNMASK_POLICY,
+        actor: { userId: user.id, role: user.role },
+        reason: { code: reasonCode, justification },
+        profile: { id: profileId, purpose },
         requestedUnmask,
         grantedUnmask: requestedUnmask,
-        role: user.role,
-        fields: requestedUnmask ? ['ssn', 'taxId'] : ['ssnMasked', 'taxIdMasked']
+        fieldScope: requestedUnmask ? ['ssn', 'taxId'] : ['ssnMasked', 'taxIdMasked']
       });
       return response;
     },
@@ -2231,6 +1946,12 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       });
       persist();
       return { rotatedProfiles, rotatedFields };
+      const ssn = decryptValue(profile.pii?.ssnCiphertext);
+      const taxId = decryptValue(profile.pii?.taxIdCiphertext);
+      return {
+        ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
+        taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
+      };
     },
     __setTestHooks(hooks = {}) {
       testHooks = { ...hooks };

@@ -60,15 +60,23 @@ try {
   }, 409);
 
   const analytics = await context.request('/api/analytics', { headers: { Authorization: `Bearer ${admin.token}` } });
+  const analyticsFiltered = await context.request('/api/analytics?startDate=2026-01-01&endDate=2026-12-31&cohortBy=stage&cohortValue=proposal&slaTargetDays=7', { headers: { Authorization: `Bearer ${admin.token}` } });
+  const snapshot = await context.request('/api/analytics/export?startDate=2026-01-01&endDate=2026-12-31', { headers: { Authorization: `Bearer ${admin.token}` } });
   const audit = await context.request('/api/audit', { headers: { Authorization: `Bearer ${admin.token}` } });
 
   assert(typeof analytics.stageCounts === 'object' && analytics.stageCounts !== null, 'Analytics stage counts missing');
   assert(Array.isArray(analytics.summary?.funnel), 'Funnel metrics missing');
   assert(typeof analytics.summary?.stageAging === 'object' && analytics.summary.stageAging !== null, 'Stage aging metrics missing');
   assert(Array.isArray(analytics.summary?.formCompletionRates), 'Form completion rates missing');
-  assert(Array.isArray(analytics.summary?.advisorProductivity), 'Advisor productivity metrics missing');
+  assert(Array.isArray(analytics.summary?.advisorThroughput), 'Advisor throughput missing');
+  assert(typeof analytics.summary?.completionSla === 'object', 'Completion SLA missing');
+  assert(typeof analytics.summary?.cohortSegments === 'object', 'Cohort segments missing');
+  assert(analytics.summary?.reconciliation?.matches === true, 'Reconciliation mismatch');
   assert(analytics.materialized?.firmId, 'Materialized analytics summary missing');
   assert((analytics.stageCounts.proposal || 0) >= 1, 'Updated stage count missing');
+  assert((analyticsFiltered.summary?.stageCounts?.proposal || 0) >= 1, 'Date range/cohort filter should include proposal prospect');
+  assert(snapshot.fileName?.startsWith('analytics-snapshot-'), 'Analytics snapshot export missing filename');
+  assert(snapshot.snapshot?.reconciliation?.matches === true, 'Analytics snapshot reconciliation mismatch');
   assert(revised.ok === true && revised.submission.revisionId > 1, 'Draft revision did not increment');
   assert(conflict.conflict === true && conflict.mergePrompt?.type === 'revision_conflict', 'Expected draft revision conflict');
   assert(advisorConflict.conflict === true, 'Expected lock conflict for second advisor');
@@ -77,9 +85,11 @@ try {
   console.log(JSON.stringify({
     suite: 'integration-analytics',
     proposalCount: analytics.stageCounts.proposal || 0,
+    filteredProposalCount: analyticsFiltered.summary?.stageCounts?.proposal || 0,
     draftRevision: revised.submission.revisionId,
     conflictType: conflict.mergePrompt?.type,
-    auditEvents: audit.length
+    auditEvents: audit.length,
+    snapshotFile: snapshot.fileName
   }, null, 2));
 } finally {
   await context.shutdown();
