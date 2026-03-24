@@ -1,8 +1,8 @@
-export function createExportsService({ store }) {
+export function createExportsService({ exportsRepository }) {
   return {
-    list(user) { return store.listExports(user); },
-    create(user, input) { return store.createExport(user, input); },
-    processQueuedExports() { return store.processQueuedExports(); },
-    retry(user, exportId) { return store.retryExport(user, exportId); }
+    list(user) { return exportsRepository.list(user); },
+    create(user, input) { return exportsRepository.create(user, input); },
+    processQueuedExports() { return exportsRepository.processQueued(); },
+    retry(user, exportId) { return exportsRepository.retry(user, exportId); }
   };
 }

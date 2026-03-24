@@ -1,5 +1,5 @@
-export function createAuditService({ store }) {
+export function createAuditService({ auditRepository }) {
   return {
-    list(user) { return store.listAudit(user); }
+    list(user) { return auditRepository.list(user); }
   };
 }

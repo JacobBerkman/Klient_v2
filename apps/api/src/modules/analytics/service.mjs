@@ -1,12 +1,16 @@
-export function createAnalyticsService({ store, reads }) {
+export function createAnalyticsService({ analyticsRepository }) {
   return {
     get(user) {
-      return { stageCounts: reads.getAnalytics(user.firmId), summary: store.getAnalytics(user) };
+      return {
+        stageCounts: analyticsRepository.getStageCounts(user.firmId),
+        summary: analyticsRepository.getSummary(user)
+      };
     },
     getDiagnosticsContext(user) {
-      const auditEvents = store.listAudit(user);
-      const exports = store.listExports(user);
-      return { auditEvents, exports };
+      return {
+        auditEvents: analyticsRepository.listAuditEvents(user),
+        exports: analyticsRepository.listExports(user)
+      };
     }
   };
 }

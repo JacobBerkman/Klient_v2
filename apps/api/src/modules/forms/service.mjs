@@ -1,18 +1,18 @@
-export function createFormsService({ store }) {
+export function createFormsService({ formsRepository }) {
   return {
-    listFormTemplates(user) { return store.listFormTemplates(user); },
-    createFormTemplate(user, input) { return store.createFormTemplate(user, input); },
-    listFormSubmissions(user) { return store.listFormSubmissions(user); },
-    listFormDrafts(user) { return store.listFormDrafts(user); },
-    createFormSubmission(user, input) { return store.createFormSubmission(user, input); },
-    updateSubmission(user, submissionId, patch) { return store.updateSubmission(user, submissionId, patch); },
-    deleteSubmission(user, submissionId) { return store.deleteSubmission(user, submissionId); },
-    getClientWorkspace(user) { return store.getClientWorkspace(user); },
-    submitClientForm(user, input) { return store.submitClientForm(user, input); },
-    submitClientUpload(user, input) { return store.submitClientUpload(user, input); },
-    createPortalLink(user, profileId) { return store.createPortalLink(user, profileId); },
-    getPortalData(token) { return store.getPortalData(token); },
-    portalSubmit(token, input) { return store.portalSubmit(token, input); },
-    portalUpload(token, input) { return store.portalUpload(token, input); }
+    listFormTemplates(user) { return formsRepository.listFormTemplates(user); },
+    createFormTemplate(user, input) { return formsRepository.createFormTemplate(user, input); },
+    listFormSubmissions(user) { return formsRepository.listFormSubmissions(user); },
+    listFormDrafts(user) { return formsRepository.listFormDrafts(user); },
+    createFormSubmission(user, input) { return formsRepository.createFormSubmission(user, input); },
+    updateSubmission(user, submissionId, patch) { return formsRepository.updateSubmission(user, submissionId, patch); },
+    deleteSubmission(user, submissionId) { return formsRepository.deleteSubmission(user, submissionId); },
+    getClientWorkspace(user) { return formsRepository.getClientWorkspace(user); },
+    submitClientForm(user, input) { return formsRepository.submitClientForm(user, input); },
+    submitClientUpload(user, input) { return formsRepository.submitClientUpload(user, input); },
+    createPortalLink(user, profileId) { return formsRepository.createPortalLink(user, profileId); },
+    getPortalData(token) { return formsRepository.getPortalData(token); },
+    portalSubmit(token, input) { return formsRepository.portalSubmit(token, input); },
+    portalUpload(token, input) { return formsRepository.portalUpload(token, input); }
   };
 }

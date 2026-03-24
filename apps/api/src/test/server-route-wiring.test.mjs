@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 
 import { createHttpServer } from '../server.mjs';
 
@@ -52,4 +53,23 @@ test('GET /api/profiles forwards query params to profiles service', async () => 
   assert.equal(body.length, 1);
   assert.deepEqual(calls, ['policy', { kind: 'prospect', search: 'casey' }]);
   await close(server);
+});
+
+test('server routes do not call store domain mutation methods directly', () => {
+  const serverSource = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8');
+  const forbidden = [
+    'store.createProfile(',
+    'store.updateProfile(',
+    'store.reorderBoard(',
+    'store.createHousehold(',
+    'store.createFormSubmission(',
+    'store.createDocumentTemplate(',
+    'store.createExport(',
+    'store.listAudit(',
+    'store.getAnalytics('
+  ];
+
+  forbidden.forEach((pattern) => {
+    assert.equal(serverSource.includes(pattern), false, `Expected server route transport layer to avoid ${pattern}`);
+  });
 });

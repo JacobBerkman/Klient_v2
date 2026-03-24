@@ -1,8 +1,21 @@
-export function createPipelineService({ store }) {
+export function createPipelineService({ pipelineRepository }) {
   return {
-    moveProfileStage(user, profileId, stage, beforeProfileId = null) {
-      return store.moveProfileStage(user, profileId, stage, beforeProfileId);
+    moveProfileStage(user, profileId, stage, beforeProfileId = null, concurrency = {}) {
+      return pipelineRepository.reorderBoard(user, {
+        profileId,
+        toStage: stage,
+        beforeProfileId,
+        ...concurrency
+      });
     },
-    getBoard(user) { return store.getBoard(user); }
+    reorderBoard(user, input) {
+      return pipelineRepository.reorderBoard(user, input);
+    },
+    normalizeBoardOrdering(user) {
+      return pipelineRepository.normalizeBoardOrdering(user);
+    },
+    getBoard(user) {
+      return pipelineRepository.getBoard(user);
+    }
   };
 }
