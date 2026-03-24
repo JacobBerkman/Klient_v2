@@ -9,7 +9,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - prospects and clients management
 - persisted prospect pipeline board
 - households and member linking
-- dynamic form template and submission flows
+- dynamic form template and submission flows, including section/field builder editing, repeatable groups, validation metadata, and draft/publish states
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
 - audit trail and analytics views
@@ -68,6 +68,7 @@ curl http://localhost:3000/ready
 
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
+Only **published** form definitions are exposed in portal template choices.
 
 ## Backup
 ```bash

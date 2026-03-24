@@ -53,6 +53,62 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
 }
 
+function sanitizeList(raw) {
+  if (!raw) return [];
+  if (Array.isArray(raw)) return raw.map((entry) => String(entry).trim()).filter(Boolean);
+  return String(raw)
+    .split('\n')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function normalizeField(fieldInput = {}, fallbackIndex = 0) {
+  const keyBase = fieldInput.key || fieldInput.label || `field-${fallbackIndex + 1}`;
+  const key = slugify(String(keyBase || `field-${fallbackIndex + 1}`));
+  const options = sanitizeList(fieldInput.options);
+  return {
+    id: fieldInput.id || randomUUID(),
+    key,
+    label: String(fieldInput.label || key).trim(),
+    type: String(fieldInput.type || 'text'),
+    helperText: String(fieldInput.helperText || '').trim(),
+    defaultValue: fieldInput.defaultValue ?? null,
+    repeatableGroup: Boolean(fieldInput.repeatableGroup),
+    options,
+    validation: {
+      required: Boolean(fieldInput.validation?.required || fieldInput.required),
+      min: fieldInput.validation?.min ?? fieldInput.min ?? null,
+      max: fieldInput.validation?.max ?? fieldInput.max ?? null,
+      pattern: fieldInput.validation?.pattern || fieldInput.pattern || '',
+      minLength: fieldInput.validation?.minLength ?? fieldInput.minLength ?? null,
+      maxLength: fieldInput.validation?.maxLength ?? fieldInput.maxLength ?? null,
+      message: fieldInput.validation?.message || fieldInput.message || ''
+    }
+  };
+}
+
+function normalizeSection(sectionInput = {}, fallbackIndex = 0) {
+  const fields = Array.isArray(sectionInput.fields) ? sectionInput.fields : [];
+  return {
+    id: sectionInput.id || randomUUID(),
+    title: String(sectionInput.title || `Section ${fallbackIndex + 1}`).trim(),
+    description: String(sectionInput.description || '').trim(),
+    repeatable: Boolean(sectionInput.repeatable),
+    repeatableGroup: String(sectionInput.repeatableGroup || '').trim(),
+    fields: fields.map((field, index) => normalizeField(field, index))
+  };
+}
+
+function normalizeTemplateInput(input, existing = null) {
+  const sections = Array.isArray(input.sections) ? input.sections : existing?.sections || [];
+  return {
+    name: String(input.name || existing?.name || 'Untitled form').trim(),
+    description: String(input.description || existing?.description || '').trim(),
+    status: input.status === 'published' ? 'published' : 'draft',
+    sections: sections.map((section, index) => normalizeSection(section, index))
+  };
+}
+
 function seedState() {
   const createdAt = now();
   const firmId = randomUUID();
@@ -168,9 +224,30 @@ function seedState() {
       firmId,
       name: 'Financial Discovery',
       description: 'Core onboarding discovery form',
+      status: 'published',
       sections: [
-        { id: randomUUID(), title: 'Household', fields: [{ key: 'goals', label: 'Goals', type: 'textarea' }, { key: 'riskTolerance', label: 'Risk Tolerance', type: 'select', options: ['Conservative','Moderate','Aggressive'] }] },
-        { id: randomUUID(), title: 'Assets', repeatable: true, fields: [{ key: 'accountName', label: 'Account Name', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }] }
+        {
+          id: randomUUID(),
+          title: 'Household',
+          description: '',
+          repeatable: false,
+          repeatableGroup: '',
+          fields: [
+            normalizeField({ key: 'goals', label: 'Goals', type: 'textarea', validation: { required: true, minLength: 5, message: 'Please share at least one goal.' } }),
+            normalizeField({ key: 'riskTolerance', label: 'Risk Tolerance', type: 'select', options: ['Conservative','Moderate','Aggressive'], validation: { required: true } })
+          ]
+        },
+        {
+          id: randomUUID(),
+          title: 'Assets',
+          description: '',
+          repeatable: true,
+          repeatableGroup: 'accounts',
+          fields: [
+            normalizeField({ key: 'accountName', label: 'Account Name', type: 'text', repeatableGroup: true, validation: { required: true } }),
+            normalizeField({ key: 'value', label: 'Value', type: 'number', repeatableGroup: true, validation: { required: true, min: 0 } })
+          ]
+        }
       ],
       createdAt,
       updatedAt: createdAt
@@ -424,15 +501,39 @@ export function createStore() {
       return note;
     },
     listFormTemplates(user) {
-      return state.formTemplates.filter((entry) => entry.firmId === user.firmId);
+      return state.formTemplates
+        .filter((entry) => entry.firmId === user.firmId)
+        .slice()
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
     },
     createFormTemplate(user, input) {
       requirePermission(user, 'forms:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, description: input.description || '', sections: input.sections || [], createdAt: now(), updatedAt: now() };
+      const normalized = normalizeTemplateInput(input);
+      const template = { id: randomUUID(), firmId: user.firmId, ...normalized, createdAt: now(), updatedAt: now(), publishedAt: normalized.status === 'published' ? now() : null };
       state.formTemplates.push(template);
-      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.created', { name: template.name });
+      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.created', { name: template.name, status: template.status });
       persist();
       return template;
+    },
+    updateFormTemplate(user, templateId, input) {
+      requirePermission(user, 'forms:write');
+      const template = state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Form template not found.');
+      const normalized = normalizeTemplateInput(input, template);
+      template.name = normalized.name;
+      template.description = normalized.description;
+      template.sections = normalized.sections;
+      if (input.status) {
+        template.status = normalized.status;
+        template.publishedAt = template.status === 'published' ? now() : null;
+      }
+      template.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.updated', { status: template.status, sectionCount: template.sections.length });
+      persist();
+      return template;
+    },
+    publishFormTemplate(user, templateId) {
+      return this.updateFormTemplate(user, templateId, { status: 'published' });
     },
     listFormSubmissions(user, status = null) {
       return state.formSubmissions
@@ -635,8 +736,8 @@ export function createStore() {
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
       const availableTemplates = state.formTemplates
-        .filter((entry) => entry.firmId === link.firmId)
-        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
+        .filter((entry) => entry.firmId === link.firmId && entry.status === 'published')
+        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [], status: entry.status }));
       return { firm, profile, submissions, availableTemplates };
     },
     portalSubmit(token, input) {

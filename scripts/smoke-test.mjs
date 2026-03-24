@@ -56,11 +56,45 @@ async function run() {
   const portalTemplate = await jsonFetch('/api/forms/templates', { method: 'POST', headers: authHeaders, body: JSON.stringify({
     name: 'Portal Intake',
     description: 'Client-completed discovery questions',
+    status: 'draft',
     sections: [
-      { title: 'Goals', fields: [{ key: 'primaryGoal', label: 'Primary Goal', type: 'text' }] },
-      { title: 'Accounts', repeatable: true, fields: [{ key: 'institution', label: 'Institution', type: 'text' }, { key: 'balance', label: 'Balance', type: 'number' }] }
+      {
+        title: 'Goals',
+        fields: [
+          { key: 'primaryGoal', label: 'Primary Goal', type: 'text', validation: { required: true, minLength: 3, message: 'Primary goal required.' } },
+          { key: 'targetDate', label: 'Target Date', type: 'date' }
+        ]
+      },
+      {
+        title: 'Accounts',
+        repeatable: true,
+        repeatableGroup: 'accounts',
+        fields: [
+          { key: 'institution', label: 'Institution', type: 'text', repeatableGroup: true, validation: { required: true } },
+          { key: 'balance', label: 'Balance', type: 'number', repeatableGroup: true, validation: { required: true, min: 0 } },
+          { key: 'accountType', label: 'Account Type', type: 'select', options: ['IRA', '401k', 'Brokerage'] }
+        ]
+      }
     ]
   }) });
+  const updatedPortalTemplate = await jsonFetch(`/api/forms/templates/${portalTemplate.id}`, {
+    method: 'PATCH',
+    headers: authHeaders,
+    body: JSON.stringify({
+      description: 'Client-completed discovery and account inventory',
+      sections: [
+        ...portalTemplate.sections,
+        {
+          title: 'Risk',
+          fields: [{ key: 'riskProfile', label: 'Risk Profile', type: 'select', options: ['Conservative', 'Balanced', 'Aggressive'], validation: { required: true } }]
+        }
+      ]
+    })
+  });
+  const publishedPortalTemplate = await jsonFetch(`/api/forms/templates/${portalTemplate.id}/publish`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${login.token}` }
+  });
   const portalData = await jsonFetch(`/api/portal/${portal.token}`);
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'draft', data: { primaryGoal: 'Retire early' } }) });
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'submitted', data: { primaryGoal: 'Retire early', accounts: [{ institution: 'Vanguard', balance: '120000' }] } }) });
@@ -82,6 +116,11 @@ async function run() {
   if (!portalData.availableTemplates.find((entry) => entry.id === portalTemplate.id)) throw new Error('Portal templates missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'draft')) throw new Error('Portal draft missing');
   if (!refreshedPortalData.submissions.find((entry) => entry.status === 'submitted')) throw new Error('Portal submission missing');
+  if (publishedPortalTemplate.status !== 'published') throw new Error('Form template publish failed');
+  if (!updatedPortalTemplate.sections.find((section) => section.title === 'Risk')) throw new Error('Form template section update failed');
+  if (!updatedPortalTemplate.sections.find((section) => section.repeatableGroup === 'accounts')) throw new Error('Repeatable group metadata missing');
+  if (!updatedPortalTemplate.sections.find((section) => section.fields.some((field) => field.options?.length))) throw new Error('Select options missing');
+  if (!updatedPortalTemplate.sections.find((section) => section.fields.some((field) => field.validation?.required))) throw new Error('Validation metadata missing');
   if (!exportsList.find((job) => job.id === exportJob.id && job.status === 'completed')) throw new Error('Export processing failed');
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
@@ -95,7 +134,9 @@ async function run() {
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,
-    templateStatus: published.status
+    templateStatus: published.status,
+    formTemplateStatus: publishedPortalTemplate.status,
+    formTemplateSections: updatedPortalTemplate.sections.length
   }, null, 2));
 }
 

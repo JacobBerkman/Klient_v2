@@ -148,6 +148,123 @@ async function renderHouseholds() {
   `);
 }
 
+function fieldTemplate() {
+  return {
+    id: crypto.randomUUID(),
+    key: '',
+    label: '',
+    type: 'text',
+    helperText: '',
+    defaultValue: '',
+    repeatableGroup: false,
+    options: [],
+    validation: { required: false, min: '', max: '', pattern: '', minLength: '', maxLength: '', message: '' }
+  };
+}
+
+function sectionTemplate() {
+  return { id: crypto.randomUUID(), title: '', description: '', repeatable: false, repeatableGroup: '', fields: [fieldTemplate()] };
+}
+
+function getEditorState(template) {
+  return {
+    id: template?.id || null,
+    name: template?.name || '',
+    description: template?.description || '',
+    status: template?.status || 'draft',
+    sections: (template?.sections || [sectionTemplate()]).map((section) => ({
+      id: section.id || crypto.randomUUID(),
+      title: section.title || '',
+      description: section.description || '',
+      repeatable: Boolean(section.repeatable),
+      repeatableGroup: section.repeatableGroup || '',
+      fields: (section.fields || [fieldTemplate()]).map((field) => ({
+        ...fieldTemplate(),
+        ...field,
+        id: field.id || crypto.randomUUID(),
+        options: Array.isArray(field.options) ? field.options : [],
+        validation: {
+          ...fieldTemplate().validation,
+          ...(field.validation || {})
+        }
+      }))
+    }))
+  };
+}
+
+function renderFieldEditor(sectionIndex, field, fieldIndex) {
+  const fieldType = field.type || 'text';
+  return `
+    <div class="item stack gap-sm">
+      <div class="row between">
+        <strong>Field ${fieldIndex + 1}</strong>
+        <button type="button" data-field-remove="${sectionIndex}:${fieldIndex}">Remove Field</button>
+      </div>
+      <div class="grid two compact-grid">
+        <input data-bind="sections.${sectionIndex}.fields.${fieldIndex}.label" value="${field.label || ''}" placeholder="Field label" />
+        <input data-bind="sections.${sectionIndex}.fields.${fieldIndex}.key" value="${field.key || ''}" placeholder="Field key (unique)" />
+      </div>
+      <div class="grid two compact-grid">
+        <select data-bind="sections.${sectionIndex}.fields.${fieldIndex}.type">
+          ${['text', 'textarea', 'number', 'date', 'email', 'phone', 'checkbox', 'select'].map((type) => `<option value="${type}" ${fieldType === type ? 'selected' : ''}>${type}</option>`).join('')}
+        </select>
+        <input data-bind="sections.${sectionIndex}.fields.${fieldIndex}.helperText" value="${field.helperText || ''}" placeholder="Helper text" />
+      </div>
+      <div class="grid two compact-grid">
+        <input data-bind="sections.${sectionIndex}.fields.${fieldIndex}.defaultValue" value="${field.defaultValue ?? ''}" placeholder="Default value" />
+        <label class="row"><input type="checkbox" data-bind="sections.${sectionIndex}.fields.${fieldIndex}.repeatableGroup" ${field.repeatableGroup ? 'checked' : ''} /> Repeatable group field</label>
+      </div>
+      ${fieldType === 'select' ? `<textarea data-bind="sections.${sectionIndex}.fields.${fieldIndex}.options" placeholder="One select option per line">${(field.options || []).join('\n')}</textarea>` : ''}
+      <div class="grid two compact-grid">
+        <label class="row"><input type="checkbox" data-bind="sections.${sectionIndex}.fields.${fieldIndex}.validation.required" ${field.validation?.required ? 'checked' : ''} /> Required</label>
+        <input data-bind="sections.${sectionIndex}.fields.${fieldIndex}.validation.pattern" value="${field.validation?.pattern || ''}" placeholder="Validation regex pattern" />
+        <input data-bind="sections.${sectionIndex}.fields.${fieldIndex}.validation.min" value="${field.validation?.min ?? ''}" placeholder="Min value" />
+        <input data-bind="sections.${sectionIndex}.fields.${fieldIndex}.validation.max" value="${field.validation?.max ?? ''}" placeholder="Max value" />
+        <input data-bind="sections.${sectionIndex}.fields.${fieldIndex}.validation.minLength" value="${field.validation?.minLength ?? ''}" placeholder="Min length" />
+        <input data-bind="sections.${sectionIndex}.fields.${fieldIndex}.validation.maxLength" value="${field.validation?.maxLength ?? ''}" placeholder="Max length" />
+      </div>
+      <input data-bind="sections.${sectionIndex}.fields.${fieldIndex}.validation.message" value="${field.validation?.message || ''}" placeholder="Validation error message" />
+    </div>
+  `;
+}
+
+function buildTemplatePayload(editor) {
+  return {
+    name: editor.name,
+    description: editor.description,
+    status: editor.status === 'published' ? 'published' : 'draft',
+    sections: editor.sections.map((section) => ({
+      id: section.id,
+      title: section.title || 'Untitled Section',
+      description: section.description || '',
+      repeatable: Boolean(section.repeatable),
+      repeatableGroup: section.repeatableGroup || '',
+      fields: section.fields.map((field) => ({
+        id: field.id,
+        key: field.key || field.label?.toLowerCase().replace(/[^a-z0-9]+/g, '_'),
+        label: field.label || field.key || 'Untitled Field',
+        type: field.type || 'text',
+        helperText: field.helperText || '',
+        defaultValue: field.defaultValue || '',
+        repeatableGroup: Boolean(field.repeatableGroup),
+        options: String(field.options || '')
+          .split('\n')
+          .map((option) => option.trim())
+          .filter(Boolean),
+        validation: {
+          required: Boolean(field.validation?.required),
+          min: field.validation?.min === '' ? null : field.validation?.min,
+          max: field.validation?.max === '' ? null : field.validation?.max,
+          pattern: field.validation?.pattern || '',
+          minLength: field.validation?.minLength === '' ? null : field.validation?.minLength,
+          maxLength: field.validation?.maxLength === '' ? null : field.validation?.maxLength,
+          message: field.validation?.message || ''
+        }
+      }))
+    }))
+  };
+}
+
 async function renderForms() {
   const [templates, submissions, drafts] = await Promise.all([
     api('/api/forms/templates'),
@@ -168,12 +285,139 @@ async function renderForms() {
       </div>
     </div>
     <h3>Templates</h3>
-    ${renderItems(templates, (item) => `<div class="item"><strong>${item.name}</strong><div class="muted">${item.description || ''}</div><div class="muted">Sections: ${(item.sections || []).length}</div></div>`)}
+    ${renderItems(templates, (item) => `<div class="item"><div class="row between"><strong>${item.name}</strong><span class="badge ${item.status === 'published' ? '' : 'subtle'}">${item.status || 'draft'}</span></div><div class="muted">${item.description || ''}</div><div class="muted">Sections: ${(item.sections || []).length}</div><button data-template-edit="${item.id}">Edit Definition</button></div>`)}
     <h3>Drafts</h3>
     ${drafts.length ? renderItems(drafts, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge subtle">draft</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div><pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No drafts yet.</div>'}
     <h3>Submitted</h3>
     ${submitted.length ? renderItems(submitted, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge">${item.status}</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div><pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No submitted forms yet.</div>'}
+    <div id="form-template-editor" class="item stack gap-md"></div>
   `;
+
+  const editorRoot = document.querySelector('#form-template-editor');
+  const editorState = getEditorState();
+
+  function pathSet(path, value) {
+    const steps = path.split('.');
+    let target = editorState;
+    while (steps.length > 1) {
+      target = target[steps.shift()];
+    }
+    target[steps[0]] = value;
+  }
+
+  function renderEditor() {
+    editorRoot.innerHTML = `
+      <div class="row between">
+        <h3>${editorState.id ? 'Edit Form Definition' : 'Create Form Definition'}</h3>
+        <div class="actions-row">
+          <button type="button" data-template-new>New Template</button>
+          <button type="button" data-template-save>Save Draft</button>
+          <button type="button" data-template-publish>Publish</button>
+        </div>
+      </div>
+      <div class="grid two compact-grid">
+        <input data-bind="name" value="${editorState.name}" placeholder="Template name" />
+        <select data-bind="status">
+          <option value="draft" ${editorState.status === 'draft' ? 'selected' : ''}>draft</option>
+          <option value="published" ${editorState.status === 'published' ? 'selected' : ''}>published</option>
+        </select>
+      </div>
+      <textarea data-bind="description" placeholder="Template description">${editorState.description || ''}</textarea>
+      <div class="stack gap-md">
+        ${editorState.sections.map((section, sectionIndex) => `
+          <div class="item stack gap-sm">
+            <div class="row between">
+              <strong>Section ${sectionIndex + 1}</strong>
+              <div class="actions-row">
+                <button type="button" data-field-add="${sectionIndex}">Add Field</button>
+                <button type="button" data-section-remove="${sectionIndex}">Remove Section</button>
+              </div>
+            </div>
+            <div class="grid two compact-grid">
+              <input data-bind="sections.${sectionIndex}.title" value="${section.title || ''}" placeholder="Section title" />
+              <input data-bind="sections.${sectionIndex}.repeatableGroup" value="${section.repeatableGroup || ''}" placeholder="Repeatable group key (optional)" />
+            </div>
+            <textarea data-bind="sections.${sectionIndex}.description" placeholder="Section description">${section.description || ''}</textarea>
+            <label class="row"><input type="checkbox" data-bind="sections.${sectionIndex}.repeatable" ${section.repeatable ? 'checked' : ''} /> Repeatable group section</label>
+            <div class="stack gap-sm">
+              ${section.fields.map((field, fieldIndex) => renderFieldEditor(sectionIndex, field, fieldIndex)).join('')}
+            </div>
+          </div>
+        `).join('')}
+      </div>
+      <button type="button" data-section-add>Add Section</button>
+    `;
+
+    editorRoot.querySelectorAll('[data-bind]').forEach((input) => {
+      input.addEventListener('input', () => {
+        const bindPath = input.dataset.bind;
+        const value = input.type === 'checkbox' ? input.checked : input.value;
+        pathSet(bindPath, value);
+      });
+    });
+
+    editorRoot.querySelector('[data-section-add]').addEventListener('click', () => {
+      editorState.sections.push(sectionTemplate());
+      renderEditor();
+    });
+    editorRoot.querySelector('[data-template-new]').addEventListener('click', () => {
+      Object.assign(editorState, getEditorState());
+      renderEditor();
+    });
+    editorRoot.querySelector('[data-template-save]').addEventListener('click', async () => {
+      const payload = buildTemplatePayload({ ...editorState, status: 'draft' });
+      if (editorState.id) {
+        await api(`/api/forms/templates/${editorState.id}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      } else {
+        const created = await api('/api/forms/templates', { method: 'POST', body: JSON.stringify(payload) });
+        editorState.id = created.id;
+      }
+      await renderForms();
+    });
+    editorRoot.querySelector('[data-template-publish]').addEventListener('click', async () => {
+      const payload = buildTemplatePayload({ ...editorState, status: 'published' });
+      let templateId = editorState.id;
+      if (!templateId) {
+        const created = await api('/api/forms/templates', { method: 'POST', body: JSON.stringify(payload) });
+        templateId = created.id;
+      } else {
+        await api(`/api/forms/templates/${templateId}`, { method: 'PATCH', body: JSON.stringify(payload) });
+      }
+      await api(`/api/forms/templates/${templateId}/publish`, { method: 'POST' });
+      await renderForms();
+    });
+
+    editorRoot.querySelectorAll('[data-section-remove]').forEach((button) => {
+      button.addEventListener('click', () => {
+        editorState.sections.splice(Number(button.dataset.sectionRemove), 1);
+        if (!editorState.sections.length) editorState.sections.push(sectionTemplate());
+        renderEditor();
+      });
+    });
+    editorRoot.querySelectorAll('[data-field-add]').forEach((button) => {
+      button.addEventListener('click', () => {
+        editorState.sections[Number(button.dataset.fieldAdd)].fields.push(fieldTemplate());
+        renderEditor();
+      });
+    });
+    editorRoot.querySelectorAll('[data-field-remove]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const [sectionIndex, fieldIndex] = button.dataset.fieldRemove.split(':').map(Number);
+        editorState.sections[sectionIndex].fields.splice(fieldIndex, 1);
+        if (!editorState.sections[sectionIndex].fields.length) editorState.sections[sectionIndex].fields.push(fieldTemplate());
+        renderEditor();
+      });
+    });
+  }
+
+  document.querySelectorAll('[data-template-edit]').forEach((button) => {
+    button.addEventListener('click', () => {
+      Object.assign(editorState, getEditorState(templates.find((template) => template.id === button.dataset.templateEdit)));
+      renderEditor();
+    });
+  });
+
+  renderEditor();
 }
 
 async function renderTemplates() {
@@ -279,7 +523,7 @@ document.querySelector('#household-form').addEventListener('submit', async (even
 document.querySelector('#form-template-form').addEventListener('submit', async (event) => {
   event.preventDefault();
   const form = new FormData(event.target);
-  await api('/api/forms/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), sections: [] }) });
+  await api('/api/forms/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), status: 'draft', sections: [] }) });
   event.target.reset();
   state.view = 'forms';
   await renderCurrentView();
