@@ -25,7 +25,9 @@ The API should enforce authorization server-side using:
 - firm scoping middleware,
 - policy checks by resource/action,
 - audited sensitive field access,
-- encryption services for PII.
+- encryption services for PII,
+- session lifecycle controls (single logout, logout-all, and admin-forced firm-user revocation),
+- expiring invite and password-reset tokens with rejection on expiry.
 
 ### 4. Durable pipeline ordering
 Prospect records should store a persisted per-stage `stageOrderIndex` so the Kanban board supports:

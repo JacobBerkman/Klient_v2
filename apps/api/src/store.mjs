@@ -41,6 +41,18 @@ function now() {
   return new Date().toISOString();
 }
 
+const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const PASSWORD_RESET_TTL_MS = 1000 * 60 * 60;
+
+function expiresAtFromNow(ttlMs) {
+  return new Date(Date.now() + ttlMs).toISOString();
+}
+
+function isExpired(expiresAt) {
+  return Boolean(expiresAt) && new Date(expiresAt).getTime() <= Date.now();
+}
+
 function slugify(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
@@ -212,7 +224,7 @@ export function createStore() {
 
   function createSession(user) {
     const token = randomUUID();
-    state.sessions.push({ token, userId: user.id, firmId: user.firmId, createdAt: now(), expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 8).toISOString() });
+    state.sessions.push({ token, userId: user.id, firmId: user.firmId, createdAt: now(), expiresAt: expiresAtFromNow(SESSION_TTL_MS) });
     persist();
     return { token, user: publicUser(user) };
   }
@@ -224,6 +236,11 @@ export function createStore() {
   function requireUser(token) {
     const session = state.sessions.find((entry) => entry.token === token);
     if (!session) throw new Error('Authentication required.');
+    if (isExpired(session.expiresAt)) {
+      state.sessions = state.sessions.filter((entry) => entry.token !== token);
+      persist();
+      throw new Error('Authentication required.');
+    }
     const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId);
     if (!user) throw new Error('Authentication required.');
     return publicUser(user);
@@ -249,7 +266,14 @@ export function createStore() {
     login({ email, password }) {
       const normalizedEmail = email.toLowerCase();
       const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password));
-      if (!user) throw new Error('Invalid email or password.');
+      if (!user) {
+        const knownUser = state.users.find((entry) => entry.email === normalizedEmail);
+        if (knownUser) {
+          addAudit(knownUser.firmId, knownUser.id, 'auth_session', knownUser.id, 'auth.login.failed', { email: normalizedEmail });
+        }
+        throw new Error('Invalid email or password.');
+      }
+      addAudit(user.firmId, user.id, 'auth_session', user.id, 'auth.login.succeeded', { email: normalizedEmail });
       return createSession(user);
     },
     requireUser,
@@ -521,10 +545,31 @@ export function createStore() {
     listAudit(user) {
       return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();
     },
-    logout(token) {
+    logout(user, token) {
+      const session = state.sessions.find((entry) => entry.token === token && entry.userId === user.id && entry.firmId === user.firmId);
+      const revokedSessionCount = session ? 1 : 0;
       state.sessions = state.sessions.filter((entry) => entry.token !== token);
+      addAudit(user.firmId, user.id, 'auth_session', user.id, 'auth.session.revoked', { scope: 'current', revokedSessionCount });
       persist();
-      return { ok: true };
+      return { ok: true, revokedSessionCount };
+    },
+    logoutAllSessions(user) {
+      const existingSessions = state.sessions.filter((entry) => entry.userId === user.id && entry.firmId === user.firmId);
+      state.sessions = state.sessions.filter((entry) => !(entry.userId === user.id && entry.firmId === user.firmId));
+      addAudit(user.firmId, user.id, 'auth_session', user.id, 'auth.session.revoked', { scope: 'all', revokedSessionCount: existingSessions.length });
+      persist();
+      return { ok: true, revokedSessionCount: existingSessions.length };
+    },
+    revokeUserSessions(user, targetUserId) {
+      requirePermission(user, 'analytics:read');
+      if (user.role !== 'admin') throw new Error('Only admins can revoke user sessions.');
+      const target = state.users.find((entry) => entry.id === targetUserId && entry.firmId === user.firmId);
+      if (!target) throw new Error('User not found.');
+      const existingSessions = state.sessions.filter((entry) => entry.userId === targetUserId && entry.firmId === user.firmId);
+      state.sessions = state.sessions.filter((entry) => !(entry.userId === targetUserId && entry.firmId === user.firmId));
+      addAudit(user.firmId, user.id, 'auth_session', targetUserId, 'auth.session.revoked', { scope: 'admin_forced', targetUserId, revokedSessionCount: existingSessions.length });
+      persist();
+      return { ok: true, revokedSessionCount: existingSessions.length };
     },
     listUsers(user) {
       requirePermission(user, 'analytics:read');
@@ -532,25 +577,43 @@ export function createStore() {
     },
     inviteUser(user, input) {
       requirePermission(user, 'profiles:write');
-      const invite = { id: randomUUID(), firmId: user.firmId, email: input.email.toLowerCase(), role: input.role || 'advisor', invitedByUserId: user.id, token: randomUUID(), createdAt: now() };
+      const inviteTtlMs = Number.isFinite(Number(input.expiresInMs)) && Number(input.expiresInMs) > 0 ? Number(input.expiresInMs) : INVITE_TTL_MS;
+      const invite = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        email: input.email.toLowerCase(),
+        role: input.role || 'advisor',
+        invitedByUserId: user.id,
+        token: randomUUID(),
+        createdAt: now(),
+        expiresAt: expiresAtFromNow(inviteTtlMs)
+      };
       state.invites.push(invite);
-      addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role });
+      addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role, expiresAt: invite.expiresAt });
       persist();
       return invite;
     },
     acceptInvite(input) {
       const invite = state.invites.find((entry) => entry.token === input.token);
       if (!invite) throw new Error('Invite not found.');
+      if (isExpired(invite.expiresAt)) {
+        state.invites = state.invites.filter((entry) => entry.id !== invite.id);
+        persist();
+        throw new Error('Invite expired.');
+      }
       const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hash(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, createdAt: now() };
       state.users.push(user);
       state.invites = state.invites.filter((entry) => entry.id !== invite.id);
+      addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.accepted', { email: invite.email, role: invite.role });
       persist();
       return createSession(user);
     },
-    requestPasswordReset(email) {
-      const user = state.users.find((entry) => entry.email === email.toLowerCase());
+    requestPasswordReset(input) {
+      const resetEmail = typeof input === 'string' ? input : input?.email || '';
+      const resetTtlMs = Number.isFinite(Number(input?.expiresInMs)) && Number(input.expiresInMs) > 0 ? Number(input.expiresInMs) : PASSWORD_RESET_TTL_MS;
+      const user = state.users.find((entry) => entry.email === resetEmail.toLowerCase());
       if (!user) return { ok: true };
-      const reset = { id: randomUUID(), userId: user.id, token: randomUUID(), createdAt: now() };
+      const reset = { id: randomUUID(), userId: user.id, token: randomUUID(), createdAt: now(), expiresAt: expiresAtFromNow(resetTtlMs) };
       state.passwordResets.push(reset);
       persist();
       return reset;
@@ -558,10 +621,16 @@ export function createStore() {
     resetPassword(input) {
       const reset = state.passwordResets.find((entry) => entry.token === input.token);
       if (!reset) throw new Error('Reset token not found.');
+      if (isExpired(reset.expiresAt)) {
+        state.passwordResets = state.passwordResets.filter((entry) => entry.id !== reset.id);
+        persist();
+        throw new Error('Reset token expired.');
+      }
       const user = state.users.find((entry) => entry.id === reset.userId);
       if (!user) throw new Error('User not found.');
       user.passwordHash = hash(input.password);
       state.passwordResets = state.passwordResets.filter((entry) => entry.id !== reset.id);
+      addAudit(user.firmId, user.id, 'password_reset', reset.id, 'auth.password_reset.completed', {});
       persist();
       return { ok: true };
     },
