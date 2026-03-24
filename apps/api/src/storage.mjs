@@ -113,6 +113,17 @@ db.exec(`
     payload TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS csrf_tokens (
+    id TEXT PRIMARY KEY,
+    session_token TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    token TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_rotated_at TEXT NOT NULL
+  );
+
 `);
 
 function hasColumn(table, column) {
@@ -172,6 +183,56 @@ function readStatePayload() {
   const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get();
   if (!row?.payload) return null;
   return JSON.parse(row.payload);
+}
+
+
+
+export function upsertCsrfToken(record) {
+  db.prepare(`
+    INSERT INTO csrf_tokens (id, session_token, user_id, token, issued_at, expires_at, last_rotated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      session_token = excluded.session_token,
+      user_id = excluded.user_id,
+      token = excluded.token,
+      issued_at = excluded.issued_at,
+      expires_at = excluded.expires_at,
+      last_rotated_at = excluded.last_rotated_at
+  `).run(
+    record.id,
+    record.sessionToken,
+    record.userId,
+    record.token,
+    record.issuedAt,
+    record.expiresAt,
+    record.lastRotatedAt || record.issuedAt
+  );
+}
+
+export function readCsrfToken(sessionToken, tokenId) {
+  const row = db.prepare(`
+    SELECT id, session_token AS sessionToken, user_id AS userId, token, issued_at AS issuedAt,
+      expires_at AS expiresAt, last_rotated_at AS lastRotatedAt
+    FROM csrf_tokens
+    WHERE session_token = ? AND id = ?
+  `).get(sessionToken, tokenId);
+  return row || null;
+}
+
+export function deleteCsrfToken(tokenId) {
+  db.prepare('DELETE FROM csrf_tokens WHERE id = ?').run(tokenId);
+}
+
+export function deleteCsrfTokensBySession(sessionToken) {
+  db.prepare('DELETE FROM csrf_tokens WHERE session_token = ?').run(sessionToken);
+}
+
+export function deleteCsrfTokensByUser(userId) {
+  db.prepare('DELETE FROM csrf_tokens WHERE user_id = ?').run(userId);
+}
+
+export function deleteExpiredCsrfTokens(cutoffIso = new Date().toISOString()) {
+  db.prepare('DELETE FROM csrf_tokens WHERE expires_at <= ?').run(cutoffIso);
 }
 
 export function listExportQueueJobs() {

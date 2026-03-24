@@ -5,6 +5,13 @@ import { createOidcAuthProvider } from './auth/oidc-provider.mjs';
 import { createSamlAuthProvider } from './auth/saml-provider.mjs';
 import { runtime } from './runtime.mjs';
 import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { createAuthService } from './auth/service.mjs';
+import { createAuthService } from './auth/service.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState, upsertCsrfToken, readCsrfToken, deleteCsrfToken, deleteCsrfTokensBySession, deleteExpiredCsrfTokens } from './storage.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { createAuthService } from './auth/service.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
@@ -96,6 +103,7 @@ const OPERATION_TO_POLICY = {
   'client:write': ['client', 'write']
 };
 const CSRF_TOKEN_TTL_MS = 1000 * 60 * 15;
+const CSRF_ROTATION_INTERVAL_MS = 1000 * 60 * 5;
 const PERMISSIONS = {
   admin: ['*'],
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
@@ -747,11 +755,32 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     return { token, user: publicUser(user) };
   }
 
+  function pruneExpiredCsrfTokens(persistChanges = true) {
+    const cutoffIso = new Date().toISOString();
+    deleteExpiredCsrfTokens(cutoffIso);
+    const activeSessionTokens = new Set(state.sessions.map((entry) => entry.token));
+    for (const token of state.csrfTokens.map((entry) => entry.sessionToken)) {
+      if (!activeSessionTokens.has(token)) {
+        deleteCsrfTokensBySession(token);
+      }
+    }
+    const nextTokens = state.csrfTokens.filter((entry) => activeSessionTokens.has(entry.sessionToken) && new Date(entry.expiresAt).getTime() > Date.now());
+    if (nextTokens.length !== state.csrfTokens.length) {
+      state.csrfTokens = nextTokens;
+      if (persistChanges) persist();
+    }
+  }
+
   function pruneExpiredSessions() {
     const cutoff = Date.now();
+    const expired = state.sessions.filter((entry) => new Date(entry.expiresAt).getTime() <= cutoff);
     const nextSessions = state.sessions.filter((entry) => new Date(entry.expiresAt).getTime() > cutoff);
     if (nextSessions.length !== state.sessions.length) {
       state.sessions = nextSessions;
+      for (const session of expired) {
+        deleteCsrfTokensBySession(session.token);
+      }
+      pruneExpiredCsrfTokens(false);
       persist();
     }
   }
@@ -896,6 +925,79 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return auth.login(input);
     },
     requireUser,
+    getSession(token) {
+      pruneExpiredSessions();
+      const session = state.sessions.find((entry) => entry.token === token);
+      if (!session) return null;
+      return { ...session };
+    },
+    issueCsrfToken(sessionToken) {
+      pruneExpiredSessions();
+      const session = state.sessions.find((entry) => entry.token === sessionToken);
+      if (!session) throw new Error('Authentication required.');
+      const issuedAt = now();
+      const record = {
+        id: randomUUID(),
+        sessionToken,
+        userId: session.userId,
+        token: randomUUID(),
+        issuedAt,
+        lastRotatedAt: issuedAt,
+        expiresAt: new Date(Date.now() + CSRF_TOKEN_TTL_MS).toISOString()
+      };
+      deleteCsrfTokensBySession(sessionToken);
+      upsertCsrfToken(record);
+      state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== sessionToken);
+      state.csrfTokens.push(record);
+      persist();
+      return { ...record };
+    },
+    validateCsrfToken(sessionToken, csrfTokenId, csrfToken) {
+      pruneExpiredSessions();
+      const session = state.sessions.find((entry) => entry.token === sessionToken);
+      if (!session) {
+        return { ok: false, reason: 'Missing or expired authenticated session.' };
+      }
+      const inMemory = state.csrfTokens.find((entry) => entry.sessionToken === sessionToken && entry.id === csrfTokenId);
+      const record = readCsrfToken(sessionToken, csrfTokenId) || inMemory;
+      if (!record) {
+        return { ok: false, reason: 'Missing CSRF session.' };
+      }
+      if (record.userId && record.userId !== session.userId) {
+        deleteCsrfToken(record.id);
+        return { ok: false, reason: 'CSRF token/session mismatch.' };
+      }
+      if (new Date(record.expiresAt).getTime() <= Date.now()) {
+        state.csrfTokens = state.csrfTokens.filter((entry) => entry.id !== record.id);
+        deleteCsrfToken(record.id);
+        persist();
+        return { ok: false, reason: 'Stale CSRF token.' };
+      }
+      if (!csrfToken || record.token !== csrfToken) {
+        return { ok: false, reason: 'Invalid or missing CSRF token.' };
+      }
+      const issuedAtMs = new Date(record.lastRotatedAt || record.issuedAt).getTime();
+      const shouldRotate = !Number.isFinite(issuedAtMs) || (Date.now() - issuedAtMs >= CSRF_ROTATION_INTERVAL_MS) || true; // rotate on each successful mutating request
+      if (!shouldRotate) {
+        return { ok: true, nextToken: { ...record } };
+      }
+      const nextToken = {
+        id: randomUUID(),
+        sessionToken,
+        userId: session.userId,
+        token: randomUUID(),
+        issuedAt: now(),
+        lastRotatedAt: now(),
+        expiresAt: new Date(Date.now() + CSRF_TOKEN_TTL_MS).toISOString()
+      };
+      deleteCsrfTokensBySession(sessionToken);
+      upsertCsrfToken(nextToken);
+      state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== sessionToken);
+      state.csrfTokens.push(nextToken);
+      persist();
+      return { ok: true, nextToken };
+    },
+    _internal: { piiCrypto },
     getDashboard(user) {
       requirePermission(user, 'profiles:read');
       const profiles = state.profiles.filter((profile) => profile.firmId === user.firmId);
@@ -1567,6 +1669,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     logout(token) {
       state.sessions = state.sessions.filter((entry) => entry.token !== token);
+      state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== token);
+      deleteCsrfTokensBySession(token);
       persist();
       return { ok: true };
     },

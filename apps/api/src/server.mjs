@@ -22,7 +22,138 @@ const publicDir = resolve(__dirname, '../../web/public');
 const bootedAt = new Date().toISOString();
 const startupDiagnostics = validateRuntimeConfig();
 
-function baseHeaders() {
+function json(res, status, body, headers = {}) {
+  res.writeHead(status, { ...baseHeaders(), 'Content-Type': 'application/json', ...headers });
+  res.end(JSON.stringify(body, null, 2));
+}
+
+function notFound(res, requestId) {
+  json(res, 404, { message: 'Not found' }, { 'X-Request-Id': requestId });
+}
+
+function parseCookies(req) {
+  const header = req.headers.cookie || '';
+  if (!header) return {};
+  return Object.fromEntries(
+    header
+      .split(';')
+      .map((entry) => entry.trim())
+      .filter(Boolean)
+      .map((entry) => {
+        const [name, ...rest] = entry.split('=');
+        return [name, decodeURIComponent(rest.join('=') || '')];
+      })
+  );
+}
+
+function cookieConfig(req) {
+  const xfProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  const secure = runtime.isProduction || xfProto === 'https';
+  return {
+    secure,
+    sameSite: secure ? 'Strict' : 'Lax',
+    httpOnly: true,
+    path: '/api',
+    maxAge: 60 * 15
+  };
+}
+
+function serializeCookie(name, value, options = {}) {
+  const parts = [`${name}=${encodeURIComponent(value)}`];
+  if (options.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
+  if (options.path) parts.push(`Path=${options.path}`);
+  if (options.sameSite) parts.push(`SameSite=${options.sameSite}`);
+  if (options.httpOnly) parts.push('HttpOnly');
+  if (options.secure) parts.push('Secure');
+  return parts.join('; ');
+}
+
+function clearCsrfCookie(req) {
+  const options = cookieConfig(req);
+  return serializeCookie(CSRF_SESSION_COOKIE, '', { ...options, maxAge: 0 });
+}
+
+function requiresCsrfProtection(method = 'GET') {
+  return !CSRF_SAFE_METHODS.has(method.toUpperCase());
+}
+
+function getCsrfErrorResponse(reason, requestId) {
+  return {
+    statusCode: 403,
+    body: {
+      error: {
+        code: 'CSRF_VALIDATION_FAILED',
+        message: 'CSRF validation failed.',
+        details: { reason }
+      }
+    },
+    headers: { 'X-Request-Id': requestId }
+  };
+}
+
+function getExpectedOrigins(req) {
+  const host = String(req.headers.host || `${runtime.host}:${runtime.port}`).split(',')[0].trim();
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  const forwardedPort = String(req.headers['x-forwarded-port'] || '').split(',')[0].trim();
+  const protocol = forwardedProto || (runtime.isProduction ? 'https' : 'http');
+  const normalizeHost = (value) => {
+    if (!value) return '';
+    if (value.includes(':') || !forwardedPort) return value;
+    return `${value}:${forwardedPort}`;
+  };
+  const origins = new Set();
+  const directHost = normalizeHost(host);
+  const proxyHost = normalizeHost(forwardedHost);
+  if (directHost) origins.add(`${protocol}://${directHost}`);
+  if (proxyHost) origins.add(`${protocol}://${proxyHost}`);
+  return origins;
+}
+
+function isCsrfExempt(pathname) {
+  return pathname === CSRF_BOOTSTRAP_PATH || CSRF_EXEMPT_PATHS.has(pathname);
+}
+
+function validateOriginAndReferer(req, requestId) {
+  const suppliedOrigin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+  const suppliedReferer = typeof req.headers.referer === 'string' ? req.headers.referer.trim() : '';
+  const secFetchSite = typeof req.headers['sec-fetch-site'] === 'string' ? req.headers['sec-fetch-site'].toLowerCase() : '';
+  const expectedOrigins = getExpectedOrigins(req);
+  const matchesOrigin = suppliedOrigin && expectedOrigins.has(suppliedOrigin);
+  const matchesReferer = suppliedReferer && [...expectedOrigins].some((origin) => suppliedReferer.startsWith(`${origin}/`) || suppliedReferer === origin);
+
+  if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
+    return getCsrfErrorResponse('Cross-site browser context rejected.', requestId);
+  }
+  if (!suppliedOrigin && !suppliedReferer) {
+    return getCsrfErrorResponse('Missing Origin or Referer.', requestId);
+  }
+  if (suppliedOrigin && !matchesOrigin) {
+    return getCsrfErrorResponse('Origin mismatch.', requestId);
+  }
+  if (suppliedReferer && !matchesReferer) {
+    return getCsrfErrorResponse('Referrer mismatch.', requestId);
+  }
+  return null;
+}
+
+function validateCsrf(req, requestId) {
+  const originError = validateOriginAndReferer(req, requestId);
+  if (originError) return originError;
+  const sessionToken = getToken(req);
+  if (!sessionToken) {
+    return getCsrfErrorResponse('Missing or expired authenticated session.', requestId);
+  }
+  const cookies = parseCookies(req);
+  const cookieTokenId = cookies[CSRF_SESSION_COOKIE];
+  const headerToken = req.headers[CSRF_HEADER];
+  const result = store.validateCsrfToken(sessionToken, cookieTokenId, headerToken);
+  if (!result.ok) return getCsrfErrorResponse(result.reason, requestId);
+  return { nextToken: result.nextToken };
+}
+
+function csrfRefreshHeaders(req, nextToken) {
+  const options = cookieConfig(req);
   return {
     'X-Frame-Options': 'DENY',
     'X-Content-Type-Options': 'nosniff',
@@ -211,16 +342,18 @@ export function createHttpServer({ modules }) {
         }, { 'X-Request-Id': requestId });
       }
       if (pathname === '/api/csrf' && req.method === 'GET') {
-        const session = createCsrfSession();
-        finalizeLog(200);
-        return json(res, 200, { csrfToken: session.token }, { 'X-Request-Id': requestId, 'Set-Cookie': `${CSRF_SESSION_COOKIE}=${session.sessionId}; HttpOnly; Path=/; SameSite=Strict` });
+        const token = getToken(req);
+        const response = sendCsrfBootstrap(res, req, requestId, token);
+        finalizeLog(token ? 200 : 401);
+        return response;
       }
-      if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method)) {
-        const csrfError = validateCsrf(req, requestId);
-        if (csrfError) {
-          finalizeLog(csrfError.statusCode, { reason: csrfError.body.error.details.reason });
-          return json(res, csrfError.statusCode, csrfError.body, csrfError.headers);
-        }
+      const csrfValidation = csrfHeadersForRequest(req, pathname, req.method, requestId);
+      if (csrfValidation.error) {
+        finalizeLog(csrfValidation.error.statusCode, { reason: csrfValidation.error.body.error.details.reason });
+        return serveJson(res, csrfValidation.error.statusCode, csrfValidation.error.body, requestId, csrfValidation.error.headers);
+      }
+      if (Object.keys(csrfValidation.headers).length) {
+        applyResponseHeaders(res, csrfValidation.headers);
       }
       if (pathname === '/api/register' && req.method === 'POST') { const result = modules.auth.register(await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/login' && req.method === 'POST') { const result = modules.auth.login(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
@@ -230,7 +363,7 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/password-resets/confirm' && req.method === 'POST') { const result = modules.auth.resetPassword(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/users' && req.method === 'GET') { const user = requireUser(); modules.policy.requireGuard(user, 'canReadUsers'); const result = modules.firmsUsers.listUsers(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/session' && req.method === 'GET') { const result = { user: requireUser() }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-      if (pathname === '/api/logout' && req.method === 'POST') { const result = modules.auth.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+      if (pathname === '/api/logout' && req.method === 'POST') { const result = modules.auth.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId, 'Set-Cookie': clearCsrfCookie(req) }); }
       if (pathname === '/api/dashboard' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.profiles.getDashboard(user); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/profiles' && req.method === 'GET') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:read'); const result = modules.profiles.listProfiles(user, { kind: url.searchParams.get('kind'), search: url.searchParams.get('search') || '' }); finalizeLog(200, { firmId: user.firmId }); return json(res, 200, result, { 'X-Request-Id': requestId }); }
       if (pathname === '/api/profiles' && req.method === 'POST') { const user = requireUser(); modules.policy.requirePermission(user, 'profiles:write'); const result = modules.profiles.createProfile(user, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
@@ -537,7 +670,7 @@ export async function startServer() {
     }
     if (pathname === '/api/users' && req.method === 'GET') { const result = store.listUsers(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/session' && req.method === 'GET') { const result = { user: requireUser(req) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-    if (pathname === '/api/logout' && req.method === 'POST') { const result = store.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/logout' && req.method === 'POST') { const result = store.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId, 'Set-Cookie': clearCsrfCookie(req) }); }
     if (pathname === '/api/dashboard' && req.method === 'GET') { const result = store.getDashboard(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/profiles' && req.method === 'GET') { const user = requireUser(req); store.assertPermission(user, 'profiles:read'); const result = reads.listProfiles(user.firmId, { kind: url.searchParams.get('kind'), search: url.searchParams.get('search') || '' }); finalizeLog(200, { firmId: user.firmId }); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/profiles' && req.method === 'POST') { const result = store.createProfile(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
