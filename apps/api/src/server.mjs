@@ -5,14 +5,23 @@ import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SqliteReadRepository } from './repositories/sqlite-read-repository.mjs';
-import { runtime, log } from './runtime.mjs';
-import { ensureDatabaseReady, closeDatabase, readQuerySummary } from './storage.mjs';
+import { runtime, log, validateRuntimeConfig } from './runtime.mjs';
+import {
+  ensureDatabaseReady,
+  closeDatabase,
+  readQuerySummary,
+  readExportWorkerStatus,
+  readStorageHealth,
+  readAuditEventSummary
+} from './storage.mjs';
 import { createStore } from './store.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(__dirname, '../../web/public');
 const store = createStore();
 const reads = new SqliteReadRepository();
+const bootedAt = new Date().toISOString();
+const startupDiagnostics = validateRuntimeConfig();
 const csrfSessions = new Map();
 const CSRF_SESSION_COOKIE = 'klient-csrf-session';
 const CSRF_HEADER = 'x-csrf-token';
@@ -195,8 +204,42 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === '/ready' && (req.method === 'GET' || req.method === 'HEAD')) {
       const database = ensureDatabaseReady();
+      const storageHealth = readStorageHealth();
       finalizeLog(200);
-      return json(res, 200, { status: 'ready', querySummary: readQuerySummary(), database }, { 'X-Request-Id': requestId });
+      return json(res, 200, {
+        status: 'ready',
+        querySummary: readQuerySummary(),
+        database,
+        storageHealth,
+        exportWorker: readExportWorkerStatus(),
+        auditEvents: readAuditEventSummary(),
+        startupDiagnostics
+      }, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/ops/diagnostics' && req.method === 'GET') {
+      const user = requireUser(req);
+      const auditEvents = store.listAudit(user);
+      const exports = store.listExports(user);
+      const byStatus = exports.reduce((acc, job) => {
+        acc[job.status] = (acc[job.status] || 0) + 1;
+        return acc;
+      }, {});
+      finalizeLog(200);
+      return json(res, 200, {
+        generatedAt: new Date().toISOString(),
+        startup: {
+          bootedAt,
+          uptimeSeconds: Math.round(process.uptime()),
+          pid: process.pid,
+          runtime: startupDiagnostics
+        },
+        data: {
+          querySummary: readQuerySummary(),
+          storageHealth: readStorageHealth(),
+          exportWorker: { byStatus, total: exports.length, latest: exports.slice().sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] || null },
+          audit: { total: auditEvents.length, latest: auditEvents[0] || null }
+        }
+      }, { 'X-Request-Id': requestId });
     }
     if (pathname === '/api/csrf' && req.method === 'GET') {
       const session = createCsrfSession();
@@ -228,7 +271,7 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/session' && req.method === 'GET') { const result = { user: requireUser(req) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/logout' && req.method === 'POST') { const result = store.logout(getToken(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/dashboard' && req.method === 'GET') { const result = store.getDashboard(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-    if (pathname === '/api/profiles' && req.method === 'GET') { const user = requireUser(req); const result = reads.listProfiles(user.firmId, { kind: url.searchParams.get('kind'), search: url.searchParams.get('search') || '' }); finalizeLog(200, { firmId: user.firmId }); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/profiles' && req.method === 'GET') { const user = requireUser(req); store.assertPermission(user, 'profiles:read'); const result = reads.listProfiles(user.firmId, { kind: url.searchParams.get('kind'), search: url.searchParams.get('search') || '' }); finalizeLog(200, { firmId: user.firmId }); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/profiles' && req.method === 'POST') { const result = store.createProfile(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage-history') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.listStageHistory(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.listNotes(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
@@ -248,6 +291,9 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/forms/submissions' && req.method === 'GET') { const result = store.listFormSubmissions(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/forms/drafts' && req.method === 'GET') { const result = store.listFormDrafts(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/forms/submissions' && req.method === 'POST') { const result = store.createFormSubmission(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/client/workspace' && req.method === 'GET') { const result = store.getClientWorkspace(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/client/forms/submissions' && req.method === 'POST') { const result = store.submitClientForm(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/client/uploads' && req.method === 'POST') { const result = store.submitClientUpload(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/forms/submissions/') && req.method === 'PATCH') { const id = pathname.split('/')[4]; const result = store.updateSubmission(requireUser(req), id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/forms/submissions/') && req.method === 'DELETE') { const id = pathname.split('/')[4]; const result = store.deleteSubmission(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/templates' && req.method === 'GET') { const result = store.listDocumentTemplates(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
@@ -265,6 +311,7 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/portal-links' && req.method === 'POST') { const body = await parseBody(req); const result = store.createPortalLink(requireUser(req), body.profileId); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/portal/') && pathname.split('/').length === 4 && req.method === 'GET') { const token = pathname.split('/')[3]; const result = store.getPortalData(token); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/portal/') && pathname.endsWith('/submissions') && req.method === 'POST') { const token = pathname.split('/')[3]; const result = store.portalSubmit(token, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads') && req.method === 'POST') { const token = pathname.split('/')[3]; const result = store.portalUpload(token, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/portal' && req.method === 'GET') { finalizeLog(200); return serveStatic('portal.html', res, requestId); }
 
     finalizeLog(200, { static: true });
@@ -303,5 +350,20 @@ process.on('unhandledRejection', (error) => {
 });
 
 server.listen(runtime.port, runtime.host, () => {
-  log('info', 'server.started', { host: runtime.host, port: runtime.port, dbPath: ensureDatabaseReady().dbPath });
+  const ready = ensureDatabaseReady();
+  const diag = {
+    bootedAt,
+    config: startupDiagnostics,
+    storageHealth: readStorageHealth(),
+    querySummary: readQuerySummary(),
+    exportWorker: readExportWorkerStatus(),
+    auditEvents: readAuditEventSummary()
+  };
+  log('info', 'server.started', { host: runtime.host, port: runtime.port, dbPath: ready.dbPath, diagnostics: diag });
+  if (!startupDiagnostics.ok) {
+    log('error', 'runtime.config.invalid', { issues: startupDiagnostics.issues });
+  }
+  if (startupDiagnostics.warnings.length) {
+    log('warn', 'runtime.config.warnings', { warnings: startupDiagnostics.warnings });
+  }
 });

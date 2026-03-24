@@ -4,6 +4,7 @@ const state = {
   token: localStorage.getItem('klient-token') || '',
   view: 'dashboard',
   selectedProfileId: null,
+  user: null
   profileFilter: 'all',
   search: '',
   clients: [],
@@ -79,6 +80,29 @@ function renderItems(items, render, emptyMessage = 'Nothing to show yet.') {
   return `<div class="list">${items.map(render).join('')}</div>`;
 }
 
+function activeRole() {
+  return state.user?.role || null;
+}
+
+function canAccessView(nextView) {
+  const role = activeRole();
+  if (!role) return false;
+  const allowedRoles = document.querySelector(`[data-view="${nextView}"]`)?.dataset.roles?.split(',') || [];
+  return allowedRoles.length ? allowedRoles.includes(role) : true;
+}
+
+function updateRoleVisibility() {
+  const role = activeRole();
+  const navButtons = document.querySelectorAll('[data-view]');
+  navButtons.forEach((button) => {
+    const allowed = (button.dataset.roles || '').split(',').filter(Boolean);
+    button.hidden = !role || (allowed.length > 0 && !allowed.includes(role));
+  });
+
+  document.querySelectorAll('[data-requires-role]').forEach((section) => {
+    const allowed = section.dataset.requiresRole.split(',').filter(Boolean);
+    section.hidden = !role || !allowed.includes(role);
+  });
 function profileName(profile) {
   return `${profile.firstName} ${profile.lastName}`;
 }
@@ -88,6 +112,12 @@ function syncAuthStatus() {
 }
 
 async function refreshPrimaryClientOptions() {
+  if (!state.token || activeRole() === 'client') {
+    householdPrimary.innerHTML = '<option value="">Advisor sign-in required</option>';
+    portalProfileSelect.innerHTML = '<option value="">Advisor sign-in required</option>';
+    return;
+  }
+
   try {
     const clients = await api('/api/profiles?kind=client');
     const allProfiles = await api('/api/profiles');
@@ -191,6 +221,18 @@ async function renderDashboard() {
 }
 
 async function renderProfiles(kind) {
+  const profiles = await api(`/api/profiles?kind=${kind}`);
+  view.innerHTML = `<h2>${kind === 'prospect' ? 'Prospects' : 'Clients'}</h2>` + renderItems(profiles, (profile) => `
+    <div class="item">
+      <strong>${profile.firstName} ${profile.lastName}</strong> <span class="badge">${profile.kind}</span>
+      <div class="muted">${profile.email || ''}</div>
+      <div>Source: ${profile.source?.displayValue || '—'}</div>
+      <div>Stage: ${profile.stage || '—'}</div>
+      <button data-profile-id="${profile.id}">Open Profile</button>
+      ${kind === 'prospect' && ['admin', 'advisor'].includes(activeRole()) ? `<select data-stage-id="${profile.id}">
+        ${['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'].map((stage) => `<option value="${stage}" ${profile.stage === stage ? 'selected' : ''}>${stage}</option>`).join('')}
+      </select>` : ''}
+    </div>`);
   const params = new URLSearchParams();
   if (kind !== 'all') params.set('kind', kind);
   if (state.search) params.set('search', state.search);
@@ -319,6 +361,11 @@ async function renderProfileDetail() {
     </div>
     <div class="item">
       <h3>Notes</h3>
+      ${['admin', 'advisor'].includes(activeRole()) ? `<form id="note-form">
+        <textarea name="body" rows="3" placeholder="Add a note"></textarea>
+        <button type="submit">Add Note</button>
+      </form>` : '<div class="muted">Read-only access.</div>'}
+      ${renderItems(detail.notes, (note) => `<div class="item"><div class="muted">${note.createdAt}</div><div>${note.body}</div></div>`)}
       <form id="note-form" class="stack gap-sm">
         <textarea name="body" rows="3" placeholder="Add a note" required></textarea>
         <button type="submit">Add Note</button>
@@ -332,6 +379,15 @@ async function renderProfileDetail() {
     await renderCurrentView();
   });
 
+  const noteForm = document.querySelector('#note-form');
+  if (noteForm) {
+    noteForm.addEventListener('submit', async (event) => {
+      event.preventDefault();
+      const form = new FormData(event.target);
+      await api(`/api/profiles/${state.selectedProfileId}/notes`, { method: 'POST', body: JSON.stringify({ body: form.get('body') }) });
+      await renderProfileDetail();
+    });
+  }
   document.querySelector('#note-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     try {
@@ -497,10 +553,120 @@ async function renderBoard() {
   wireProfileButtons();
 }
 
-async function renderCurrentView() {
+function workspaceTemplateSection(templates, progress) {
+  if (!templates.length) return '<div class="item compact muted">Your advisor has not shared any forms yet.</div>';
+  const progressMap = new Map(progress.map((entry) => [entry.templateId, entry.status]));
+  return renderItems(templates, (template) => `<div class="item"><div class="row between"><strong>${template.name}</strong><span class="badge ${progressMap.get(template.id) === 'submitted' ? '' : 'subtle'}">${progressMap.get(template.id) || 'not_started'}</span></div><div class="muted">${template.description || ''}</div></div>`);
+}
+
+async function renderClientWorkspace() {
+  const workspace = await api('/api/client/workspace');
+  view.innerHTML = `
+    <div class="section-header">
+      <div>
+        <h2>My Client Workspace</h2>
+        <p class="muted">Secure, client-only portal experience. Advisor/admin operations are intentionally hidden.</p>
+      </div>
+      <span class="badge">${workspace.profile.firstName} ${workspace.profile.lastName}</span>
+    </div>
+    <section class="grid two">
+      <article class="item">
+        <h3>Profile</h3>
+        <div class="muted">${workspace.profile.email || 'No email'}</div>
+        <div class="muted">${workspace.profile.phone || 'No phone'}</div>
+      </article>
+      <article class="item">
+        <h3>Document Upload Visibility</h3>
+        ${workspace.uploads.length ? renderItems(workspace.uploads, (upload) => `<div class="item compact"><div class="row between"><strong>${upload.name}</strong><span class="badge">${upload.status}</span></div><div class="muted">${upload.category} • ${upload.uploadedBy}</div></div>`) : '<div class="item compact muted">No documents uploaded yet.</div>'}
+      </article>
+    </section>
+    <h3>Form Completion Visibility</h3>
+    ${workspaceTemplateSection(workspace.templates, workspace.templateProgress)}
+    <section class="grid two">
+      <form id="client-form-submission" class="card inner">
+        <h3>Submit Form</h3>
+        <select name="templateId" required>
+          <option value="">Select template</option>
+          ${workspace.templates.map((template) => `<option value="${template.id}">${template.name}</option>`).join('')}
+        </select>
+        <select name="status"><option value="draft">Save draft</option><option value="submitted">Submit</option></select>
+        <textarea name="data" rows="4" placeholder='JSON payload, e.g. {"goals":"Retire"}' required></textarea>
+        <button type="submit">Save Form</button>
+      </form>
+      <form id="client-upload" class="card inner">
+        <h3>Log Document Upload</h3>
+        <input name="name" placeholder="Document name" required />
+        <input name="category" placeholder="Category (tax, ID, etc.)" value="general" />
+        <textarea name="notes" rows="4" placeholder="Optional notes"></textarea>
+        <button type="submit">Log Upload</button>
+      </form>
+    </section>
+    <h3>Recent Submission History</h3>
+    ${workspace.submissions.length ? renderItems(workspace.submissions, (submission) => `<div class="item"><div class="row between"><strong>${submission.templateId}</strong><span class="badge ${submission.status === 'submitted' ? '' : 'subtle'}">${submission.status}</span></div><pre>${JSON.stringify(submission.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No submissions yet.</div>'}
+  `;
+
+  document.querySelector('#client-form-submission')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    const raw = String(form.get('data') || '{}').trim();
+    let parsed;
+    try {
+      parsed = JSON.parse(raw || '{}');
+    } catch {
+      alert('Submission data must be valid JSON.');
+      return;
+    }
+    await api('/api/client/forms/submissions', {
+      method: 'POST',
+      body: JSON.stringify({ templateId: form.get('templateId'), status: form.get('status'), data: parsed })
+    });
+    await renderClientWorkspace();
+  });
+
+  document.querySelector('#client-upload')?.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    await api('/api/client/uploads', {
+      method: 'POST',
+      body: JSON.stringify(Object.fromEntries(form.entries()))
+    });
+    await renderClientWorkspace();
+  });
+}
+
+async function hydrateSession() {
   if (!state.token) {
+    state.user = null;
+    authStatus.textContent = '';
+    updateRoleVisibility();
+    return;
+  }
+
+  try {
+    const session = await api('/api/session');
+    state.user = session.user;
+    authStatus.textContent = JSON.stringify(session.user, null, 2);
+    updateRoleVisibility();
+    if (!canAccessView(state.view)) {
+      state.view = state.user.role === 'client' ? 'client-workspace' : 'dashboard';
+    }
+  } catch {
+    state.user = null;
+    state.token = '';
+    localStorage.removeItem('klient-token');
+    authStatus.textContent = '';
+    updateRoleVisibility();
+  }
+}
+
+async function renderCurrentView() {
+  if (!state.token || !state.user) {
+    view.innerHTML = '<h2>Sign in to continue</h2>';
     view.innerHTML = `${state.flash ? `<div class="item compact ${state.flash.type === 'error' ? 'error-banner' : 'success-banner'}">${escapeHtml(state.flash.message)}</div>` : ''}<h2>Sign in to continue</h2><p class="muted">Use the demo account or register a new firm admin with a strong password.</p>`;
     return;
+  }
+  if (!canAccessView(state.view)) {
+    state.view = state.user.role === 'client' ? 'client-workspace' : 'dashboard';
   }
   if (state.view === 'dashboard') return renderDashboard();
   if (state.view === 'prospects') return renderBoard();
@@ -513,6 +679,7 @@ async function renderCurrentView() {
   if (state.view === 'exports') return renderExports();
   if (state.view === 'analytics') return renderAnalytics();
   if (state.view === 'audit') return renderAudit();
+  if (state.view === 'client-workspace') return renderClientWorkspace();
 }
 
 document.querySelectorAll('[data-view]').forEach((button) => {
@@ -523,10 +690,15 @@ document.querySelectorAll('[data-view]').forEach((button) => {
   });
 });
 
+async function storeSession(session) {
 async function finishAuthentication(session, successMessage) {
   state.token = session.token;
   state.activeSession = session.user;
   localStorage.setItem('klient-token', state.token);
+  state.user = session.user;
+  authStatus.textContent = JSON.stringify(session.user, null, 2);
+  updateRoleVisibility();
+  state.view = session.user.role === 'client' ? 'client-workspace' : 'dashboard';
   syncAuthStatus();
   setFlash('success', successMessage);
   await refreshPrimaryClientOptions();
@@ -534,6 +706,8 @@ async function finishAuthentication(session, successMessage) {
 }
 
 document.querySelector('#demo-login').addEventListener('click', async () => {
+  const session = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' }) });
+  await storeSession(session);
   try {
     clearFlash();
     const session = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' }) });
@@ -546,6 +720,10 @@ document.querySelector('#demo-login').addEventListener('click', async () => {
 
 document.querySelector('#register-form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  const form = new FormData(event.target);
+  const payload = Object.fromEntries(form.entries());
+  const session = await api('/api/register', { method: 'POST', body: JSON.stringify(payload) });
+  await storeSession(session);
   try {
     clearFlash();
     const form = new FormData(event.target);
@@ -561,6 +739,9 @@ document.querySelector('#register-form').addEventListener('submit', async (event
 
 document.querySelector('#login-form').addEventListener('submit', async (event) => {
   event.preventDefault();
+  const form = new FormData(event.target);
+  const session = await api('/api/login', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+  await storeSession(session);
   try {
     clearFlash();
     const form = new FormData(event.target);
@@ -670,5 +851,6 @@ document.querySelector('#portal-form').addEventListener('submit', async (event) 
   }
 });
 
+hydrateSession().then(refreshPrimaryClientOptions).then(renderCurrentView);
 await hydrateSession();
 await renderCurrentView();
