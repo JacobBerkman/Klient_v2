@@ -5,8 +5,9 @@ This repository contains a **single-command runnable advisory onboarding app** w
 ## What is included
 - admin firm bootstrap and sign-in
 - persistent SQLite-backed local data storage in `data/app.db`
-- dashboard with stats and recent activity
+- dashboard with stats, recent activity, and source reporting breakdowns
 - prospects and clients management
+- structured source filtering across event/location/venue/date in profile search
 - persisted prospect pipeline board
 - households and member linking
 - dynamic form template and submission flows
@@ -64,6 +65,21 @@ See `DEPLOYMENT.md` for deployment details, environment variables, health checks
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
+```
+
+## Source reporting + filters
+Use source filters in profile search:
+
+```bash
+curl "http://localhost:3000/api/profiles?kind=prospect&location=Austin&venue=Seminar&event=Seminar&occurredFrom=2026-03-01&occurredTo=2026-03-31" \
+  -H "Authorization: Bearer <token>"
+```
+
+Get dashboard-ready source reporting grouped by event/location/venue/date:
+
+```bash
+curl "http://localhost:3000/api/source-report?occurredFrom=2026-03-01&occurredTo=2026-03-31" \
+  -H "Authorization: Bearer <token>"
 ```
 
 ## Portal view

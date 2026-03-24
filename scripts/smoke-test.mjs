@@ -32,11 +32,32 @@ async function run() {
   const profile = await jsonFetch('/api/profiles', {
     method: 'POST',
     headers: authHeaders,
-    body: JSON.stringify({ kind: 'prospect', firstName: 'Smoke', lastName: 'Test', email: 'smoke@example.com', stage: 'discovery', ssn: '123456789' })
+    body: JSON.stringify({
+      kind: 'prospect',
+      firstName: 'Smoke',
+      lastName: 'Test',
+      email: 'smoke@example.com',
+      stage: 'discovery',
+      ssn: '123456789',
+      source: {
+        cityOrLocation: 'Phoenix',
+        venue: 'Industry Lunch',
+        eventName: 'Retirement Roadshow',
+        occurredOn: '2026-03-20'
+      }
+    })
   });
 
   const foundProfiles = await jsonFetch('/api/profiles?search=Smoke', { headers: { Authorization: `Bearer ${login.token}` } });
   if (!foundProfiles.find((entry) => entry.id === profile.id)) throw new Error('Search failed');
+  const filteredProfiles = await jsonFetch('/api/profiles?kind=prospect&location=Phoenix&venue=Industry&event=Roadshow&occurredFrom=2026-03-01&occurredTo=2026-03-31', {
+    headers: { Authorization: `Bearer ${login.token}` }
+  });
+  if (!filteredProfiles.find((entry) => entry.id === profile.id)) throw new Error('Source filters failed');
+  const sourceReport = await jsonFetch('/api/source-report?occurredFrom=2026-03-01&occurredTo=2026-03-31', {
+    headers: { Authorization: `Bearer ${login.token}` }
+  });
+  if (!sourceReport.byLocation.find((entry) => entry.key === 'Phoenix')) throw new Error('Source report missing location breakdown');
 
   const note = await jsonFetch(`/api/profiles/${profile.id}/notes`, {
     method: 'POST',

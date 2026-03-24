@@ -1,4 +1,10 @@
-const state = { token: localStorage.getItem('klient-token') || '', view: 'dashboard', selectedProfileId: null };
+const state = {
+  token: localStorage.getItem('klient-token') || '',
+  view: 'dashboard',
+  selectedProfileId: null,
+  profileFilters: { search: '', location: '', venue: '', event: '', occurredFrom: '', occurredTo: '' },
+  reportDateFilters: { occurredFrom: '', occurredTo: '' }
+};
 
 const view = document.querySelector('#view');
 const authStatus = document.querySelector('#auth-status');
@@ -48,21 +54,73 @@ function wireProfileButtons() {
 }
 
 async function renderDashboard() {
-  const data = await api('/api/dashboard');
+  const reportParams = new URLSearchParams();
+  if (state.reportDateFilters.occurredFrom) reportParams.set('occurredFrom', state.reportDateFilters.occurredFrom);
+  if (state.reportDateFilters.occurredTo) reportParams.set('occurredTo', state.reportDateFilters.occurredTo);
+  const [data, sourceReport] = await Promise.all([
+    api('/api/dashboard'),
+    api(`/api/source-report${reportParams.size ? `?${reportParams.toString()}` : ''}`)
+  ]);
   view.innerHTML = `
     <h2>Dashboard</h2>
     <div class="stat-grid">
       ${Object.entries(data.stats).map(([key, value]) => `<div class="stat"><strong>${value}</strong><div class="muted">${key}</div></div>`).join('')}
     </div>
+    <h3>Source Reporting</h3>
+    <form id="report-filter-form" class="grid two">
+      <input name="occurredFrom" type="date" value="${state.reportDateFilters.occurredFrom}" />
+      <input name="occurredTo" type="date" value="${state.reportDateFilters.occurredTo}" />
+      <button type="submit">Apply Date Filter</button>
+      <button type="button" id="report-filter-reset">Reset</button>
+    </form>
+    <div class="stat-grid">
+      ${Object.entries(sourceReport.totals).map(([key, value]) => `<div class="stat"><strong>${value}</strong><div class="muted">${key}</div></div>`).join('')}
+    </div>
+    <div class="grid two">
+      <div class="item"><strong>Top Events</strong>${renderItems(sourceReport.byEvent.slice(0, 5), (entry) => `<div class="row between"><span>${entry.key}</span><strong>${entry.count}</strong></div>`)}</div>
+      <div class="item"><strong>Top Locations</strong>${renderItems(sourceReport.byLocation.slice(0, 5), (entry) => `<div class="row between"><span>${entry.key}</span><strong>${entry.count}</strong></div>`)}</div>
+      <div class="item"><strong>Top Venues</strong>${renderItems(sourceReport.byVenue.slice(0, 5), (entry) => `<div class="row between"><span>${entry.key}</span><strong>${entry.count}</strong></div>`)}</div>
+      <div class="item"><strong>Recent Source Dates</strong>${renderItems(sourceReport.byDate.slice(0, 5), (entry) => `<div class="row between"><span>${entry.occurredOn}</span><strong>${entry.count}</strong></div>`)}</div>
+    </div>
     <h3>Recent Profiles</h3>
     ${renderItems(data.recentProfiles, (profile) => `<div class="item"><strong>${profile.firstName} ${profile.lastName}</strong> <span class="badge">${profile.kind}</span><div class="muted">${profile.source?.displayValue || 'No source'}</div><button data-profile-id="${profile.id}">Open Profile</button></div>`)}
   `;
+  document.querySelector('#report-filter-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    state.reportDateFilters = {
+      occurredFrom: String(form.get('occurredFrom') || ''),
+      occurredTo: String(form.get('occurredTo') || '')
+    };
+    await renderDashboard();
+  });
+  document.querySelector('#report-filter-reset').addEventListener('click', async () => {
+    state.reportDateFilters = { occurredFrom: '', occurredTo: '' };
+    await renderDashboard();
+  });
   wireProfileButtons();
 }
 
 async function renderProfiles(kind) {
-  const profiles = await api(`/api/profiles?kind=${kind}`);
-  view.innerHTML = `<h2>${kind === 'prospect' ? 'Prospects' : 'Clients'}</h2>` + renderItems(profiles, (profile) => `
+  const searchParams = new URLSearchParams({ kind });
+  Object.entries(state.profileFilters).forEach(([key, value]) => {
+    if (value) searchParams.set(key, value);
+  });
+  const profiles = await api(`/api/profiles?${searchParams.toString()}`);
+  view.innerHTML = `
+    <h2>${kind === 'prospect' ? 'Prospects' : 'Clients'}</h2>
+    <form id="profile-filter-form" class="grid two">
+      <input name="search" placeholder="Search name/email" value="${state.profileFilters.search}" />
+      <input name="location" placeholder="Source location" value="${state.profileFilters.location}" />
+      <input name="venue" placeholder="Source venue" value="${state.profileFilters.venue}" />
+      <input name="event" placeholder="Event name" value="${state.profileFilters.event}" />
+      <input name="occurredFrom" type="date" value="${state.profileFilters.occurredFrom}" />
+      <input name="occurredTo" type="date" value="${state.profileFilters.occurredTo}" />
+      <button type="submit">Apply Filters</button>
+      <button type="button" id="profile-filter-reset">Reset</button>
+    </form>
+    <p class="muted">${profiles.length} profile(s) matched.</p>
+  ` + renderItems(profiles, (profile) => `
     <div class="item">
       <strong>${profile.firstName} ${profile.lastName}</strong> <span class="badge">${profile.kind}</span>
       <div class="muted">${profile.email || ''}</div>
@@ -73,6 +131,24 @@ async function renderProfiles(kind) {
         ${['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'].map((stage) => `<option value="${stage}" ${profile.stage === stage ? 'selected' : ''}>${stage}</option>`).join('')}
       </select>` : ''}
     </div>`);
+
+  document.querySelector('#profile-filter-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const form = new FormData(event.target);
+    state.profileFilters = {
+      search: String(form.get('search') || ''),
+      location: String(form.get('location') || ''),
+      venue: String(form.get('venue') || ''),
+      event: String(form.get('event') || ''),
+      occurredFrom: String(form.get('occurredFrom') || ''),
+      occurredTo: String(form.get('occurredTo') || '')
+    };
+    await renderProfiles(kind);
+  });
+  document.querySelector('#profile-filter-reset').addEventListener('click', async () => {
+    state.profileFilters = { search: '', location: '', venue: '', event: '', occurredFrom: '', occurredTo: '' };
+    await renderProfiles(kind);
+  });
 
   document.querySelectorAll('[data-stage-id]').forEach((select) => {
     select.addEventListener('change', async (event) => {
