@@ -10,6 +10,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - persisted prospect pipeline board
 - households and member linking
 - dynamic form template and submission flows
+- form definition and document template version history (draft, publish, inspect, revert)
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
 - audit trail and analytics views
@@ -39,6 +40,12 @@ Run the smoke test:
 
 ```bash
 node scripts/smoke-test.mjs
+```
+
+Run template/form versioning API coverage:
+
+```bash
+node scripts/version-history-test.mjs
 ```
 
 Run the broader local validation bundle:

@@ -41,6 +41,10 @@ function now() {
   return new Date().toISOString();
 }
 
+function deepCopy(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
 function slugify(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
@@ -172,6 +176,19 @@ function seedState() {
         { id: randomUUID(), title: 'Household', fields: [{ key: 'goals', label: 'Goals', type: 'textarea' }, { key: 'riskTolerance', label: 'Risk Tolerance', type: 'select', options: ['Conservative','Moderate','Aggressive'] }] },
         { id: randomUUID(), title: 'Assets', repeatable: true, fields: [{ key: 'accountName', label: 'Account Name', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }] }
       ],
+      status: 'published',
+      publishedVersion: 1,
+      versions: [{
+        version: 1,
+        status: 'published',
+        name: 'Financial Discovery',
+        description: 'Core onboarding discovery form',
+        sections: [
+          { id: randomUUID(), title: 'Household', fields: [{ key: 'goals', label: 'Goals', type: 'textarea' }, { key: 'riskTolerance', label: 'Risk Tolerance', type: 'select', options: ['Conservative','Moderate','Aggressive'] }] },
+          { id: randomUUID(), title: 'Assets', repeatable: true, fields: [{ key: 'accountName', label: 'Account Name', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }] }
+        ],
+        createdAt
+      }],
       createdAt,
       updatedAt: createdAt
     }],
@@ -192,6 +209,15 @@ function seedState() {
       fileName: 'client-intake.pdf',
       blueprint: { sections: ['client', 'household', 'assets'] },
       mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName' }],
+      status: 'published',
+      publishedVersion: 1,
+      versions: [{
+        version: 1,
+        status: 'published',
+        blueprint: { sections: ['client', 'household', 'assets'] },
+        mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName' }],
+        createdAt
+      }],
       createdAt,
       updatedAt: createdAt
     }],
@@ -205,6 +231,44 @@ function seedState() {
 
 export function createStore() {
   const state = loadState(seedState);
+
+  for (const template of state.formTemplates) {
+    const fallbackSections = deepCopy(template.sections || []);
+    if (!Array.isArray(template.versions) || !template.versions.length) {
+      template.versions = [{
+        version: 1,
+        status: template.status === 'published' ? 'published' : 'draft',
+        name: template.name,
+        description: template.description || '',
+        sections: fallbackSections,
+        createdAt: template.createdAt || now()
+      }];
+    }
+    if (!template.status) template.status = 'draft';
+    if (!template.status || template.status === 'published') {
+      const published = [...template.versions].reverse().find((entry) => entry.status === 'published');
+      if (published) template.publishedVersion = published.version;
+    }
+  }
+
+  for (const template of state.documentTemplates) {
+    const fallbackBlueprint = deepCopy(template.blueprint || { sections: [] });
+    const fallbackMappings = deepCopy(template.mappings || []);
+    if (!Array.isArray(template.versions) || !template.versions.length) {
+      template.versions = [{
+        version: 1,
+        status: template.status === 'published' ? 'published' : 'draft',
+        blueprint: fallbackBlueprint,
+        mappings: fallbackMappings,
+        createdAt: template.createdAt || now()
+      }];
+    }
+    if (!template.status) template.status = 'draft';
+    if (!template.status || template.status === 'published') {
+      const published = [...template.versions].reverse().find((entry) => entry.status === 'published');
+      if (published) template.publishedVersion = published.version;
+    }
+  }
 
   function persist() {
     saveState(state);
@@ -428,9 +492,104 @@ export function createStore() {
     },
     createFormTemplate(user, input) {
       requirePermission(user, 'forms:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, description: input.description || '', sections: input.sections || [], createdAt: now(), updatedAt: now() };
+      const createdAt = now();
+      const name = input.name || 'Untitled Form';
+      const description = input.description || '';
+      const sections = input.sections || [];
+      const template = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        name,
+        description,
+        sections,
+        status: 'draft',
+        publishedVersion: null,
+        versions: [{
+          version: 1,
+          status: 'draft',
+          name,
+          description,
+          sections: deepCopy(sections),
+          createdAt
+        }],
+        createdAt,
+        updatedAt: createdAt
+      };
       state.formTemplates.push(template);
       addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.created', { name: template.name });
+      persist();
+      return template;
+    },
+    updateFormTemplate(user, templateId, input) {
+      requirePermission(user, 'forms:write');
+      const template = state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Form template not found.');
+      template.name = input.name ?? template.name;
+      template.description = input.description ?? template.description;
+      template.sections = deepCopy(input.sections ?? template.sections ?? []);
+      template.status = 'draft';
+      const version = {
+        version: template.versions.length + 1,
+        status: 'draft',
+        name: template.name,
+        description: template.description,
+        sections: deepCopy(template.sections),
+        createdAt: now()
+      };
+      template.versions.push(version);
+      template.updatedAt = version.createdAt;
+      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.draft_saved', { version: version.version });
+      persist();
+      return template;
+    },
+    listFormTemplateVersions(user, templateId) {
+      requirePermission(user, 'forms:write');
+      const template = state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Form template not found.');
+      return [...template.versions].sort((a, b) => b.version - a.version);
+    },
+    publishFormTemplate(user, templateId) {
+      requirePermission(user, 'forms:write');
+      const template = state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Form template not found.');
+      const version = {
+        version: template.versions.length + 1,
+        status: 'published',
+        name: template.name,
+        description: template.description,
+        sections: deepCopy(template.sections || []),
+        createdAt: now()
+      };
+      template.versions.push(version);
+      template.status = 'published';
+      template.publishedVersion = version.version;
+      template.updatedAt = version.createdAt;
+      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.published', { version: version.version });
+      persist();
+      return template;
+    },
+    revertFormTemplateVersion(user, templateId, versionNumber) {
+      requirePermission(user, 'forms:write');
+      const template = state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Form template not found.');
+      const sourceVersion = template.versions.find((entry) => entry.version === versionNumber);
+      if (!sourceVersion) throw new Error('Form template version not found.');
+      template.name = sourceVersion.name;
+      template.description = sourceVersion.description || '';
+      template.sections = deepCopy(sourceVersion.sections || []);
+      template.status = 'draft';
+      const newVersion = {
+        version: template.versions.length + 1,
+        status: 'draft',
+        name: template.name,
+        description: template.description,
+        sections: deepCopy(template.sections),
+        revertedFromVersion: sourceVersion.version,
+        createdAt: now()
+      };
+      template.versions.push(newVersion);
+      template.updatedAt = newVersion.createdAt;
+      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.reverted', { fromVersion: sourceVersion.version, newVersion: newVersion.version });
       persist();
       return template;
     },
@@ -458,9 +617,46 @@ export function createStore() {
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
+      const createdAt = now();
+      const blueprint = input.blueprint || { sections: [] };
+      const mappings = input.mappings || [];
+      const template = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: input.name,
+        fileName: input.fileName || 'template.pdf',
+        blueprint,
+        mappings,
+        versions: [{ version: 1, status: 'draft', blueprint: deepCopy(blueprint), mappings: deepCopy(mappings), createdAt }],
+        status: 'draft',
+        publishedVersion: null,
+        createdAt,
+        updatedAt: createdAt
+      };
       state.documentTemplates.push(template);
       addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
+      persist();
+      return template;
+    },
+    updateDocumentTemplate(user, templateId, input) {
+      requirePermission(user, 'templates:write');
+      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Template not found.');
+      template.name = input.name ?? template.name;
+      template.fileName = input.fileName ?? template.fileName;
+      template.blueprint = deepCopy(input.blueprint ?? template.blueprint ?? { sections: [] });
+      template.mappings = deepCopy(input.mappings ?? template.mappings ?? []);
+      template.status = 'draft';
+      const version = {
+        version: template.versions.length + 1,
+        status: 'draft',
+        blueprint: deepCopy(template.blueprint),
+        mappings: deepCopy(template.mappings),
+        createdAt: now()
+      };
+      template.versions.push(version);
+      template.updatedAt = version.createdAt;
+      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.draft_saved', { version: version.version });
       persist();
       return template;
     },
@@ -468,19 +664,60 @@ export function createStore() {
       requirePermission(user, 'templates:write');
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
-      template.mappings = mappings;
-      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
-      template.updatedAt = now();
+      template.mappings = deepCopy(mappings);
+      const version = { version: template.versions.length + 1, status: 'draft', blueprint: deepCopy(template.blueprint), mappings: deepCopy(mappings), createdAt: now() };
+      template.versions.push(version);
+      template.status = 'draft';
+      template.updatedAt = version.createdAt;
       addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.mappings_updated', { count: mappings.length });
       persist();
       return template;
+    },
+    listDocumentTemplateVersions(user, templateId) {
+      requirePermission(user, 'templates:write');
+      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Template not found.');
+      return [...template.versions].sort((a, b) => b.version - a.version);
     },
     publishTemplate(user, templateId) {
       requirePermission(user, 'templates:write');
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
+      const version = {
+        version: template.versions.length + 1,
+        status: 'published',
+        blueprint: deepCopy(template.blueprint),
+        mappings: deepCopy(template.mappings),
+        createdAt: now()
+      };
+      template.versions.push(version);
       template.status = 'published';
-      template.updatedAt = now();
+      template.publishedVersion = version.version;
+      template.updatedAt = version.createdAt;
+      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.published', { version: version.version });
+      persist();
+      return template;
+    },
+    revertTemplateVersion(user, templateId, versionNumber) {
+      requirePermission(user, 'templates:write');
+      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Template not found.');
+      const sourceVersion = template.versions.find((entry) => entry.version === versionNumber);
+      if (!sourceVersion) throw new Error('Template version not found.');
+      template.blueprint = deepCopy(sourceVersion.blueprint || { sections: [] });
+      template.mappings = deepCopy(sourceVersion.mappings || []);
+      template.status = 'draft';
+      const newVersion = {
+        version: template.versions.length + 1,
+        status: 'draft',
+        blueprint: deepCopy(template.blueprint),
+        mappings: deepCopy(template.mappings),
+        revertedFromVersion: sourceVersion.version,
+        createdAt: now()
+      };
+      template.versions.push(newVersion);
+      template.updatedAt = newVersion.createdAt;
+      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.reverted', { fromVersion: sourceVersion.version, newVersion: newVersion.version });
       persist();
       return template;
     },
