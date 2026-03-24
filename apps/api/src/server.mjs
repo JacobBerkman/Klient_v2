@@ -1,7 +1,7 @@
 import { createServer } from 'node:http';
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
-import { extname, resolve } from 'node:path';
+import { extname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SqliteReadRepository } from './repositories/sqlite-read-repository.mjs';
@@ -15,7 +15,7 @@ const store = createStore();
 const reads = new SqliteReadRepository();
 
 function json(res, status, body, headers = {}) {
-  res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
+  res.writeHead(status, { ...baseHeaders(), 'Content-Type': 'application/json', ...headers });
   res.end(JSON.stringify(body, null, 2));
 }
 
@@ -29,6 +29,7 @@ function parseBody(req) {
     req.on('data', (chunk) => {
       data += chunk;
       if (data.length > 1_000_000) {
+        req.destroy();
         reject(new Error('Payload too large'));
       }
     });
@@ -53,6 +54,10 @@ function requireUser(req) {
 
 function serveStatic(pathname, res, requestId) {
   const filePath = pathname === '/' ? resolve(publicDir, 'index.html') : resolve(publicDir, pathname.slice(1));
+  const publicDirRoot = `${publicDir}${sep}`;
+  if (filePath !== publicDir && !filePath.startsWith(publicDirRoot)) {
+    return notFound(res, requestId);
+  }
   readFile(filePath)
     .then((contents) => {
       const contentType = {
@@ -60,10 +65,20 @@ function serveStatic(pathname, res, requestId) {
         '.js': 'application/javascript; charset=utf-8',
         '.css': 'text/css; charset=utf-8'
       }[extname(filePath)] || 'text/plain; charset=utf-8';
-      res.writeHead(200, { 'Content-Type': contentType, 'X-Request-Id': requestId, 'Cache-Control': 'no-store' });
+      res.writeHead(200, { ...baseHeaders(), 'Content-Type': contentType, 'X-Request-Id': requestId, 'Cache-Control': 'no-store' });
       res.end(contents);
     })
     .catch(() => notFound(res, requestId));
+}
+
+function baseHeaders() {
+  return {
+    'X-Frame-Options': 'DENY',
+    'X-Content-Type-Options': 'nosniff',
+    'Referrer-Policy': 'no-referrer',
+    'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+    'Cross-Origin-Resource-Policy': 'same-origin'
+  };
 }
 
 function sendError(res, error, requestId) {
@@ -93,11 +108,11 @@ const server = createServer(async (req, res) => {
   const finalizeLog = requestLogger(req, requestId);
 
   try {
-    if (pathname === '/health') {
+    if (pathname === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
       finalizeLog(200);
       return json(res, 200, { status: 'ok', service: runtime.serviceName, uptimeSeconds: Math.round(process.uptime()) }, { 'X-Request-Id': requestId });
     }
-    if (pathname === '/ready') {
+    if (pathname === '/ready' && (req.method === 'GET' || req.method === 'HEAD')) {
       const database = ensureDatabaseReady();
       finalizeLog(200);
       return json(res, 200, { status: 'ready', querySummary: readQuerySummary(), database }, { 'X-Request-Id': requestId });

@@ -1,5 +1,5 @@
 .git
+.github
 node_modules
-data/*.db
-data/backup-*.db
-.env
+data
+*.log
