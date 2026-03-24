@@ -12,7 +12,8 @@ import {
   readQuerySummary,
   readExportWorkerStatus,
   readStorageHealth,
-  readAuditEventSummary
+  readAuditEventSummary,
+  readAnalyticsMaterializedSummary
 } from './storage.mjs';
 import { createStore } from './store.mjs';
 
@@ -22,10 +23,17 @@ const store = createStore();
 const reads = new SqliteReadRepository();
 const bootedAt = new Date().toISOString();
 const startupDiagnostics = validateRuntimeConfig();
-const csrfSessions = new Map();
-const CSRF_SESSION_COOKIE = 'klient-csrf-session';
+const CSRF_SESSION_COOKIE = '__Host-klient-csrf';
 const CSRF_HEADER = 'x-csrf-token';
 const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+const CSRF_BOOTSTRAP_PATH = '/api/csrf';
+const CSRF_EXEMPT_PATHS = new Set([
+  '/api/login',
+  '/api/register',
+  '/api/invites/accept',
+  '/api/password-resets',
+  '/api/password-resets/confirm'
+]);
 
 function json(res, status, body, headers = {}) {
   res.writeHead(status, { ...baseHeaders(), 'Content-Type': 'application/json', ...headers });
@@ -51,25 +59,31 @@ function parseCookies(req) {
   );
 }
 
-function expectedOrigin(req) {
-  const protocol = req.headers['x-forwarded-proto'] || 'http';
-  return `${protocol}://${req.headers.host || `${runtime.host}:${runtime.port}`}`;
+function cookieConfig(req) {
+  const xfProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  const secure = runtime.isProduction || xfProto === 'https';
+  return {
+    secure,
+    sameSite: secure ? 'Strict' : 'Lax',
+    httpOnly: true,
+    path: '/api',
+    maxAge: 60 * 15
+  };
 }
 
-function getCsrfTokenRecord(req) {
-  const cookies = parseCookies(req);
-  const sessionId = cookies[CSRF_SESSION_COOKIE];
-  if (!sessionId) return null;
-  const token = csrfSessions.get(sessionId);
-  if (!token) return null;
-  return { sessionId, token };
+function serializeCookie(name, value, options = {}) {
+  const parts = [`${name}=${encodeURIComponent(value)}`];
+  if (options.maxAge !== undefined) parts.push(`Max-Age=${options.maxAge}`);
+  if (options.path) parts.push(`Path=${options.path}`);
+  if (options.sameSite) parts.push(`SameSite=${options.sameSite}`);
+  if (options.httpOnly) parts.push('HttpOnly');
+  if (options.secure) parts.push('Secure');
+  return parts.join('; ');
 }
 
-function createCsrfSession() {
-  const sessionId = randomUUID();
-  const token = randomUUID();
-  csrfSessions.set(sessionId, token);
-  return { sessionId, token };
+function clearCsrfCookie(req) {
+  const options = cookieConfig(req);
+  return serializeCookie(CSRF_SESSION_COOKIE, '', { ...options, maxAge: 0 });
 }
 
 function requiresCsrfProtection(method = 'GET') {
@@ -90,27 +104,107 @@ function getCsrfErrorResponse(reason, requestId) {
   };
 }
 
-function validateCsrf(req, requestId) {
-  const suppliedOrigin = req.headers.origin;
-  const suppliedReferer = req.headers.referer;
-  const origin = expectedOrigin(req);
+function getExpectedOrigins(req) {
+  const host = String(req.headers.host || `${runtime.host}:${runtime.port}`).split(',')[0].trim();
+  const forwardedHost = String(req.headers['x-forwarded-host'] || '').split(',')[0].trim();
+  const forwardedProto = String(req.headers['x-forwarded-proto'] || '').split(',')[0].trim().toLowerCase();
+  const protocol = forwardedProto || (runtime.isProduction ? 'https' : 'http');
+  const origins = new Set();
+  if (host) origins.add(`${protocol}://${host}`);
+  if (forwardedHost) origins.add(`${protocol}://${forwardedHost}`);
+  return origins;
+}
 
-  if (suppliedOrigin && suppliedOrigin !== origin) {
+function isCsrfExempt(pathname) {
+  return pathname === CSRF_BOOTSTRAP_PATH || CSRF_EXEMPT_PATHS.has(pathname);
+}
+
+function validateOriginAndReferer(req, requestId) {
+  const suppliedOrigin = typeof req.headers.origin === 'string' ? req.headers.origin.trim() : '';
+  const suppliedReferer = typeof req.headers.referer === 'string' ? req.headers.referer.trim() : '';
+  const secFetchSite = typeof req.headers['sec-fetch-site'] === 'string' ? req.headers['sec-fetch-site'].toLowerCase() : '';
+  const expectedOrigins = getExpectedOrigins(req);
+  const matchesOrigin = suppliedOrigin && expectedOrigins.has(suppliedOrigin);
+  const matchesReferer = suppliedReferer && [...expectedOrigins].some((origin) => suppliedReferer.startsWith(`${origin}/`) || suppliedReferer === origin);
+
+  if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
+    return getCsrfErrorResponse('Cross-site browser context rejected.', requestId);
+  }
+  if (!suppliedOrigin && !suppliedReferer) {
+    return getCsrfErrorResponse('Missing Origin or Referer.', requestId);
+  }
+  if (suppliedOrigin && !matchesOrigin) {
     return getCsrfErrorResponse('Origin mismatch.', requestId);
   }
-  if (suppliedReferer && !suppliedReferer.startsWith(`${origin}/`)) {
+  if (suppliedReferer && !matchesReferer) {
     return getCsrfErrorResponse('Referrer mismatch.', requestId);
   }
-
-  const record = getCsrfTokenRecord(req);
-  if (!record) {
-    return getCsrfErrorResponse('Missing CSRF session.', requestId);
-  }
-  const headerToken = req.headers[CSRF_HEADER];
-  if (!headerToken || headerToken !== record.token) {
-    return getCsrfErrorResponse('Invalid or missing CSRF token.', requestId);
-  }
   return null;
+}
+
+function validateCsrf(req, requestId) {
+  const originError = validateOriginAndReferer(req, requestId);
+  if (originError) return originError;
+  const sessionToken = getToken(req);
+  if (!sessionToken) {
+    return getCsrfErrorResponse('Missing or expired authenticated session.', requestId);
+  }
+  const cookies = parseCookies(req);
+  const cookieTokenId = cookies[CSRF_SESSION_COOKIE];
+  const headerToken = req.headers[CSRF_HEADER];
+  const result = store.validateCsrfToken(sessionToken, cookieTokenId, headerToken);
+  if (!result.ok) return getCsrfErrorResponse(result.reason, requestId);
+  return { nextToken: result.nextToken };
+}
+
+function csrfRefreshHeaders(req, nextToken) {
+  const options = cookieConfig(req);
+  return {
+    'Set-Cookie': serializeCookie(CSRF_SESSION_COOKIE, nextToken.id, options),
+    'X-CSRF-Token': nextToken.token
+  };
+}
+
+function applyResponseHeaders(res, headers = {}) {
+  for (const [name, value] of Object.entries(headers)) {
+    if (value === undefined || value === null) continue;
+    res.setHeader(name, value);
+  }
+}
+
+function withCommonHeaders(res, requestId, headers = {}) {
+  applyResponseHeaders(res, { ...baseHeaders(), 'X-Request-Id': requestId, ...headers });
+}
+
+function jsonWithHeaders(res, status, body, requestId, headers = {}) {
+  withCommonHeaders(res, requestId, { 'Content-Type': 'application/json', ...headers });
+  res.statusCode = status;
+  res.end(JSON.stringify(body, null, 2));
+}
+
+function sendCsrfBootstrap(res, req, requestId, sessionToken) {
+  const session = store.getSession(sessionToken);
+  if (!session) {
+    return jsonWithHeaders(res, 401, { message: 'Authentication required.' }, requestId, { 'Set-Cookie': clearCsrfCookie(req) });
+  }
+  const tokenRecord = store.issueCsrfToken(session.token);
+  const headers = csrfRefreshHeaders(req, tokenRecord);
+  return jsonWithHeaders(res, 200, { csrfToken: tokenRecord.token, expiresAt: tokenRecord.expiresAt }, requestId, headers);
+}
+
+function serveJson(res, statusCode, payload, requestId, extraHeaders = {}) {
+  return jsonWithHeaders(res, statusCode, payload, requestId, extraHeaders);
+}
+
+function csrfHeadersForRequest(req, pathname, method, requestId) {
+  if (!pathname.startsWith('/api/') || !requiresCsrfProtection(method) || isCsrfExempt(pathname)) {
+    return { error: null, headers: {} };
+  }
+  const validation = validateCsrf(req, requestId);
+  if (validation?.statusCode) {
+    return { error: validation, headers: {} };
+  }
+  return { error: null, headers: csrfRefreshHeaders(req, validation.nextToken) };
 }
 
 function parseBody(req) {
@@ -133,6 +227,24 @@ function parseBody(req) {
     req.on('error', reject);
   });
 }
+
+function parseRawBody(req) {
+  return new Promise((resolveBody, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      chunks.push(chunk);
+      size += chunk.length;
+      if (size > 25_000_000) {
+        req.destroy();
+        reject(new Error('Payload too large'));
+      }
+    });
+    req.on('end', () => resolveBody(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
 
 function getToken(req) {
   return req.headers.authorization?.replace('Bearer ', '');
@@ -178,11 +290,16 @@ function baseHeaders() {
 
 function sendError(res, error, requestId) {
   const message = error?.message || 'Request failed';
-  const statusCode = /not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400;
+  const statusCode = Number.isInteger(error?.statusCode)
+    ? error.statusCode
+    : (/not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400);
+  const statusCode = error?.statusCode || (/not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400);
   json(res, statusCode, {
     message,
     error: {
       message,
+      code: error?.code || null,
+      details: error?.details || null,
       statusCode,
       requestId
     }
@@ -216,7 +333,7 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === '/ready' && (req.method === 'GET' || req.method === 'HEAD')) {
       const database = ensureDatabaseReady();
-      const storageHealth = readStorageHealth();
+      const storageHealth = { ...readStorageHealth(), objectStorage: store.objectStorage.describeHealth?.() || null };
       const queue = readExportWorkerStatus();
       finalizeLog(200);
       return json(res, 200, {
@@ -250,7 +367,7 @@ const server = createServer(async (req, res) => {
         },
         data: {
           querySummary: readQuerySummary(),
-          storageHealth: readStorageHealth(),
+          storageHealth: { ...readStorageHealth(), objectStorage: store.objectStorage.describeHealth?.() || null },
           queue,
           exportWorker: { byStatus, total: exports.length, latest: exports.slice().sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] || null },
           audit: { total: auditEvents.length, latest: auditEvents[0] || null }
@@ -258,24 +375,55 @@ const server = createServer(async (req, res) => {
       }, { 'X-Request-Id': requestId });
     }
     if (pathname === '/api/csrf' && req.method === 'GET') {
-      const session = createCsrfSession();
-      finalizeLog(200);
-      return json(
-        res,
-        200,
-        { csrfToken: session.token },
-        {
-          'X-Request-Id': requestId,
-          'Set-Cookie': `${CSRF_SESSION_COOKIE}=${session.sessionId}; HttpOnly; Path=/; SameSite=Strict`
-        }
-      );
+      const token = getToken(req);
+      const session = token ? store.getSession(token) : null;
+      const response = sendCsrfBootstrap(res, req, requestId, token);
+      finalizeLog(session ? 200 : 401);
+      return response;
     }
-    if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method)) {
-      const csrfError = validateCsrf(req, requestId);
-      if (csrfError) {
-        finalizeLog(csrfError.statusCode, { reason: csrfError.body.error.details.reason });
-        return json(res, csrfError.statusCode, csrfError.body, csrfError.headers);
+    const csrfValidation = csrfHeadersForRequest(req, pathname, req.method, requestId);
+    if (csrfValidation.error) {
+      finalizeLog(csrfValidation.error.statusCode, { reason: csrfValidation.error.body.error.details.reason });
+      return serveJson(res, csrfValidation.error.statusCode, csrfValidation.error.body, requestId, csrfValidation.error.headers);
+    }
+    if (Object.keys(csrfValidation.headers).length) {
+      applyResponseHeaders(res, csrfValidation.headers);
+    }
+
+    if (pathname.startsWith('/api/storage/presigned/') && req.method === 'PUT') {
+      const token = url.searchParams.get('token');
+      const operation = pathname.endsWith('/upload') ? 'upload' : null;
+      if (!token || !operation || typeof store.objectStorage.provider.consumePresignedToken !== 'function') {
+        finalizeLog(404);
+        return notFound(res, requestId);
       }
+      const object = store.objectStorage.provider.consumePresignedToken(token, operation);
+      if (!object) {
+        finalizeLog(403);
+        return json(res, 403, { message: 'Invalid or expired presigned token.' }, { 'X-Request-Id': requestId });
+      }
+      const payload = await parseRawBody(req);
+      await store.objectStorage.putObject({ ...object, body: payload, contentType: req.headers['content-type'] || object.contentType || 'application/octet-stream' });
+      finalizeLog(200);
+      return json(res, 200, { ok: true }, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/storage/presigned/') && req.method === 'GET') {
+      const token = url.searchParams.get('token');
+      const operation = pathname.endsWith('/download') ? 'download' : null;
+      if (!token || !operation || typeof store.objectStorage.provider.consumePresignedToken !== 'function') {
+        finalizeLog(404);
+        return notFound(res, requestId);
+      }
+      const object = store.objectStorage.provider.consumePresignedToken(token, operation);
+      if (!object) {
+        finalizeLog(403);
+        return json(res, 403, { message: 'Invalid or expired presigned token.' }, { 'X-Request-Id': requestId });
+      }
+      const fetched = await store.objectStorage.getObject(object);
+      res.writeHead(200, { ...baseHeaders(), 'X-Request-Id': requestId, 'Content-Type': object.contentType || fetched.contentType || 'application/octet-stream' });
+      res.end(fetched.body);
+      finalizeLog(200);
+      return;
     }
     if (pathname === '/api/register' && req.method === 'POST') { const result = store.auth.register(await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/login' && req.method === 'POST') {
@@ -332,7 +480,30 @@ const server = createServer(async (req, res) => {
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.listNotes(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'POST') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.addNote(requireUser(req), id, body.body || ''); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/profiles/') && pathname.split('/').length === 4 && req.method === 'GET') { const id = pathname.split('/')[3]; const user = requireUser(req); const result = { ...store.getProfileDetail(user, id), profileRecord: reads.getProfileDetail(user.firmId, id) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-    if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage') && req.method === 'PATCH') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.moveProfileStage(requireUser(req), id, body.stage, body.beforeProfileId || null); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage') && req.method === 'PATCH') {
+      const id = pathname.split('/')[3];
+      const body = await parseBody(req);
+      const result = store.reorderBoard(requireUser(req), {
+        profileId: id,
+        toStage: body.stage,
+        beforeProfileId: body.beforeProfileId || null,
+        expectedVersion: body.expectedVersion ?? null,
+        expectedUpdatedAt: body.expectedUpdatedAt ?? null,
+        expectedBoardVersion: body.expectedBoardVersion ?? null
+      });
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/board/reorder' && req.method === 'POST') {
+      const result = store.reorderBoard(requireUser(req), await parseBody(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/board/normalize' && req.method === 'POST') {
+      const result = store.normalizeBoardOrdering(requireUser(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname.startsWith('/api/profiles/') && req.method === 'PATCH') { const id = pathname.split('/')[3]; const result = store.updateProfile(requireUser(req), id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/board' && req.method === 'GET') { const result = store.getBoard(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/households' && req.method === 'GET') { const result = store.listHouseholds(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
@@ -346,40 +517,108 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/forms/submissions' && req.method === 'GET') { const result = store.listFormSubmissions(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/forms/drafts' && req.method === 'GET') { const result = store.listFormDrafts(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/forms/submissions' && req.method === 'POST') { const result = store.createFormSubmission(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/forms/drafts/') && pathname.endsWith('/lock') && req.method === 'POST') {
+      const id = pathname.split('/')[4];
+      const result = store.acquireDraftLock(requireUser(req), id, await parseBody(req));
+      finalizeLog(result.conflict ? 409 : 200);
+      return json(res, result.conflict ? 409 : 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/forms/drafts/') && pathname.endsWith('/lock') && req.method === 'DELETE') {
+      const id = pathname.split('/')[4];
+      const body = await parseBody(req);
+      const result = store.releaseDraftLock(requireUser(req), id, body.leaseId || '');
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/forms/drafts/') && req.method === 'PATCH') {
+      const id = pathname.split('/')[4];
+      const result = store.reviseDraftSubmission(requireUser(req), id, await parseBody(req));
+      finalizeLog(result.conflict ? 409 : 200);
+      return json(res, result.conflict ? 409 : 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname === '/api/client/workspace' && req.method === 'GET') { const result = store.getClientWorkspace(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/client/forms/submissions' && req.method === 'POST') { const result = store.submitClientForm(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/client/uploads/presign' && req.method === 'POST') { const result = await store.createClientUploadPresign(requireUser(req), await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/client/uploads' && req.method === 'POST') { const result = store.submitClientUpload(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/forms/submissions/') && pathname.split('/').length === 5 && req.method === 'PATCH') { const id = pathname.split('/')[4]; const result = store.updateSubmission(requireUser(req), id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/forms/submissions/') && pathname.includes('/sections/') && pathname.endsWith('/items') && req.method === 'POST') {
+      const parts = pathname.split('/');
+      const submissionId = parts[4];
+      const sectionKey = parts[6];
+      const result = store.createSubmissionSectionItem(requireUser(req), submissionId, sectionKey, await parseBody(req));
+      finalizeLog(201);
+      return json(res, 201, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/forms/submissions/') && pathname.includes('/sections/') && pathname.includes('/items/') && req.method === 'PATCH') {
+      const parts = pathname.split('/');
+      const submissionId = parts[4];
+      const sectionKey = parts[6];
+      const itemKey = parts[8];
+      const result = store.updateSubmissionSectionItem(requireUser(req), submissionId, sectionKey, itemKey, await parseBody(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/forms/submissions/') && pathname.includes('/sections/') && pathname.includes('/items/') && req.method === 'DELETE') {
+      const parts = pathname.split('/');
+      const submissionId = parts[4];
+      const sectionKey = parts[6];
+      const itemKey = parts[8];
+      const result = store.deleteSubmissionSectionItem(requireUser(req), submissionId, sectionKey, itemKey);
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/client/uploads/') && pathname.endsWith('/download-url') && req.method === 'POST') { const id = pathname.split('/')[4]; const result = await store.createClientUploadDownloadUrl(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/forms/submissions/') && req.method === 'PATCH') { const id = pathname.split('/')[4]; const result = store.updateSubmission(requireUser(req), id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/forms/submissions/') && req.method === 'DELETE') { const id = pathname.split('/')[4]; const result = store.deleteSubmission(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/templates' && req.method === 'GET') { const result = store.listDocumentTemplates(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/templates' && req.method === 'POST') { const result = store.createDocumentTemplate(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/templates/auto-build' && req.method === 'POST') { const result = store.autoBuildTemplate(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/templates/') && pathname.endsWith('/versions') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.listTemplateVersions(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/templates/') && pathname.endsWith('/publish-transitions') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.listPublishTransitions(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/templates/') && pathname.endsWith('/publish') && req.method === 'POST') { const id = pathname.split('/')[3]; const result = store.publishTemplate(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/templates/') && pathname.endsWith('/mappings') && req.method === 'POST') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.updateTemplateMappings(requireUser(req), id, body.mappings || []); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/exports' && req.method === 'GET') { const result = store.listExports(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/exports' && req.method === 'POST') { const result = store.createExport(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/exports/process' && req.method === 'POST') {
       const user = requireUser(req);
-      store.assertPermission(user, 'exports:write');
+      store.assertPermission(user, 'exports:process');
       const result = store.processQueuedExports();
+      store.assertPermission(user, 'exports:write');
+      const result = await store.processQueuedExports();
       finalizeLog(200);
       return json(res, 200, { ...result, deprecated: true, message: 'Manual processing endpoint is deprecated; prefer running scripts/export-worker.mjs.' }, { 'X-Request-Id': requestId });
     }
     if (pathname.startsWith('/api/exports/') && pathname.endsWith('/retry') && req.method === 'POST') { const id = pathname.split('/')[3]; const result = store.retryExport(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/exports/') && pathname.endsWith('/download-url') && req.method === 'POST') { const id = pathname.split('/')[3]; const result = await store.createExportDownloadUrl(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/ops/lifecycle/run' && req.method === 'POST') { const result = await store.runLifecyclePolicies(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/audit' && req.method === 'GET') { const result = store.listAudit(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/analytics' && req.method === 'GET') { const user = requireUser(req); const result = { stageCounts: reads.getAnalytics(user.firmId), summary: store.getAnalytics(user) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/sensitive') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.getMaskedSensitiveData(requireUser(req), id, { purpose: url.searchParams.get('purpose') || 'profile_view', unmask: url.searchParams.get('unmask') === 'true' }); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/analytics' && req.method === 'GET') {
+      const user = requireUser(req);
+      const result = {
+        stageCounts: reads.getAnalytics(user.firmId),
+        summary: store.getAnalytics(user),
+        materialized: readAnalyticsMaterializedSummary(user.firmId)
+      };
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/sensitive') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.getMaskedSensitiveData(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/portal-links' && req.method === 'POST') { const body = await parseBody(req); const result = store.createPortalLink(requireUser(req), body.profileId); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/portal/') && pathname.split('/').length === 4 && req.method === 'GET') { const token = pathname.split('/')[3]; const result = store.getPortalData(token); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/portal/') && pathname.endsWith('/submissions') && req.method === 'POST') { const token = pathname.split('/')[3]; const result = store.portalSubmit(token, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads/presign') && req.method === 'POST') { const token = pathname.split('/')[3]; const result = await store.createPortalUploadPresign(token, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads') && req.method === 'POST') { const token = pathname.split('/')[3]; const result = store.portalUpload(token, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/portal/') && pathname.includes('/uploads/') && pathname.endsWith('/download-url') && req.method === 'POST') { const [, , , token, , uploadId] = pathname.split('/'); const result = await store.createPortalUploadDownloadUrl(token, uploadId); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/portal' && req.method === 'GET') { finalizeLog(200); return serveStatic('portal.html', res, requestId); }
 
     finalizeLog(200, { static: true });
     return serveStatic(pathname, res, requestId);
   } catch (error) {
     log('error', 'request.failed', { requestId, method: req.method, path: req.url, error: error.message || String(error) });
-    finalizeLog(/not found/i.test(error?.message || '') ? 404 : 400);
+    const statusCode = error?.statusCode || (/not found/i.test(error?.message || '') ? 404 : 400);
+    finalizeLog(statusCode);
     return sendError(res, error, requestId);
   }
 });

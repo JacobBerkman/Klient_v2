@@ -10,9 +10,10 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - persisted prospect pipeline board
 - households and member linking
 - dynamic form template and submission flows
+- collaborative draft editing with revision IDs, lock leases, and conflict prompts
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
-- audit trail and analytics views
+- audit trail plus advisor-facing analytics panels (funnel conversion, stage aging, form completion, productivity)
 - invite flow and password reset endpoints
 - internal web UI served by the backend
 - operational diagnostics for runtime config, storage health, export worker queue, and audit counts
@@ -73,6 +74,7 @@ Open:
 - Sessions expire after 8 hours.
 - Repeated failed login attempts are rate limited.
 - Sensitive identifiers are stored encrypted and only returned in masked form.
+- Sensitive identifiers now use envelope encryption metadata (`keyId`, `alg`, `createdAt`, `ciphertext`) with key-provider backed rotation support and audited unmask policy checks.
 
 ## Testing
 Run the production server contract test:
@@ -173,3 +175,7 @@ docker compose --env-file .env up --build -d
 ```
 
 See `DEPLOYMENT.md` for deployment details.
+
+### PII key rotation utility
+
+Run `node scripts/reencrypt-pii.mjs` to re-encrypt stored PII fields using the active key configured by `PII_ACTIVE_KEY_ID` and `PII_KEYRING`.
