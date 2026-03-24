@@ -57,6 +57,150 @@ function now() {
   return new Date().toISOString();
 }
 
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function toKey(item) {
+  return JSON.stringify(item ?? null);
+}
+
+function summarizeArrayDiff(previous = [], next = []) {
+  const prevMap = new Map(previous.map((item) => [toKey(item), item]));
+  const nextMap = new Map(next.map((item) => [toKey(item), item]));
+  const added = [];
+  const removed = [];
+  for (const [key, value] of nextMap.entries()) {
+    if (!prevMap.has(key)) added.push(value);
+  }
+  for (const [key, value] of prevMap.entries()) {
+    if (!nextMap.has(key)) removed.push(value);
+  }
+  return { added, removed, changed: added.length > 0 || removed.length > 0 };
+}
+
+function summarizeBlueprintDiff(previousBlueprint = { sections: [] }, nextBlueprint = { sections: [] }) {
+  const previousSections = Array.isArray(previousBlueprint?.sections) ? previousBlueprint.sections : [];
+  const nextSections = Array.isArray(nextBlueprint?.sections) ? nextBlueprint.sections : [];
+  const sectionDiff = summarizeArrayDiff(previousSections, nextSections);
+  return {
+    changed: sectionDiff.changed,
+    previousSectionCount: previousSections.length,
+    nextSectionCount: nextSections.length,
+    addedSections: sectionDiff.added,
+    removedSections: sectionDiff.removed
+  };
+}
+
+function createTemplateVersion(template, event, { blueprint, mappings, publishState, diff, actorUserId }) {
+  return {
+    version: (template.versions?.length || 0) + 1,
+    event,
+    blueprint: deepClone(blueprint || template.blueprint || { sections: [] }),
+    mappings: deepClone(mappings || template.mappings || []),
+    formSchema: deepClone(template.formSchema || { sections: [] }),
+    publishState: publishState || template.publishState || 'draft',
+    diff: diff || null,
+    actorUserId: actorUserId || null,
+    createdAt: now()
+  };
+}
+
+function normalizeTemplateAggregate(template, fallbackKind = 'document') {
+  const baseBlueprint = template.blueprint || { sections: [] };
+  const baseMappings = template.mappings || template.mappingRules || [];
+  const basePublishState = template.publishState || template.status || 'draft';
+  const baseFormSchema = template.formSchema || { sections: template.sections || [] };
+  const normalized = {
+    id: template.id,
+    firmId: template.firmId,
+    kind: template.kind || fallbackKind,
+    name: template.name,
+    description: template.description || '',
+    documentMetadata: template.documentMetadata || { fileName: template.fileName || null },
+    extractedFields: template.extractedFields || [],
+    formSchema: baseFormSchema,
+    blueprint: baseBlueprint,
+    mappings: baseMappings,
+    mappingRules: baseMappings,
+    publishState: basePublishState,
+    status: basePublishState,
+    versions: (template.versions || []).map((entry, index) => ({
+      version: entry.version || index + 1,
+      event: entry.event || 'snapshot',
+      blueprint: deepClone(entry.blueprint || baseBlueprint),
+      mappings: deepClone(entry.mappings || baseMappings),
+      formSchema: deepClone(entry.formSchema || baseFormSchema),
+      publishState: entry.publishState || basePublishState,
+      diff: entry.diff || null,
+      actorUserId: entry.actorUserId || null,
+      createdAt: entry.createdAt || template.updatedAt || template.createdAt || now()
+    })),
+    publishTransitions: template.publishTransitions || [],
+    createdAt: template.createdAt || now(),
+    updatedAt: template.updatedAt || template.createdAt || now(),
+    legacy: template.legacy || null
+  };
+  if (!normalized.versions.length) {
+    normalized.versions.push(createTemplateVersion(normalized, 'created', {
+      blueprint: normalized.blueprint,
+      mappings: normalized.mappings,
+      publishState: normalized.publishState
+    }));
+  }
+  return normalized;
+}
+
+function migrateTemplateSystems(state) {
+  state.templateAggregates ||= [];
+  if (state.templateAggregates.length === 0) {
+    const migratedForms = (state.formTemplates || []).map((template) => normalizeTemplateAggregate({
+      ...template,
+      kind: 'form',
+      formSchema: { sections: template.sections || [] },
+      blueprint: { sections: [] },
+      mappings: [],
+      publishState: 'draft',
+      legacy: { source: 'formTemplates', id: template.id }
+    }, 'form'));
+    const migratedDocuments = (state.documentTemplates || []).map((template) => normalizeTemplateAggregate({
+      ...template,
+      kind: 'document',
+      formSchema: { sections: [] },
+      blueprint: template.blueprint || { sections: [] },
+      mappings: template.mappings || [],
+      publishState: template.status || 'draft',
+      legacy: { source: 'documentTemplates', id: template.id }
+    }, 'document'));
+    state.templateAggregates = [...migratedForms, ...migratedDocuments];
+  } else {
+    state.templateAggregates = state.templateAggregates.map((entry) => normalizeTemplateAggregate(entry, entry.kind || 'document'));
+  }
+  state.formTemplates = state.templateAggregates
+    .filter((entry) => entry.kind === 'form')
+    .map((entry) => ({
+      id: entry.id,
+      firmId: entry.firmId,
+      name: entry.name,
+      description: entry.description || '',
+      sections: deepClone(entry.formSchema?.sections || []),
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt
+    }));
+  state.documentTemplates = state.templateAggregates
+    .filter((entry) => entry.kind !== 'form')
+    .map((entry) => ({
+      id: entry.id,
+      firmId: entry.firmId,
+      name: entry.name,
+      fileName: entry.documentMetadata?.fileName || 'template.pdf',
+      blueprint: deepClone(entry.blueprint || { sections: [] }),
+      mappings: deepClone(entry.mappings || []),
+      versions: deepClone(entry.versions || []),
+      status: entry.publishState || 'draft',
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt
+    }));
 function parseIso(value) {
   const time = new Date(value || '').getTime();
   return Number.isFinite(time) ? time : 0;
@@ -279,6 +423,11 @@ function seedState() {
 
 export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   const state = loadState(seedState);
+  migrateTemplateSystems(state);
+  saveState(state);
+
+  function persist() {
+    migrateTemplateSystems(state);
   state.pendingUploadIntents ||= [];
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
@@ -852,15 +1001,50 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     listFormTemplates(user) {
       requirePermission(user, 'profiles:read');
-      return state.formTemplates.filter((entry) => entry.firmId === user.firmId);
+      return state.templateAggregates
+        .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
+        .map((entry) => ({
+          id: entry.id,
+          firmId: entry.firmId,
+          name: entry.name,
+          description: entry.description || '',
+          sections: entry.formSchema?.sections || [],
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt
+        }));
     },
     createFormTemplate(user, input) {
       requirePermission(user, 'forms:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, description: input.description || '', sections: input.sections || [], createdAt: now(), updatedAt: now() };
-      state.formTemplates.push(template);
-      addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.created', { name: template.name });
+      const createdAt = now();
+      const template = normalizeTemplateAggregate({
+        id: randomUUID(),
+        firmId: user.firmId,
+        kind: 'form',
+        name: input.name,
+        description: input.description || '',
+        documentMetadata: { fileName: null },
+        extractedFields: [],
+        formSchema: { sections: input.sections || [] },
+        blueprint: { sections: [] },
+        mappings: [],
+        publishState: 'draft',
+        versions: [{
+          version: 1,
+          event: 'created',
+          blueprint: { sections: [] },
+          mappings: [],
+          formSchema: { sections: input.sections || [] },
+          publishState: 'draft',
+          createdAt
+        }],
+        publishTransitions: [],
+        createdAt,
+        updatedAt: createdAt
+      }, 'form');
+      state.templateAggregates.push(template);
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'form_template.created', { name: template.name });
       persist();
-      return template;
+      return { id: template.id, firmId: template.firmId, name: template.name, description: template.description, sections: template.formSchema.sections, createdAt, updatedAt: createdAt };
     },
     listFormSubmissions(user, status = null) {
       requirePermission(user, 'profiles:read');
@@ -886,6 +1070,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      const templates = state.templateAggregates
+        .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
+        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.formSchema?.sections || [] }));
       submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const templates = state.formTemplates
         .filter((entry) => entry.firmId === user.firmId)
@@ -908,7 +1095,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     submitClientForm(user, input) {
       requirePermission(user, 'client:write');
       const profile = requireClientProfile(user);
-      const template = state.formTemplates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId);
+      const template = state.templateAggregates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId && entry.kind === 'form');
       if (!template) throw new Error('Form template not found.');
       const status = input.status === 'draft' ? 'draft' : 'submitted';
       const submission = {
@@ -1113,35 +1300,107 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     listDocumentTemplates(user) {
       requirePermission(user, 'templates:write');
-      return state.documentTemplates.filter((entry) => entry.firmId === user.firmId);
+      return state.templateAggregates
+        .filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form')
+        .map((entry) => ({
+          id: entry.id,
+          firmId: entry.firmId,
+          name: entry.name,
+          fileName: entry.documentMetadata?.fileName || 'template.pdf',
+          blueprint: entry.blueprint || { sections: [] },
+          mappings: entry.mappings || [],
+          versions: entry.versions || [],
+          status: entry.publishState || 'draft',
+          publishState: entry.publishState || 'draft',
+          createdAt: entry.createdAt,
+          updatedAt: entry.updatedAt
+        }));
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
-      state.documentTemplates.push(template);
-      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
+      const createdAt = now();
+      const template = normalizeTemplateAggregate({
+        id: randomUUID(),
+        firmId: user.firmId,
+        kind: 'document',
+        name: input.name,
+        description: input.description || '',
+        documentMetadata: { fileName: input.fileName || 'template.pdf' },
+        extractedFields: input.fields || [],
+        formSchema: { sections: input.formSections || [] },
+        blueprint: input.blueprint || { sections: [] },
+        mappings: input.mappings || [],
+        publishState: 'draft',
+        versions: [{
+          version: 1,
+          event: 'created',
+          blueprint: input.blueprint || { sections: [] },
+          mappings: input.mappings || [],
+          formSchema: { sections: input.formSections || [] },
+          publishState: 'draft',
+          createdAt,
+          actorUserId: user.id
+        }],
+        publishTransitions: [],
+        createdAt,
+        updatedAt: createdAt
+      }, 'document');
+      state.templateAggregates.push(template);
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.created', { name: template.name });
       persist();
-      return template;
+      return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
     },
     updateTemplateMappings(user, templateId, mappings) {
       requirePermission(user, 'templates:write');
-      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
-      template.mappings = mappings;
-      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
+      const nextMappings = mappings || [];
+      const prevMappings = template.mappings || [];
+      const mappingDiff = summarizeArrayDiff(prevMappings, nextMappings);
+      template.mappings = nextMappings;
+      template.mappingRules = nextMappings;
       template.updatedAt = now();
-      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.mappings_updated', { count: mappings.length });
+      template.versions.push(createTemplateVersion(template, 'mappings_updated', {
+        mappings: nextMappings,
+        blueprint: template.blueprint,
+        actorUserId: user.id,
+        diff: { mappings: mappingDiff, blueprint: summarizeBlueprintDiff(template.blueprint, template.blueprint) }
+      }));
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.mappings_updated', { count: nextMappings.length });
       persist();
-      return template;
+      return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
     },
     publishTemplate(user, templateId) {
       requirePermission(user, 'templates:write');
-      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
+      const previousState = template.publishState || 'draft';
+      template.publishState = 'published';
       template.status = 'published';
       template.updatedAt = now();
+      template.publishTransitions ||= [];
+      template.publishTransitions.push({ from: previousState, to: 'published', at: template.updatedAt, actorUserId: user.id });
+      template.versions.push(createTemplateVersion(template, 'published', {
+        mappings: template.mappings,
+        blueprint: template.blueprint,
+        publishState: 'published',
+        actorUserId: user.id,
+        diff: { publishTransition: { from: previousState, to: 'published' } }
+      }));
       persist();
-      return template;
+      return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
+    },
+    listTemplateVersions(user, templateId) {
+      requirePermission(user, 'templates:write');
+      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
+      if (!template) throw new Error('Template not found.');
+      return template.versions || [];
+    },
+    listPublishTransitions(user, templateId) {
+      requirePermission(user, 'templates:write');
+      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
+      if (!template) throw new Error('Template not found.');
+      return template.publishTransitions || [];
     },
     listExports(user) {
       requirePermission(user, 'exports:write');
@@ -1359,6 +1618,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId)
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+      const availableTemplates = state.templateAggregates
+        .filter((entry) => entry.firmId === link.firmId && entry.kind === 'form')
+        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.formSchema?.sections || [] }));
       submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const availableTemplates = state.formTemplates
         .filter((entry) => entry.firmId === link.firmId)
@@ -1373,7 +1635,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       const link = state.portalLinks.find((entry) => entry.token === token);
       if (!link) throw new Error('Portal link not found.');
       const templateId = input.templateId || 'portal';
-      const template = templateId === 'portal' ? null : state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === link.firmId);
+      const template = templateId === 'portal' ? null : state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === link.firmId && entry.kind === 'form');
       if (templateId !== 'portal' && !template) throw new Error('Form template not found.');
       const status = input.status === 'draft' ? 'draft' : 'submitted';
       const submission = {
@@ -1524,6 +1786,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         profileCount: firmProfiles.length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
+        templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form').length
         templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length,
         avgProspectStageAgeDays: Number(average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2))
       };

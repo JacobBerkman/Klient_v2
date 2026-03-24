@@ -61,6 +61,15 @@ db.exec(`
     payload TEXT NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS template_aggregates (
+    id TEXT PRIMARY KEY,
+    firm_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    publish_state TEXT,
+    payload TEXT NOT NULL
+  );
+
   CREATE TABLE IF NOT EXISTS export_jobs (
     id TEXT PRIMARY KEY,
     firm_id TEXT NOT NULL,
@@ -256,6 +265,7 @@ function syncQueryTables(state) {
   replaceRows('households', state.households || [], (household) => [household.id, household.firmId, household.name, JSON.stringify(household)]);
   replaceRows('form_templates', state.formTemplates || [], (template) => [template.id, template.firmId, template.name, JSON.stringify(template)]);
   replaceRows('document_templates', state.documentTemplates || [], (template) => [template.id, template.firmId, template.name, template.status || 'draft', JSON.stringify(template)]);
+  replaceRows('template_aggregates', state.templateAggregates || [], (template) => [template.id, template.firmId, template.name, template.kind || 'document', template.publishState || 'draft', JSON.stringify(template)]);
   replaceRows('notes', state.notes || [], (note) => [note.id, note.firmId, note.profileId, note.createdAt, JSON.stringify(note)]);
   replaceRows('audit_events', state.auditEvents || [], (event) => [event.id, event.firmId, event.action, event.occurredAt, JSON.stringify(event)]);
 }
