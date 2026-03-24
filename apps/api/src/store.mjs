@@ -1,8 +1,6 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
-import { createAuthService } from './auth/service.mjs';
-import { createLocalAuthProvider } from './auth/local-provider.mjs';
-import { loadState, saveState } from './storage.mjs';
+import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
@@ -605,37 +603,51 @@ export function createStore() {
     },
     listExports(user) {
       requirePermission(user, 'exports:write');
+      state.exportJobs = listExportQueueJobs();
       return state.exportJobs.filter((entry) => entry.firmId === user.firmId);
     },
     createExport(user, input) {
       requirePermission(user, 'exports:write');
-      const job = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, type: input.type || 'pdf', status: 'queued', output: null, createdAt: now(), updatedAt: now() };
-      state.exportJobs.push(job);
-      addAudit(user.firmId, user.id, 'export_job', job.id, 'export_job.created', { clientId: input.clientId, templateId: input.templateId, type: job.type });
+      const queued = enqueueExportJob({
+        id: randomUUID(),
+        firmId: user.firmId,
+        clientId: input.clientId,
+        templateId: input.templateId,
+        type: input.type || 'pdf',
+        maxAttempts: Number(input.maxAttempts || 3),
+        metadata: input.metadata || {}
+      });
+      addAudit(user.firmId, user.id, 'export_job', queued.id, 'export_job.created', { clientId: input.clientId, templateId: input.templateId, type: queued.type });
+      state.exportJobs = state.exportJobs.filter((entry) => entry.id !== queued.id);
+      state.exportJobs.push(queued);
       persist();
-      return job;
+      return queued;
     },
     retryExport(user, exportId) {
       requirePermission(user, 'exports:write');
       const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
       if (!job) throw new Error('Export not found.');
-      job.status = 'queued';
-      job.updatedAt = now();
+      const updated = requeueExportJob(exportId);
+      if (!updated) throw new Error('Export not found.');
+      state.exportJobs = state.exportJobs.map((entry) => (entry.id === exportId ? updated : entry));
       persist();
-      return job;
+      return updated;
     },
     processQueuedExports() {
-      let processed = 0;
-      for (const job of state.exportJobs) {
-        if (job.status === 'queued') {
-          job.status = 'completed';
-          job.output = { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
-          job.updatedAt = now();
-          processed += 1;
+      const result = processExportQueueTick({
+        workerId: 'api-process-endpoint',
+        limit: 10,
+        leaseMs: 15_000,
+        processor(job) {
+          const failCount = Number(job?.metadata?.simulateFailuresRemaining || 0);
+          if (failCount > 0) {
+            job.metadata.simulateFailuresRemaining = failCount - 1;
+            throw new Error(`Simulated export failure for ${job.id}`);
+          }
+          return { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
         }
-      }
-      persist();
-      return { processed };
+      });
+      return { processed: result.processed, leased: result.leased, failed: result.failed };
     },
     listAudit(user) {
       requirePermission(user, 'profiles:read');

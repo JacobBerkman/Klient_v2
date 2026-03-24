@@ -174,7 +174,14 @@ function baseHeaders() {
 function sendError(res, error, requestId) {
   const message = error?.message || 'Request failed';
   const statusCode = /not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400;
-  json(res, statusCode, { message }, { 'X-Request-Id': requestId });
+  json(res, statusCode, {
+    message,
+    error: {
+      message,
+      statusCode,
+      requestId
+    }
+  }, { 'X-Request-Id': requestId });
 }
 
 function requestLogger(req, requestId) {
@@ -205,13 +212,14 @@ const server = createServer(async (req, res) => {
     if (pathname === '/ready' && (req.method === 'GET' || req.method === 'HEAD')) {
       const database = ensureDatabaseReady();
       const storageHealth = readStorageHealth();
+      const queue = readExportWorkerStatus();
       finalizeLog(200);
       return json(res, 200, {
         status: 'ready',
         querySummary: readQuerySummary(),
         database,
         storageHealth,
-        exportWorker: readExportWorkerStatus(),
+        exportWorker: queue,
         auditEvents: readAuditEventSummary(),
         startupDiagnostics
       }, { 'X-Request-Id': requestId });
@@ -220,6 +228,7 @@ const server = createServer(async (req, res) => {
       const user = requireUser(req);
       const auditEvents = store.listAudit(user);
       const exports = store.listExports(user);
+      const queue = readExportWorkerStatus();
       const byStatus = exports.reduce((acc, job) => {
         acc[job.status] = (acc[job.status] || 0) + 1;
         return acc;
@@ -237,6 +246,7 @@ const server = createServer(async (req, res) => {
         data: {
           querySummary: readQuerySummary(),
           storageHealth: readStorageHealth(),
+          queue,
           exportWorker: { byStatus, total: exports.length, latest: exports.slice().sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] || null },
           audit: { total: auditEvents.length, latest: auditEvents[0] || null }
         }
@@ -304,7 +314,13 @@ const server = createServer(async (req, res) => {
     if (pathname.startsWith('/api/templates/') && pathname.endsWith('/mappings') && req.method === 'POST') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.updateTemplateMappings(requireUser(req), id, body.mappings || []); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/exports' && req.method === 'GET') { const result = store.listExports(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/exports' && req.method === 'POST') { const result = store.createExport(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
-    if (pathname === '/api/exports/process' && req.method === 'POST') { const result = store.processQueuedExports(); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/exports/process' && req.method === 'POST') {
+      const user = requireUser(req);
+      store.assertPermission(user, 'exports:write');
+      const result = store.processQueuedExports();
+      finalizeLog(200);
+      return json(res, 200, { ...result, deprecated: true, message: 'Manual processing endpoint is deprecated; prefer running scripts/export-worker.mjs.' }, { 'X-Request-Id': requestId });
+    }
     if (pathname.startsWith('/api/exports/') && pathname.endsWith('/retry') && req.method === 'POST') { const id = pathname.split('/')[3]; const result = store.retryExport(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/audit' && req.method === 'GET') { const result = store.listAudit(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/analytics' && req.method === 'GET') { const user = requireUser(req); const result = { stageCounts: reads.getAnalytics(user.firmId), summary: store.getAnalytics(user) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
