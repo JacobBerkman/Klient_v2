@@ -45,6 +45,16 @@ function now() {
   return new Date().toISOString();
 }
 
+function parseIso(value) {
+  const time = new Date(value || '').getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
 function hash(password) {
   return createHash('sha256').update(password).digest('hex');
 }
@@ -677,9 +687,16 @@ export function createStore() {
     },
     listFormSubmissions(user, status = null) {
       requirePermission(user, 'profiles:read');
+      const currentTime = Date.now();
       return state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || entry.status === status)
+        .map((entry) => {
+          if (entry.lock && parseIso(entry.lock.expiresAt) <= currentTime) {
+            return { ...entry, lock: null };
+          }
+          return entry;
+        })
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
     },
@@ -721,6 +738,7 @@ export function createStore() {
         status,
         data: input.data && typeof input.data === 'object' ? input.data : {},
         source: 'client_portal',
+        createdByUserId: user.id,
         createdAt: now(),
         updatedAt: now()
       };
@@ -755,11 +773,135 @@ export function createStore() {
     },
     createFormSubmission(user, input) {
       requirePermission(user, 'forms:write');
-      const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status: input.status || 'draft', data: input.data || {}, createdAt: now(), updatedAt: now() };
+      const status = input.status || 'draft';
+      const createdAt = now();
+      const submission = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        clientId: input.clientId,
+        templateId: input.templateId,
+        status,
+        data: input.data || {},
+        createdByUserId: user.id,
+        createdAt,
+        updatedAt: createdAt,
+        revisionId: status === 'draft' ? 1 : null,
+        lock: null
+      };
       state.formSubmissions.push(submission);
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', { templateId: input.templateId, clientId: input.clientId });
       persist();
       return submission;
+    },
+    acquireDraftLock(user, submissionId, input = {}) {
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft');
+      if (!submission) throw new Error('Draft submission not found.');
+
+      const nowTime = Date.now();
+      const leaseMs = Math.max(5_000, Math.min(120_000, Number(input.leaseMs || 30_000)));
+      const existing = submission.lock;
+      const active = existing && parseIso(existing.expiresAt) > nowTime;
+      const force = input.force === true;
+      if (active && existing.holderUserId !== user.id && !force) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft is currently locked by another advisor.',
+          lock: existing,
+          revisionId: submission.revisionId || 1
+        };
+      }
+
+      const lock = {
+        leaseId: randomUUID(),
+        holderUserId: user.id,
+        acquiredAt: now(),
+        expiresAt: new Date(nowTime + leaseMs).toISOString(),
+        leaseMs
+      };
+      submission.lock = lock;
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.lock_acquired', { leaseMs, force });
+      persist();
+      return { ok: true, lock, revisionId: submission.revisionId || 1 };
+    },
+    releaseDraftLock(user, submissionId, leaseId = '') {
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft');
+      if (!submission) throw new Error('Draft submission not found.');
+      const existing = submission.lock;
+      if (!existing) return { ok: true, released: false };
+      if (existing.holderUserId !== user.id && leaseId && existing.leaseId !== leaseId) {
+        throw new Error('Cannot release lock held by another advisor.');
+      }
+      submission.lock = null;
+      submission.updatedAt = now();
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.lock_released', {});
+      persist();
+      return { ok: true, released: true };
+    },
+    reviseDraftSubmission(user, submissionId, input = {}) {
+      requirePermission(user, 'forms:write');
+      const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft');
+      if (!submission) throw new Error('Draft submission not found.');
+
+      const currentRevision = Number(submission.revisionId || 1);
+      const expectedRevision = Number(input.expectedRevisionId || 0);
+      if (!Number.isFinite(expectedRevision) || expectedRevision < 1) {
+        throw new Error('expectedRevisionId is required.');
+      }
+
+      const lock = submission.lock;
+      const lockActive = lock && parseIso(lock.expiresAt) > Date.now();
+      if (!lockActive || lock.holderUserId !== user.id || lock.leaseId !== input.leaseId) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft lease is missing, expired, or held by another advisor.',
+          mergePrompt: {
+            type: 'lease_conflict',
+            localRevisionId: expectedRevision,
+            serverRevisionId: currentRevision,
+            suggestion: 'Refresh draft, compare changes, and reacquire lock before saving.'
+          },
+          serverDraft: submission
+        };
+      }
+
+      if (expectedRevision !== currentRevision) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft has changed since your last load.',
+          mergePrompt: {
+            type: 'revision_conflict',
+            localRevisionId: expectedRevision,
+            serverRevisionId: currentRevision,
+            suggestion: 'Show merge preview and choose keep-local, keep-server, or manual merge.'
+          },
+          serverDraft: submission
+        };
+      }
+
+      submission.data = input.data && typeof input.data === 'object' ? input.data : {};
+      submission.revisionId = currentRevision + 1;
+      submission.updatedAt = now();
+      if (input.status === 'submitted') {
+        submission.status = 'submitted';
+        submission.lock = null;
+      } else {
+        submission.lock = {
+          ...lock,
+          expiresAt: new Date(Date.now() + Number(lock.leaseMs || 30_000)).toISOString()
+        };
+      }
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.draft_revised', {
+        revisionId: submission.revisionId,
+        submitted: submission.status === 'submitted'
+      });
+      persist();
+      return { ok: true, submission };
     },
     listDocumentTemplates(user) {
       requirePermission(user, 'templates:write');
@@ -970,6 +1112,7 @@ export function createStore() {
         templateId,
         status,
         data: input.data && typeof input.data === 'object' ? input.data : {},
+        createdByUserId: null,
         createdAt: now(),
         updatedAt: now(),
         source: 'portal'
@@ -1000,17 +1143,91 @@ export function createStore() {
     },
     getAnalytics(user) {
       requirePermission(user, 'analytics:read');
-      const prospects = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect');
+      const firmProfiles = state.profiles.filter((entry) => entry.firmId === user.firmId);
+      const prospects = firmProfiles.filter((entry) => entry.kind === 'prospect');
       const stageCounts = prospects.reduce((acc, profile) => {
-        acc[profile.stage || 'unassigned'] = (acc[profile.stage || 'unassigned'] || 0) + 1;
+        const stage = profile.stage || 'unassigned';
+        acc[stage] = (acc[stage] || 0) + 1;
         return acc;
       }, {});
+      const totalProspects = prospects.length || 1;
+      const stageOrder = ['discovery', 'gather_oi', 'analysis', 'advisor_proposal_meeting', 'intake', 'on_boarding', 'investment_strategy', 'completed'];
+      const funnel = stageOrder.map((stage) => {
+        const count = stageCounts[stage] || 0;
+        return { stage, count, conversionRate: Number((count / totalProspects).toFixed(4)) };
+      });
+      const firstStage = stageCounts[stageOrder[0]] || 0;
+      const lastStage = stageCounts.completed || 0;
+
+      const stageEvents = state.stageChanges
+        .filter((entry) => entry.firmId === user.firmId)
+        .slice()
+        .sort((a, b) => parseIso(a.changedAt) - parseIso(b.changedAt));
+      const stageEntryTimes = new Map();
+      stageEvents.forEach((event) => {
+        const key = `${event.clientId}:${event.toStage || 'unassigned'}`;
+        if (!stageEntryTimes.has(key)) stageEntryTimes.set(key, parseIso(event.changedAt));
+      });
+      const stageAging = Object.fromEntries(stageOrder.map((stage) => [stage, { count: 0, avgDays: 0 }]));
+      const nowTime = Date.now();
+      prospects.forEach((profile) => {
+        const stage = profile.stage || 'unassigned';
+        if (!stageAging[stage]) stageAging[stage] = { count: 0, avgDays: 0 };
+        const enteredAt = stageEntryTimes.get(`${profile.id}:${stage}`) || parseIso(profile.createdAt);
+        const ageDays = Math.max(0, (nowTime - enteredAt) / 86_400_000);
+        stageAging[stage].count += 1;
+        stageAging[stage].avgDays += ageDays;
+      });
+      Object.values(stageAging).forEach((entry) => {
+        if (entry.count) entry.avgDays = Number((entry.avgDays / entry.count).toFixed(2));
+      });
+
+      const templateIds = new Set(state.formTemplates.filter((entry) => entry.firmId === user.firmId).map((entry) => entry.id));
+      const formsByTemplate = {};
+      templateIds.forEach((templateId) => {
+        formsByTemplate[templateId] = { templateId, drafts: 0, submitted: 0, completionRate: 0 };
+      });
+      state.formSubmissions
+        .filter((entry) => entry.firmId === user.firmId)
+        .forEach((submission) => {
+          formsByTemplate[submission.templateId] ||= { templateId: submission.templateId, drafts: 0, submitted: 0, completionRate: 0 };
+          if (submission.status === 'submitted') formsByTemplate[submission.templateId].submitted += 1;
+          else formsByTemplate[submission.templateId].drafts += 1;
+        });
+      Object.values(formsByTemplate).forEach((entry) => {
+        const total = entry.drafts + entry.submitted;
+        entry.completionRate = total ? Number((entry.submitted / total).toFixed(4)) : 0;
+      });
+
+      const advisors = state.users.filter((entry) => entry.firmId === user.firmId && ['advisor', 'admin'].includes(entry.role));
+      const advisorProductivity = advisors.map((advisor) => {
+        const assignedProfiles = firmProfiles.filter((entry) => entry.advisorUserId === advisor.id);
+        const notesCount = state.notes.filter((entry) => entry.firmId === user.firmId && entry.createdByUserId === advisor.id).length;
+        const stageMoves = state.stageChanges.filter((entry) => entry.firmId === user.firmId && entry.changedByUserId === advisor.id).length;
+        const submissions = state.formSubmissions.filter((entry) => entry.firmId === user.firmId && entry.createdByUserId === advisor.id).length;
+        return {
+          advisorUserId: advisor.id,
+          advisorName: `${advisor.firstName} ${advisor.lastName}`,
+          profilesManaged: assignedProfiles.length,
+          notesAuthored: notesCount,
+          stageMoves,
+          formSubmissionsAuthored: submissions,
+          productivityScore: assignedProfiles.length + notesCount + stageMoves + submissions
+        };
+      });
+
       return {
         stageCounts,
-        profileCount: state.profiles.filter((entry) => entry.firmId === user.firmId).length,
+        funnel,
+        overallConversionRate: firstStage ? Number((lastStage / firstStage).toFixed(4)) : 0,
+        stageAging,
+        formCompletionRates: Object.values(formsByTemplate),
+        advisorProductivity,
+        profileCount: firmProfiles.length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
-        templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length
+        templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length,
+        avgProspectStageAgeDays: Number(average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2))
       };
     },
     getMaskedSensitiveData(user, profileId) {

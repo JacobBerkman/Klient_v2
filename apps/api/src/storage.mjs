@@ -97,6 +97,12 @@ db.exec(`
     occurred_at TEXT NOT NULL,
     payload TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS analytics_materialized (
+    firm_id TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
 `);
 
 function hasColumn(table, column) {
@@ -254,6 +260,83 @@ function syncQueryTables(state) {
   replaceRows('audit_events', state.auditEvents || [], (event) => [event.id, event.firmId, event.action, event.occurredAt, JSON.stringify(event)]);
 }
 
+function syncAnalyticsMaterialized(state) {
+  db.exec('DELETE FROM analytics_materialized');
+  const firms = state.firms || [];
+  const byFirm = new Map();
+  firms.forEach((firm) => byFirm.set(firm.id, {
+    firmId: firm.id,
+    generatedAt: nowIso(),
+    funnel: {},
+    stageAgingDays: {},
+    formCompletionRates: {},
+    advisorProductivity: {}
+  }));
+
+  (state.profiles || []).forEach((profile) => {
+    const summary = byFirm.get(profile.firmId);
+    if (!summary || profile.kind !== 'prospect') return;
+    const stage = profile.stage || 'unassigned';
+    summary.funnel[stage] = (summary.funnel[stage] || 0) + 1;
+    const ageDays = Math.max(0, (Date.now() - new Date(profile.updatedAt || profile.createdAt || nowIso()).getTime()) / 86_400_000);
+    const age = summary.stageAgingDays[stage] || { count: 0, sumDays: 0 };
+    age.count += 1;
+    age.sumDays += ageDays;
+    summary.stageAgingDays[stage] = age;
+  });
+
+  (state.formSubmissions || []).forEach((submission) => {
+    const summary = byFirm.get(submission.firmId);
+    if (!summary) return;
+    const key = submission.templateId || 'unknown';
+    const bucket = summary.formCompletionRates[key] || { templateId: key, drafts: 0, submitted: 0 };
+    if (submission.status === 'submitted') bucket.submitted += 1;
+    else bucket.drafts += 1;
+    summary.formCompletionRates[key] = bucket;
+  });
+
+  const usersById = new Map((state.users || []).map((user) => [user.id, user]));
+  (state.notes || []).forEach((note) => {
+    const actor = usersById.get(note.createdByUserId);
+    if (!actor) return;
+    const summary = byFirm.get(note.firmId);
+    if (!summary) return;
+    const key = actor.id;
+    const bucket = summary.advisorProductivity[key] || { advisorUserId: key, advisorName: `${actor.firstName} ${actor.lastName}`, notesAuthored: 0, stageMoves: 0 };
+    bucket.notesAuthored += 1;
+    summary.advisorProductivity[key] = bucket;
+  });
+  (state.stageChanges || []).forEach((change) => {
+    const actor = usersById.get(change.changedByUserId);
+    if (!actor) return;
+    const summary = byFirm.get(change.firmId);
+    if (!summary) return;
+    const key = actor.id;
+    const bucket = summary.advisorProductivity[key] || { advisorUserId: key, advisorName: `${actor.firstName} ${actor.lastName}`, notesAuthored: 0, stageMoves: 0 };
+    bucket.stageMoves += 1;
+    summary.advisorProductivity[key] = bucket;
+  });
+
+  const insert = db.prepare(`
+    INSERT INTO analytics_materialized (firm_id, payload, updated_at)
+    VALUES (?, ?, ?)
+  `);
+  byFirm.forEach((summary, firmId) => {
+    Object.values(summary.stageAgingDays).forEach((entry) => {
+      entry.avgDays = entry.count ? Number((entry.sumDays / entry.count).toFixed(2)) : 0;
+      delete entry.sumDays;
+    });
+    Object.values(summary.formCompletionRates).forEach((entry) => {
+      const total = entry.drafts + entry.submitted;
+      entry.completionRate = total ? Number((entry.submitted / total).toFixed(4)) : 0;
+    });
+    Object.values(summary.advisorProductivity).forEach((entry) => {
+      entry.productivityScore = entry.notesAuthored + entry.stageMoves;
+    });
+    insert.run(firmId, JSON.stringify(summary), nowIso());
+  });
+}
+
 export function ensureDatabaseReady() {
   db.prepare('SELECT 1').get();
   return {
@@ -290,6 +373,7 @@ export function saveState(state) {
     ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
   `).run(JSON.stringify(state));
   syncQueryTables(state);
+  syncAnalyticsMaterialized(state);
 }
 
 export function backupState(targetPath = resolve(process.cwd(), 'data', `backup-${Date.now()}.db`)) {
@@ -600,4 +684,14 @@ export function readAuditEventSummary() {
     total: row?.total || 0,
     latest: last || null
   };
+}
+
+export function readAnalyticsMaterializedSummary(firmId) {
+  const row = db.prepare(`
+    SELECT payload, updated_at AS updatedAt
+    FROM analytics_materialized
+    WHERE firm_id = ?
+  `).get(firmId);
+  if (!row) return null;
+  return { ...JSON.parse(row.payload), updatedAt: row.updatedAt };
 }
