@@ -50,6 +50,48 @@ async function run() {
   await jsonFetch('/api/password-resets/confirm', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ token: reset.token, password: 'Readonly456!' }) });
 
   const template = await jsonFetch('/api/templates/auto-build', { method: 'POST', headers: authHeaders, body: JSON.stringify({ name: 'Auto Build Test', fields: ['client.name', 'client.address', 'assets.account'] }) });
+  const mappingEditor = await jsonFetch(`/api/templates/${template.id}/mappings`, { headers: { Authorization: `Bearer ${login.token}` } });
+  if (!mappingEditor.mappingTypes.includes('direct') || !mappingEditor.mappingTypes.includes('repeater')) throw new Error('Mapping editor capabilities missing');
+  if (!mappingEditor.supportedTransforms.includes('date') || !mappingEditor.supportedTransforms.includes('currency')) throw new Error('Mapping transforms missing');
+  const suggestions = await jsonFetch(`/api/templates/${template.id}/mappings/suggestions`, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ fields: ['client_dob', 'client_phone', 'assets_balance', 'client_full_name'] })
+  });
+  if (!suggestions.every((entry) => typeof entry.confidence === 'number' && entry.confidence > 0)) throw new Error('Suggestion confidence missing');
+  await jsonFetch(`/api/templates/${template.id}/mappings`, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      mappings: [
+        { kind: 'direct', pdfFieldName: 'client_phone', sourcePath: 'profile.phone', transform: { type: 'phone' }, confidence: 0.93 },
+        { kind: 'composite', pdfFieldName: 'client_full_name', sourcePaths: ['profile.firstName', 'profile.lastName'], joinWith: ' ', confidence: 0.95 },
+        {
+          kind: 'split',
+          sourcePath: 'profile.fullName',
+          delimiter: ' ',
+          targets: [
+            { pdfFieldName: 'first_name', index: 0 },
+            { pdfFieldName: 'last_name', index: 1 }
+          ],
+          confidence: 0.78
+        },
+        {
+          kind: 'repeater',
+          repeaterGroupId: 'asset_rows',
+          sourceCollectionPath: 'profile.assets',
+          itemMappings: [
+            { pdfFieldName: 'asset_name', sourcePath: 'name' },
+            { pdfFieldName: 'asset_balance', sourcePath: 'balance', transform: { type: 'currency' } }
+          ],
+          confidence: 0.9
+        }
+      ]
+    })
+  });
+  const updatedMappingEditor = await jsonFetch(`/api/templates/${template.id}/mappings`, { headers: { Authorization: `Bearer ${login.token}` } });
+  if ((updatedMappingEditor.mappings || []).length !== 4) throw new Error('Template mappings were not persisted.');
+  if (!updatedMappingEditor.templateModel?.versions?.length) throw new Error('Canonical template model missing versions.');
   const published = await jsonFetch(`/api/templates/${template.id}/publish`, { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
 
   const portal = await jsonFetch('/api/portal-links', { method: 'POST', headers: authHeaders, body: JSON.stringify({ profileId: profile.id }) });
@@ -95,7 +137,8 @@ async function run() {
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,
-    templateStatus: published.status
+    templateStatus: published.status,
+    suggestionCount: suggestions.length
   }, null, 2));
 }
 

@@ -178,3 +178,5 @@ export const defaultNavigation = [
   "exports",
   "audit"
 ] as const;
+
+export * from "./unified-template-model";

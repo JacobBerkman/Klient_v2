@@ -53,6 +53,141 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
 }
 
+const TRANSFORM_TYPES = ['none', 'date', 'phone', 'currency', 'checkbox', 'number', 'uppercase', 'lowercase', 'trim'];
+
+function normalizeField(value) {
+  return String(value || '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
+}
+
+function scoreCandidate(pdfFieldName, sourcePath) {
+  const pdf = normalizeField(pdfFieldName);
+  const source = normalizeField(sourcePath.split('.').at(-1) || sourcePath);
+  if (!pdf || !source) return 0.35;
+  if (pdf === source) return 0.98;
+  if (pdf.includes(source) || source.includes(pdf)) return 0.87;
+  const pdfTokens = new Set(pdf.split('_').filter(Boolean));
+  const sourceTokens = source.split('_').filter(Boolean);
+  const overlap = sourceTokens.filter((token) => pdfTokens.has(token)).length;
+  if (!sourceTokens.length) return 0.42;
+  return Math.min(0.8, 0.45 + overlap / sourceTokens.length * 0.3);
+}
+
+function inferTransform(fieldName) {
+  const key = normalizeField(fieldName);
+  if (/date|dob|birth/.test(key)) return { type: 'date', options: { to: 'MM/DD/YYYY' } };
+  if (/phone|mobile|tel/.test(key)) return { type: 'phone', options: { style: 'us' } };
+  if (/amount|balance|currency|income|value|price/.test(key)) return { type: 'currency', options: { locale: 'en-US', currency: 'USD' } };
+  if (/agree|consent|is_|has_|opt_in|checkbox/.test(key)) return { type: 'checkbox' };
+  return { type: 'none' };
+}
+
+function ensureTransform(transform) {
+  if (!transform) return undefined;
+  if (!TRANSFORM_TYPES.includes(transform.type)) throw new Error(`Unsupported transform type: ${transform.type}`);
+  return transform;
+}
+
+function validateMapping(mapping) {
+  if (!mapping?.kind) throw new Error('Each mapping requires a kind.');
+  if (mapping.kind === 'direct') {
+    if (!mapping.pdfFieldName || !mapping.sourcePath) throw new Error('Direct mappings require pdfFieldName and sourcePath.');
+    ensureTransform(mapping.transform);
+    return;
+  }
+  if (mapping.kind === 'composite') {
+    if (!mapping.pdfFieldName || !Array.isArray(mapping.sourcePaths) || mapping.sourcePaths.length < 2) {
+      throw new Error('Composite mappings require pdfFieldName and at least two sourcePaths.');
+    }
+    ensureTransform(mapping.transform);
+    return;
+  }
+  if (mapping.kind === 'split') {
+    if (!mapping.sourcePath || !mapping.delimiter || !Array.isArray(mapping.targets) || !mapping.targets.length) {
+      throw new Error('Split mappings require sourcePath, delimiter, and one or more targets.');
+    }
+    mapping.targets.forEach((target) => {
+      if (!target.pdfFieldName || Number.isInteger(target.index) === false) throw new Error('Split target requires pdfFieldName and numeric index.');
+      ensureTransform(target.transform);
+    });
+    return;
+  }
+  if (mapping.kind === 'repeater') {
+    if (!mapping.repeaterGroupId || !mapping.sourceCollectionPath || !Array.isArray(mapping.itemMappings) || !mapping.itemMappings.length) {
+      throw new Error('Repeater mappings require repeaterGroupId, sourceCollectionPath, and itemMappings.');
+    }
+    mapping.itemMappings.forEach((item) => {
+      if (!item.pdfFieldName) throw new Error('Repeater item mapping requires pdfFieldName.');
+      if ('sourcePaths' in item && (!Array.isArray(item.sourcePaths) || item.sourcePaths.length < 2)) throw new Error('Composite repeater item requires sourcePaths.');
+      if (!('sourcePath' in item) && !('sourcePaths' in item)) throw new Error('Repeater item requires sourcePath or sourcePaths.');
+      ensureTransform(item.transform);
+    });
+    return;
+  }
+  throw new Error(`Unsupported mapping kind: ${mapping.kind}`);
+}
+
+function normalizeMappings(mappings = []) {
+  return mappings.map((rawMapping) => {
+    const mapping = rawMapping.kind
+      ? rawMapping
+      : {
+          kind: 'direct',
+          pdfFieldName: rawMapping.pdfFieldName || rawMapping.pdfField || '',
+          sourcePath: rawMapping.sourcePath || rawMapping.dataPath || '',
+          transform: typeof rawMapping.transform === 'string' ? { type: rawMapping.transform } : rawMapping.transform,
+          confidence: rawMapping.confidence
+        };
+    validateMapping(mapping);
+    return { ...mapping, id: mapping.id || randomUUID(), confidence: typeof mapping.confidence === 'number' ? mapping.confidence : undefined };
+  });
+}
+
+function buildAutoMapSuggestions(fields = []) {
+  return fields.map((field, index) => {
+    const guessedPath = `profile.${normalizeField(field)}`;
+    const confidence = scoreCandidate(field, guessedPath);
+    return {
+      mapping: {
+        id: `suggested-${index + 1}`,
+        kind: 'direct',
+        pdfFieldName: field,
+        sourcePath: guessedPath,
+        transform: inferTransform(field),
+        confidence
+      },
+      confidence,
+      rationale: confidence > 0.9 ? 'Exact normalized field-name match.' : 'Token overlap based match.'
+    };
+  });
+}
+
+function createTemplateModel(template, userId, mappings, suggestions = []) {
+  return {
+    templateId: template.id,
+    templateKey: normalizeField(template.name || template.fileName || template.id),
+    firmId: template.firmId,
+    artifact: {
+      storageKey: `templates/${template.id}/${template.fileName || 'template.pdf'}`,
+      fileName: template.fileName || 'template.pdf',
+      kind: 'pdf_template',
+      ingestion: { extractor: 'manual', extractedAt: now() }
+    },
+    versions: [{
+      id: randomUUID(),
+      versionNumber: 1,
+      status: 'draft',
+      blueprint: template.blueprint || { sections: [], repeatableGroups: [] },
+      mappings,
+      suggestions,
+      createdAt: now(),
+      createdByUserId: userId
+    }]
+  };
+}
+
 function seedState() {
   const createdAt = now();
   const firmId = randomUUID();
@@ -190,8 +325,10 @@ function seedState() {
       firmId,
       name: 'Client Intake PDF Template',
       fileName: 'client-intake.pdf',
-      blueprint: { sections: ['client', 'household', 'assets'] },
-      mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName' }],
+      blueprint: { sections: [{ id: 'seed-client', title: 'Client', order: 1, fieldKeys: ['client_name'] }], repeatableGroups: [] },
+      mappings: [{ id: 'seed-mapping-client-name', kind: 'direct', pdfFieldName: 'client_name', sourcePath: 'profile.firstName', transform: { type: 'none' }, confidence: 0.95 }],
+      suggestions: [{ mapping: { id: 'seed-suggested-client-last-name', kind: 'direct', pdfFieldName: 'client_last_name', sourcePath: 'profile.lastName', transform: { type: 'none' }, confidence: 0.92 }, confidence: 0.92, rationale: 'Seed suggestion for mapping editor review.' }],
+      templateModel: null,
       createdAt,
       updatedAt: createdAt
     }],
@@ -205,6 +342,14 @@ function seedState() {
 
 export function createStore() {
   const state = loadState(seedState);
+  for (const template of state.documentTemplates || []) {
+    const normalizedMappings = normalizeMappings(template.mappings || []);
+    template.mappings = normalizedMappings;
+    template.suggestions = Array.isArray(template.suggestions) ? template.suggestions : buildAutoMapSuggestions(normalizedMappings.map((entry) => entry.pdfFieldName || entry.sourcePath));
+    if (!template.templateModel) {
+      template.templateModel = createTemplateModel(template, state.users.find((entry) => entry.firmId === template.firmId)?.id || 'system', normalizedMappings, template.suggestions);
+    }
+  }
 
   function persist() {
     saveState(state);
@@ -458,20 +603,75 @@ export function createStore() {
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
+      const mappings = normalizeMappings(input.mappings || []);
+      const suggestions = input.suggestions || buildAutoMapSuggestions((input.fieldsForSuggestions || mappings.map((entry) => entry.pdfFieldName || entry.sourcePath || '')).filter(Boolean));
+      const template = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: input.name,
+        fileName: input.fileName || 'template.pdf',
+        blueprint: input.blueprint || { sections: [], repeatableGroups: [] },
+        mappings,
+        suggestions,
+        versions: [{ version: 1, blueprint: input.blueprint || { sections: [], repeatableGroups: [] }, mappings, suggestions, createdAt: now() }],
+        status: 'draft',
+        createdAt: now(),
+        updatedAt: now()
+      };
+      template.templateModel = createTemplateModel(template, user.id, mappings, suggestions);
       state.documentTemplates.push(template);
       addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
       persist();
       return template;
     },
+    getTemplateMappingEditor(user, templateId) {
+      requirePermission(user, 'templates:write');
+      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Template not found.');
+      return {
+        templateId: template.id,
+        mappingTypes: ['direct', 'composite', 'split', 'repeater'],
+        supportedTransforms: TRANSFORM_TYPES,
+        mappings: template.mappings || [],
+        suggestions: template.suggestions || [],
+        templateModel: template.templateModel
+      };
+    },
+    suggestTemplateMappings(user, templateId, payload = {}) {
+      requirePermission(user, 'templates:write');
+      const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Template not found.');
+      const fields = Array.isArray(payload.fields) && payload.fields.length ? payload.fields : (template.blueprint?.sections || []).flatMap((section) => section.fieldKeys || []);
+      const suggestions = buildAutoMapSuggestions(fields);
+      template.suggestions = suggestions;
+      template.updatedAt = now();
+      persist();
+      return suggestions;
+    },
     updateTemplateMappings(user, templateId, mappings) {
       requirePermission(user, 'templates:write');
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
-      template.mappings = mappings;
-      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
+      const normalizedMappings = normalizeMappings(mappings);
+      template.mappings = normalizedMappings;
+      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings: normalizedMappings, suggestions: template.suggestions || [], createdAt: now() });
+      if (!template.templateModel) {
+        template.templateModel = createTemplateModel(template, user.id, normalizedMappings, template.suggestions || []);
+      } else {
+        const currentVersion = template.templateModel.versions.at(-1);
+        template.templateModel.versions.push({
+          id: randomUUID(),
+          versionNumber: (currentVersion?.versionNumber || 0) + 1,
+          status: template.status === 'published' ? 'published' : 'draft',
+          blueprint: template.blueprint,
+          mappings: normalizedMappings,
+          suggestions: template.suggestions || [],
+          createdAt: now(),
+          createdByUserId: user.id
+        });
+      }
       template.updatedAt = now();
-      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.mappings_updated', { count: mappings.length });
+      addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.mappings_updated', { count: normalizedMappings.length, kinds: [...new Set(normalizedMappings.map((entry) => entry.kind))] });
       persist();
       return template;
     },
@@ -481,6 +681,13 @@ export function createStore() {
       if (!template) throw new Error('Template not found.');
       template.status = 'published';
       template.updatedAt = now();
+      if (template.templateModel) {
+        const version = template.templateModel.versions.at(-1);
+        if (version) {
+          version.status = 'published';
+          template.templateModel.publishedVersionId = version.id;
+        }
+      }
       persist();
       return template;
     },
@@ -616,7 +823,25 @@ export function createStore() {
         acc[sectionKey].push(field);
         return acc;
       }, {});
-      return this.createDocumentTemplate(user, { name: input.name, fileName: input.fileName || 'uploaded.pdf', blueprint: { sections }, mappings: (input.fields || []).map((field) => ({ pdfField: field, sourcePath: field.replace(/\s+/g, '_').toLowerCase() })) });
+      const blueprintSections = Object.entries(sections).map(([sectionKey, fieldKeys], index) => ({
+        id: `section-${index + 1}`,
+        title: sectionKey,
+        order: index + 1,
+        fieldKeys
+      }));
+      return this.createDocumentTemplate(user, {
+        name: input.name,
+        fileName: input.fileName || 'uploaded.pdf',
+        blueprint: { sections: blueprintSections, repeatableGroups: input.repeatableGroups || [] },
+        mappings: (input.fields || []).map((field) => ({
+          kind: 'direct',
+          pdfFieldName: field,
+          sourcePath: field.replace(/\s+/g, '_').toLowerCase(),
+          transform: inferTransform(field),
+          confidence: scoreCandidate(field, field)
+        })),
+        fieldsForSuggestions: input.fields || []
+      });
     },
     createPortalLink(user, profileId) {
       requirePermission(user, 'profiles:read');
