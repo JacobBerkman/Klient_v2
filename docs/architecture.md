@@ -36,3 +36,15 @@ The runtime entrypoint is `apps/api/src/server.mjs`, and that server is responsi
 - **Smoke verification:** `node scripts/smoke-test.mjs`
 - **Full validation:** `npm run test:all`
 - **Container runtime:** `docker compose --env-file .env up --build -d`
+
+
+## Main parity check
+Use the repository-level parity report command:
+
+```bash
+npm run check:main-parity
+```
+
+Expected outputs:
+- terminal status showing whether `work` is behind `main`
+- `artifacts/main-parity.json` with branch names, merge-base SHA, ahead/behind counts, and missing commit SHAs

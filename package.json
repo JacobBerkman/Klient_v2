@@ -24,6 +24,7 @@
     "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/integration-csrf.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/integration-csrf.mjs && node scripts/smoke-test.mjs && git diff --check",
     "test:integration": "node scripts/integration-tenancy.mjs && node scripts/integration-rbac.mjs && node scripts/integration-templates.mjs && node scripts/integration-exports.mjs && node scripts/integration-portal-lifecycle.mjs && node scripts/integration-analytics.mjs",
     "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/smoke-test.mjs && npm run test:integration && git diff --check",
-    "check:merge-main": "bash scripts/verify-main-merge.sh"
+    "check:merge-main": "bash scripts/verify-main-merge.sh",
+    "check:main-parity": "bash scripts/sync-main-and-report.sh"
   }
 }
