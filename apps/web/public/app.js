@@ -1,4 +1,5 @@
-const state = { token: localStorage.getItem('klient-token') || '', view: 'dashboard', selectedProfileId: null };
+const PIPELINE_STAGES = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
+const state = { token: localStorage.getItem('klient-token') || '', view: 'dashboard', selectedProfileId: null, boardColumns: [] };
 
 const view = document.querySelector('#view');
 const authStatus = document.querySelector('#auth-status');
@@ -197,9 +198,83 @@ async function renderAnalytics() {
 }
 
 async function renderBoard() {
-  const columns = await api('/api/board');
-  view.innerHTML = `<h2>Prospect Board</h2><div class="columns">${columns.map((column) => `<div class="column"><h3>${column.stage}</h3>${column.cards.map((card) => `<div class="item"><strong>${card.firstName} ${card.lastName}</strong><div class="muted">#${card.stageOrderIndex}</div><button data-profile-id="${card.id}">Open Profile</button></div>`).join('')}</div>`).join('')}</div>`;
+  state.boardColumns = await api('/api/board');
+  renderBoardColumns();
   wireProfileButtons();
+}
+
+function renderBoardColumns() {
+  view.innerHTML = `<h2>Prospect Board</h2><div id="board-error" class="muted"></div><div class="columns">${state.boardColumns.map((column) => `<div class="column"><h3>${column.stage}</h3>${column.cards.map((card, cardIndex) => `<div class="item"><strong>${card.firstName} ${card.lastName}</strong><div class="muted">#${card.stageOrder || card.stageOrderIndex}</div><div class="row"><button data-profile-id="${card.id}">Open Profile</button><button data-board-move="${card.id}" data-stage="${column.stage}" data-card-index="${cardIndex}" data-direction="up" ${cardIndex === 0 ? 'disabled' : ''}>↑</button><button data-board-move="${card.id}" data-stage="${column.stage}" data-card-index="${cardIndex}" data-direction="down" ${cardIndex === column.cards.length - 1 ? 'disabled' : ''}>↓</button><button data-board-stage="${card.id}" data-stage="${column.stage}" data-direction="left" ${PIPELINE_STAGES.indexOf(column.stage) === 0 ? 'disabled' : ''}>← Stage</button><button data-board-stage="${card.id}" data-stage="${column.stage}" data-direction="right" ${PIPELINE_STAGES.indexOf(column.stage) === PIPELINE_STAGES.length - 1 ? 'disabled' : ''}>Stage →</button></div></div>`).join('')}</div>`).join('')}</div>`;
+  wireBoardMovement();
+}
+
+function cloneBoardColumns() {
+  return state.boardColumns.map((column) => ({ ...column, cards: column.cards.map((card) => ({ ...card })) }));
+}
+
+async function moveBoardCard(profileId, targetStage, beforeProfileId, optimisticBoard) {
+  const previousBoard = cloneBoardColumns();
+  state.boardColumns = optimisticBoard;
+  renderBoardColumns();
+  try {
+    await api(`/api/profiles/${profileId}/stage`, { method: 'PATCH', body: JSON.stringify({ stage: targetStage, beforeProfileId }) });
+    state.boardColumns = await api('/api/board');
+    renderBoardColumns();
+    wireProfileButtons();
+  } catch (error) {
+    state.boardColumns = previousBoard;
+    renderBoardColumns();
+    wireProfileButtons();
+    const errorNode = document.querySelector('#board-error');
+    if (errorNode) errorNode.textContent = `Move failed: ${error.message}`;
+  }
+}
+
+function wireBoardMovement() {
+  document.querySelectorAll('[data-board-move]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const profileId = button.dataset.boardMove;
+      const stage = button.dataset.stage;
+      const cardIndex = Number(button.dataset.cardIndex);
+      const direction = button.dataset.direction;
+      const columnIndex = state.boardColumns.findIndex((entry) => entry.stage === stage);
+      if (columnIndex < 0) return;
+      const column = state.boardColumns[columnIndex];
+      const cards = [...column.cards];
+      const sourceIndex = cards.findIndex((entry) => entry.id === profileId);
+      if (sourceIndex < 0) return;
+      const destinationIndex = direction === 'up' ? sourceIndex - 1 : sourceIndex + 1;
+      if (destinationIndex < 0 || destinationIndex >= cards.length || sourceIndex !== cardIndex) return;
+      const [movingCard] = cards.splice(sourceIndex, 1);
+      cards.splice(destinationIndex, 0, movingCard);
+      const optimisticBoard = cloneBoardColumns();
+      optimisticBoard[columnIndex] = { ...column, cards: cards.map((entry, index) => ({ ...entry, stageOrder: index + 1, stageOrderIndex: index + 1 })) };
+      const beforeProfileId = cards[destinationIndex + 1]?.id || null;
+      await moveBoardCard(profileId, stage, beforeProfileId, optimisticBoard);
+    });
+  });
+
+  document.querySelectorAll('[data-board-stage]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const profileId = button.dataset.boardStage;
+      const stage = button.dataset.stage;
+      const direction = button.dataset.direction;
+      const sourceStageIndex = PIPELINE_STAGES.indexOf(stage);
+      const targetStage = PIPELINE_STAGES[sourceStageIndex + (direction === 'left' ? -1 : 1)];
+      if (!targetStage) return;
+      const optimisticBoard = cloneBoardColumns();
+      const sourceColumn = optimisticBoard.find((entry) => entry.stage === stage);
+      const targetColumn = optimisticBoard.find((entry) => entry.stage === targetStage);
+      if (!sourceColumn || !targetColumn) return;
+      const sourceCardIndex = sourceColumn.cards.findIndex((entry) => entry.id === profileId);
+      if (sourceCardIndex < 0) return;
+      const [movingCard] = sourceColumn.cards.splice(sourceCardIndex, 1);
+      targetColumn.cards.push({ ...movingCard, stage: targetStage });
+      sourceColumn.cards = sourceColumn.cards.map((entry, index) => ({ ...entry, stageOrder: index + 1, stageOrderIndex: index + 1 }));
+      targetColumn.cards = targetColumn.cards.map((entry, index) => ({ ...entry, stageOrder: index + 1, stageOrderIndex: index + 1 }));
+      await moveBoardCard(profileId, targetStage, null, optimisticBoard);
+    });
+  });
 }
 
 async function renderCurrentView() {

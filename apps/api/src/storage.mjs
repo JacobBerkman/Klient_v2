@@ -99,7 +99,7 @@ function replaceRows(tableName, rows, mapper) {
 function syncQueryTables(state) {
   replaceRows('firms', state.firms || [], (firm) => [firm.id, firm.name, firm.slug, JSON.stringify(firm)]);
   replaceRows('users', state.users || [], (user) => [user.id, user.firmId, user.email, user.role, JSON.stringify(user)]);
-  replaceRows('profiles', state.profiles || [], (profile) => [profile.id, profile.firmId, profile.kind, profile.firstName, profile.lastName, profile.stage || null, profile.stageOrderIndex || null, JSON.stringify(profile)]);
+  replaceRows('profiles', state.profiles || [], (profile) => [profile.id, profile.firmId, profile.kind, profile.firstName, profile.lastName, profile.stage || null, profile.stageOrder ?? profile.stageOrderIndex ?? null, JSON.stringify(profile)]);
   replaceRows('households', state.households || [], (household) => [household.id, household.firmId, household.name, JSON.stringify(household)]);
   replaceRows('form_templates', state.formTemplates || [], (template) => [template.id, template.firmId, template.name, JSON.stringify(template)]);
   replaceRows('document_templates', state.documentTemplates || [], (template) => [template.id, template.firmId, template.name, template.status || 'draft', JSON.stringify(template)]);

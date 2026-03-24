@@ -7,7 +7,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - persistent SQLite-backed local data storage in `data/app.db`
 - dashboard with stats and recent activity
 - prospects and clients management
-- persisted prospect pipeline board
+- persisted prospect pipeline board with deterministic stage ordering, intra-stage reordering, and cross-stage move controls
 - households and member linking
 - dynamic form template and submission flows
 - guided client portal for draft and submitted onboarding responses
@@ -39,6 +39,12 @@ Run the smoke test:
 
 ```bash
 node scripts/smoke-test.mjs
+```
+
+Run pipeline ordering regression coverage:
+
+```bash
+node scripts/pipeline-ordering-test.mjs
 ```
 
 Run the broader local validation bundle:

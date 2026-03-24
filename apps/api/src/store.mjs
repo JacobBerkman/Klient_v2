@@ -126,6 +126,7 @@ function seedState() {
         email: 'casey@example.com',
         phone: '555-111-3333',
         stage: 'discovery',
+        stageOrder: 1,
         stageOrderIndex: 1,
         source: { cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10', displayValue: sourceDisplay({ cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10' }) },
         address: { city: 'Austin', state: 'TX' },
@@ -143,6 +144,7 @@ function seedState() {
         email: 'riley@example.com',
         phone: '555-111-4444',
         stage: 'analysis',
+        stageOrder: 1,
         stageOrderIndex: 1,
         source: { cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15', displayValue: sourceDisplay({ cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15' }) },
         address: { city: 'Houston', state: 'TX' },
@@ -234,6 +236,21 @@ export function createStore() {
     persist();
   }
 
+  function getStageProspects(user, stage, excludeProfileId = null) {
+    return state.profiles
+      .filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === stage && entry.id !== excludeProfileId)
+      .sort((a, b) => ((a.stageOrder ?? a.stageOrderIndex ?? 0) - (b.stageOrder ?? b.stageOrderIndex ?? 0)));
+  }
+
+  function normalizeStageOrder(user, stage) {
+    const ordered = getStageProspects(user, stage);
+    ordered.forEach((entry, index) => {
+      const nextOrder = index + 1;
+      entry.stageOrder = nextOrder;
+      entry.stageOrderIndex = nextOrder;
+    });
+  }
+
   return {
     state,
     register({ firmName, firstName, lastName, email, password }) {
@@ -279,7 +296,7 @@ export function createStore() {
         .filter((profile) => profile.firmId === user.firmId)
         .filter((profile) => !kind || profile.kind === kind)
         .filter((profile) => !q || `${profile.firstName} ${profile.lastName} ${profile.email || ''}`.toLowerCase().includes(q))
-        .sort((a, b) => (a.stage === b.stage ? (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0) : a.lastName.localeCompare(b.lastName)));
+        .sort((a, b) => (a.stage === b.stage ? ((a.stageOrder ?? a.stageOrderIndex ?? 0) - (b.stageOrder ?? b.stageOrderIndex ?? 0)) : a.lastName.localeCompare(b.lastName)));
     },
     getProfileDetail(user, profileId) {
       requirePermission(user, 'profiles:read');
@@ -296,6 +313,7 @@ export function createStore() {
       requirePermission(user, 'profiles:write');
       const createdAt = now();
       const inStage = state.profiles.filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === (input.stage || 'discovery')).length;
+      const stageOrder = input.kind === 'prospect' ? inStage + 1 : null;
       const profile = {
         pii: { maskingPolicy: 'role_based', ssnCiphertext: encryptValue(input.ssn), taxIdCiphertext: encryptValue(input.taxId) },
         id: randomUUID(),
@@ -309,7 +327,8 @@ export function createStore() {
         dateOfBirth: input.dateOfBirth || '',
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
         stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
-        stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
+        stageOrder: input.kind === 'prospect' ? stageOrder : null,
+        stageOrderIndex: input.kind === 'prospect' ? stageOrder : null,
         address: input.address || {},
         customProfile: input.customProfile || {},
         householdId: input.householdId || null,
@@ -327,7 +346,7 @@ export function createStore() {
     },
     updateProfile(user, profileId, patch) {
       requirePermission(user, 'profiles:write');
-      if (patch.kind === 'client') { patch.stage = null; patch.stageOrderIndex = null; }
+      if (patch.kind === 'client') { patch.stage = null; patch.stageOrder = null; patch.stageOrderIndex = null; }
       if (patch.kind === 'prospect' && !patch.stage) { patch.stage = 'discovery'; }
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
@@ -341,6 +360,10 @@ export function createStore() {
         delete nextPatch.taxId;
       }
       Object.assign(profile, nextPatch, { updatedAt: now() });
+      if (profile.kind === 'prospect') {
+        profile.stageOrder = profile.stageOrder ?? profile.stageOrderIndex ?? 1;
+        profile.stageOrderIndex = profile.stageOrder;
+      }
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) });
       persist();
       return profile;
@@ -349,20 +372,22 @@ export function createStore() {
       requirePermission(user, 'pipeline:write');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
-      const sameStage = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === stage && entry.id !== profileId).sort((a,b)=>(a.stageOrderIndex||0)-(b.stageOrderIndex||0));
       const previousStage = profile.stage || null;
-      let nextIndex = sameStage.length + 1;
+      const destinationStage = getStageProspects(user, stage, profileId);
+      let insertIndex = destinationStage.length;
       if (beforeProfileId) {
-        const before = sameStage.find((entry) => entry.id === beforeProfileId);
-        if (before) {
-          nextIndex = before.stageOrderIndex || 1;
-          sameStage.filter((entry) => (entry.stageOrderIndex || 0) >= nextIndex).forEach((entry) => { entry.stageOrderIndex = (entry.stageOrderIndex || 0) + 1; });
-        }
+        const beforeIndex = destinationStage.findIndex((entry) => entry.id === beforeProfileId);
+        if (beforeIndex >= 0) insertIndex = beforeIndex;
       }
       profile.kind = 'prospect';
       profile.stage = stage;
-      profile.stageOrderIndex = nextIndex;
       profile.updatedAt = now();
+      destinationStage.splice(insertIndex, 0, profile);
+      destinationStage.forEach((entry, index) => {
+        entry.stageOrder = index + 1;
+        entry.stageOrderIndex = index + 1;
+      });
+      if (previousStage && previousStage !== stage) normalizeStageOrder(user, previousStage);
       state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, fromStage: previousStage, toStage: stage, changedByUserId: user.id, changedAt: profile.updatedAt });
       addAudit(user.firmId, user.id, 'profile', profile.id, 'pipeline.stage_changed', { fromStage: previousStage, toStage: stage });
       persist();
@@ -374,7 +399,7 @@ export function createStore() {
         stage,
         cards: state.profiles
           .filter((profile) => profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === stage)
-          .sort((a, b) => (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0))
+          .sort((a, b) => ((a.stageOrder ?? a.stageOrderIndex ?? 0) - (b.stageOrder ?? b.stageOrderIndex ?? 0)))
       }));
     },
     listStageHistory(user, profileId) {

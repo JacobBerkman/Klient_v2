@@ -23,6 +23,8 @@ pre { white-space: pre-wrap; }
 .item { padding: 12px; border-radius: 12px; background: #0b1220; border: 1px solid #1e293b; }
 .columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; align-items: start; }
 .column { background: #0b1220; border-radius: 12px; padding: 12px; }
+.column .row { flex-wrap: wrap; margin-top: 8px; }
+#board-error { min-height: 20px; color: #fca5a5; }
 .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; background: #1d4ed8; font-size: 12px; }
 
 .detail-header { display: grid; gap: 8px; margin-bottom: 16px; }
