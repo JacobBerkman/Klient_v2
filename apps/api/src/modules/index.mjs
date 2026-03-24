@@ -19,14 +19,14 @@ export function createModules({ store, reads }) {
   return {
     policy,
     auth: createAuthService({ store }),
-    firmsUsers: createFirmsUsersService({ store }),
-    profiles: createProfilesService({ profileRepository }),
-    pipeline: createPipelineService({ store }),
-    households: createHouseholdsService({ store }),
-    forms: createFormsService({ store }),
-    templates: createTemplatesService({ templateRepository }),
-    exports: createExportsService({ store }),
-    audit: createAuditService({ store }),
-    analytics: createAnalyticsService({ store, reads })
+    firmsUsers: createFirmsUsersService({ store, policy }),
+    profiles: createProfilesService({ profileRepository, policy }),
+    pipeline: createPipelineService({ store, policy }),
+    households: createHouseholdsService({ store, policy }),
+    forms: createFormsService({ store, policy }),
+    templates: createTemplatesService({ templateRepository, policy }),
+    exports: createExportsService({ store, policy }),
+    audit: createAuditService({ store, policy }),
+    analytics: createAnalyticsService({ store, reads, policy })
   };
 }

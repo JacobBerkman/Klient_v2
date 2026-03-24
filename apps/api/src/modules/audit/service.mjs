@@ -1,5 +1,5 @@
-export function createAuditService({ store }) {
+export function createAuditService({ store, policy }) {
   return {
-    list(user) { return store.listAudit(user); }
+    list(user) { policy.requireGuard(user, 'canReadAudit'); return store.listAudit(user); }
   };
 }
