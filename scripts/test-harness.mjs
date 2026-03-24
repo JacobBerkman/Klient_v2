@@ -28,8 +28,30 @@ export async function createTestContext(name) {
       if (response.ok) {
         return {
           port,
+          csrfToken: '',
+          csrfCookie: '',
+          async ensureCsrf() {
+            if (this.csrfToken && this.csrfCookie) {
+              return { csrfToken: this.csrfToken, csrfCookie: this.csrfCookie };
+            }
+            const csrfResponse = await fetch(`http://127.0.0.1:${port}/api/csrf`);
+            const csrfData = await csrfResponse.json();
+            if (!csrfResponse.ok || !csrfData.csrfToken) {
+              throw new Error(`CSRF bootstrap failed: ${csrfData?.message || csrfData?.error?.message || 'unknown error'}`);
+            }
+            this.csrfToken = csrfData.csrfToken;
+            this.csrfCookie = (csrfResponse.headers.get('set-cookie') || '').split(';')[0];
+            return { csrfToken: this.csrfToken, csrfCookie: this.csrfCookie };
+          },
           async request(path, options = {}) {
-            const responseInner = await fetch(`http://127.0.0.1:${port}${path}`, options);
+            const method = (options.method || 'GET').toUpperCase();
+            const headers = { ...(options.headers || {}) };
+            if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path.startsWith('/api/')) {
+              const { csrfToken, csrfCookie } = await this.ensureCsrf();
+              headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken;
+              headers.Cookie = headers.Cookie || csrfCookie;
+            }
+            const responseInner = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers });
             const data = await responseInner.json();
             if (!responseInner.ok) {
               throw new Error(`${path}: ${data.message || 'Request failed'}`);
@@ -37,7 +59,14 @@ export async function createTestContext(name) {
             return data;
           },
           async requestExpectError(path, options = {}, status = 400) {
-            const responseInner = await fetch(`http://127.0.0.1:${port}${path}`, options);
+            const method = (options.method || 'GET').toUpperCase();
+            const headers = { ...(options.headers || {}) };
+            if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path.startsWith('/api/')) {
+              const { csrfToken, csrfCookie } = await this.ensureCsrf();
+              headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken;
+              headers.Cookie = headers.Cookie || csrfCookie;
+            }
+            const responseInner = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers });
             const data = await responseInner.json();
             if (responseInner.status !== status) {
               throw new Error(`${path}: expected ${status}, received ${responseInner.status}`);
