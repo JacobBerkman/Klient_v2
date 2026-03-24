@@ -566,8 +566,9 @@ async function renderAnalytics() {
 }
 
 async function renderBoard() {
-  const columns = await api(routes.board());
-  view.innerHTML = `<h2>Prospect Board</h2><div class="columns">${columns.map((column) => `<div class="column"><h3>${column.stage}</h3>${column.cards.map((card) => `<div class="item"><strong>${card.firstName} ${card.lastName}</strong><div class="muted">#${card.stageOrderIndex}</div><button data-profile-id="${card.id}">Open Profile</button></div>`).join('')}</div>`).join('')}</div>`;
+  const board = await api(routes.board());
+  const columns = board.columns || [];
+  view.innerHTML = `<h2>Prospect Board</h2><div class="muted">Board version: ${board.boardVersion || 'n/a'}</div><div class="columns">${columns.map((column) => `<div class="column"><h3>${column.stage}</h3>${column.cards.map((card) => `<div class="item"><strong>${card.firstName} ${card.lastName}</strong><div class="muted">#${card.stageOrderIndex}</div><button data-profile-id="${card.id}">Open Profile</button></div>`).join('')}</div>`).join('')}</div>`;
   const templates = await api('/api/templates');
   view.innerHTML = `<h2>Templates</h2>${renderItems(templates, (item) => `<div class="item"><strong>${escapeHtml(item.name)}</strong><div class="muted">${escapeHtml(item.fileName)}</div><pre>${escapeHtml(JSON.stringify(item.mappings, null, 2))}</pre></div>`, 'No document templates yet.')}`;
 }
@@ -588,8 +589,10 @@ async function renderAnalytics() {
 }
 
 async function renderBoard() {
-  const columns = await api('/api/board');
-  view.innerHTML = `<div class="section-header"><div><h2>Prospect Board</h2><p class="muted">Track persisted per-stage ordering and quickly open prospect details.</p></div><button id="open-all-profiles">Open searchable list</button></div><div class="columns">${columns.map((column) => `<div class="column"><h3>${escapeHtml(column.stage)}</h3>${column.cards.length ? column.cards.map((card) => `<div class="item"><strong>${escapeHtml(profileName(card))}</strong><div class="muted">#${card.stageOrderIndex}</div><button data-profile-id="${card.id}">Open Profile</button></div>`).join('') : '<div class="item compact muted">No cards</div>'}</div>`).join('')}</div>`;
+  const board = await api('/api/board');
+  const columns = board.columns || [];
+  const conflictBanner = board.conflict ? `<div class="item"><strong>Ordering conflict:</strong> ${escapeHtml(board.conflict.message || 'refresh required')}</div>` : '';
+  view.innerHTML = `<div class="section-header"><div><h2>Prospect Board</h2><p class="muted">Track persisted per-stage ordering and quickly open prospect details.</p><p class="muted">Board version ${escapeHtml(String(board.boardVersion || 'n/a'))}</p></div><button id="open-all-profiles">Open searchable list</button></div>${conflictBanner}<div class="columns">${columns.map((column) => `<div class="column"><h3>${escapeHtml(column.stage)}</h3>${column.cards.length ? column.cards.map((card) => `<div class="item"><strong>${escapeHtml(profileName(card))}</strong><div class="muted">#${card.stageOrderIndex} • v${card.pipelineVersion || 1}</div><button data-profile-id="${card.id}">Open Profile</button></div>`).join('') : '<div class="item compact muted">No cards</div>'}</div>`).join('')}</div>`;
   document.querySelector('#open-all-profiles').addEventListener('click', async () => {
     state.view = 'profiles';
     state.profileFilter = 'prospect';
