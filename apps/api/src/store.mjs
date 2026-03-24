@@ -382,11 +382,12 @@ export function createStore() {
     },
     createHousehold(user, input) {
       requirePermission(user, 'households:write');
+      const primaryClient = state.profiles.find((entry) => entry.id === input.primaryClientId && entry.firmId === user.firmId);
+      if (!primaryClient) throw new Error('Primary client profile not found.');
       const household = { id: randomUUID(), firmId: user.firmId, name: input.name, primaryClientId: input.primaryClientId, createdAt: now() };
       state.households.push(household);
       state.householdMembers.push({ householdId: household.id, clientId: input.primaryClientId, role: 'primary', firmId: user.firmId, createdAt: household.createdAt });
-      const profile = state.profiles.find((entry) => entry.id === input.primaryClientId && entry.firmId === user.firmId);
-      if (profile) profile.householdId = household.id;
+      primaryClient.householdId = household.id;
       addAudit(user.firmId, user.id, 'household', household.id, 'household.created', { name: household.name });
       persist();
       return household;
@@ -395,10 +396,11 @@ export function createStore() {
       requirePermission(user, 'households:write');
       const household = state.households.find((entry) => entry.id === householdId && entry.firmId === user.firmId);
       if (!household) throw new Error('Household not found.');
+      const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId);
+      if (!profile) throw new Error('Client profile not found.');
       const member = { householdId, clientId: input.clientId, role: input.role, firmId: user.firmId, createdAt: now() };
       state.householdMembers.push(member);
-      const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId);
-      if (profile) profile.householdId = householdId;
+      profile.householdId = householdId;
       addAudit(user.firmId, user.id, 'household', householdId, 'household.member_added', input);
       persist();
       return member;
@@ -446,6 +448,10 @@ export function createStore() {
     },
     createFormSubmission(user, input) {
       requirePermission(user, 'forms:write');
+      const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId);
+      if (!profile) throw new Error('Client profile not found.');
+      const template = state.formTemplates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Form template not found.');
       const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status: input.status || 'draft', data: input.data || {}, createdAt: now(), updatedAt: now() };
       state.formSubmissions.push(submission);
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', { templateId: input.templateId, clientId: input.clientId });
@@ -490,6 +496,10 @@ export function createStore() {
     },
     createExport(user, input) {
       requirePermission(user, 'exports:write');
+      const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId);
+      if (!profile) throw new Error('Client profile not found.');
+      const template = state.documentTemplates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Document template not found.');
       const job = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, type: input.type || 'pdf', status: 'queued', output: null, createdAt: now(), updatedAt: now() };
       state.exportJobs.push(job);
       addAudit(user.firmId, user.id, 'export_job', job.id, 'export_job.created', { clientId: input.clientId, templateId: input.templateId, type: job.type });
@@ -620,6 +630,8 @@ export function createStore() {
     },
     createPortalLink(user, profileId) {
       requirePermission(user, 'profiles:read');
+      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
+      if (!profile) throw new Error('Profile not found.');
       const link = { id: randomUUID(), firmId: user.firmId, profileId, token: randomUUID(), createdAt: now() };
       state.portalLinks.push(link);
       persist();
