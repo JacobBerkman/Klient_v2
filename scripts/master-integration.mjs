@@ -6,6 +6,7 @@ const integrationScripts = [
   'integration-templates.mjs',
   'integration-exports.mjs',
   'integration-portal-lifecycle.mjs',
+  'integration-submission-repeatable-items.mjs',
   'integration-analytics.mjs',
   'integration-csrf.mjs'
 ];
