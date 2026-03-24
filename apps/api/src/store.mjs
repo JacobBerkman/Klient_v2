@@ -1,20 +1,11 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { createAuthService } from './auth/service.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { createOidcAuthProvider } from './auth/oidc-provider.mjs';
 import { createSamlAuthProvider } from './auth/saml-provider.mjs';
-import { createHash, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
 import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs';
-import { createLocalAuthProvider } from './auth/local-provider.mjs';
-import { createAuthService } from './auth/service.mjs';
-import { createAuthService } from './auth/service.mjs';
-import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
-import { createLocalAuthProvider } from './auth/local-provider.mjs';
-import { createAuthService } from './auth/service.mjs';
-import { createAuthService } from './auth/service.mjs';
-import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs';
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
@@ -97,6 +88,7 @@ const OPERATION_TO_POLICY = {
   'portal:read': ['portal', 'read'],
   'portal:write': ['portal', 'write'],
   'client:write': ['client', 'write']
+};
 const CSRF_TOKEN_TTL_MS = 1000 * 60 * 15;
 const PERMISSIONS = {
   admin: ['*'],
@@ -131,6 +123,14 @@ const SENSITIVE_ACCESS_POLICY = {
   },
   client: {}
 };
+const SENSITIVE_READ_REASON_CODES = new Set([
+  'customer_request',
+  'fraud_investigation',
+  'regulatory_review',
+  'support_escalation',
+  'compliance_review'
+]);
+const REQUIRED_UNMASK_POLICY = 'privileged_sensitive_read_v1';
 
 function can(role, operation) {
   const policy = OPERATION_TO_POLICY[operation];
@@ -143,6 +143,10 @@ function authorize(user, operation) {
   if (!can(user.role, operation)) {
     throw new Error(`Missing permission: ${operation}`);
   }
+}
+
+function requirePermission(user, operation) {
+  return authorize(user, operation);
 }
 
 function now() {
@@ -293,6 +297,8 @@ function migrateTemplateSystems(state) {
       createdAt: entry.createdAt,
       updatedAt: entry.updatedAt
     }));
+}
+
 function parseIso(value) {
   const time = new Date(value || '').getTime();
   return Number.isFinite(time) ? time : 0;
@@ -336,6 +342,8 @@ function normalizeSectionKey(value) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
+}
+
 function pipelineConflict(message, details = {}) {
   const error = new Error(message);
   error.statusCode = 409;
@@ -513,25 +521,20 @@ function seedState() {
     portalLinks: [],
     authAttempts: [],
     mfaChallenges: [],
-    mfaEnrollments: []
+    mfaEnrollments: [],
     boardVersions: { [firmId]: 1 }
   };
 }
 
-export function createStore(options = {}) {
+export function createStore({ objectStorage = defaultObjectStorage, kmsAdapter } = {}) {
   const state = loadState(seedState);
   const piiCrypto = new PiiCryptoService({
-    keyProvider: createKeyProvider(runtime, { kmsAdapter: options.kmsAdapter }),
+    keyProvider: createKeyProvider(runtime, { kmsAdapter }),
     legacyKeyId: process.env.PII_LEGACY_KEY_ID || 'legacy-app-secret-v1'
   });
-export function createStore({ objectStorage = defaultObjectStorage } = {}) {
-  const state = loadState(seedState);
   if (!Array.isArray(state.csrfTokens)) state.csrfTokens = [];
   migrateTemplateSystems(state);
   saveState(state);
-
-  function persist() {
-    migrateTemplateSystems(state);
   state.pendingUploadIntents ||= [];
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
@@ -767,9 +770,18 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     return assertFirmScopedRecord(template, user, entityName);
   }
 
-  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}) {
   function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}, options = {}) {
-    state.auditEvents.push({ id: randomUUID(), firmId, actorUserId, entityType, entityId, action, occurredAt: now(), metadata });
+    const immutableMetadata = Object.freeze(deepClone(metadata));
+    state.auditEvents.push(Object.freeze({
+      id: randomUUID(),
+      firmId,
+      actorUserId,
+      entityType,
+      entityId,
+      action,
+      occurredAt: now(),
+      metadata: immutableMetadata
+    }));
     if (options.persist !== false) {
       persist();
     }
@@ -879,6 +891,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
 
   function getSensitivePolicy(role, purpose = 'profile_view') {
     return SENSITIVE_ACCESS_POLICY[role]?.[purpose] || null;
+  }
+
+  function normalizeSensitiveReason(input) {
+    return String(input || '').trim().toLowerCase();
   }
 
   function maskSsn(value) {
@@ -1106,17 +1122,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return profile;
     },
     moveProfileStage(user, profileId, stage, beforeProfileId = null) {
-      authorize(user, 'pipeline:write');
-      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
-      if (!profile) throw new Error('Profile not found.');
-      const sameStage = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect' && entry.stage === stage && entry.id !== profileId).sort((a,b)=>(a.stageOrderIndex||0)-(b.stageOrderIndex||0));
-      const previousStage = profile.stage || null;
-      let nextIndex = sameStage.length + 1;
-      if (beforeProfileId) {
-        const before = sameStage.find((entry) => entry.id === beforeProfileId);
-        if (before) {
-          nextIndex = before.stageOrderIndex || 1;
-          sameStage.filter((entry) => (entry.stageOrderIndex || 0) >= nextIndex).forEach((entry) => { entry.stageOrderIndex = (entry.stageOrderIndex || 0) + 1; });
       return this.reorderBoard(user, { profileId, toStage: stage, beforeProfileId });
     },
     reorderBoard(user, input) {
@@ -1342,11 +1347,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { id: template.id, firmId: template.firmId, name: template.name, description: template.description, sections: template.formSchema.sections, createdAt, updatedAt: createdAt };
     },
     listFormSubmissions(user, status = null) {
-      authorize(user, 'profiles:read');
-      requirePermission(user, 'profiles:read');
-      const submissions = state.formSubmissions
       const currentTime = Date.now();
-      return state.formSubmissions
+      const submissions = state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || entry.status === status)
         .map((entry) => {
@@ -1370,9 +1372,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.formSchema?.sections || [] }));
       submissions.forEach(ensureSubmissionRepeatableItemKeys);
-      const templates = state.formTemplates
-        .filter((entry) => entry.firmId === user.firmId)
-        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
       const uploads = state.documentUploads
         .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
         .slice()
@@ -1464,10 +1463,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return this.listFormSubmissions(user, 'draft');
     },
     createFormSubmission(user, input) {
-      authorize(user, 'forms:write');
       requireFirmProfile(user, input.clientId);
       requireFirmTemplate(user, input.templateId, 'Form template');
-      const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status: input.status || 'draft', data: input.data || {}, createdAt: now(), updatedAt: now() };
       requirePermission(user, 'forms:write');
       const status = input.status || 'draft';
       const createdAt = now();
@@ -1660,10 +1657,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
     },
     updateTemplateMappings(user, templateId, mappings) {
-      authorize(user, 'templates:write');
-      const template = assertFirmScopedRecord(state.documentTemplates.find((entry) => entry.id === templateId), user, 'Template');
-      template.mappings = mappings;
-      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
       requirePermission(user, 'templates:write');
       const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
@@ -1684,8 +1677,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { ...template, fileName: template.documentMetadata.fileName, status: template.publishState };
     },
     publishTemplate(user, templateId) {
-      authorize(user, 'templates:publish');
-      const template = assertFirmScopedRecord(state.documentTemplates.find((entry) => entry.id === templateId), user, 'Template');
       requirePermission(user, 'templates:write');
       const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
@@ -1798,8 +1789,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
         consumedAt: null
       };
-      authorize(user, 'users:write');
-      const invite = { id: randomUUID(), firmId: user.firmId, email: input.email.toLowerCase(), role: input.role || 'advisor', invitedByUserId: user.id, token: randomUUID(), createdAt: now() };
       state.invites.push(invite);
       addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role });
       persist();
@@ -1978,9 +1967,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .filter((entry) => entry.firmId === link.firmId && entry.kind === 'form')
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.formSchema?.sections || [] }));
       submissions.forEach(ensureSubmissionRepeatableItemKeys);
-      const availableTemplates = state.formTemplates
-        .filter((entry) => entry.firmId === link.firmId)
-        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
       const uploads = state.documentUploads
         .filter((entry) => entry.firmId === link.firmId && entry.clientId === link.profileId)
         .slice()
@@ -2058,8 +2044,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 });
     },
     getAnalytics(user) {
-      authorize(user, 'analytics:read');
-      const prospects = state.profiles.filter((entry) => entry.firmId === user.firmId && entry.kind === 'prospect');
       requirePermission(user, 'analytics:read');
       const firmProfiles = state.profiles.filter((entry) => entry.firmId === user.firmId);
       const prospects = firmProfiles.filter((entry) => entry.kind === 'prospect');
@@ -2144,20 +2128,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         profileCount: firmProfiles.length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
-        templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form').length
         templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length,
         avgProspectStageAgeDays: Number(average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2))
       };
     },
-    getMaskedSensitiveData(user, profileId) {
-      authorize(user, 'profiles:sensitive:read');
-      const profile = requireFirmProfile(user, profileId);
-      const ssn = decryptValue(profile.pii?.ssnCiphertext);
-      const taxId = decryptValue(profile.pii?.taxIdCiphertext);
-      return {
-        ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
-        taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
-
     async createExportDownloadUrl(user, exportId) {
       requirePermission(user, 'exports:write');
       const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
@@ -2181,9 +2155,28 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       if (!profile) throw new Error('Profile not found.');
       const purpose = options.purpose || 'profile_view';
       const requestedUnmask = Boolean(options.unmask);
+      const reasonCode = normalizeSensitiveReason(options.reasonCode);
+      const justification = String(options.justification || '').trim();
+      if (!reasonCode || !SENSITIVE_READ_REASON_CODES.has(reasonCode)) {
+        throw new Error('Sensitive read reasonCode is required and must be an approved code.');
+      }
+      if (requestedUnmask && !justification) {
+        throw new Error('Sensitive unmask reads require non-empty justification.');
+      }
+      if (requestedUnmask && options.privilegedPolicy !== REQUIRED_UNMASK_POLICY) {
+        throw new Error('Sensitive unmask reads require explicit privileged policy acknowledgement.');
+      }
       const policy = getSensitivePolicy(user.role, purpose);
       if (!policy?.allowMasked || (requestedUnmask && !policy.allowUnmasked)) {
-        addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', { purpose, requestedUnmask, role: user.role });
+        addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', {
+          immutable: true,
+          policy: REQUIRED_UNMASK_POLICY,
+          actor: { userId: user.id, role: user.role },
+          reason: { code: reasonCode, justification },
+          profile: { id: profileId, purpose },
+          requestedUnmask,
+          fieldScope: requestedUnmask ? ['ssn', 'taxId'] : ['ssnMasked', 'taxIdMasked']
+        });
         throw new Error('Sensitive data access denied for role/purpose combination.');
       }
       const ssn = piiCrypto.decrypt(readSensitiveRecord(profile, 'ssn'));
@@ -2197,11 +2190,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         response.taxId = taxId;
       }
       addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
-        purpose,
+        immutable: true,
+        policy: REQUIRED_UNMASK_POLICY,
+        actor: { userId: user.id, role: user.role },
+        reason: { code: reasonCode, justification },
+        profile: { id: profileId, purpose },
         requestedUnmask,
         grantedUnmask: requestedUnmask,
-        role: user.role,
-        fields: requestedUnmask ? ['ssn', 'taxId'] : ['ssnMasked', 'taxIdMasked']
+        fieldScope: requestedUnmask ? ['ssn', 'taxId'] : ['ssnMasked', 'taxIdMasked']
       });
       return response;
     },
