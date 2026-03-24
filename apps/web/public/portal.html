@@ -73,7 +73,8 @@
         token,
         data: null,
         selectedTemplateId: '',
-        sectionRepeats: new Map()
+        sectionRepeats: new Map(),
+        draftData: {}
       };
 
       const fieldTypeToInput = {
@@ -94,6 +95,37 @@
 
       function renderEmptyState(target, message) {
         target.innerHTML = `<div class="item compact muted">${escapeHtml(message)}</div>`;
+      }
+
+      function normalizeRule(rule) {
+        if (!rule || typeof rule !== 'object' || !Array.isArray(rule.conditions) || !rule.conditions.length) return null;
+        return { match: rule.match === 'any' ? 'any' : 'all', conditions: rule.conditions };
+      }
+
+      function evaluateCondition(condition, answers) {
+        const actual = answers?.[condition.field];
+        const operator = condition.operator || 'equals';
+        if (operator === 'exists') return actual !== undefined && actual !== null && String(actual).trim() !== '';
+        if (operator === 'not_exists') return actual === undefined || actual === null || String(actual).trim() === '';
+        if (operator === 'not_equals') return actual !== condition.value;
+        if (operator === 'in') return Array.isArray(condition.value) ? condition.value.includes(actual) : false;
+        if (operator === 'not_in') return Array.isArray(condition.value) ? !condition.value.includes(actual) : true;
+        if (operator === 'gt') return Number(actual) > Number(condition.value);
+        if (operator === 'gte') return Number(actual) >= Number(condition.value);
+        if (operator === 'lt') return Number(actual) < Number(condition.value);
+        if (operator === 'lte') return Number(actual) <= Number(condition.value);
+        return actual === condition.value;
+      }
+
+      function isVisibleByRule(showWhen, answers) {
+        const rule = normalizeRule(showWhen);
+        if (!rule) return true;
+        if (rule.match === 'any') return rule.conditions.some((condition) => evaluateCondition(condition, answers));
+        return rule.conditions.every((condition) => evaluateCondition(condition, answers));
+      }
+
+      function sectionDataKey(section, sectionIndex) {
+        return (section.title || `section_${sectionIndex + 1}`).toLowerCase().replace(/[^a-z0-9]+/g, '_');
       }
 
       function selectedTemplate() {
@@ -141,24 +173,25 @@
         return rowIndex === null ? `section-${sectionIndex}::${fieldKey}` : `section-${sectionIndex}::${rowIndex}::${fieldKey}`;
       }
 
-      function renderField(sectionIndex, field, rowIndex = null) {
+      function renderField(sectionIndex, field, answers, value = '', rowIndex = null) {
         const baseName = fieldName(sectionIndex, field.key, rowIndex);
         const label = escapeHtml(field.label || field.key);
+        const escapedValue = escapeHtml(value);
         if (field.type === 'textarea') {
-          return `<label><span>${label}</span><textarea name="${baseName}" rows="4" placeholder="${label}"></textarea></label>`;
+          return `<label><span>${label}</span><textarea name="${baseName}" rows="4" placeholder="${label}">${escapedValue}</textarea></label>`;
         }
         if (field.type === 'select') {
-          return `<label><span>${label}</span><select name="${baseName}"><option value="">Select…</option>${(field.options || []).map((option) => `<option value="${escapeHtml(option)}">${escapeHtml(option)}</option>`).join('')}</select></label>`;
+          return `<label><span>${label}</span><select name="${baseName}"><option value="">Select…</option>${(field.options || []).map((option) => `<option value="${escapeHtml(option)}" ${String(option) === String(value) ? 'selected' : ''}>${escapeHtml(option)}</option>`).join('')}</select></label>`;
         }
         const inputType = fieldTypeToInput[field.type] || 'text';
-        return `<label><span>${label}</span><input type="${inputType}" name="${baseName}" placeholder="${label}" /></label>`;
+        return `<label><span>${label}</span><input type="${inputType}" name="${baseName}" placeholder="${label}" value="${escapedValue}" /></label>`;
       }
 
       function repeatCountFor(sectionIndex) {
         return portalState.sectionRepeats.get(sectionIndex) || 1;
       }
 
-      function renderTemplateFields() {
+      function renderTemplateFields(workingData = portalState.draftData || {}) {
         const template = selectedTemplate();
         if (!template) {
           templateDescription.textContent = 'No shared template selected yet.';
@@ -172,14 +205,31 @@
         statusBadge.textContent = `Ready: ${template.name}`;
         statusBadge.className = 'badge';
 
+        const answers = {};
         fieldsTarget.innerHTML = template.sections.map((section, sectionIndex) => {
+          if (!isVisibleByRule(section.showWhen, answers)) return '';
           const repeatable = Boolean(section.repeatable);
-          const repeatCount = repeatable ? repeatCountFor(sectionIndex) : 1;
+          const dataKey = sectionDataKey(section, sectionIndex);
+          const seedRows = repeatable && Array.isArray(workingData[dataKey]) ? workingData[dataKey] : [];
+          const repeatCount = repeatable ? Math.max(repeatCountFor(sectionIndex), seedRows.length || 1) : 1;
           const repeatedBlocks = Array.from({ length: repeatCount }, (_, rowIndex) => `
             <div class="repeat-block">
               ${repeatable ? `<div class="muted">Entry ${rowIndex + 1}</div>` : ''}
               <div class="grid two compact-grid">
-                ${(section.fields || []).map((field) => renderField(sectionIndex, field, repeatable ? rowIndex : null)).join('')}
+                ${(section.fields || []).map((field) => {
+                  const rowData = repeatable ? (seedRows[rowIndex] || {}) : workingData;
+                  const scopedAnswers = repeatable ? { ...answers, ...rowData } : answers;
+                  if (!isVisibleByRule(field.showWhen, scopedAnswers)) return '';
+                  const value = rowData[field.key] ?? '';
+                  if (repeatable) {
+                    if (!answers[dataKey]) answers[dataKey] = [];
+                    answers[dataKey][rowIndex] ||= {};
+                    answers[dataKey][rowIndex][field.key] = value;
+                  } else {
+                    answers[field.key] = value;
+                  }
+                  return renderField(sectionIndex, field, scopedAnswers, value, repeatable ? rowIndex : null);
+                }).join('')}
               </div>
             </div>
           `).join('');
@@ -202,14 +252,21 @@
           button.addEventListener('click', () => {
             const sectionIndex = Number(button.dataset.addRepeat);
             portalState.sectionRepeats.set(sectionIndex, repeatCountFor(sectionIndex) + 1);
-            renderTemplateFields();
+            renderTemplateFields(collectCurrentData());
+          });
+        });
+
+        fieldsTarget.querySelectorAll('input, select, textarea').forEach((input) => {
+          input.addEventListener('change', () => {
+            portalState.draftData = collectCurrentData();
+            renderTemplateFields(portalState.draftData);
           });
         });
       }
 
-      function buildPayloadFromForm() {
+      function collectCurrentData() {
         const template = selectedTemplate();
-        if (!template) throw new Error('Please select a template.');
+        if (!template) return {};
         const formData = new FormData(form);
         const payload = {};
 
@@ -238,6 +295,11 @@
         return payload;
       }
 
+      function buildPayloadFromForm() {
+        if (!selectedTemplate()) throw new Error('Please select a template.');
+        return collectCurrentData();
+      }
+
       async function loadPortal() {
         if (!token) {
           title.textContent = 'Client Portal';
@@ -257,6 +319,7 @@
         portalState.data = data;
         portalState.selectedTemplateId = data.availableTemplates?.[0]?.id || '';
         portalState.sectionRepeats = new Map();
+        portalState.draftData = {};
 
         templatePicker.innerHTML = data.availableTemplates?.length
           ? data.availableTemplates.map((template) => `<option value="${escapeHtml(template.id)}">${escapeHtml(template.name)}</option>`).join('')
@@ -264,13 +327,17 @@
 
         renderProfile(data.profile, data.firm);
         renderSubmissions(data.submissions || []);
-        renderTemplateFields();
+        const activeDraft = (data.submissions || []).find((entry) => entry.status === 'draft' && entry.templateId === portalState.selectedTemplateId);
+        portalState.draftData = activeDraft?.data || {};
+        renderTemplateFields(portalState.draftData);
       }
 
       templatePicker.addEventListener('change', () => {
         portalState.selectedTemplateId = templatePicker.value;
         portalState.sectionRepeats = new Map();
-        renderTemplateFields();
+        const activeDraft = (portalState.data?.submissions || []).find((entry) => entry.status === 'draft' && entry.templateId === portalState.selectedTemplateId);
+        portalState.draftData = activeDraft?.data || {};
+        renderTemplateFields(portalState.draftData);
       });
 
       async function saveSubmission(status) {

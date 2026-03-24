@@ -53,6 +53,91 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
 }
 
+function normalizeRule(rule) {
+  if (!rule || typeof rule !== 'object') return null;
+  const conditions = Array.isArray(rule.conditions) ? rule.conditions.filter((condition) => condition && typeof condition === 'object' && condition.field) : [];
+  if (!conditions.length) return null;
+  return {
+    match: rule.match === 'any' ? 'any' : 'all',
+    conditions
+  };
+}
+
+function evaluateCondition(condition, answers) {
+  const actual = answers?.[condition.field];
+  const operator = condition.operator || 'equals';
+  if (operator === 'exists') return actual !== undefined && actual !== null && String(actual).trim() !== '';
+  if (operator === 'not_exists') return actual === undefined || actual === null || String(actual).trim() === '';
+  if (operator === 'not_equals') return actual !== condition.value;
+  if (operator === 'in') return Array.isArray(condition.value) ? condition.value.includes(actual) : false;
+  if (operator === 'not_in') return Array.isArray(condition.value) ? !condition.value.includes(actual) : true;
+  if (operator === 'gt') return Number(actual) > Number(condition.value);
+  if (operator === 'gte') return Number(actual) >= Number(condition.value);
+  if (operator === 'lt') return Number(actual) < Number(condition.value);
+  if (operator === 'lte') return Number(actual) <= Number(condition.value);
+  return actual === condition.value;
+}
+
+export function isVisibleByRule(showWhen, answers) {
+  const rule = normalizeRule(showWhen);
+  if (!rule) return true;
+  if (rule.match === 'any') return rule.conditions.some((condition) => evaluateCondition(condition, answers));
+  return rule.conditions.every((condition) => evaluateCondition(condition, answers));
+}
+
+function sectionDataKey(section, sectionIndex) {
+  return (section.title || `section_${sectionIndex + 1}`).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
+export function sanitizeTemplateSubmissionData(template, rawData, status = 'draft') {
+  const data = rawData && typeof rawData === 'object' ? rawData : {};
+  const sanitized = {};
+  const answers = {};
+
+  for (const [sectionIndex, section] of (template.sections || []).entries()) {
+    if (!isVisibleByRule(section.showWhen, answers)) continue;
+    const fields = Array.isArray(section.fields) ? section.fields : [];
+    if (section.repeatable) {
+      const key = sectionDataKey(section, sectionIndex);
+      const rows = Array.isArray(data[key]) ? data[key] : [];
+      const sanitizedRows = [];
+
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const rowOut = {};
+        let hasValue = false;
+        for (const field of fields) {
+          if (!isVisibleByRule(field.showWhen, { ...answers, ...rowOut, ...row })) continue;
+          const value = row[field.key];
+          const normalized = value === undefined || value === null ? '' : value;
+          if (status === 'submitted' && field.required && String(normalized).trim() === '') {
+            throw new Error(`Missing required field: ${field.key}`);
+          }
+          if (String(normalized).trim() !== '') hasValue = true;
+          rowOut[field.key] = normalized;
+        }
+        if (hasValue || status === 'submitted') sanitizedRows.push(rowOut);
+      }
+      sanitized[key] = sanitizedRows;
+      answers[key] = sanitizedRows;
+      continue;
+    }
+
+    for (const field of fields) {
+      if (!isVisibleByRule(field.showWhen, answers)) continue;
+      const value = data[field.key];
+      const normalized = value === undefined || value === null ? '' : value;
+      if (status === 'submitted' && field.required && String(normalized).trim() === '') {
+        throw new Error(`Missing required field: ${field.key}`);
+      }
+      sanitized[field.key] = normalized;
+      answers[field.key] = normalized;
+    }
+  }
+
+  return sanitized;
+}
+
 function seedState() {
   const createdAt = now();
   const firmId = randomUUID();
@@ -446,7 +531,11 @@ export function createStore() {
     },
     createFormSubmission(user, input) {
       requirePermission(user, 'forms:write');
-      const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status: input.status || 'draft', data: input.data || {}, createdAt: now(), updatedAt: now() };
+      const template = state.formTemplates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId);
+      if (!template) throw new Error('Form template not found.');
+      const status = input.status === 'submitted' ? 'submitted' : 'draft';
+      const sanitizedData = sanitizeTemplateSubmissionData(template, input.data, status);
+      const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status, data: sanitizedData, createdAt: now(), updatedAt: now() };
       state.formSubmissions.push(submission);
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', { templateId: input.templateId, clientId: input.clientId });
       persist();
@@ -598,7 +687,16 @@ export function createStore() {
       requirePermission(user, 'forms:write');
       const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId);
       if (!submission) throw new Error('Submission not found.');
-      Object.assign(submission, patch, { updatedAt: now() });
+      let nextData = patch.data;
+      let nextStatus = patch.status || submission.status;
+      if (patch.data || patch.status) {
+        const template = state.formTemplates.find((entry) => entry.id === submission.templateId && entry.firmId === user.firmId);
+        if (!template) throw new Error('Form template not found.');
+        const normalizedStatus = nextStatus === 'submitted' ? 'submitted' : 'draft';
+        nextData = sanitizeTemplateSubmissionData(template, patch.data ?? submission.data, normalizedStatus);
+        nextStatus = normalizedStatus;
+      }
+      Object.assign(submission, patch, nextData ? { data: nextData } : {}, { status: nextStatus, updatedAt: now() });
       persist();
       return submission;
     },
@@ -646,13 +744,14 @@ export function createStore() {
       const template = templateId === 'portal' ? null : state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === link.firmId);
       if (templateId !== 'portal' && !template) throw new Error('Form template not found.');
       const status = input.status === 'draft' ? 'draft' : 'submitted';
+      const sanitizedData = template ? sanitizeTemplateSubmissionData(template, input.data, status) : (input.data && typeof input.data === 'object' ? input.data : {});
       const submission = {
         id: randomUUID(),
         firmId: link.firmId,
         clientId: link.profileId,
         templateId,
         status,
-        data: input.data && typeof input.data === 'object' ? input.data : {},
+        data: sanitizedData,
         createdAt: now(),
         updatedAt: now(),
         source: 'portal'

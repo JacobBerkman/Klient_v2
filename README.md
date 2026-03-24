@@ -9,7 +9,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - prospects and clients management
 - persisted prospect pipeline board
 - households and member linking
-- dynamic form template and submission flows
+- dynamic form template and submission flows (including conditional section/field rules via `showWhen`)
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
 - audit trail and analytics views
@@ -41,6 +41,12 @@ Run the smoke test:
 node scripts/smoke-test.mjs
 ```
 
+Run targeted conditional form rule tests:
+
+```bash
+node --test apps/api/src/test/form-conditions.test.mjs
+```
+
 Run the broader local validation bundle:
 
 ```bash
@@ -68,6 +74,21 @@ curl http://localhost:3000/ready
 
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
+
+Form template `sections` and individual `fields` can now include conditional logic in a `showWhen` object:
+
+```json
+{
+  "showWhen": {
+    "match": "all",
+    "conditions": [
+      { "field": "married", "operator": "equals", "value": "yes" }
+    ]
+  }
+}
+```
+
+Supported operators: `equals` (default), `not_equals`, `exists`, `not_exists`, `in`, `not_in`, `gt`, `gte`, `lt`, `lte`.
 
 ## Backup
 ```bash

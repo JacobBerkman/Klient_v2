@@ -25,6 +25,37 @@ function renderItems(items, render) {
   return `<div class="list">${items.map(render).join('')}</div>`;
 }
 
+function normalizeRule(rule) {
+  if (!rule || typeof rule !== 'object' || !Array.isArray(rule.conditions) || !rule.conditions.length) return null;
+  return { match: rule.match === 'any' ? 'any' : 'all', conditions: rule.conditions };
+}
+
+function evaluateCondition(condition, answers) {
+  const actual = answers?.[condition.field];
+  const operator = condition.operator || 'equals';
+  if (operator === 'exists') return actual !== undefined && actual !== null && String(actual).trim() !== '';
+  if (operator === 'not_exists') return actual === undefined || actual === null || String(actual).trim() === '';
+  if (operator === 'not_equals') return actual !== condition.value;
+  if (operator === 'in') return Array.isArray(condition.value) ? condition.value.includes(actual) : false;
+  if (operator === 'not_in') return Array.isArray(condition.value) ? !condition.value.includes(actual) : true;
+  if (operator === 'gt') return Number(actual) > Number(condition.value);
+  if (operator === 'gte') return Number(actual) >= Number(condition.value);
+  if (operator === 'lt') return Number(actual) < Number(condition.value);
+  if (operator === 'lte') return Number(actual) <= Number(condition.value);
+  return actual === condition.value;
+}
+
+function isVisibleByRule(showWhen, answers) {
+  const rule = normalizeRule(showWhen);
+  if (!rule) return true;
+  if (rule.match === 'any') return rule.conditions.some((condition) => evaluateCondition(condition, answers));
+  return rule.conditions.every((condition) => evaluateCondition(condition, answers));
+}
+
+function sectionDataKey(section, sectionIndex) {
+  return (section.title || `section_${sectionIndex + 1}`).toLowerCase().replace(/[^a-z0-9]+/g, '_');
+}
+
 async function refreshPrimaryClientOptions() {
   try {
     const clients = await api('/api/profiles?kind=client');
@@ -149,12 +180,113 @@ async function renderHouseholds() {
 }
 
 async function renderForms() {
-  const [templates, submissions, drafts] = await Promise.all([
+  const [templates, submissions, drafts, clients] = await Promise.all([
     api('/api/forms/templates'),
     api('/api/forms/submissions'),
-    api('/api/forms/drafts')
+    api('/api/forms/drafts'),
+    api('/api/profiles?kind=client')
   ]);
   const submitted = submissions.filter((item) => item.status !== 'draft');
+
+  let selectedTemplateId = templates[0]?.id || '';
+  let sectionRepeats = new Map();
+  let workingData = drafts.find((entry) => entry.templateId === selectedTemplateId)?.data || {};
+
+  function selectedTemplate() {
+    return templates.find((template) => template.id === selectedTemplateId) || null;
+  }
+
+  function fieldName(sectionIndex, fieldKey, rowIndex = null) {
+    return rowIndex === null ? `section-${sectionIndex}::${fieldKey}` : `section-${sectionIndex}::${rowIndex}::${fieldKey}`;
+  }
+
+  function repeatCountFor(sectionIndex) {
+    return sectionRepeats.get(sectionIndex) || 1;
+  }
+
+  function collectData(formElement) {
+    const template = selectedTemplate();
+    if (!template || !formElement) return {};
+    const formData = new FormData(formElement);
+    const payload = {};
+    template.sections.forEach((section, sectionIndex) => {
+      if (section.repeatable) {
+        const rows = [];
+        for (let rowIndex = 0; rowIndex < repeatCountFor(sectionIndex); rowIndex += 1) {
+          const row = {};
+          let hasValue = false;
+          for (const field of section.fields || []) {
+            const value = String(formData.get(fieldName(sectionIndex, field.key, rowIndex)) || '').trim();
+            if (value) hasValue = true;
+            row[field.key] = value;
+          }
+          if (hasValue) rows.push(row);
+        }
+        payload[sectionDataKey(section, sectionIndex)] = rows;
+        return;
+      }
+
+      for (const field of section.fields || []) {
+        payload[field.key] = String(formData.get(fieldName(sectionIndex, field.key)) || '').trim();
+      }
+    });
+    return payload;
+  }
+
+  function renderComposer() {
+    const template = selectedTemplate();
+    const fieldsHtml = !template ? '<div class="item compact muted">No template selected.</div>' : (() => {
+      const answers = {};
+      return template.sections.map((section, sectionIndex) => {
+        if (!isVisibleByRule(section.showWhen, answers)) return '';
+        const repeatable = Boolean(section.repeatable);
+        const dataKey = sectionDataKey(section, sectionIndex);
+        const seedRows = repeatable && Array.isArray(workingData[dataKey]) ? workingData[dataKey] : [];
+        const repeatCount = repeatable ? Math.max(repeatCountFor(sectionIndex), seedRows.length || 1) : 1;
+        const rowsMarkup = Array.from({ length: repeatCount }, (_, rowIndex) => {
+          const rowData = repeatable ? (seedRows[rowIndex] || {}) : workingData;
+          const scopedAnswers = repeatable ? { ...answers, ...rowData } : answers;
+          const fieldMarkup = (section.fields || []).map((field) => {
+            if (!isVisibleByRule(field.showWhen, scopedAnswers)) return '';
+            const value = rowData[field.key] || '';
+            if (repeatable) {
+              answers[dataKey] ||= [];
+              answers[dataKey][rowIndex] ||= {};
+              answers[dataKey][rowIndex][field.key] = value;
+            } else {
+              answers[field.key] = value;
+            }
+            const name = fieldName(sectionIndex, field.key, repeatable ? rowIndex : null);
+            if (field.type === 'textarea') return `<label><span>${field.label || field.key}</span><textarea name="${name}" rows="3">${value}</textarea></label>`;
+            if (field.type === 'select') return `<label><span>${field.label || field.key}</span><select name="${name}"><option value="">Select…</option>${(field.options || []).map((option) => `<option value="${option}" ${String(option) === String(value) ? 'selected' : ''}>${option}</option>`).join('')}</select></label>`;
+            const type = { text: 'text', number: 'number', date: 'date', email: 'email' }[field.type] || 'text';
+            return `<label><span>${field.label || field.key}</span><input type="${type}" name="${name}" value="${value}" /></label>`;
+          }).join('');
+          return `<div class="repeat-block">${repeatable ? `<div class="muted">Entry ${rowIndex + 1}</div>` : ''}<div class="grid two compact-grid">${fieldMarkup}</div></div>`;
+        }).join('');
+        return `<section class="item section-card"><div class="row between"><h4>${section.title || `Section ${sectionIndex + 1}`}</h4>${repeatable ? `<button type="button" data-advisor-add-repeat="${sectionIndex}">Add entry</button>` : ''}</div>${rowsMarkup}</section>`;
+      }).join('');
+    })();
+
+    return `
+      <section class="card">
+        <h3>Advisor Form Composer</h3>
+        <p class="muted">Conditional sections/fields evaluate live while you complete a form on behalf of a client.</p>
+        <form id="advisor-form-composer" class="stack gap-md">
+          <div class="grid two compact-grid">
+            <label><span>Template</span><select id="advisor-template-picker">${templates.map((template) => `<option value="${template.id}" ${template.id === selectedTemplateId ? 'selected' : ''}>${template.name}</option>`).join('')}</select></label>
+            <label><span>Client</span><select id="advisor-client-picker">${clients.map((profile) => `<option value="${profile.id}">${profile.firstName} ${profile.lastName}</option>`).join('')}</select></label>
+          </div>
+          <div id="advisor-form-fields" class="stack gap-md">${fieldsHtml}</div>
+          <div class="actions-row">
+            <button type="submit" data-status="submitted">Submit Form</button>
+            <button type="button" data-status="draft">Save Draft</button>
+          </div>
+        </form>
+      </section>
+    `;
+  }
+
   view.innerHTML = `
     <div class="section-header">
       <div>
@@ -173,7 +305,80 @@ async function renderForms() {
     ${drafts.length ? renderItems(drafts, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge subtle">draft</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div><pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No drafts yet.</div>'}
     <h3>Submitted</h3>
     ${submitted.length ? renderItems(submitted, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge">${item.status}</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div><pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No submitted forms yet.</div>'}
+    ${templates.length && clients.length ? renderComposer() : '<div class="item compact muted">Create at least one template and one client to use advisor form composer.</div>'}
   `;
+
+  const composer = document.querySelector('#advisor-form-composer');
+  if (!composer) return;
+  const templatePicker = document.querySelector('#advisor-template-picker');
+  const rerenderComposer = async () => {
+    const currentComposer = document.querySelector('#advisor-form-composer');
+    workingData = collectData(currentComposer);
+    const template = selectedTemplate();
+    if (template) {
+      template.sections.forEach((section, sectionIndex) => {
+        if (section.repeatable) {
+          const count = Array.isArray(workingData[sectionDataKey(section, sectionIndex)]) ? workingData[sectionDataKey(section, sectionIndex)].length : 0;
+          if (count > repeatCountFor(sectionIndex)) sectionRepeats.set(sectionIndex, count);
+        }
+      });
+    }
+    const formFields = document.querySelector('#advisor-form-fields');
+    if (formFields) {
+      const wrapper = document.createElement('div');
+      wrapper.innerHTML = renderComposer();
+      const next = wrapper.querySelector('#advisor-form-fields');
+      if (next) formFields.innerHTML = next.innerHTML;
+    }
+    bindComposerEvents();
+  };
+
+  const submitComposer = async (status) => {
+    const formElement = document.querySelector('#advisor-form-composer');
+    const clientId = document.querySelector('#advisor-client-picker')?.value;
+    const payload = collectData(formElement);
+    await api('/api/forms/submissions', {
+      method: 'POST',
+      body: JSON.stringify({
+        clientId,
+        templateId: selectedTemplateId,
+        status,
+        data: payload
+      })
+    });
+    await renderForms();
+  };
+
+  function bindComposerEvents() {
+    document.querySelectorAll('[data-advisor-add-repeat]').forEach((button) => {
+      button.addEventListener('click', async () => {
+        const sectionIndex = Number(button.dataset.advisorAddRepeat);
+        sectionRepeats.set(sectionIndex, repeatCountFor(sectionIndex) + 1);
+        await rerenderComposer();
+      });
+    });
+    document.querySelectorAll('#advisor-form-fields input, #advisor-form-fields select, #advisor-form-fields textarea').forEach((input) => {
+      input.addEventListener('change', async () => {
+        await rerenderComposer();
+      });
+    });
+  }
+
+  templatePicker?.addEventListener('change', async () => {
+    selectedTemplateId = templatePicker.value;
+    sectionRepeats = new Map();
+    workingData = drafts.find((entry) => entry.templateId === selectedTemplateId)?.data || {};
+    await renderForms();
+  });
+
+  composer.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    await submitComposer('submitted');
+  });
+  composer.querySelector('[data-status="draft"]')?.addEventListener('click', async () => {
+    await submitComposer('draft');
+  });
+  bindComposerEvents();
 }
 
 async function renderTemplates() {
