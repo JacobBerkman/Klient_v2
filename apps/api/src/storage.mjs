@@ -88,7 +88,8 @@ db.exec(`
     updated_at TEXT NOT NULL,
     completed_at TEXT,
     dead_lettered_at TEXT,
-    last_attempt_at TEXT
+    last_attempt_at TEXT,
+    idempotency_key TEXT
   );
 
   CREATE TABLE IF NOT EXISTS notes (
@@ -112,6 +113,17 @@ db.exec(`
     payload TEXT NOT NULL,
     updated_at TEXT NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS csrf_tokens (
+    id TEXT PRIMARY KEY,
+    session_token TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    token TEXT NOT NULL,
+    issued_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL,
+    last_rotated_at TEXT NOT NULL
+  );
+
 `);
 
 function hasColumn(table, column) {
@@ -131,7 +143,8 @@ function ensureExportJobsColumns() {
     ['updated_at', 'TEXT'],
     ['completed_at', 'TEXT'],
     ['dead_lettered_at', 'TEXT'],
-    ['last_attempt_at', 'TEXT']
+    ['last_attempt_at', 'TEXT'],
+    ['idempotency_key', 'TEXT']
   ];
   for (const [column, ddl] of definitions) {
     if (!hasColumn('export_jobs', column)) {
@@ -141,6 +154,7 @@ function ensureExportJobsColumns() {
 }
 
 ensureExportJobsColumns();
+db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_export_jobs_firm_idempotency ON export_jobs (firm_id, idempotency_key) WHERE idempotency_key IS NOT NULL');
 
 db.exec(`
   UPDATE export_jobs
@@ -171,6 +185,56 @@ function readStatePayload() {
   return JSON.parse(row.payload);
 }
 
+
+
+export function upsertCsrfToken(record) {
+  db.prepare(`
+    INSERT INTO csrf_tokens (id, session_token, user_id, token, issued_at, expires_at, last_rotated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      session_token = excluded.session_token,
+      user_id = excluded.user_id,
+      token = excluded.token,
+      issued_at = excluded.issued_at,
+      expires_at = excluded.expires_at,
+      last_rotated_at = excluded.last_rotated_at
+  `).run(
+    record.id,
+    record.sessionToken,
+    record.userId,
+    record.token,
+    record.issuedAt,
+    record.expiresAt,
+    record.lastRotatedAt || record.issuedAt
+  );
+}
+
+export function readCsrfToken(sessionToken, tokenId) {
+  const row = db.prepare(`
+    SELECT id, session_token AS sessionToken, user_id AS userId, token, issued_at AS issuedAt,
+      expires_at AS expiresAt, last_rotated_at AS lastRotatedAt
+    FROM csrf_tokens
+    WHERE session_token = ? AND id = ?
+  `).get(sessionToken, tokenId);
+  return row || null;
+}
+
+export function deleteCsrfToken(tokenId) {
+  db.prepare('DELETE FROM csrf_tokens WHERE id = ?').run(tokenId);
+}
+
+export function deleteCsrfTokensBySession(sessionToken) {
+  db.prepare('DELETE FROM csrf_tokens WHERE session_token = ?').run(sessionToken);
+}
+
+export function deleteCsrfTokensByUser(userId) {
+  db.prepare('DELETE FROM csrf_tokens WHERE user_id = ?').run(userId);
+}
+
+export function deleteExpiredCsrfTokens(cutoffIso = new Date().toISOString()) {
+  db.prepare('DELETE FROM csrf_tokens WHERE expires_at <= ?').run(cutoffIso);
+}
+
 export function listExportQueueJobs() {
   const rows = db.prepare(`
     SELECT id, firm_id AS firmId, client_id AS clientId, type, status, attempts,
@@ -179,7 +243,7 @@ export function listExportQueueJobs() {
       leased_by AS leasedBy, lease_expires_at AS leaseExpiresAt,
       created_at AS createdAt, updated_at AS updatedAt,
       completed_at AS completedAt, dead_lettered_at AS deadLetteredAt,
-      last_attempt_at AS lastAttemptAt
+      last_attempt_at AS lastAttemptAt, idempotency_key AS idempotencyKey
     FROM export_jobs
     ORDER BY created_at DESC
   `).all();
@@ -204,7 +268,8 @@ export function listExportQueueJobs() {
       updatedAt: row.updatedAt,
       completedAt: row.completedAt || null,
       deadLetteredAt: row.deadLetteredAt || null,
-      lastAttemptAt: row.lastAttemptAt || null
+      lastAttemptAt: row.lastAttemptAt || null,
+      idempotencyKey: row.idempotencyKey || null
     };
   });
 }
@@ -227,8 +292,8 @@ function ensureQueueSeededFromState(state) {
     INSERT INTO export_jobs (
       id, firm_id, client_id, type, status, attempts, max_attempts, payload, output_payload,
       error_message, next_attempt_at, leased_by, lease_expires_at, created_at, updated_at,
-      completed_at, dead_lettered_at, last_attempt_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      completed_at, dead_lettered_at, last_attempt_at, idempotency_key
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   for (const job of state.exportJobs || []) {
     const createdAt = job.createdAt || nowIso();
@@ -253,7 +318,8 @@ function ensureQueueSeededFromState(state) {
       updatedAt,
       completedAt,
       job.deadLetteredAt || null,
-      job.lastAttemptAt || null
+      job.lastAttemptAt || null,
+      job.idempotencyKey || null
     );
   }
 }
@@ -392,6 +458,13 @@ export function backupState(targetPath = resolve(process.cwd(), 'data', `backup-
 }
 
 export function enqueueExportJob(job) {
+  const idempotencyKey = (job.idempotencyKey || '').trim() || null;
+  if (idempotencyKey) {
+    const existing = db.prepare('SELECT id FROM export_jobs WHERE firm_id = ? AND idempotency_key = ?').get(job.firmId, idempotencyKey);
+    if (existing?.id) {
+      return getExportJob(existing.id);
+    }
+  }
   const createdAt = job.createdAt || nowIso();
   const payload = {
     id: job.id,
@@ -402,6 +475,7 @@ export function enqueueExportJob(job) {
     status: 'queued',
     attempts: 0,
     maxAttempts: Number(job.maxAttempts || 3),
+    idempotencyKey,
     output: null,
     createdAt,
     updatedAt: createdAt,
@@ -411,8 +485,8 @@ export function enqueueExportJob(job) {
     INSERT INTO export_jobs (
       id, firm_id, client_id, type, status, attempts, max_attempts, payload, output_payload,
       error_message, next_attempt_at, leased_by, lease_expires_at, created_at, updated_at,
-      completed_at, dead_lettered_at, last_attempt_at
-    ) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, NULL, NULL, NULL)
+      completed_at, dead_lettered_at, last_attempt_at, idempotency_key
+    ) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, NULL, NULL, NULL, ?)
   `).run(
     payload.id,
     payload.firmId,
@@ -422,7 +496,8 @@ export function enqueueExportJob(job) {
     JSON.stringify(payload),
     createdAt,
     createdAt,
-    createdAt
+    createdAt,
+    idempotencyKey
   );
   syncStateExportsFromQueue();
   return payload;
@@ -538,41 +613,75 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
   const maxAttempts = Number(options.maxAttempts || 3);
   const baseBackoffMs = Number(options.baseBackoffMs || 500);
   const maxBackoffMs = Number(options.maxBackoffMs || 30_000);
+  const jitterRatio = Math.max(0, Math.min(Number(options.jitterRatio ?? 0.25), 0.75));
+  const poisonErrorThreshold = Math.max(2, Number(options.poisonErrorThreshold || 3));
+  const workerId = options.workerId || null;
   const current = db.prepare('SELECT attempts, max_attempts AS maxAttempts, payload FROM export_jobs WHERE id = ?').get(jobId);
   if (!current) return null;
   const existingPayload = current.payload ? JSON.parse(current.payload) : {};
   const attempts = Number(current.attempts || 0) + 1;
   const effectiveMaxAttempts = Number(current.maxAttempts || maxAttempts);
   const timestamp = nowIso();
+  const normalizedError = String(errorMessage || 'Unknown worker failure');
+  const previousError = String(existingPayload?.failure?.lastError || '');
+  const repeatedErrorCount = normalizedError === previousError ? Number(existingPayload?.failure?.repeatedErrorCount || 0) + 1 : 1;
+  const poisonDetected = repeatedErrorCount >= poisonErrorThreshold;
+  const deadLetterNow = attempts >= effectiveMaxAttempts || poisonDetected;
 
-  if (attempts >= effectiveMaxAttempts) {
+  if (deadLetterNow) {
+    const deadLetterReason = poisonDetected ? 'poison_job' : 'max_attempts_exhausted';
     const payload = {
       ...existingPayload,
       status: 'dead_letter',
       attempts,
-      errorMessage: String(errorMessage || 'Unknown worker failure'),
+      errorMessage: normalizedError,
       deadLetteredAt: timestamp,
       lastAttemptAt: timestamp,
-      updatedAt: timestamp
+      updatedAt: timestamp,
+      failure: {
+        reason: deadLetterReason,
+        workerId,
+        attempts,
+        maxAttempts: effectiveMaxAttempts,
+        firstFailedAt: existingPayload?.failure?.firstFailedAt || timestamp,
+        lastFailedAt: timestamp,
+        lastError: normalizedError,
+        repeatedErrorCount,
+        poisonDetected
+      }
     };
     db.prepare(`
       UPDATE export_jobs
       SET status = 'dead_letter', attempts = ?, error_message = ?, leased_by = NULL,
         lease_expires_at = NULL, dead_lettered_at = ?, last_attempt_at = ?, updated_at = ?, payload = ?
       WHERE id = ?
-    `).run(attempts, String(errorMessage || 'Unknown worker failure'), timestamp, timestamp, timestamp, JSON.stringify(payload), jobId);
+    `).run(attempts, normalizedError, timestamp, timestamp, timestamp, JSON.stringify(payload), jobId);
   } else {
-    const delayMs = Math.min(baseBackoffMs * (2 ** (attempts - 1)), maxBackoffMs);
+    const delayBaseMs = Math.min(baseBackoffMs * (2 ** (attempts - 1)), maxBackoffMs);
+    const jitterMs = Math.round((Math.random() * 2 - 1) * delayBaseMs * jitterRatio);
+    const delayMs = Math.max(250, delayBaseMs + jitterMs);
     const nextAttemptAt = new Date(Date.now() + delayMs).toISOString();
     const nextFailures = Number(existingPayload?.metadata?.simulateFailuresRemaining || 0);
     const payload = {
       ...existingPayload,
       status: 'retrying',
       attempts,
-      errorMessage: String(errorMessage || 'Unknown worker failure'),
+      errorMessage: normalizedError,
       nextAttemptAt,
       lastAttemptAt: timestamp,
       updatedAt: timestamp,
+      failure: {
+        reason: 'retry_scheduled',
+        workerId,
+        attempts,
+        maxAttempts: effectiveMaxAttempts,
+        firstFailedAt: existingPayload?.failure?.firstFailedAt || timestamp,
+        lastFailedAt: timestamp,
+        lastError: normalizedError,
+        repeatedErrorCount,
+        jitterMs,
+        nextAttemptAt
+      },
       metadata: {
         ...(existingPayload.metadata || {}),
         simulateFailuresRemaining: Math.max(0, nextFailures - 1)
@@ -583,30 +692,53 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
       SET status = 'retrying', attempts = ?, error_message = ?, next_attempt_at = ?, leased_by = NULL,
         lease_expires_at = NULL, last_attempt_at = ?, updated_at = ?, payload = ?
       WHERE id = ?
-    `).run(attempts, String(errorMessage || 'Unknown worker failure'), nextAttemptAt, timestamp, timestamp, JSON.stringify(payload), jobId);
+    `).run(attempts, normalizedError, nextAttemptAt, timestamp, timestamp, JSON.stringify(payload), jobId);
   }
 
   syncStateExportsFromQueue();
   return getExportJob(jobId);
 }
 
-export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs = 30_000, processor }) {
+export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs = 30_000, processor, onLeased } = {}) {
+  const startedAt = Date.now();
   const leased = leaseExportJobs({ workerId, limit, leaseMs });
+  onLeased?.(leased);
   let processed = 0;
   let failed = 0;
+  let skipped = 0;
 
   for (const job of leased) {
+    const current = getExportJob(job.id);
+    if (current?.status === 'completed' || current?.status === 'dead_letter') {
+      skipped += 1;
+      continue;
+    }
     try {
-      const output = processor(job);
+      const output = processor?.({
+        ...job,
+        execution: {
+          idempotencyKey: job.idempotencyKey || job.id,
+          workerId,
+          leasedAt: new Date(startedAt).toISOString(),
+          leaseMs
+        }
+      });
       markExportJobCompleted(job.id, output);
       processed += 1;
     } catch (error) {
-      markExportJobFailed(job.id, error?.message || String(error), { maxAttempts: job.maxAttempts || 3 });
+      markExportJobFailed(job.id, error?.message || String(error), { maxAttempts: job.maxAttempts || 3, workerId });
       failed += 1;
     }
   }
 
-  return { leased: leased.length, processed, failed };
+  return {
+    leased: leased.length,
+    processed,
+    failed,
+    skipped,
+    durationMs: Date.now() - startedAt,
+    timestamp: nowIso()
+  };
 }
 
 export function readQuerySummary() {
@@ -646,6 +778,16 @@ export function readExportWorkerStatus() {
     ORDER BY attempts ASC
   `).all();
   const deadLetter = db.prepare("SELECT COUNT(*) AS count FROM export_jobs WHERE status = 'dead_letter'").get().count;
+  const readyNow = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM export_jobs
+    WHERE status IN ('queued', 'retrying') AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+  `).get(nowIso()).count;
+  const stalled = db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM export_jobs
+    WHERE status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+  `).get(nowIso()).count;
 
   return {
     queued: (byStatus.queued || 0) + (byStatus.retrying || 0),
@@ -653,6 +795,8 @@ export function readExportWorkerStatus() {
     completed: byStatus.completed || 0,
     failed: byStatus.failed || 0,
     deadLetter,
+    readyNow,
+    stalled,
     total: Object.values(byStatus).reduce((sum, count) => sum + count, 0),
     activeLeases,
     retryCounts,
