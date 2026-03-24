@@ -1,13 +1,12 @@
-import { createJsonApiClient, routes } from './api-contract.js';
+import { routes } from './api-contract.js';
 
-const state = { token: localStorage.getItem('klient-token') || '', view: 'dashboard', selectedProfileId: null };
 const STAGES = ['discovery', 'gather_oi', 'analysis', 'advisor_proposal_meeting', 'intake', 'on_boarding', 'investment_strategy', 'completed', 'drop_dead_lead', 'drop_nurture'];
 
 const state = {
   token: localStorage.getItem('klient-token') || '',
   view: 'dashboard',
   selectedProfileId: null,
-  user: null
+  user: null,
   profileFilter: 'all',
   search: '',
   clients: [],
@@ -21,7 +20,6 @@ const authStatus = document.querySelector('#auth-status');
 const householdPrimary = document.querySelector('select[name="primaryClientId"]');
 const portalProfileSelect = document.querySelector('select[name="profileId"]');
 
-const api = createJsonApiClient({ getToken: () => state.token });
 const headers = () => state.token ? { Authorization: `Bearer ${state.token}` } : {};
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 let csrfToken = '';
@@ -88,25 +86,51 @@ function activeRole() {
   return state.user?.role || null;
 }
 
+const ROLE_POLICY_MATRIX = {
+  admin: new Set(['dashboard:view', 'profiles:view', 'households:view', 'forms:view', 'templates:view', 'exports:view', 'analytics:view', 'audit:view', 'users:view', 'portal-links:view', 'client-workspace:view']),
+  advisor: new Set(['dashboard:view', 'profiles:view', 'households:view', 'forms:view', 'templates:view', 'exports:view', 'analytics:view', 'audit:view', 'portal-links:view']),
+  readonly: new Set(['dashboard:view', 'profiles:view', 'households:view', 'forms:view', 'analytics:view', 'audit:view']),
+  client: new Set(['client-workspace:view'])
+};
+
+const VIEW_POLICIES = {
+  dashboard: 'dashboard:view',
+  prospects: 'profiles:view',
+  clients: 'profiles:view',
+  board: 'profiles:view',
+  'profile-detail': 'profiles:view',
+  households: 'households:view',
+  forms: 'forms:view',
+  templates: 'templates:view',
+  exports: 'exports:view',
+  analytics: 'analytics:view',
+  audit: 'audit:view',
+  settings: 'users:view',
+  portal: 'portal-links:view',
+  'client-workspace': 'client-workspace:view'
+};
+
 function canAccessView(nextView) {
   const role = activeRole();
   if (!role) return false;
-  const allowedRoles = document.querySelector(`[data-view="${nextView}"]`)?.dataset.roles?.split(',') || [];
-  return allowedRoles.length ? allowedRoles.includes(role) : true;
+  const policy = VIEW_POLICIES[nextView];
+  return policy ? ROLE_POLICY_MATRIX[role]?.has(policy) : false;
 }
 
 function updateRoleVisibility() {
   const role = activeRole();
   const navButtons = document.querySelectorAll('[data-view]');
   navButtons.forEach((button) => {
-    const allowed = (button.dataset.roles || '').split(',').filter(Boolean);
-    button.hidden = !role || (allowed.length > 0 && !allowed.includes(role));
+    const targetView = button.dataset.view;
+    button.hidden = !role || !canAccessView(targetView);
   });
 
   document.querySelectorAll('[data-requires-role]').forEach((section) => {
     const allowed = section.dataset.requiresRole.split(',').filter(Boolean);
     section.hidden = !role || !allowed.includes(role);
   });
+}
+
 function profileName(profile) {
   return `${profile.firstName} ${profile.lastName}`;
 }
@@ -123,10 +147,6 @@ async function refreshPrimaryClientOptions() {
   }
 
   try {
-    const clients = await api(routes.profiles({ kind: 'client' }));
-    const allProfiles = await api(routes.profiles());
-    householdPrimary.innerHTML = clients.map((profile) => `<option value="${profile.id}">${profile.firstName} ${profile.lastName}</option>`).join('');
-    portalProfileSelect.innerHTML = allProfiles.map((profile) => `<option value="${profile.id}">${profile.firstName} ${profile.lastName}</option>`).join('');
     const clients = await api('/api/profiles?kind=client');
     const allProfiles = await api('/api/profiles');
     state.clients = clients;
@@ -229,18 +249,6 @@ async function renderDashboard() {
 }
 
 async function renderProfiles(kind) {
-  const profiles = await api(routes.profiles({ kind }));
-  view.innerHTML = `<h2>${kind === 'prospect' ? 'Prospects' : 'Clients'}</h2>` + renderItems(profiles, (profile) => `
-    <div class="item">
-      <strong>${profile.firstName} ${profile.lastName}</strong> <span class="badge">${profile.kind}</span>
-      <div class="muted">${profile.email || ''}</div>
-      <div>Source: ${profile.source?.displayValue || '—'}</div>
-      <div>Stage: ${profile.stage || '—'}</div>
-      <button data-profile-id="${profile.id}">Open Profile</button>
-      ${kind === 'prospect' && ['admin', 'advisor'].includes(activeRole()) ? `<select data-stage-id="${profile.id}">
-        ${['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'].map((stage) => `<option value="${stage}" ${profile.stage === stage ? 'selected' : ''}>${stage}</option>`).join('')}
-      </select>` : ''}
-    </div>`);
   const params = new URLSearchParams();
   if (kind !== 'all') params.set('kind', kind);
   if (state.search) params.set('search', state.search);
@@ -284,6 +292,7 @@ async function renderProfiles(kind) {
       await api(routes.profileStage(event.target.dataset.stageId), { method: 'PATCH', body: JSON.stringify({ stage: event.target.value }) });
       await renderCurrentView();
     });
+  });
   document.querySelector('#profile-search-button').addEventListener('click', async () => {
     state.search = document.querySelector('#profile-search').value.trim();
     state.profileFilter = document.querySelector('#profile-kind-filter').value;
