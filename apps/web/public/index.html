@@ -83,6 +83,14 @@
             <input name="fileName" placeholder="File name" value="template.pdf" />
             <button type="submit">Create Template</button>
           </form>
+
+          <form id="form-submission-form" class="card">
+            <h3>Create Form Draft</h3>
+            <select name="clientId" required></select>
+            <select name="templateId" required></select>
+            <label><input type="checkbox" name="reuseEnabled" checked /> Reuse profile, household, and prior answers</label>
+            <button type="submit">Create Draft</button>
+          </form>
         </section>
 
         <section class="actions grid two">

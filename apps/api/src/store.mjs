@@ -53,6 +53,27 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
 }
 
+function hasValue(value) {
+  if (value === null || value === undefined) return false;
+  if (typeof value === 'string') return value.trim().length > 0;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === 'object') return Object.keys(value).length > 0;
+  return true;
+}
+
+const DEFAULT_EQUIVALENT_FIELDS = {
+  goals: ['primaryGoal', 'financialGoals'],
+  primaryGoal: ['goals', 'financialGoals'],
+  financialGoals: ['goals', 'primaryGoal'],
+  riskTolerance: ['riskProfile', 'risk_profile'],
+  riskProfile: ['riskTolerance', 'risk_profile'],
+  risk_profile: ['riskTolerance', 'riskProfile'],
+  accountName: ['institution'],
+  institution: ['accountName'],
+  value: ['balance'],
+  balance: ['value']
+};
+
 function seedState() {
   const createdAt = now();
   const firmId = randomUUID();
@@ -172,6 +193,12 @@ function seedState() {
         { id: randomUUID(), title: 'Household', fields: [{ key: 'goals', label: 'Goals', type: 'textarea' }, { key: 'riskTolerance', label: 'Risk Tolerance', type: 'select', options: ['Conservative','Moderate','Aggressive'] }] },
         { id: randomUUID(), title: 'Assets', repeatable: true, fields: [{ key: 'accountName', label: 'Account Name', type: 'text' }, { key: 'value', label: 'Value', type: 'number' }] }
       ],
+      equivalentFieldMappings: [
+        { fromTemplateId: 'portal', fromField: 'primaryGoal', toField: 'goals' },
+        { fromTemplateId: 'portal', fromField: 'riskProfile', toField: 'riskTolerance' },
+        { fromTemplateId: 'portal', fromField: 'institution', toField: 'accountName' },
+        { fromTemplateId: 'portal', fromField: 'balance', toField: 'value' }
+      ],
       createdAt,
       updatedAt: createdAt
     }],
@@ -232,6 +259,131 @@ export function createStore() {
   function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}) {
     state.auditEvents.push({ id: randomUUID(), firmId, actorUserId, entityType, entityId, action, occurredAt: now(), metadata });
     persist();
+  }
+
+  function findHouseholdContext(firmId, profile) {
+    if (!profile?.householdId) return { household: null, members: [] };
+    const household = state.households.find((entry) => entry.id === profile.householdId && entry.firmId === firmId) || null;
+    const members = state.householdMembers
+      .filter((entry) => entry.householdId === profile.householdId && entry.firmId === firmId)
+      .map((member) => {
+        const memberProfile = state.profiles.find((entry) => entry.id === member.clientId && entry.firmId === firmId);
+        return { ...member, profile: memberProfile || null };
+      });
+    return { household, members };
+  }
+
+  function normalizeEquivalentFieldMappings(template) {
+    return (template?.equivalentFieldMappings || []).filter((entry) => entry?.fromField && entry?.toField);
+  }
+
+  function getTemplateFieldKeys(template) {
+    return (template?.sections || []).flatMap((section) => (section.fields || []).map((field) => field.key).filter(Boolean));
+  }
+
+  function collectPriorSubmissions(firmId, clientId) {
+    return state.formSubmissions
+      .filter((entry) => entry.firmId === firmId && entry.clientId === clientId)
+      .slice()
+      .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
+  }
+
+  function prepopulateFormData(firmId, clientId, templateId) {
+    const profile = state.profiles.find((entry) => entry.id === clientId && entry.firmId === firmId);
+    if (!profile) throw new Error('Profile not found.');
+    const template = state.formTemplates.find((entry) => entry.id === templateId && entry.firmId === firmId);
+    if (!template) throw new Error('Form template not found.');
+
+    const { household, members } = findHouseholdContext(firmId, profile);
+    const priorSubmissions = collectPriorSubmissions(firmId, clientId);
+    const latestByTemplate = new Map();
+    for (const submission of priorSubmissions) {
+      if (!latestByTemplate.has(submission.templateId)) {
+        latestByTemplate.set(submission.templateId, submission);
+      }
+    }
+
+    const targetKeys = getTemplateFieldKeys(template);
+    const templateMappings = normalizeEquivalentFieldMappings(template);
+    const profileLookup = {
+      firstName: profile.firstName,
+      lastName: profile.lastName,
+      email: profile.email,
+      phone: profile.phone,
+      dateOfBirth: profile.dateOfBirth,
+      city: profile.address?.city,
+      state: profile.address?.state,
+      source: profile.source?.displayValue,
+      householdName: household?.name,
+      householdMemberCount: members.length
+    };
+    const spouseProfile = members.find((entry) => entry.role === 'spouse')?.profile || null;
+    if (spouseProfile) {
+      profileLookup.spouseFirstName = spouseProfile.firstName;
+      profileLookup.spouseLastName = spouseProfile.lastName;
+      profileLookup.spouseEmail = spouseProfile.email;
+    }
+
+    const output = {};
+    const reuseLog = [];
+
+    for (const key of targetKeys) {
+      let selectedValue;
+      let source = null;
+
+      if (hasValue(profileLookup[key])) {
+        selectedValue = profileLookup[key];
+        source = { type: 'profile', detail: key };
+      }
+
+      if (!hasValue(selectedValue)) {
+        const sameTemplateSubmission = latestByTemplate.get(templateId);
+        if (sameTemplateSubmission && hasValue(sameTemplateSubmission.data?.[key])) {
+          selectedValue = sameTemplateSubmission.data[key];
+          source = { type: 'prior_form_answer', detail: `${template.name}:${key}` };
+        }
+      }
+
+      if (!hasValue(selectedValue)) {
+        const mappedCandidate = templateMappings.filter((entry) => entry.toField === key).find((entry) => {
+          const submission = latestByTemplate.get(entry.fromTemplateId);
+          return hasValue(submission?.data?.[entry.fromField]);
+        });
+        if (mappedCandidate) {
+          const submission = latestByTemplate.get(mappedCandidate.fromTemplateId);
+          selectedValue = submission.data[mappedCandidate.fromField];
+          source = { type: 'mapped_equivalent', detail: `${mappedCandidate.fromTemplateId}.${mappedCandidate.fromField}` };
+        }
+      }
+
+      if (!hasValue(selectedValue)) {
+        const equivalentKeys = DEFAULT_EQUIVALENT_FIELDS[key] || [];
+        for (const equivalent of equivalentKeys) {
+          const priorWithEquivalent = priorSubmissions.find((entry) => hasValue(entry.data?.[equivalent]));
+          if (priorWithEquivalent) {
+            selectedValue = priorWithEquivalent.data[equivalent];
+            source = { type: 'mapped_equivalent', detail: `${priorWithEquivalent.templateId}.${equivalent}` };
+            break;
+          }
+        }
+      }
+
+      if (hasValue(selectedValue)) {
+        output[key] = selectedValue;
+        reuseLog.push({ field: key, source });
+      }
+    }
+
+    return {
+      data: output,
+      reuseLog,
+      context: {
+        profileId: profile.id,
+        householdId: household?.id || null,
+        priorSubmissionCount: priorSubmissions.length,
+        consideredTemplates: [...latestByTemplate.keys()]
+      }
+    };
   }
 
   return {
@@ -428,7 +580,16 @@ export function createStore() {
     },
     createFormTemplate(user, input) {
       requirePermission(user, 'forms:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, description: input.description || '', sections: input.sections || [], createdAt: now(), updatedAt: now() };
+      const template = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: input.name,
+        description: input.description || '',
+        sections: input.sections || [],
+        equivalentFieldMappings: (input.equivalentFieldMappings || []).filter((entry) => entry?.fromTemplateId && entry?.fromField && entry?.toField),
+        createdAt: now(),
+        updatedAt: now()
+      };
       state.formTemplates.push(template);
       addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.created', { name: template.name });
       persist();
@@ -444,11 +605,26 @@ export function createStore() {
     listFormDrafts(user) {
       return this.listFormSubmissions(user, 'draft');
     },
+    getFormPrepopulation(user, input) {
+      requirePermission(user, 'forms:write');
+      return prepopulateFormData(user.firmId, input.clientId, input.templateId);
+    },
     createFormSubmission(user, input) {
       requirePermission(user, 'forms:write');
-      const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status: input.status || 'draft', data: input.data || {}, createdAt: now(), updatedAt: now() };
+      const prepopulation = input.reuse?.enabled ? prepopulateFormData(user.firmId, input.clientId, input.templateId) : { data: {}, reuseLog: [] };
+      const submission = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        clientId: input.clientId,
+        templateId: input.templateId,
+        status: input.status || 'draft',
+        data: { ...prepopulation.data, ...(input.data || {}) },
+        reuseLog: prepopulation.reuseLog,
+        createdAt: now(),
+        updatedAt: now()
+      };
       state.formSubmissions.push(submission);
-      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', { templateId: input.templateId, clientId: input.clientId });
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', { templateId: input.templateId, clientId: input.clientId, reusedFieldCount: submission.reuseLog.length });
       persist();
       return submission;
     },

@@ -4,6 +4,8 @@ const view = document.querySelector('#view');
 const authStatus = document.querySelector('#auth-status');
 const householdPrimary = document.querySelector('select[name="primaryClientId"]');
 const portalProfileSelect = document.querySelector('select[name="profileId"]');
+const submissionClientSelect = document.querySelector('#form-submission-form select[name="clientId"]');
+const submissionTemplateSelect = document.querySelector('#form-submission-form select[name="templateId"]');
 
 const headers = () => state.token ? { Authorization: `Bearer ${state.token}` } : {};
 
@@ -29,11 +31,16 @@ async function refreshPrimaryClientOptions() {
   try {
     const clients = await api('/api/profiles?kind=client');
     const allProfiles = await api('/api/profiles');
+    const templates = await api('/api/forms/templates');
     householdPrimary.innerHTML = clients.map((profile) => `<option value="${profile.id}">${profile.firstName} ${profile.lastName}</option>`).join('');
     portalProfileSelect.innerHTML = allProfiles.map((profile) => `<option value="${profile.id}">${profile.firstName} ${profile.lastName}</option>`).join('');
+    submissionClientSelect.innerHTML = allProfiles.map((profile) => `<option value="${profile.id}">${profile.firstName} ${profile.lastName} (${profile.kind})</option>`).join('');
+    submissionTemplateSelect.innerHTML = templates.map((template) => `<option value="${template.id}">${template.name}</option>`).join('');
   } catch {
     householdPrimary.innerHTML = '<option value="">Login first</option>';
     portalProfileSelect.innerHTML = '<option value="">Login first</option>';
+    submissionClientSelect.innerHTML = '<option value="">Login first</option>';
+    submissionTemplateSelect.innerHTML = '<option value="">Login first</option>';
   }
 }
 
@@ -170,9 +177,9 @@ async function renderForms() {
     <h3>Templates</h3>
     ${renderItems(templates, (item) => `<div class="item"><strong>${item.name}</strong><div class="muted">${item.description || ''}</div><div class="muted">Sections: ${(item.sections || []).length}</div></div>`)}
     <h3>Drafts</h3>
-    ${drafts.length ? renderItems(drafts, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge subtle">draft</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div><pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No drafts yet.</div>'}
+    ${drafts.length ? renderItems(drafts, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge subtle">draft</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div>${item.reuseLog?.length ? `<div class="muted">Reused fields: ${item.reuseLog.map((entry) => `${entry.field} (${entry.source?.type || 'unknown'})`).join(', ')}</div>` : '<div class="muted">Reused fields: none</div>'}<pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No drafts yet.</div>'}
     <h3>Submitted</h3>
-    ${submitted.length ? renderItems(submitted, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge">${item.status}</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div><pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No submitted forms yet.</div>'}
+    ${submitted.length ? renderItems(submitted, (item) => `<div class="item"><div class="row between"><strong>${item.templateId}</strong><span class="badge">${item.status}</span></div><div class="muted">Client ${item.clientId}</div><div class="muted">Source ${item.source || 'advisor'}</div>${item.reuseLog?.length ? `<div class="muted">Reused fields: ${item.reuseLog.map((entry) => `${entry.field} (${entry.source?.type || 'unknown'})`).join(', ')}</div>` : '<div class="muted">Reused fields: none</div>'}<pre>${JSON.stringify(item.data, null, 2)}</pre></div>`) : '<div class="item compact muted">No submitted forms yet.</div>'}
   `;
 }
 
@@ -281,6 +288,7 @@ document.querySelector('#form-template-form').addEventListener('submit', async (
   const form = new FormData(event.target);
   await api('/api/forms/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), sections: [] }) });
   event.target.reset();
+  await refreshPrimaryClientOptions();
   state.view = 'forms';
   await renderCurrentView();
 });
@@ -291,6 +299,29 @@ document.querySelector('#doc-template-form').addEventListener('submit', async (e
   await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), blueprint: { sections: [] }, mappings: [] }) });
   event.target.reset();
   state.view = 'templates';
+  await renderCurrentView();
+});
+
+document.querySelector('#form-submission-form').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  const form = new FormData(event.target);
+  const clientId = form.get('clientId');
+  const templateId = form.get('templateId');
+  const reuseEnabled = form.get('reuseEnabled') === 'on';
+  if (reuseEnabled) {
+    const prepopulation = await api(`/api/forms/prepopulation?clientId=${encodeURIComponent(String(clientId))}&templateId=${encodeURIComponent(String(templateId))}`);
+    alert(`Prepopulated ${prepopulation.reuseLog.length} field(s): ${prepopulation.reuseLog.map((entry) => `${entry.field} from ${entry.source?.type || 'unknown'}`).join(', ') || 'none'}`);
+  }
+  await api('/api/forms/submissions', {
+    method: 'POST',
+    body: JSON.stringify({
+      clientId,
+      templateId,
+      status: 'draft',
+      reuse: { enabled: reuseEnabled }
+    })
+  });
+  state.view = 'forms';
   await renderCurrentView();
 });
 

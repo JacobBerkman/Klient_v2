@@ -34,6 +34,11 @@ async function run() {
     headers: authHeaders,
     body: JSON.stringify({ kind: 'prospect', firstName: 'Smoke', lastName: 'Test', email: 'smoke@example.com', stage: 'discovery', ssn: '123456789' })
   });
+  await jsonFetch('/api/households', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ name: 'Smoke Household', primaryClientId: profile.id })
+  });
 
   const foundProfiles = await jsonFetch('/api/profiles?search=Smoke', { headers: { Authorization: `Bearer ${login.token}` } });
   if (!foundProfiles.find((entry) => entry.id === profile.id)) throw new Error('Search failed');
@@ -61,10 +66,44 @@ async function run() {
       { title: 'Accounts', repeatable: true, fields: [{ key: 'institution', label: 'Institution', type: 'text' }, { key: 'balance', label: 'Balance', type: 'number' }] }
     ]
   }) });
+  const advisorIntakeTemplate = await jsonFetch('/api/forms/templates', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      name: 'Advisor Intake',
+      description: 'Advisor-facing intake leveraging client portal answers',
+      sections: [
+        {
+          title: 'Client Basics',
+          fields: [
+            { key: 'firstName', label: 'First Name', type: 'text' },
+            { key: 'householdName', label: 'Household Name', type: 'text' },
+            { key: 'goals', label: 'Goals', type: 'textarea' },
+            { key: 'riskTolerance', label: 'Risk Tolerance', type: 'text' }
+          ]
+        }
+      ],
+      equivalentFieldMappings: [
+        { fromTemplateId: portalTemplate.id, fromField: 'primaryGoal', toField: 'goals' },
+        { fromTemplateId: portalTemplate.id, fromField: 'riskProfile', toField: 'riskTolerance' }
+      ]
+    })
+  });
   const portalData = await jsonFetch(`/api/portal/${portal.token}`);
   await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'draft', data: { primaryGoal: 'Retire early' } }) });
-  await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'submitted', data: { primaryGoal: 'Retire early', accounts: [{ institution: 'Vanguard', balance: '120000' }] } }) });
+  await jsonFetch(`/api/portal/${portal.token}/submissions`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ templateId: portalTemplate.id, status: 'submitted', data: { primaryGoal: 'Retire early', riskProfile: 'Moderate', accounts: [{ institution: 'Vanguard', balance: '120000' }] } }) });
   const refreshedPortalData = await jsonFetch(`/api/portal/${portal.token}`);
+  const prepopulation = await jsonFetch(`/api/forms/prepopulation?clientId=${encodeURIComponent(profile.id)}&templateId=${encodeURIComponent(advisorIntakeTemplate.id)}`, { headers: { Authorization: `Bearer ${login.token}` } });
+  const reusedDraft = await jsonFetch('/api/forms/submissions', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      clientId: profile.id,
+      templateId: advisorIntakeTemplate.id,
+      status: 'draft',
+      reuse: { enabled: true }
+    })
+  });
 
   const exportJob = await jsonFetch('/api/exports', { method: 'POST', headers: authHeaders, body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' }) });
   await jsonFetch('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
@@ -86,6 +125,11 @@ async function run() {
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
+  if (prepopulation.data.firstName !== 'Smoke') throw new Error('Profile prepopulation missing');
+  if (!prepopulation.data.householdName) throw new Error('Household prepopulation missing');
+  if (prepopulation.data.goals !== 'Retire early') throw new Error('Mapped equivalent prepopulation missing');
+  if (!prepopulation.reuseLog.find((entry) => entry.field === 'goals' && entry.source?.type === 'mapped_equivalent')) throw new Error('Mapped equivalent source metadata missing');
+  if (!reusedDraft.reuseLog.length || reusedDraft.data.riskTolerance !== 'Moderate') throw new Error('Submission reuse application failed');
 
   console.log(JSON.stringify({
     login: login.user.email,
@@ -93,6 +137,7 @@ async function run() {
     noteId: note.id,
     inviteRole: readonlySession.user.role,
     draftCount: drafts.length,
+    reusedFieldCount: reusedDraft.reuseLog.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,
     templateStatus: published.status

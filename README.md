@@ -10,6 +10,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - persisted prospect pipeline board
 - households and member linking
 - dynamic form template and submission flows
+- prepopulation rules for new form drafts (profile + household + prior answers + mapped equivalent intake fields)
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
 - audit trail and analytics views
@@ -68,6 +69,19 @@ curl http://localhost:3000/ready
 
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
+
+## Form prepopulation
+When creating a new form draft from the advisor UI, enable **Reuse profile, household, and prior answers** to pull:
+- direct profile fields (for example `firstName`, `email`)
+- household context (for example `householdName`, spouse fields)
+- the most recent same-template answers
+- mapped equivalent fields from related intake forms (template-defined mappings plus built-in equivalent key fallbacks)
+
+The API endpoint for prepopulation preview is:
+
+```bash
+GET /api/forms/prepopulation?clientId=<profileId>&templateId=<formTemplateId>
+```
 
 ## Backup
 ```bash
