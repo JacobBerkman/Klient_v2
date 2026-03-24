@@ -94,6 +94,12 @@ Run the full local validation bundle:
 npm run test:all
 ```
 
+Run the standard integration coverage (tenancy, RBAC, templates, exports, portal lifecycle, analytics, and CSRF):
+
+```bash
+npm run test:integration
+```
+
 ## Health checks
 ```bash
 curl http://localhost:3000/health
