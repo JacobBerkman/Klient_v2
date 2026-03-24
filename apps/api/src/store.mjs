@@ -1,3 +1,11 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { createAuthService } from './auth/service.mjs';
+import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { createOidcAuthProvider } from './auth/oidc-provider.mjs';
+import { createSamlAuthProvider } from './auth/saml-provider.mjs';
+import { runtime } from './runtime.mjs';
+import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs';
+import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
@@ -7,6 +15,87 @@ import { objectStorage as defaultObjectStorage } from './object-storage/index.mj
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7;
+const ALLOWED_INVITE_ROLES = new Set(['advisor', 'readonly', 'client']);
+const ROLE_POLICY_MATRIX = {
+  admin: {
+    profiles: { read: 'firm', write: 'firm', sensitiveRead: 'firm' },
+    pipeline: { write: 'firm' },
+    households: { read: 'firm', write: 'firm' },
+    forms: { read: 'firm', write: 'firm' },
+    templates: { read: 'firm', write: 'firm', publish: 'firm' },
+    exports: { read: 'firm', write: 'firm', process: 'firm' },
+    analytics: { read: 'firm' },
+    users: { read: 'firm', write: 'firm' },
+    firm: { settingsWrite: 'firm' },
+    portal: { read: 'self', write: 'self' },
+    client: { write: 'self' }
+  },
+  advisor: {
+    profiles: { read: 'firm', write: 'firm', sensitiveRead: 'firm' },
+    pipeline: { write: 'firm' },
+    households: { read: 'firm', write: 'firm' },
+    forms: { read: 'firm', write: 'firm' },
+    templates: { read: 'firm', write: 'firm', publish: 'firm' },
+    exports: { read: 'firm', write: 'firm', process: 'firm' },
+    analytics: { read: 'firm' },
+    users: { read: null, write: null },
+    firm: { settingsWrite: null },
+    portal: { read: 'self', write: 'self' },
+    client: { write: null }
+  },
+  readonly: {
+    profiles: { read: 'firm', write: null, sensitiveRead: null },
+    pipeline: { write: null },
+    households: { read: 'firm', write: null },
+    forms: { read: 'firm', write: null },
+    templates: { read: null, write: null, publish: null },
+    exports: { read: null, write: null, process: null },
+    analytics: { read: 'firm' },
+    users: { read: null, write: null },
+    firm: { settingsWrite: null },
+    portal: { read: null, write: null },
+    client: { write: null }
+  },
+  client: {
+    profiles: { read: null, write: null, sensitiveRead: null },
+    pipeline: { write: null },
+    households: { read: null, write: null },
+    forms: { read: null, write: null },
+    templates: { read: null, write: null, publish: null },
+    exports: { read: null, write: null, process: null },
+    analytics: { read: null },
+    users: { read: null, write: null },
+    firm: { settingsWrite: null },
+    portal: { read: 'self', write: 'self' },
+    client: { write: 'self' }
+  }
+};
+
+const OPERATION_TO_POLICY = {
+  'profiles:read': ['profiles', 'read'],
+  'profiles:write': ['profiles', 'write'],
+  'profiles:sensitive:read': ['profiles', 'sensitiveRead'],
+  'pipeline:write': ['pipeline', 'write'],
+  'households:read': ['households', 'read'],
+  'households:write': ['households', 'write'],
+  'forms:read': ['forms', 'read'],
+  'forms:write': ['forms', 'write'],
+  'templates:read': ['templates', 'read'],
+  'templates:write': ['templates', 'write'],
+  'templates:publish': ['templates', 'publish'],
+  'exports:read': ['exports', 'read'],
+  'exports:write': ['exports', 'write'],
+  'exports:process': ['exports', 'process'],
+  'analytics:read': ['analytics', 'read'],
+  'users:read': ['users', 'read'],
+  'users:write': ['users', 'write'],
+  'firm:settings:write': ['firm', 'settingsWrite'],
+  'portal:read': ['portal', 'read'],
+  'portal:write': ['portal', 'write'],
+  'client:write': ['client', 'write']
+};
+const CSRF_TOKEN_TTL_MS = 1000 * 60 * 15;
 const PERMISSIONS = {
   admin: ['*'],
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
@@ -19,6 +108,29 @@ function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission);
 }
 
+const SENSITIVE_ACCESS_POLICY = {
+  admin: {
+    profile_view: { allowMasked: true, allowUnmasked: false },
+    compliance_review: { allowMasked: true, allowUnmasked: true },
+    audit_investigation: { allowMasked: true, allowUnmasked: true }
+  },
+  advisor: {
+    profile_view: { allowMasked: true, allowUnmasked: false },
+    client_support: { allowMasked: true, allowUnmasked: true }
+  },
+  readonly: {
+    profile_view: { allowMasked: true, allowUnmasked: false }
+  },
+  client: {}
+};
+const SENSITIVE_READ_REASON_CODES = new Set([
+  'customer_request',
+  'fraud_investigation',
+  'regulatory_review',
+  'support_escalation',
+  'compliance_review'
+]);
+const REQUIRED_UNMASK_POLICY = 'privileged_sensitive_read_v1';
 function requirePermission(user, permission) {
   if (!can(user.role, permission)) {
     throw new Error(`Missing permission: ${permission}`);
@@ -40,6 +152,10 @@ function decryptValue(payload) {
   const decipher = createDecipheriv('aes-256-gcm', APP_SECRET, Buffer.from(ivHex, 'hex'));
   decipher.setAuthTag(Buffer.from(tagHex, 'hex'));
   return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8');
+}
+
+function requirePermission(user, operation) {
+  return authorize(user, operation);
 }
 
 function now() {
@@ -191,10 +307,77 @@ function migrateTemplateSystems(state) {
   } else {
     state.templateAggregates = state.templateAggregates.map((entry) => normalizeTemplateAggregate(entry, entry.kind || 'document'));
   }
+  state.formTemplates = state.templateAggregates
+    .filter((entry) => entry.kind === 'form')
+    .map((entry) => ({
+      id: entry.id,
+      firmId: entry.firmId,
+      name: entry.name,
+      description: entry.description || '',
+      sections: deepClone(entry.formSchema?.sections || []),
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt
+    }));
+  state.documentTemplates = state.templateAggregates
+    .filter((entry) => entry.kind !== 'form')
+    .map((entry) => ({
+      id: entry.id,
+      firmId: entry.firmId,
+      name: entry.name,
+      fileName: entry.documentMetadata?.fileName || 'template.pdf',
+      blueprint: deepClone(entry.blueprint || { sections: [] }),
+      mappings: deepClone(entry.mappings || []),
+      versions: deepClone(entry.versions || []),
+      status: entry.publishState || 'draft',
+      createdAt: entry.createdAt,
+      updatedAt: entry.updatedAt
+    }));
+}
+
+function parseIso(value) {
+  const time = new Date(value || '').getTime();
+  return Number.isFinite(time) ? time : 0;
+}
+
+function average(values) {
+  if (!values.length) return 0;
+  return values.reduce((sum, value) => sum + value, 0) / values.length;
+}
+
+function hash(password) {
+  return createHash('sha256').update(password).digest('hex');
+}
+
+function assertStrongPassword(password) {
+  const value = String(password || '');
+  if (value.length < 12) throw new Error('Password must be at least 12 characters long.');
+  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value)) {
+    throw new Error('Password must include uppercase, lowercase, and numeric characters.');
+  }
+}
+
 
   // Deprecated compatibility projections for persistence only; do not read internally.
   state.formTemplates = state.templateAggregates.filter((entry) => entry.kind === 'form').map(formTemplateAdapter);
   state.documentTemplates = state.templateAggregates.filter((entry) => entry.kind !== 'form').map(documentTemplateAdapter);
+}
+
+function daysBetween(thenIso, nowMs) {
+  const thenMs = new Date(thenIso || 0).getTime();
+  if (!Number.isFinite(thenMs) || thenMs <= 0) return 0;
+  return Math.floor((nowMs - thenMs) / (1000 * 60 * 60 * 24));
+}
+
+function sourceDisplay(source) {
+  return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
+}
+
+function normalizeSectionKey(value) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
 
 function pipelineConflict(message, details = {}) {
@@ -370,10 +553,19 @@ function seedState() {
     passwordResets: [],
     portalLinks: [],
     authAttempts: [],
+    mfaChallenges: [],
+    mfaEnrollments: [],
     boardVersions: { [firmId]: 1 }
   };
 }
 
+export function createStore({ objectStorage = defaultObjectStorage, kmsAdapter } = {}) {
+  const state = loadState(seedState);
+  const piiCrypto = new PiiCryptoService({
+    keyProvider: createKeyProvider(runtime, { kmsAdapter }),
+    legacyKeyId: process.env.PII_LEGACY_KEY_ID || 'legacy-app-secret-v1'
+  });
+  if (!Array.isArray(state.csrfTokens)) state.csrfTokens = [];
 export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   const state = loadState(seedState);
   migrateTemplateSystems(state);
@@ -577,8 +769,41 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     return publicUser(user);
   }
 
+  function assertFirmScopedRecord(record, user, entityName = 'Record') {
+    if (!record) throw new Error(`${entityName} not found.`);
+    if (record.firmId && record.firmId !== user.firmId) {
+      throw new Error(`${entityName} not found.`);
+    }
+    return record;
+  }
+
+  function requireFirmProfile(user, profileId, entityName = 'Profile') {
+    const profile = state.profiles.find((entry) => entry.id === profileId);
+    return assertFirmScopedRecord(profile, user, entityName);
+  }
+
+  function requireFirmHousehold(user, householdId, entityName = 'Household') {
+    const household = state.households.find((entry) => entry.id === householdId);
+    return assertFirmScopedRecord(household, user, entityName);
+  }
+
+  function requireFirmTemplate(user, templateId, entityName = 'Template') {
+    const template = state.formTemplates.find((entry) => entry.id === templateId);
+    return assertFirmScopedRecord(template, user, entityName);
+  }
+
   function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}, options = {}) {
-    state.auditEvents.push({ id: randomUUID(), firmId, actorUserId, entityType, entityId, action, occurredAt: now(), metadata });
+    const immutableMetadata = Object.freeze(deepClone(metadata));
+    state.auditEvents.push(Object.freeze({
+      id: randomUUID(),
+      firmId,
+      actorUserId,
+      entityType,
+      entityId,
+      action,
+      occurredAt: now(),
+      metadata: immutableMetadata
+    }));
     if (options.persist !== false) {
       persist();
     }
@@ -604,6 +829,58 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   }
 
   const auth = createAuthService({ provider: createAuthProvider() });
+
+  function getSensitivePolicy(role, purpose = 'profile_view') {
+    return SENSITIVE_ACCESS_POLICY[role]?.[purpose] || null;
+  }
+
+  function normalizeSensitiveReason(input) {
+    return String(input || '').trim().toLowerCase();
+  }
+
+  function maskSsn(value) {
+    return value ? `***-**-${value.slice(-4)}` : null;
+  }
+
+  function maskTaxId(value) {
+    return value ? `**-${value.slice(-4)}` : null;
+  }
+
+  function readSensitiveRecord(profile, field) {
+    if (!profile?.pii) return null;
+    const envelopeField = `${field}Encrypted`;
+    if (profile.pii[envelopeField]) return profile.pii[envelopeField];
+    const legacyField = `${field}Ciphertext`;
+    return profile.pii[legacyField] || null;
+  }
+
+  function writeSensitiveRecord(profile, field, value) {
+    profile.pii ||= { maskingPolicy: 'role_based' };
+    profile.pii[`${field}Encrypted`] = piiCrypto.encrypt(value);
+    delete profile.pii[`${field}Ciphertext`];
+  }
+
+  function reencryptProfilePii(profile) {
+    if (!profile?.pii) return { changed: false, fields: [] };
+    const fields = ['ssn', 'taxId'];
+    const changedFields = [];
+    fields.forEach((field) => {
+      const current = readSensitiveRecord(profile, field);
+      if (!current) return;
+      if (!piiCrypto.needsReencryption(current)) {
+        if (typeof current === 'string') {
+          profile.pii[`${field}Encrypted`] = piiCrypto.encrypt(piiCrypto.decrypt(current));
+          delete profile.pii[`${field}Ciphertext`];
+          changedFields.push(field);
+        }
+        return;
+      }
+      profile.pii[`${field}Encrypted`] = piiCrypto.reencrypt(current);
+      delete profile.pii[`${field}Ciphertext`];
+      changedFields.push(field);
+    });
+    return { changed: changedFields.length > 0, fields: changedFields };
+  }
 
   return {
     state,
@@ -905,7 +1182,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     listFormSubmissions(user, status = null) {
       requirePermission(user, 'profiles:read');
       const currentTime = Date.now();
-      return state.formSubmissions
+      const submissions = state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || entry.status === status)
         .map((entry) => {
@@ -926,6 +1203,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       const templatesFromAggregates = state.templateAggregates
         .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.formSchema?.sections || [] }));
+      submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const uploads = state.documentUploads
         .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
         .slice()
@@ -1016,6 +1294,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return this.listFormSubmissions(user, 'draft');
     },
     createFormSubmission(user, input) {
+      requireFirmProfile(user, input.clientId);
+      requireFirmTemplate(user, input.templateId, 'Form template');
       requirePermission(user, 'forms:write');
       const status = input.status || 'draft';
       const createdAt = now();
@@ -1288,6 +1568,20 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     inviteUser(user, input) {
       requirePermission(user, 'profiles:write');
+      const role = input.role || 'advisor';
+      if (!ALLOWED_INVITE_ROLES.has(role)) throw new Error('Invalid invite role.');
+      if (role === 'client' && user.role !== 'admin') throw new Error('Only admins can invite client users.');
+      const invite = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        email: input.email.toLowerCase(),
+        role,
+        invitedByUserId: user.id,
+        token: randomUUID(),
+        createdAt: now(),
+        expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
+        consumedAt: null
+      };
       const invite = { id: randomUUID(), firmId: user.firmId, email: input.email.toLowerCase(), role: input.role || 'advisor', invitedByUserId: user.id, token: randomUUID(), createdAt: now() };
       state.invites.push(invite);
       addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role });
@@ -1383,6 +1677,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       const availableTemplates = state.templateAggregates
         .filter((entry) => entry.firmId === link.firmId && entry.kind === 'form')
         .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.formSchema?.sections || [] }));
+      submissions.forEach(ensureSubmissionRepeatableItemKeys);
       const uploads = state.documentUploads
         .filter((entry) => entry.firmId === link.firmId && entry.clientId === link.profileId)
         .slice()
@@ -1544,6 +1839,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         profileCount: firmProfiles.length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
+        templateCount: state.documentTemplates.filter((entry) => entry.firmId === user.firmId).length,
+        avgProspectStageAgeDays: Number(average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2))
+      };
+    },
         templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form').length,
         avgProspectStageAgeDays: Number(average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2))
       };
@@ -1570,6 +1869,75 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       requirePermission(user, 'profiles:read');
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
+      const purpose = options.purpose || 'profile_view';
+      const requestedUnmask = Boolean(options.unmask);
+      const reasonCode = normalizeSensitiveReason(options.reasonCode);
+      const justification = String(options.justification || '').trim();
+      if (!reasonCode || !SENSITIVE_READ_REASON_CODES.has(reasonCode)) {
+        throw new Error('Sensitive read reasonCode is required and must be an approved code.');
+      }
+      if (requestedUnmask && !justification) {
+        throw new Error('Sensitive unmask reads require non-empty justification.');
+      }
+      if (requestedUnmask && options.privilegedPolicy !== REQUIRED_UNMASK_POLICY) {
+        throw new Error('Sensitive unmask reads require explicit privileged policy acknowledgement.');
+      }
+      const policy = getSensitivePolicy(user.role, purpose);
+      if (!policy?.allowMasked || (requestedUnmask && !policy.allowUnmasked)) {
+        addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', {
+          immutable: true,
+          policy: REQUIRED_UNMASK_POLICY,
+          actor: { userId: user.id, role: user.role },
+          reason: { code: reasonCode, justification },
+          profile: { id: profileId, purpose },
+          requestedUnmask,
+          fieldScope: requestedUnmask ? ['ssn', 'taxId'] : ['ssnMasked', 'taxIdMasked']
+        });
+        throw new Error('Sensitive data access denied for role/purpose combination.');
+      }
+      const ssn = piiCrypto.decrypt(readSensitiveRecord(profile, 'ssn'));
+      const taxId = piiCrypto.decrypt(readSensitiveRecord(profile, 'taxId'));
+      const response = {
+        ssnMasked: maskSsn(ssn),
+        taxIdMasked: maskTaxId(taxId)
+      };
+      if (requestedUnmask) {
+        response.ssn = ssn;
+        response.taxId = taxId;
+      }
+      addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
+        immutable: true,
+        policy: REQUIRED_UNMASK_POLICY,
+        actor: { userId: user.id, role: user.role },
+        reason: { code: reasonCode, justification },
+        profile: { id: profileId, purpose },
+        requestedUnmask,
+        grantedUnmask: requestedUnmask,
+        fieldScope: requestedUnmask ? ['ssn', 'taxId'] : ['ssnMasked', 'taxIdMasked']
+      });
+      return response;
+    },
+    reencryptSensitiveData(options = {}) {
+      const profiles = state.profiles.filter((entry) => entry.firmId === options.firmId || !options.firmId);
+      let rotatedProfiles = 0;
+      let rotatedFields = 0;
+      profiles.forEach((profile) => {
+        const result = reencryptProfilePii(profile);
+        if (result.changed) {
+          rotatedProfiles += 1;
+          rotatedFields += result.fields.length;
+          profile.updatedAt = now();
+        }
+      });
+      const actorUserId = options.actorUserId || 'system';
+      const actorFirmId = options.firmId || profiles[0]?.firmId || 'system';
+      addAudit(actorFirmId, actorUserId, 'pii', 'rotation', 'pii.rotation.completed', {
+        rotatedProfiles,
+        rotatedFields,
+        activeKeyId: piiCrypto.keyProvider.getActiveKey().keyId
+      });
+      persist();
+      return { rotatedProfiles, rotatedFields };
       const ssn = decryptValue(profile.pii?.ssnCiphertext);
       const taxId = decryptValue(profile.pii?.taxIdCiphertext);
       return {
