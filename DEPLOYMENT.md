@@ -26,9 +26,21 @@ Use:
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
+curl -I http://localhost:3000/health
 ```
 
 `/ready` verifies the SQLite database is reachable and returns a query summary for seeded/runtime records.
+Both endpoints accept `GET` and `HEAD`, which is useful for load balancer probes.
+
+## HTTP hardening defaults
+The API and static responses include default hardening headers:
+- `X-Frame-Options: DENY`
+- `X-Content-Type-Options: nosniff`
+- `Referrer-Policy: no-referrer`
+- `Permissions-Policy: camera=(), microphone=(), geolocation=()`
+- `Cross-Origin-Resource-Policy: same-origin`
+
+Static asset serving is restricted to files beneath `apps/web/public`; path traversal attempts return `404`.
 
 ## Persistent data
 The app stores seeded and runtime data in `data/app.db`.

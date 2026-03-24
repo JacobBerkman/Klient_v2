@@ -1,6 +1,6 @@
 # Kinetic Klient Rebuild
 
-This repository contains a **single-command runnable advisory onboarding app** with persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and smoke-test coverage for the main user flows.
+This repository contains a **single-command runnable advisory onboarding app** with persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, baseline HTTP hardening headers, backup/restore scripts, and smoke-test coverage for the main user flows.
 
 ## What is included
 - admin firm bootstrap and sign-in
@@ -64,7 +64,11 @@ See `DEPLOYMENT.md` for deployment details, environment variables, health checks
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
+curl -I http://localhost:3000/health
 ```
+
+`GET` and `HEAD` are both supported for `/health` and `/ready`.
+Static file serving is constrained to `apps/web/public` so path traversal requests are rejected with 404.
 
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.

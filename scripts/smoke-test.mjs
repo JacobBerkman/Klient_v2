@@ -19,6 +19,12 @@ async function jsonFetch(path, options = {}) {
 
 async function run() {
   await wait(700);
+  const health = await fetch(`http://127.0.0.1:${port}/health`, { method: 'HEAD' });
+  if (!health.ok) throw new Error('Health HEAD failed');
+  if (health.headers.get('x-content-type-options') !== 'nosniff') throw new Error('Security headers missing');
+
+  const traversalAttempt = await fetch(`http://127.0.0.1:${port}/../package.json`);
+  if (traversalAttempt.status !== 404) throw new Error('Static traversal guard failed');
   const ready = await jsonFetch('/ready');
   if (!ready.querySummary) throw new Error('Readiness summary missing');
 
