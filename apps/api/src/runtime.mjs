@@ -36,8 +36,8 @@ function readStorageProvider(value) {
 }
 function readAuthProvider(value) {
   const normalized = String(value || 'local').toLowerCase();
-  if (!['local'].includes(normalized)) {
-    throw new Error(`Invalid AUTH_PROVIDER: ${normalized}.`);
+  if (!['local', 'oidc', 'saml'].includes(normalized)) {
+    return 'local';
   }
   return normalized;
 }
