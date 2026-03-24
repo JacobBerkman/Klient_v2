@@ -86,7 +86,16 @@ node scripts/restore-db.mjs data/backup-<timestamp>.db
 node scripts/export-worker.mjs
 ```
 
-This processes queued export jobs in the SQLite-backed runtime.
+This processes export jobs in the SQLite-backed runtime with a real lifecycle:
+
+- `queued` → `processing` → `completed`
+- `failed` jobs can be retried into `retried` and then processed again
+- stale `processing` jobs are automatically recovered back to `queued` before processing
+
+Optional worker controls:
+
+- `EXPORT_WORKER_FAIL_JOB_IDS=job1,job2` to simulate failures for specific jobs
+- `EXPORT_WORKER_STALE_AFTER_MS=300000` to tune stale-processing recovery window
 
 ## CI
 A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.

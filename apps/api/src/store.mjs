@@ -1,6 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
 import { runtime } from './runtime.mjs';
 import { loadState, saveState } from './storage.mjs';
+import { findIdempotentExportJob, initializeExportJob, markExportForRetry, processExportJobs } from './export-jobs.mjs';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const PERMISSIONS = {
@@ -195,7 +196,7 @@ function seedState() {
       createdAt,
       updatedAt: createdAt
     }],
-    exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json' }, createdAt, updatedAt: createdAt }],
+    exportJobs: [{ id: exportId, firmId, clientId, templateId, type: 'pdf', status: 'completed', output: { fileName: 'client-intake-demo.json' }, retryCount: 0, attemptCount: 1, maxRetries: 3, idempotencyKey: null, lastError: null, processingStartedAt: null, completedAt: createdAt, failedAt: null, createdAt, updatedAt: createdAt }],
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
@@ -490,9 +491,13 @@ export function createStore() {
     },
     createExport(user, input) {
       requirePermission(user, 'exports:write');
-      const job = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, type: input.type || 'pdf', status: 'queued', output: null, createdAt: now(), updatedAt: now() };
+      const idempotencyKey = input.idempotencyKey || null;
+      const existing = findIdempotentExportJob(state.exportJobs, { firmId: user.firmId, idempotencyKey });
+      if (existing) return existing;
+      const createdAt = now();
+      const job = initializeExportJob({ id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, type: input.type || 'pdf', idempotencyKey, createdAt });
       state.exportJobs.push(job);
-      addAudit(user.firmId, user.id, 'export_job', job.id, 'export_job.created', { clientId: input.clientId, templateId: input.templateId, type: job.type });
+      addAudit(user.firmId, user.id, 'export_job', job.id, 'export_job.created', { clientId: input.clientId, templateId: input.templateId, type: job.type, idempotencyKey });
       persist();
       return job;
     },
@@ -500,23 +505,14 @@ export function createStore() {
       requirePermission(user, 'exports:write');
       const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId);
       if (!job) throw new Error('Export not found.');
-      job.status = 'queued';
-      job.updatedAt = now();
+      markExportForRetry(job, { currentTime: now() });
       persist();
       return job;
     },
-    processQueuedExports() {
-      let processed = 0;
-      for (const job of state.exportJobs) {
-        if (job.status === 'queued') {
-          job.status = 'completed';
-          job.output = { fileName: `${job.type}-${Date.now()}.json`, preview: { clientId: job.clientId, templateId: job.templateId } };
-          job.updatedAt = now();
-          processed += 1;
-        }
-      }
+    processQueuedExports(options = {}) {
+      const summary = processExportJobs(state.exportJobs, options);
       persist();
-      return { processed };
+      return summary;
     },
     listAudit(user) {
       return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();
