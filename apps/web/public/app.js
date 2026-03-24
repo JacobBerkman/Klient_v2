@@ -278,11 +278,12 @@ async function renderClientWorkspace() {
         <button type="submit">Save Form</button>
       </form>
       <form id="client-upload" class="card inner">
-        <h3>Log Document Upload</h3>
-        <input name="name" placeholder="Document name" required />
+        <h3>Upload Document (Presigned)</h3>
+        <input type="file" name="file" required />
+        <input name="name" placeholder="Document name (optional)" />
         <input name="category" placeholder="Category (tax, ID, etc.)" value="general" />
         <textarea name="notes" rows="4" placeholder="Optional notes"></textarea>
-        <button type="submit">Log Upload</button>
+        <button type="submit">Upload File</button>
       </form>
     </section>
     <h3>Recent Submission History</h3>
@@ -310,9 +311,33 @@ async function renderClientWorkspace() {
   document.querySelector('#client-upload')?.addEventListener('submit', async (event) => {
     event.preventDefault();
     const form = new FormData(event.target);
+    const file = form.get('file');
+    if (!(file instanceof File) || !file.size) {
+      alert('Choose a file first.');
+      return;
+    }
+    const presign = await api('/api/client/uploads/presign', {
+      method: 'POST',
+      body: JSON.stringify({
+        fileName: file.name,
+        contentType: file.type || 'application/octet-stream',
+        category: form.get('category') || 'general'
+      })
+    });
+    await fetch(presign.presigned.url, {
+      method: presign.presigned.method || 'PUT',
+      headers: presign.presigned.headers || { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file
+    });
     await api('/api/client/uploads', {
       method: 'POST',
-      body: JSON.stringify(Object.fromEntries(form.entries()))
+      body: JSON.stringify({
+        uploadId: presign.uploadId,
+        name: form.get('name') || file.name,
+        category: form.get('category') || 'general',
+        notes: form.get('notes') || '',
+        object: presign.object
+      })
     });
     await renderClientWorkspace();
   });
