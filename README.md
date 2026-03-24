@@ -1,5 +1,29 @@
 # Kinetic Klient Rebuild
 
+This repository contains a **single-command runnable advisory onboarding app** with persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and smoke-test coverage for the main user flows.
+
+## What is included
+- admin firm bootstrap and sign-in
+- persistent SQLite-backed local data storage in `data/app.db`
+- dashboard with stats and recent activity
+- prospects and clients management
+- persisted prospect pipeline board
+- households and member linking
+- dynamic form template and submission flows
+- guided client portal for draft and submitted onboarding responses
+- document template and export job foundations
+- audit trail and analytics views
+- invite flow and password reset endpoints
+- internal web UI served by the backend
+- operational diagnostics for runtime config, storage health, export worker queue, and audit counts
+- Docker + compose deployment artifacts
+- backup, restore, and export worker scripts
+
+## Environment
+Copy `.env.example` to `.env` for deployment-oriented runs.
+In production, `APP_SECRET` must be set to a long random value.
+
+## Run locally
 Kinetic Klient is now consolidated onto **one real runtime architecture**:
 
 - a single Node.js HTTP server at `apps/api/src/server.mjs`
@@ -70,6 +94,21 @@ curl http://localhost:3000/ready
 curl -I http://localhost:3000/health
 ```
 
+Authenticated operational diagnostics:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:3000/api/ops/diagnostics
+```
+
+`/ready` now includes config validation output, SQLite quick-check results, export worker status summary, and audit event counts. `/api/ops/diagnostics` adds richer startup/runtime metadata for on-call troubleshooting.
+
+## Portal view
+Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
+
+## Backup
+```bash
+node scripts/backup-db.mjs
+```
 ## Data location
 Runtime data is stored in:
 - `data/app.db`
