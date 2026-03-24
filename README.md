@@ -1,87 +1,84 @@
 # Kinetic Klient Rebuild
 
-This repository contains a **single-command runnable advisory onboarding app** with persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, baseline HTTP hardening headers, backup/restore scripts, and smoke-test coverage for the main user flows.
+Kinetic Klient is now consolidated onto **one real runtime architecture**:
 
-## What is included
-- admin firm bootstrap and sign-in
-- persistent SQLite-backed local data storage in `data/app.db`
-- dashboard with stats and recent activity
-- prospects and clients management
-- persisted prospect pipeline board
-- households and member linking
-- dynamic form template and submission flows
-- guided client portal for draft and submitted onboarding responses
-- document template and export job foundations
-- audit trail and analytics views
-- invite flow and password reset endpoints
-- internal web UI served by the backend
-- Docker + compose deployment artifacts
-- backup, restore, and export worker scripts
+- a single Node.js HTTP server at `apps/api/src/server.mjs`
+- SQLite-backed persistence in `data/app.db`
+- the advisor web UI served directly from `apps/web/public`
+- the client portal served from `/portal`
 
-## Environment
-Copy `.env.example` to `.env` for deployment-oriented runs.
-In production, `APP_SECRET` must be set to a long random value.
+The older duplicate Fastify/TypeScript backend path and related workspace scaffolding have been removed so the repository now has one real startup path.
 
-## Run locally
+## Product capabilities
+- firm admin registration and sign-in
+- persistent session-backed advisory workspace
+- dashboard with recent activity and operating stats
+- prospect/client creation, search, detail, notes, and stage management
+- household creation, member management, and spouse linking/creation
+- masked sensitive data handling for SSNs and tax IDs
+- form template creation plus advisor and portal submission flows
+- document templates, auto-build mappings, export jobs, and worker processing
+- invite and password reset flows
+- readiness/health probes, backup/restore scripts, Docker packaging, and smoke coverage
+
+## Runtime architecture kept
+The repo now treats the plain Node runtime as canonical because it is the path that already:
+- serves the API and static UI together,
+- persists real state to SQLite,
+- powers the smoke test and Docker startup path,
+- and can be verified end-to-end without a second backend stack.
+
+That eliminates the split-brain between competing backend implementations and keeps local, Docker, CI, and smoke verification on the same runtime.
+
+## Local development
 ```bash
 node apps/api/src/server.mjs
 ```
 
-Then open:
+Open:
 - `http://localhost:3000`
+- `http://localhost:3000/portal?token=<token>`
 
 ## Demo credentials
-- `admin@demo.test`
-- `ChangeMe123!`
+- Email: `admin@demo.test`
+- Password: `ChangeMe123!`
+
+## Security notes
+- In production, set `APP_SECRET` to a long random secret.
+- New passwords must be at least 12 characters and include uppercase, lowercase, and numeric characters.
+- Sessions expire after 8 hours.
+- Repeated failed login attempts are rate limited.
+- Sensitive identifiers are stored encrypted and only returned in masked form.
 
 ## Testing
-Run the smoke test:
+Smoke test the full runtime:
 
 ```bash
 node scripts/smoke-test.mjs
 ```
 
-Run the broader local validation bundle:
+Run the full local validation bundle:
 
 ```bash
 npm run test:all
 ```
 
-## Data location
-All persisted demo/runtime data is stored in:
-- `data/app.db`
-
-Delete that file to reseed the app.
-
-## Docker deployment
-```bash
-docker compose --env-file .env up --build -d
-```
-
-See `DEPLOYMENT.md` for deployment details, environment variables, health checks, and restore procedures.
-
-## Health endpoints
+## Health checks
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
 curl -I http://localhost:3000/health
 ```
 
-`GET` and `HEAD` are both supported for `/health` and `/ready`.
-Static file serving is constrained to `apps/web/public` so path traversal requests are rejected with 404.
+## Data location
+Runtime data is stored in:
+- `data/app.db`
 
-## Portal view
-Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
+Delete the file to reseed the demo dataset.
 
-## Backup
+## Backups
 ```bash
 node scripts/backup-db.mjs
-```
-
-This writes a timestamped SQLite backup into `data/`.
-
-## Restore
-```bash
 node scripts/restore-db.mjs data/backup-<timestamp>.db
 ```
 
@@ -90,7 +87,9 @@ node scripts/restore-db.mjs data/backup-<timestamp>.db
 node scripts/export-worker.mjs
 ```
 
-This processes queued export jobs in the SQLite-backed runtime.
+## Docker
+```bash
+docker compose --env-file .env up --build -d
+```
 
-## CI
-A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.
+See `DEPLOYMENT.md` for deployment details.
