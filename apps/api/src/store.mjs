@@ -863,16 +863,17 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   }
 
   function createAuthProvider() {
+    const localProvider = createLocalAuthProvider({ state, persist, createSession, addAudit });
     if (runtime.authProvider === 'local') {
-      return createLocalAuthProvider({ state, persist, createSession, addAudit });
+      return localProvider;
     }
     if (runtime.authProvider === 'oidc') {
-      return createOidcAuthProvider();
+      return createOidcAuthProvider({ state, persist, createSession, addAudit, fallbackProvider: localProvider });
     }
     if (runtime.authProvider === 'saml') {
-      return createSamlAuthProvider();
+      return createSamlAuthProvider({ state, persist, createSession, addAudit, fallbackProvider: localProvider });
     }
-    throw new Error(`Unsupported auth provider: ${runtime.authProvider}.`);
+    return localProvider;
   }
 
   const auth = createAuthService({ provider: createAuthProvider() });
