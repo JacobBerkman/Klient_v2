@@ -1,31 +1,23 @@
-import { spawn } from 'node:child_process';
+import { assert, createTestContext } from './test-harness.mjs';
 
-const port = 3010;
-const server = spawn(process.execPath, ['apps/api/src/server.mjs'], {
-  env: { ...process.env, PORT: String(port) },
-  stdio: ['ignore', 'pipe', 'pipe']
-});
+const context = await createTestContext('smoke');
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+try {
+  const health = await context.request('/health');
+  const ready = await context.request('/ready');
+  const login = await context.login();
 
-async function jsonFetch(path, options = {}) {
-  const response = await fetch(`http://127.0.0.1:${port}${path}`, options);
-  const data = await response.json();
-  if (!response.ok) throw new Error(`${path}: ${data.message || 'Request failed'}`);
-  return data;
-}
-
-async function run() {
-  await wait(700);
-  const ready = await jsonFetch('/ready');
-  if (!ready.querySummary) throw new Error('Readiness summary missing');
-
-  const login = await jsonFetch('/api/login', {
+  const headers = context.authHeaders(login.token);
+  const profile = await context.request('/api/profiles', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' })
+    headers,
+    body: JSON.stringify({
+      kind: 'prospect',
+      firstName: 'Smoke',
+      lastName: 'Path',
+      email: `smoke.path+${Date.now()}@example.com`,
+      stage: 'discovery'
+    })
   });
 
   const authHeaders = { 'Content-Type': 'application/json', Authorization: `Bearer ${login.token}` };
@@ -101,7 +93,8 @@ async function run() {
   if (published.status !== 'published') throw new Error('Template publish failed');
 
   console.log(JSON.stringify({
-    login: login.user.email,
+    suite: 'smoke',
+    user: login.user.email,
     profileId: profile.id,
     noteId: note.id,
     householdId: household.id,
@@ -112,13 +105,6 @@ async function run() {
     totalProfiles: dashboard.stats.totalProfiles,
     templateStatus: published.status
   }, null, 2));
+} finally {
+  await context.shutdown();
 }
-
-run()
-  .finally(() => {
-    server.kill('SIGTERM');
-  })
-  .catch((error) => {
-    console.error(error);
-    process.exitCode = 1;
-  });
