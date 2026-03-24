@@ -234,6 +234,57 @@ export function createStore() {
     persist();
   }
 
+  function requireHousehold(user, householdId) {
+    const household = state.households.find((entry) => entry.id === householdId && entry.firmId === user.firmId);
+    if (!household) throw new Error('Household not found.');
+    return household;
+  }
+
+  function requireProfile(user, profileId) {
+    const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
+    if (!profile) throw new Error('Profile not found.');
+    return profile;
+  }
+
+  function getHouseholdMembers(firmId, householdId) {
+    return state.householdMembers.filter((entry) => entry.firmId === firmId && entry.householdId === householdId);
+  }
+
+  function removeMemberRecords(firmId, householdId, clientId) {
+    state.householdMembers = state.householdMembers.filter((entry) => !(entry.firmId === firmId && entry.householdId === householdId && entry.clientId === clientId));
+  }
+
+  function upsertHouseholdMember(firmId, householdId, clientId, role) {
+    removeMemberRecords(firmId, householdId, clientId);
+    const member = { householdId, clientId, role, firmId, createdAt: now() };
+    state.householdMembers.push(member);
+    return member;
+  }
+
+  function assignProfileHousehold(firmId, clientId, householdId) {
+    const profile = state.profiles.find((entry) => entry.id === clientId && entry.firmId === firmId);
+    if (profile) {
+      profile.householdId = householdId;
+      profile.updatedAt = now();
+    }
+    return profile;
+  }
+
+  function enforcePrimaryConsistency(firmId, householdId) {
+    const household = state.households.find((entry) => entry.id === householdId && entry.firmId === firmId);
+    if (!household) return;
+    const members = getHouseholdMembers(firmId, householdId);
+    const primaryMember = members.find((entry) => entry.role === 'primary');
+    if (primaryMember) {
+      household.primaryClientId = primaryMember.clientId;
+      return;
+    }
+    if (!members.length) return;
+    const fallback = members[0];
+    fallback.role = 'primary';
+    household.primaryClientId = fallback.clientId;
+  }
+
   return {
     state,
     register({ firmName, firstName, lastName, email, password }) {
@@ -382,26 +433,154 @@ export function createStore() {
     },
     createHousehold(user, input) {
       requirePermission(user, 'households:write');
+      requireProfile(user, input.primaryClientId);
       const household = { id: randomUUID(), firmId: user.firmId, name: input.name, primaryClientId: input.primaryClientId, createdAt: now() };
       state.households.push(household);
-      state.householdMembers.push({ householdId: household.id, clientId: input.primaryClientId, role: 'primary', firmId: user.firmId, createdAt: household.createdAt });
-      const profile = state.profiles.find((entry) => entry.id === input.primaryClientId && entry.firmId === user.firmId);
-      if (profile) profile.householdId = household.id;
+      upsertHouseholdMember(user.firmId, household.id, input.primaryClientId, 'primary');
+      assignProfileHousehold(user.firmId, input.primaryClientId, household.id);
       addAudit(user.firmId, user.id, 'household', household.id, 'household.created', { name: household.name });
       persist();
       return household;
     },
     addHouseholdMember(user, householdId, input) {
       requirePermission(user, 'households:write');
-      const household = state.households.find((entry) => entry.id === householdId && entry.firmId === user.firmId);
-      if (!household) throw new Error('Household not found.');
-      const member = { householdId, clientId: input.clientId, role: input.role, firmId: user.firmId, createdAt: now() };
-      state.householdMembers.push(member);
-      const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId);
-      if (profile) profile.householdId = householdId;
+      const household = requireHousehold(user, householdId);
+      requireProfile(user, input.clientId);
+      const existingPrimary = getHouseholdMembers(user.firmId, householdId).find((entry) => entry.role === 'primary');
+      if (input.role === 'primary' && existingPrimary && existingPrimary.clientId !== input.clientId) {
+        existingPrimary.role = 'other';
+      }
+      const member = upsertHouseholdMember(user.firmId, householdId, input.clientId, input.role);
+      assignProfileHousehold(user.firmId, input.clientId, householdId);
+      if (input.role === 'primary') {
+        household.primaryClientId = input.clientId;
+      }
       addAudit(user.firmId, user.id, 'household', householdId, 'household.member_added', input);
       persist();
       return member;
+    },
+    updateHouseholdMemberRole(user, householdId, clientId, role) {
+      requirePermission(user, 'households:write');
+      const household = requireHousehold(user, householdId);
+      const member = state.householdMembers.find((entry) => entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId);
+      if (!member) throw new Error('Household member not found.');
+      const previousRole = member.role;
+      if (role === 'primary') {
+        getHouseholdMembers(user.firmId, householdId)
+          .filter((entry) => entry.role === 'primary' && entry.clientId !== clientId)
+          .forEach((entry) => {
+            entry.role = 'other';
+          });
+        household.primaryClientId = clientId;
+      } else if (member.role === 'primary') {
+        throw new Error('Primary household member must be reassigned via /reassign-primary.');
+      }
+      member.role = role;
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.member_role_changed', { clientId, fromRole: previousRole, toRole: role });
+      persist();
+      return member;
+    },
+    reassignHouseholdPrimary(user, householdId, nextPrimaryClientId) {
+      requirePermission(user, 'households:write');
+      const household = requireHousehold(user, householdId);
+      const nextPrimary = state.householdMembers.find((entry) => entry.householdId === householdId && entry.clientId === nextPrimaryClientId && entry.firmId === user.firmId);
+      if (!nextPrimary) throw new Error('Household member not found.');
+      getHouseholdMembers(user.firmId, householdId)
+        .filter((entry) => entry.role === 'primary' && entry.clientId !== nextPrimaryClientId)
+        .forEach((entry) => {
+          entry.role = 'other';
+        });
+      const previousPrimaryClientId = household.primaryClientId;
+      nextPrimary.role = 'primary';
+      household.primaryClientId = nextPrimaryClientId;
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.primary_reassigned', { fromClientId: previousPrimaryClientId, toClientId: nextPrimaryClientId });
+      persist();
+      return household;
+    },
+    unlinkSpouse(user, clientId) {
+      requirePermission(user, 'households:write');
+      const profile = requireProfile(user, clientId);
+      if (!profile.spouseClientId) throw new Error('Spouse link not found.');
+      const spouse = requireProfile(user, profile.spouseClientId);
+      const firstId = profile.id;
+      const secondId = spouse.id;
+      profile.spouseClientId = null;
+      spouse.spouseClientId = null;
+      const householdId = profile.householdId || spouse.householdId || null;
+      if (householdId) {
+        const spouseMember = state.householdMembers.find((entry) => entry.firmId === user.firmId && entry.householdId === householdId && entry.clientId === secondId);
+        if (spouseMember?.role === 'spouse') spouseMember.role = 'other';
+      }
+      addAudit(user.firmId, user.id, 'household', householdId || profile.id, 'household.spouse_unlinked', { clientId: firstId, spouseClientId: secondId });
+      persist();
+      return { clientId: firstId, spouseClientId: secondId };
+    },
+    mergeHouseholds(user, sourceHouseholdId, targetHouseholdId) {
+      requirePermission(user, 'households:write');
+      if (sourceHouseholdId === targetHouseholdId) throw new Error('Cannot merge household into itself.');
+      const source = requireHousehold(user, sourceHouseholdId);
+      const target = requireHousehold(user, targetHouseholdId);
+      const sourceMembers = getHouseholdMembers(user.firmId, source.id);
+      for (const member of sourceMembers) {
+        const desiredRole = member.role === 'primary' ? 'other' : member.role;
+        upsertHouseholdMember(user.firmId, target.id, member.clientId, desiredRole);
+        assignProfileHousehold(user.firmId, member.clientId, target.id);
+      }
+      state.householdMembers = state.householdMembers.filter((entry) => !(entry.firmId === user.firmId && entry.householdId === source.id));
+      state.households = state.households.filter((entry) => !(entry.firmId === user.firmId && entry.id === source.id));
+      enforcePrimaryConsistency(user.firmId, target.id);
+      addAudit(user.firmId, user.id, 'household', target.id, 'household.merged', {
+        sourceHouseholdId: source.id,
+        sourceMemberCount: sourceMembers.length,
+        targetHouseholdId: target.id
+      });
+      persist();
+      return target;
+    },
+    splitHouseholdMember(user, householdId, clientId, target = {}) {
+      requirePermission(user, 'households:write');
+      const sourceHousehold = requireHousehold(user, householdId);
+      const member = state.householdMembers.find((entry) => entry.firmId === user.firmId && entry.householdId === householdId && entry.clientId === clientId);
+      if (!member) throw new Error('Household member not found.');
+      if (member.role === 'primary') throw new Error('Cannot split the primary member. Reassign primary first.');
+
+      let destinationHouseholdId;
+      if (target.targetHouseholdId) {
+        destinationHouseholdId = requireHousehold(user, target.targetHouseholdId).id;
+      } else {
+        const profile = requireProfile(user, clientId);
+        const created = this.createHousehold(user, {
+          name: target.name || `${profile.lastName || profile.firstName} Household`,
+          primaryClientId: clientId
+        });
+        destinationHouseholdId = created.id;
+      }
+
+      removeMemberRecords(user.firmId, householdId, clientId);
+      const destinationMembers = getHouseholdMembers(user.firmId, destinationHouseholdId);
+      const destinationRole = destinationMembers.length === 0 ? 'primary' : target.role || member.role || 'other';
+      if (destinationRole === 'primary') {
+        destinationMembers
+          .filter((entry) => entry.role === 'primary')
+          .forEach((entry) => {
+            entry.role = 'other';
+          });
+      }
+      upsertHouseholdMember(user.firmId, destinationHouseholdId, clientId, destinationRole);
+      assignProfileHousehold(user.firmId, clientId, destinationHouseholdId);
+      enforcePrimaryConsistency(user.firmId, householdId);
+      enforcePrimaryConsistency(user.firmId, destinationHouseholdId);
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.member_split', {
+        clientId,
+        fromHouseholdId: householdId,
+        toHouseholdId: destinationHouseholdId,
+        destinationRole
+      });
+      persist();
+      return {
+        sourceHousehold,
+        destinationHousehold: requireHousehold(user, destinationHouseholdId)
+      };
     },
     listHouseholds(user) {
       requirePermission(user, 'profiles:read');
@@ -567,9 +746,12 @@ export function createStore() {
     },
     removeHouseholdMember(user, householdId, clientId) {
       requirePermission(user, 'households:write');
-      state.householdMembers = state.householdMembers.filter((entry) => !(entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId));
-      const profile = state.profiles.find((entry) => entry.id === clientId && entry.firmId === user.firmId);
-      if (profile) profile.householdId = null;
+      const member = state.householdMembers.find((entry) => entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId);
+      if (!member) throw new Error('Household member not found.');
+      if (member.role === 'primary') throw new Error('Cannot remove primary household member. Reassign primary first.');
+      removeMemberRecords(user.firmId, householdId, clientId);
+      assignProfileHousehold(user.firmId, clientId, null);
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.member_removed', { clientId });
       persist();
       return { ok: true };
     },
@@ -584,8 +766,9 @@ export function createStore() {
       if (!householdId) {
         householdId = this.createHousehold(user, { name: `${primary.lastName} Household`, primaryClientId: primary.id }).id;
       }
-      spouse.householdId = householdId;
-      state.householdMembers.push({ householdId, clientId: spouse.id, role: 'spouse', firmId: user.firmId, createdAt: now() });
+      assignProfileHousehold(user.firmId, spouse.id, householdId);
+      upsertHouseholdMember(user.firmId, householdId, spouse.id, 'spouse');
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.spouse_linked', { primaryClientId, spouseClientId });
       persist();
       return { primary, spouse };
     },

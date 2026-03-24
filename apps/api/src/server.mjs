@@ -124,8 +124,21 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/households' && req.method === 'GET') { const result = store.listHouseholds(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/households' && req.method === 'POST') { const result = store.createHousehold(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/households/') && pathname.endsWith('/members') && req.method === 'POST') { const id = pathname.split('/')[3]; const result = store.addHouseholdMember(requireUser(req), id, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/households/') && pathname.includes('/members/') && req.method === 'PATCH') {
+      const [, , householdSegment, householdId, membersSegment, clientId] = pathname.split('/');
+      if (householdSegment === 'households' && membersSegment === 'members' && householdId && clientId) {
+        const body = await parseBody(req);
+        const result = store.updateHouseholdMemberRole(requireUser(req), householdId, clientId, body.role);
+        finalizeLog(200);
+        return json(res, 200, result, { 'X-Request-Id': requestId });
+      }
+    }
+    if (pathname.startsWith('/api/households/') && pathname.endsWith('/reassign-primary') && req.method === 'POST') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.reassignHouseholdPrimary(requireUser(req), id, body.primaryClientId); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/households/') && pathname.endsWith('/merge') && req.method === 'POST') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.mergeHouseholds(requireUser(req), id, body.targetHouseholdId); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/households/') && pathname.endsWith('/split') && req.method === 'POST') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.splitHouseholdMember(requireUser(req), id, body.clientId, { targetHouseholdId: body.targetHouseholdId, role: body.role, name: body.name }); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/households/') && pathname.endsWith('/members') && req.method === 'DELETE') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.removeHouseholdMember(requireUser(req), id, body.clientId); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/households/link-spouse' && req.method === 'POST') { const body = await parseBody(req); const result = store.linkSpouse(requireUser(req), body.primaryClientId, body.spouseClientId); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/households/unlink-spouse' && req.method === 'POST') { const body = await parseBody(req); const result = store.unlinkSpouse(requireUser(req), body.clientId); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/households/create-spouse' && req.method === 'POST') { const body = await parseBody(req); const result = store.createSpouse(requireUser(req), body.primaryClientId, body.spouse); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/forms/templates' && req.method === 'GET') { const result = store.listFormTemplates(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/forms/templates' && req.method === 'POST') { const result = store.createFormTemplate(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }

@@ -8,7 +8,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - dashboard with stats and recent activity
 - prospects and clients management
 - persisted prospect pipeline board
-- households and member linking
+- households with role-aware member management (primary/spouse/dependent/other), spouse unlinking, household merges, and member splitting
 - dynamic form template and submission flows
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
@@ -39,6 +39,12 @@ Run the smoke test:
 
 ```bash
 node scripts/smoke-test.mjs
+```
+
+Run the household regression suite:
+
+```bash
+node scripts/household-regression-test.mjs
 ```
 
 Run the broader local validation bundle:
