@@ -13,7 +13,7 @@ function wait(ms) {
 async function jsonFetch(path, options = {}) {
   const response = await fetch(`http://127.0.0.1:${port}${path}`, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(`${path}: ${data.message || 'Request failed'}`);
+  if (!response.ok) throw new Error(`${path}: ${data.error?.message || data.message || 'Request failed'}`);
   return data;
 }
 

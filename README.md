@@ -39,6 +39,7 @@ Run the smoke test:
 
 ```bash
 node scripts/smoke-test.mjs
+node scripts/validation-smoke-test.mjs
 ```
 
 Run the broader local validation bundle:
@@ -64,6 +65,21 @@ See `DEPLOYMENT.md` for deployment details, environment variables, health checks
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
+```
+
+## API error shape
+Request validation and runtime errors now return a stable envelope:
+
+```json
+{
+  "error": {
+    "code": "invalid_request",
+    "message": "lastName is required.",
+    "details": [{ "field": "lastName", "issue": "required" }]
+  },
+  "message": "lastName is required.",
+  "requestId": "..."
+}
 ```
 
 ## Portal view
