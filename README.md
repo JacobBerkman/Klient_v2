@@ -47,6 +47,12 @@ Run the broader local validation bundle:
 npm run test:all
 ```
 
+Run the CI regression suite (role/tenancy, export generation, validation, deterministic seeded startup):
+
+```bash
+npm run test:regression
+```
+
 ## Data location
 All persisted demo/runtime data is stored in:
 - `data/app.db`
@@ -89,4 +95,8 @@ node scripts/export-worker.mjs
 This processes queued export jobs in the SQLite-backed runtime.
 
 ## CI
-A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml`.
+A GitHub Actions smoke workflow is included at `.github/workflows/smoke.yml` with:
+- runtime syntax + smoke checks
+- role/tenancy + export + validation regression coverage
+- deterministic seeded startup verification
+- optional browser E2E execution when E2E specs are present
