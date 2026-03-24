@@ -1,8 +1,9 @@
-export function createPipelineService({ store }) {
+export function createPipelineService({ store, policy }) {
   return {
     moveProfileStage(user, profileId, stage, beforeProfileId = null) {
+      policy.requireGuard(user, 'canMovePipeline');
       return store.moveProfileStage(user, profileId, stage, beforeProfileId);
     },
-    getBoard(user) { return store.getBoard(user); }
+    getBoard(user) { policy.requireGuard(user, 'canReadPipeline'); return store.getBoard(user); }
   };
 }
