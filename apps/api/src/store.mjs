@@ -3,6 +3,10 @@ import { runtime } from './runtime.mjs';
 import { loadState, saveState } from './storage.mjs';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
+const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const LOGIN_WINDOW_MS = 1000 * 60 * 15;
+const MAX_LOGIN_ATTEMPTS = 5;
+
 const PERMISSIONS = {
   admin: ['*'],
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
@@ -47,6 +51,14 @@ function slugify(value) {
 
 function hash(password) {
   return createHash('sha256').update(password).digest('hex');
+}
+
+function assertStrongPassword(password) {
+  const value = String(password || '');
+  if (value.length < 12) throw new Error('Password must be at least 12 characters long.');
+  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value)) {
+    throw new Error('Password must include uppercase, lowercase, and numeric characters.');
+  }
 }
 
 function sourceDisplay(source) {
@@ -199,7 +211,8 @@ function seedState() {
     notes: [{ id: randomUUID(), firmId, profileId: prospectOneId, body: 'Follow up after workshop and confirm beneficiary details.', createdByUserId: adminId, createdAt }],
     invites: [],
     passwordResets: [],
-    portalLinks: []
+    portalLinks: [],
+    authAttempts: []
   };
 }
 
@@ -212,9 +225,34 @@ export function createStore() {
 
   function createSession(user) {
     const token = randomUUID();
-    state.sessions.push({ token, userId: user.id, firmId: user.firmId, createdAt: now(), expiresAt: new Date(Date.now() + 1000 * 60 * 60 * 8).toISOString() });
+    state.sessions.push({ token, userId: user.id, firmId: user.firmId, createdAt: now(), expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString() });
     persist();
     return { token, user: publicUser(user) };
+  }
+
+  function pruneExpiredSessions() {
+    const cutoff = Date.now();
+    const nextSessions = state.sessions.filter((entry) => new Date(entry.expiresAt).getTime() > cutoff);
+    if (nextSessions.length !== state.sessions.length) {
+      state.sessions = nextSessions;
+      persist();
+    }
+  }
+
+  function recordLoginAttempt(email, ok) {
+    const normalizedEmail = String(email || '').toLowerCase();
+    const entry = { id: randomUUID(), email: normalizedEmail, ok, createdAt: now() };
+    state.authAttempts = (state.authAttempts || []).filter((attempt) => Date.now() - new Date(attempt.createdAt).getTime() <= LOGIN_WINDOW_MS);
+    state.authAttempts.push(entry);
+    persist();
+  }
+
+  function ensureLoginAllowed(email) {
+    const normalizedEmail = String(email || '').toLowerCase();
+    const attempts = (state.authAttempts || []).filter((attempt) => attempt.email === normalizedEmail && !attempt.ok && Date.now() - new Date(attempt.createdAt).getTime() <= LOGIN_WINDOW_MS);
+    if (attempts.length >= MAX_LOGIN_ATTEMPTS) {
+      throw new Error('Too many failed login attempts. Please wait 15 minutes and try again.');
+    }
   }
 
   function publicUser(user) {
@@ -222,6 +260,7 @@ export function createStore() {
   }
 
   function requireUser(token) {
+    pruneExpiredSessions();
     const session = state.sessions.find((entry) => entry.token === token);
     if (!session) throw new Error('Authentication required.');
     const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId);
@@ -237,6 +276,7 @@ export function createStore() {
   return {
     state,
     register({ firmName, firstName, lastName, email, password }) {
+      assertStrongPassword(password);
       const normalizedEmail = email.toLowerCase();
       if (state.users.some((user) => user.email === normalizedEmail)) throw new Error('An account with this email already exists.');
       const firm = { id: randomUUID(), name: firmName, slug: slugify(firmName), createdAt: now() };
@@ -248,8 +288,13 @@ export function createStore() {
     },
     login({ email, password }) {
       const normalizedEmail = email.toLowerCase();
+      ensureLoginAllowed(normalizedEmail);
       const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password));
-      if (!user) throw new Error('Invalid email or password.');
+      if (!user) {
+        recordLoginAttempt(normalizedEmail, false);
+        throw new Error('Invalid email or password.');
+      }
+      recordLoginAttempt(normalizedEmail, true);
       return createSession(user);
     },
     requireUser,
@@ -539,6 +584,7 @@ export function createStore() {
       return invite;
     },
     acceptInvite(input) {
+      assertStrongPassword(input.password);
       const invite = state.invites.find((entry) => entry.token === input.token);
       if (!invite) throw new Error('Invite not found.');
       const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hash(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, createdAt: now() };
@@ -556,6 +602,7 @@ export function createStore() {
       return reset;
     },
     resetPassword(input) {
+      assertStrongPassword(input.password);
       const reset = state.passwordResets.find((entry) => entry.token === input.token);
       if (!reset) throw new Error('Reset token not found.');
       const user = state.users.find((entry) => entry.id === reset.userId);
