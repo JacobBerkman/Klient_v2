@@ -19,6 +19,15 @@ The legacy split between `form_templates` and `templates`/`form_definitions`/`fo
 - mapping rules,
 - publish history.
 
+The canonical form-definition payload (used by both manual and PDF-derived templates) includes:
+- `sections` (ordered container metadata),
+- `fields` (flat field registry keyed by `sectionId`),
+- `repeatableGroups` (collection metadata for repeaters),
+- `validation` rules per field,
+- help text and placeholders on sections/fields/groups,
+- conditional logic metadata on sections/fields/groups,
+- version and publish state (`versions`, `activeVersionId`, `publishedVersionId`, `status`).
+
 ### 3. Security-first backend policy
 The API should enforce authorization server-side using:
 - authenticated principal context,

@@ -53,6 +53,191 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`;
 }
 
+function coerceArray(value) {
+  return Array.isArray(value) ? value : [];
+}
+
+function normalizeConditionalLogicMetadata(value) {
+  if (!value || typeof value !== 'object') return null;
+  return {
+    dependsOn: Array.isArray(value.dependsOn) ? value.dependsOn.filter(Boolean) : [],
+    expression: typeof value.expression === 'string' ? value.expression : '',
+    action: value.action === 'hide' ? 'hide' : 'show'
+  };
+}
+
+function normalizeValidationRules(value) {
+  const source = value && typeof value === 'object' ? value : {};
+  return {
+    required: Boolean(source.required),
+    minLength: Number.isFinite(source.minLength) ? source.minLength : null,
+    maxLength: Number.isFinite(source.maxLength) ? source.maxLength : null,
+    min: Number.isFinite(source.min) ? source.min : null,
+    max: Number.isFinite(source.max) ? source.max : null,
+    pattern: typeof source.pattern === 'string' ? source.pattern : null,
+    message: typeof source.message === 'string' ? source.message : null
+  };
+}
+
+function normalizeLegacySectionsToDefinition(sections = []) {
+  const normalizedSections = [];
+  const normalizedFields = [];
+  const repeatableGroups = [];
+
+  coerceArray(sections).forEach((section, sectionIndex) => {
+    const sectionId = section.id || randomUUID();
+    const sectionKey = section.key || slugify(section.title || `section-${sectionIndex + 1}`) || `section-${sectionIndex + 1}`;
+    const repeatableGroupId = section.repeatable ? (section.repeatableGroupId || randomUUID()) : null;
+
+    normalizedSections.push({
+      id: sectionId,
+      key: sectionKey,
+      title: section.title || `Section ${sectionIndex + 1}`,
+      description: section.description || '',
+      helpText: section.helpText || '',
+      placeholder: section.placeholder || '',
+      order: Number.isFinite(section.order) ? section.order : sectionIndex + 1,
+      conditionalLogic: normalizeConditionalLogicMetadata(section.conditionalLogic)
+    });
+
+    if (repeatableGroupId) {
+      repeatableGroups.push({
+        id: repeatableGroupId,
+        key: section.groupKey || `${sectionKey}_items`,
+        label: section.groupLabel || section.title || 'Items',
+        sectionId,
+        minItems: Number.isFinite(section.minItems) ? section.minItems : 0,
+        maxItems: Number.isFinite(section.maxItems) ? section.maxItems : null,
+        helpText: section.groupHelpText || '',
+        placeholder: section.groupPlaceholder || '',
+        conditionalLogic: normalizeConditionalLogicMetadata(section.groupConditionalLogic || section.conditionalLogic)
+      });
+    }
+
+    coerceArray(section.fields).forEach((field, fieldIndex) => {
+      const fieldId = field.id || randomUUID();
+      const normalizedKey = field.key || slugify(field.label || `${sectionKey}_${fieldIndex + 1}`) || `${sectionKey}_${fieldIndex + 1}`;
+      normalizedFields.push({
+        id: fieldId,
+        key: normalizedKey,
+        sectionId,
+        repeatableGroupId,
+        label: field.label || normalizedKey,
+        type: field.type || 'text',
+        helpText: field.helpText || '',
+        placeholder: field.placeholder || '',
+        defaultValue: field.defaultValue ?? null,
+        options: coerceArray(field.options).map((option) => (typeof option === 'string' ? { label: option, value: option } : option)).map((option) => ({
+          label: option.label || String(option.value || ''),
+          value: option.value ?? option.label ?? ''
+        })),
+        validation: normalizeValidationRules(field.validation || { required: field.required }),
+        conditionalLogic: normalizeConditionalLogicMetadata(field.conditionalLogic)
+      });
+    });
+  });
+
+  return {
+    schemaVersion: 1,
+    sections: normalizedSections,
+    fields: normalizedFields,
+    repeatableGroups
+  };
+}
+
+export function normalizeFormDefinition(definition, fallbackSections = []) {
+  if (definition && typeof definition === 'object' && Array.isArray(definition.sections) && Array.isArray(definition.fields)) {
+    return normalizeLegacySectionsToDefinition(definition.sections.map((section) => ({
+      ...section,
+      fields: definition.fields
+        .filter((field) => field.sectionId === section.id)
+        .map((field) => ({ ...field, required: field.validation?.required }))
+    })));
+  }
+  return normalizeLegacySectionsToDefinition(fallbackSections);
+}
+
+function definitionToLegacySections(definition) {
+  const safeDefinition = normalizeFormDefinition(definition);
+  return safeDefinition.sections.map((section) => {
+    const group = safeDefinition.repeatableGroups.find((entry) => entry.sectionId === section.id) || null;
+    return {
+      id: section.id,
+      key: section.key,
+      title: section.title,
+      description: section.description,
+      helpText: section.helpText,
+      placeholder: section.placeholder,
+      repeatable: Boolean(group),
+      repeatableGroupId: group?.id || null,
+      fields: safeDefinition.fields
+        .filter((field) => field.sectionId === section.id)
+        .map((field) => ({
+          id: field.id,
+          key: field.key,
+          label: field.label,
+          type: field.type,
+          helpText: field.helpText,
+          placeholder: field.placeholder,
+          validation: field.validation,
+          conditionalLogic: field.conditionalLogic,
+          options: field.options.map((option) => option.value)
+        }))
+    };
+  });
+}
+
+function normalizeTemplateRecord(record, sourceKind = 'manual') {
+  const createdAt = record.createdAt || now();
+  const updatedAt = record.updatedAt || createdAt;
+  const existingDefinition = normalizeFormDefinition(record.formDefinition, record.sections || []);
+  const versionEntries = coerceArray(record.versions);
+  const versions = versionEntries.length
+    ? versionEntries.map((version, index) => ({
+      id: version.id || randomUUID(),
+      versionNumber: Number.isFinite(version.versionNumber) ? version.versionNumber : Number(version.version) || index + 1,
+      status: version.status || ((record.status === 'published' && index === versionEntries.length - 1) ? 'published' : 'draft'),
+      sourceKind: version.sourceKind || sourceKind,
+      definition: normalizeFormDefinition(version.definition || version.formDefinition, version.blueprint?.sections || record.sections || []),
+      mappings: coerceArray(version.mappings),
+      createdAt: version.createdAt || createdAt,
+      updatedAt: version.updatedAt || version.createdAt || updatedAt
+    }))
+    : [{
+      id: randomUUID(),
+      versionNumber: 1,
+      status: record.status === 'published' ? 'published' : 'draft',
+      sourceKind,
+      definition: existingDefinition,
+      mappings: coerceArray(record.mappings),
+      createdAt,
+      updatedAt
+    }];
+  const publishedVersionId = record.publishedVersionId || versions.find((entry) => entry.status === 'published')?.id || null;
+  const activeVersionId = record.activeVersionId || publishedVersionId || versions[versions.length - 1].id;
+  const activeVersion = versions.find((entry) => entry.id === activeVersionId) || versions[versions.length - 1];
+  const formDefinition = normalizeFormDefinition(record.formDefinition || activeVersion.definition, record.sections || []);
+
+  return {
+    ...record,
+    sourceKind,
+    status: publishedVersionId ? 'published' : 'draft',
+    formDefinition,
+    versions,
+    publishedVersionId,
+    activeVersionId,
+    sections: definitionToLegacySections(formDefinition),
+    mappings: coerceArray(coerceArray(record.mappings).length ? record.mappings : activeVersion.mappings),
+    updatedAt
+  };
+}
+
+export function migrateTemplateState(state) {
+  state.formTemplates = coerceArray(state.formTemplates).map((entry) => normalizeTemplateRecord(entry, 'manual'));
+  state.documentTemplates = coerceArray(state.documentTemplates).map((entry) => normalizeTemplateRecord(entry, 'pdf-derived'));
+  return state;
+}
+
 function seedState() {
   const createdAt = now();
   const firmId = randomUUID();
@@ -204,7 +389,8 @@ function seedState() {
 }
 
 export function createStore() {
-  const state = loadState(seedState);
+  const state = migrateTemplateState(loadState(seedState));
+  saveState(state);
 
   function persist() {
     saveState(state);
@@ -424,11 +610,36 @@ export function createStore() {
       return note;
     },
     listFormTemplates(user) {
-      return state.formTemplates.filter((entry) => entry.firmId === user.firmId);
+      return state.formTemplates
+        .filter((entry) => entry.firmId === user.firmId)
+        .map((entry) => normalizeTemplateRecord(entry, 'manual'));
     },
     createFormTemplate(user, input) {
       requirePermission(user, 'forms:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, description: input.description || '', sections: input.sections || [], createdAt: now(), updatedAt: now() };
+      const createdAt = now();
+      const formDefinition = normalizeFormDefinition(input.formDefinition, input.sections || []);
+      const version = {
+        id: randomUUID(),
+        versionNumber: 1,
+        status: input.status === 'published' ? 'published' : 'draft',
+        sourceKind: 'manual',
+        definition: formDefinition,
+        mappings: [],
+        createdAt,
+        updatedAt: createdAt
+      };
+      const template = normalizeTemplateRecord({
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: input.name,
+        description: input.description || '',
+        formDefinition,
+        versions: [version],
+        publishedVersionId: version.status === 'published' ? version.id : null,
+        activeVersionId: version.id,
+        createdAt,
+        updatedAt: createdAt
+      }, 'manual');
       state.formTemplates.push(template);
       addAudit(user.firmId, user.id, 'form_template', template.id, 'form_template.created', { name: template.name });
       persist();
@@ -454,11 +665,40 @@ export function createStore() {
     },
     listDocumentTemplates(user) {
       requirePermission(user, 'templates:write');
-      return state.documentTemplates.filter((entry) => entry.firmId === user.firmId);
+      return state.documentTemplates
+        .filter((entry) => entry.firmId === user.firmId)
+        .map((entry) => normalizeTemplateRecord(entry, 'pdf-derived'));
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
+      const createdAt = now();
+      const formDefinition = normalizeFormDefinition(input.formDefinition, input.sections || input.blueprint?.sections || []);
+      const version = {
+        id: randomUUID(),
+        versionNumber: 1,
+        status: 'draft',
+        sourceKind: 'pdf-derived',
+        definition: formDefinition,
+        mappings: coerceArray(input.mappings),
+        createdAt,
+        updatedAt: createdAt
+      };
+      const template = normalizeTemplateRecord({
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: input.name,
+        description: input.description || '',
+        fileName: input.fileName || 'template.pdf',
+        artifact: input.artifact || null,
+        mappings: coerceArray(input.mappings),
+        formDefinition,
+        versions: [version],
+        publishedVersionId: null,
+        activeVersionId: version.id,
+        status: 'draft',
+        createdAt,
+        updatedAt: createdAt
+      }, 'pdf-derived');
       state.documentTemplates.push(template);
       addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
       persist();
@@ -468,9 +708,23 @@ export function createStore() {
       requirePermission(user, 'templates:write');
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
-      template.mappings = mappings;
-      template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
-      template.updatedAt = now();
+      const normalizedTemplate = normalizeTemplateRecord(template, 'pdf-derived');
+      const previousVersion = normalizedTemplate.versions.find((entry) => entry.id === normalizedTemplate.activeVersionId) || normalizedTemplate.versions[normalizedTemplate.versions.length - 1];
+      const nextVersion = {
+        id: randomUUID(),
+        versionNumber: normalizedTemplate.versions.length + 1,
+        status: 'draft',
+        sourceKind: 'pdf-derived',
+        definition: previousVersion.definition,
+        mappings: coerceArray(mappings),
+        createdAt: now(),
+        updatedAt: now()
+      };
+      normalizedTemplate.mappings = nextVersion.mappings;
+      normalizedTemplate.versions.push(nextVersion);
+      normalizedTemplate.activeVersionId = nextVersion.id;
+      normalizedTemplate.updatedAt = now();
+      Object.assign(template, normalizeTemplateRecord(normalizedTemplate, 'pdf-derived'));
       addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.mappings_updated', { count: mappings.length });
       persist();
       return template;
@@ -479,8 +733,13 @@ export function createStore() {
       requirePermission(user, 'templates:write');
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
-      template.status = 'published';
-      template.updatedAt = now();
+      const normalizedTemplate = normalizeTemplateRecord(template, 'pdf-derived');
+      const targetVersion = normalizedTemplate.versions.find((entry) => entry.id === normalizedTemplate.activeVersionId) || normalizedTemplate.versions[normalizedTemplate.versions.length - 1];
+      targetVersion.status = 'published';
+      normalizedTemplate.publishedVersionId = targetVersion.id;
+      normalizedTemplate.status = 'published';
+      normalizedTemplate.updatedAt = now();
+      Object.assign(template, normalizeTemplateRecord(normalizedTemplate, 'pdf-derived'));
       persist();
       return template;
     },
@@ -610,13 +869,33 @@ export function createStore() {
     },
     autoBuildTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const sections = (input.fields || []).reduce((acc, field) => {
+      const sectionBuckets = (input.fields || []).reduce((acc, field) => {
         const sectionKey = field.split('.')[0] || 'general';
         acc[sectionKey] ||= [];
         acc[sectionKey].push(field);
         return acc;
       }, {});
-      return this.createDocumentTemplate(user, { name: input.name, fileName: input.fileName || 'uploaded.pdf', blueprint: { sections }, mappings: (input.fields || []).map((field) => ({ pdfField: field, sourcePath: field.replace(/\s+/g, '_').toLowerCase() })) });
+      const sections = Object.entries(sectionBuckets).map(([sectionKey, fields], index) => ({
+        id: randomUUID(),
+        key: sectionKey,
+        title: sectionKey.replace(/_/g, ' ').replace(/\b\w/g, (letter) => letter.toUpperCase()),
+        order: index + 1,
+        fields: fields.map((field) => ({
+          key: field,
+          label: field.split('.').slice(1).join('.') || field,
+          type: 'text',
+          placeholder: `Enter ${field}`,
+          helpText: 'Auto-generated from PDF field extraction metadata',
+          validation: { required: false }
+        }))
+      }));
+      return this.createDocumentTemplate(user, {
+        name: input.name,
+        fileName: input.fileName || 'uploaded.pdf',
+        sections,
+        mappings: (input.fields || []).map((field) => ({ pdfField: field, sourcePath: field.replace(/\s+/g, '_').toLowerCase() })),
+        artifact: { storageKey: input.storageKey || randomUUID(), fileName: input.fileName || 'uploaded.pdf', kind: 'pdf_template', ingestion: { extractor: input.extractor || 'manual', extractedAt: now() } }
+      });
     },
     createPortalLink(user, profileId) {
       requirePermission(user, 'profiles:read');
@@ -636,7 +915,17 @@ export function createStore() {
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime());
       const availableTemplates = state.formTemplates
         .filter((entry) => entry.firmId === link.firmId)
-        .map((entry) => ({ id: entry.id, name: entry.name, description: entry.description || '', sections: entry.sections || [] }));
+        .map((entry) => {
+          const template = normalizeTemplateRecord(entry, 'manual');
+          return {
+            id: template.id,
+            name: template.name,
+            description: template.description || '',
+            status: template.status,
+            schemaVersion: template.formDefinition.schemaVersion,
+            sections: template.sections
+          };
+        });
       return { firm, profile, submissions, availableTemplates };
     },
     portalSubmit(token, input) {
