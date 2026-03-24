@@ -5,9 +5,31 @@ import { loadState, saveState } from './storage.mjs';
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
 const PERMISSIONS = {
   admin: ['*'],
-  advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
-  readonly: ['profiles:read', 'analytics:read'],
-  client: ['portal:read']
+  advisor: [
+    'profiles:read',
+    'profiles:write',
+    'pipeline:write',
+    'households:read',
+    'households:write',
+    'forms:read',
+    'forms:write',
+    'templates:read',
+    'templates:write',
+    'exports:read',
+    'exports:write',
+    'audit:read',
+    'analytics:read'
+  ],
+  readonly: [
+    'profiles:read',
+    'households:read',
+    'forms:read',
+    'templates:read',
+    'exports:read',
+    'audit:read',
+    'analytics:read'
+  ],
+  client: ['portal:read', 'portal:write']
 };
 
 function can(role, permission) {
@@ -253,6 +275,7 @@ export function createStore() {
       return createSession(user);
     },
     requireUser,
+    requirePermission,
     getDashboard(user) {
       requirePermission(user, 'profiles:read');
       const profiles = state.profiles.filter((profile) => profile.firmId === user.firmId);
@@ -369,6 +392,7 @@ export function createStore() {
       return profile;
     },
     getBoard(user) {
+      requirePermission(user, 'profiles:read');
       const columns = ['discovery','gather_oi','analysis','advisor_proposal_meeting','intake','on_boarding','investment_strategy','completed','drop_dead_lead','drop_nurture'];
       return columns.map((stage) => ({
         stage,
@@ -378,6 +402,7 @@ export function createStore() {
       }));
     },
     listStageHistory(user, profileId) {
+      requirePermission(user, 'profiles:read');
       return state.stageChanges.filter((entry) => entry.firmId === user.firmId && entry.clientId === profileId);
     },
     createHousehold(user, input) {
@@ -411,6 +436,7 @@ export function createStore() {
       }));
     },
     listNotes(user, profileId) {
+      requirePermission(user, 'profiles:read');
       return state.notes.filter((entry) => entry.firmId === user.firmId && entry.profileId === profileId).slice().reverse();
     },
     addNote(user, profileId, body) {
@@ -424,6 +450,7 @@ export function createStore() {
       return note;
     },
     listFormTemplates(user) {
+      requirePermission(user, 'forms:read');
       return state.formTemplates.filter((entry) => entry.firmId === user.firmId);
     },
     createFormTemplate(user, input) {
@@ -435,6 +462,7 @@ export function createStore() {
       return template;
     },
     listFormSubmissions(user, status = null) {
+      requirePermission(user, 'forms:read');
       return state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || entry.status === status)
@@ -453,7 +481,7 @@ export function createStore() {
       return submission;
     },
     listDocumentTemplates(user) {
-      requirePermission(user, 'templates:write');
+      requirePermission(user, 'templates:read');
       return state.documentTemplates.filter((entry) => entry.firmId === user.firmId);
     },
     createDocumentTemplate(user, input) {
@@ -485,7 +513,7 @@ export function createStore() {
       return template;
     },
     listExports(user) {
-      requirePermission(user, 'exports:write');
+      requirePermission(user, 'exports:read');
       return state.exportJobs.filter((entry) => entry.firmId === user.firmId);
     },
     createExport(user, input) {
@@ -505,7 +533,8 @@ export function createStore() {
       persist();
       return job;
     },
-    processQueuedExports() {
+    processQueuedExports(user) {
+      requirePermission(user, 'exports:process');
       let processed = 0;
       for (const job of state.exportJobs) {
         if (job.status === 'queued') {
@@ -519,6 +548,7 @@ export function createStore() {
       return { processed };
     },
     listAudit(user) {
+      requirePermission(user, 'audit:read');
       return state.auditEvents.filter((entry) => entry.firmId === user.firmId).slice().reverse();
     },
     logout(token) {
@@ -527,11 +557,11 @@ export function createStore() {
       return { ok: true };
     },
     listUsers(user) {
-      requirePermission(user, 'analytics:read');
+      requirePermission(user, 'users:read');
       return state.users.filter((entry) => entry.firmId === user.firmId).map(publicUser);
     },
     inviteUser(user, input) {
-      requirePermission(user, 'profiles:write');
+      requirePermission(user, 'users:invite');
       const invite = { id: randomUUID(), firmId: user.firmId, email: input.email.toLowerCase(), role: input.role || 'advisor', invitedByUserId: user.id, token: randomUUID(), createdAt: now() };
       state.invites.push(invite);
       addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role });

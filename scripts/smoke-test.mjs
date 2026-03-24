@@ -10,6 +10,19 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function waitForServer(path = '/health', attempts = 40) {
+  for (let index = 0; index < attempts; index += 1) {
+    try {
+      const response = await fetch(`http://127.0.0.1:${port}${path}`);
+      if (response.ok) return;
+    } catch {
+      // keep retrying while server boots
+    }
+    await wait(150);
+  }
+  throw new Error('Server did not become ready in time');
+}
+
 async function jsonFetch(path, options = {}) {
   const response = await fetch(`http://127.0.0.1:${port}${path}`, options);
   const data = await response.json();
@@ -18,7 +31,7 @@ async function jsonFetch(path, options = {}) {
 }
 
 async function run() {
-  await wait(700);
+  await waitForServer();
   const ready = await jsonFetch('/ready');
   if (!ready.querySummary) throw new Error('Readiness summary missing');
 

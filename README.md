@@ -34,11 +34,19 @@ Then open:
 - `admin@demo.test`
 - `ChangeMe123!`
 
+## Server-side permission matrix
+The canonical Node runtime (`apps/api/src/server.mjs` + `apps/api/src/store.mjs`) enforces role permissions for every API route and sensitive state mutation.
+
+- `admin`: full access, including admin-only actions (`/api/users`, `/api/invites`, `/api/exports/process`).
+- `advisor`: firm-scoped advisor workflows (prospects/clients, households, forms, templates, exports) but no admin-only actions.
+- `readonly`: firm-scoped read access only; writes are denied.
+- `client`: portal-only permissions; advisor/admin routes are denied.
+
 ## Testing
-Run the smoke test:
+Run the smoke and permission authorization tests:
 
 ```bash
-node scripts/smoke-test.mjs
+npm test
 ```
 
 Run the broader local validation bundle:
