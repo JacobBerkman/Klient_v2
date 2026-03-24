@@ -53,7 +53,7 @@ test('envelope crypto preserves backward compatibility for legacy ciphertext', a
       taxIdCiphertext: encryptLegacy('12-3456789', 'test-secret-for-pii')
     };
 
-    const sensitive = store.getMaskedSensitiveData(user, profile.id, { purpose: 'profile_view' });
+    const sensitive = store.getMaskedSensitiveData(user, profile.id, { purpose: 'profile_view', reasonCode: 'customer_request' });
     assert.equal(sensitive.ssnMasked, '***-**-6789');
     assert.equal(sensitive.taxIdMasked, '**-6789');
   });
@@ -89,10 +89,18 @@ test('unauthorized unmask reads are denied and audited', async () => {
     const user = store.requireUser(session.token);
     const profile = store.state.profiles.find((entry) => entry.firmId === user.firmId && entry.kind === 'client');
 
-    assert.throws(() => store.getMaskedSensitiveData({ ...user, role: 'readonly' }, profile.id, { purpose: 'compliance_review', unmask: true }), /denied/);
+    assert.throws(() => store.getMaskedSensitiveData({ ...user, role: 'readonly' }, profile.id, {
+      purpose: 'compliance_review',
+      unmask: true,
+      reasonCode: 'regulatory_review',
+      justification: 'Investigating regulator inquiry.',
+      privilegedPolicy: 'privileged_sensitive_read_v1'
+    }), /denied/);
     const denyEvent = store.state.auditEvents.find((entry) => entry.action === 'sensitive.read_denied');
     assert.ok(denyEvent);
     assert.equal(denyEvent.metadata.requestedUnmask, true);
+    assert.equal(denyEvent.metadata.reason.code, 'regulatory_review');
+    assert.equal(denyEvent.metadata.actor.userId, user.id);
   });
 });
 
@@ -108,12 +116,49 @@ test('authorized unmask reads return clear values and emit audit events', async 
       taxId: '11-2223333'
     });
 
-    const response = store.getMaskedSensitiveData(user, created.id, { purpose: 'compliance_review', unmask: true });
+    const response = store.getMaskedSensitiveData(user, created.id, {
+      purpose: 'compliance_review',
+      unmask: true,
+      reasonCode: 'compliance_review',
+      justification: 'Periodic compliance verification for KYC controls.',
+      privilegedPolicy: 'privileged_sensitive_read_v1'
+    });
     assert.equal(response.ssn, '999-88-7777');
     assert.equal(response.taxId, '11-2223333');
 
     const auditEvent = store.state.auditEvents.find((entry) => entry.action === 'sensitive.read' && entry.entityId === created.id);
     assert.ok(auditEvent);
     assert.equal(auditEvent.metadata.grantedUnmask, true);
+    assert.deepEqual(auditEvent.metadata.fieldScope, ['ssn', 'taxId']);
+    assert.equal(auditEvent.metadata.reason.code, 'compliance_review');
+  });
+});
+
+test('unmask reads require approved reason code, justification, and explicit privileged policy', async () => {
+  await withStoreEnv((store) => {
+    const session = store.login({ email: 'admin@demo.test', password: 'ChangeMe123!' });
+    const user = store.requireUser(session.token);
+    const profile = store.state.profiles.find((entry) => entry.firmId === user.firmId && entry.kind === 'client');
+
+    assert.throws(() => store.getMaskedSensitiveData(user, profile.id, {
+      purpose: 'compliance_review',
+      unmask: true,
+      reasonCode: 'invalid_reason',
+      justification: 'Need this'
+    }), /approved code/);
+
+    assert.throws(() => store.getMaskedSensitiveData(user, profile.id, {
+      purpose: 'compliance_review',
+      unmask: true,
+      reasonCode: 'compliance_review',
+      privilegedPolicy: 'privileged_sensitive_read_v1'
+    }), /require non-empty justification/);
+
+    assert.throws(() => store.getMaskedSensitiveData(user, profile.id, {
+      purpose: 'compliance_review',
+      unmask: true,
+      reasonCode: 'compliance_review',
+      justification: 'Incident ticket KLIENT-123'
+    }), /explicit privileged policy acknowledgement/);
   });
 });
