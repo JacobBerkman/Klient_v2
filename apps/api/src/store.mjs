@@ -1507,6 +1507,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return state.exportJobs.filter((entry) => entry.firmId === user.firmId);
     },
     createExport(user, input) {
+      authorize(user, 'exports:write');
+      requireFirmProfile(user, input.clientId);
+      assertFirmScopedRecord(state.documentTemplates.find((entry) => entry.id === input.templateId), user, 'Template');
+      const idempotencyKey = (input.idempotencyKey || '').trim() || null;
       requirePermission(user, 'exports:write');
       const template = state.templateAggregates.find((entry) => entry.id === input.templateId && entry.firmId === user.firmId && entry.kind !== 'form');
       if (!template) throw new Error('Template not found.');
@@ -1517,9 +1521,13 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         templateId: input.templateId,
         type: input.type || 'pdf',
         maxAttempts: Number(input.maxAttempts || 3),
-        metadata: input.metadata || {}
+        metadata: input.metadata || {},
+        idempotencyKey
       });
-      addAudit(user.firmId, user.id, 'export_job', queued.id, 'export_job.created', { clientId: input.clientId, templateId: input.templateId, type: queued.type });
+      const existing = state.exportJobs.find((entry) => entry.id === queued.id);
+      if (!existing) {
+        addAudit(user.firmId, user.id, 'export_job', queued.id, 'export_job.created', { clientId: input.clientId, templateId: input.templateId, type: queued.type, idempotencyKey });
+      }
       state.exportJobs = state.exportJobs.filter((entry) => entry.id !== queued.id);
       state.exportJobs.push(queued);
       persist();
