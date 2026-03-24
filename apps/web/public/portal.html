@@ -43,8 +43,12 @@
         <p class="muted">Track what has already been uploaded and share missing files securely.</p>
         <form id="portal-upload-form" class="grid two">
           <label>
+            <span>File</span>
+            <input type="file" name="file" required />
+          </label>
+          <label>
             <span>Document Name</span>
-            <input name="name" placeholder="e.g. Recent tax return" required />
+            <input name="name" placeholder="Optional display name" />
           </label>
           <label>
             <span>Category</span>
@@ -375,7 +379,6 @@
 
       async function saveSubmission(status) {
         const payload = buildPayloadFromForm();
-        await api(routes.portalSubmissions(token), {
         await apiRequest(`/api/portal/${token}/submissions`, {
           method: 'POST',
           body: JSON.stringify({ templateId: portalState.selectedTemplateId, status, data: payload })
@@ -407,18 +410,43 @@
 
       uploadForm.addEventListener('submit', async (event) => {
         event.preventDefault();
-        const payload = Object.fromEntries(new FormData(uploadForm).entries());
+        const payload = new FormData(uploadForm);
+        const file = payload.get('file');
+        if (!(file instanceof File) || !file.size) {
+          statusBadge.textContent = 'Please select a file.';
+          statusBadge.className = 'badge subtle';
+          return;
+        }
         try {
+          const presignResponse = await fetch(`/api/portal/${token}/uploads/presign`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fileName: file.name, contentType: file.type || 'application/octet-stream', category: payload.get('category') || 'general' })
+          });
+          const presign = await presignResponse.json();
+          if (!presignResponse.ok) throw new Error(presign.message || 'Unable to prepare upload.');
+          const uploadResponse = await fetch(presign.presigned.url, {
+            method: presign.presigned.method || 'PUT',
+            headers: presign.presigned.headers || { 'Content-Type': file.type || 'application/octet-stream' },
+            body: file
+          });
+          if (!uploadResponse.ok) throw new Error('Upload transfer failed.');
           const response = await fetch(`/api/portal/${token}/uploads`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload)
+            body: JSON.stringify({
+              uploadId: presign.uploadId,
+              object: presign.object,
+              name: payload.get('name') || file.name,
+              category: payload.get('category') || 'general',
+              notes: payload.get('notes') || ''
+            })
           });
           const result = await response.json();
           if (!response.ok) throw new Error(result.message || 'Unable to log upload.');
           uploadForm.reset();
           await loadPortal();
-          statusBadge.textContent = 'Document upload logged';
+          statusBadge.textContent = 'Document upload complete';
           statusBadge.className = 'badge';
         } catch (error) {
           statusBadge.textContent = error.message;

@@ -12,7 +12,8 @@ import {
   readQuerySummary,
   readExportWorkerStatus,
   readStorageHealth,
-  readAuditEventSummary
+  readAuditEventSummary,
+  readAnalyticsMaterializedSummary
 } from './storage.mjs';
 import { createStore } from './store.mjs';
 
@@ -134,6 +135,24 @@ function parseBody(req) {
   });
 }
 
+function parseRawBody(req) {
+  return new Promise((resolveBody, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on('data', (chunk) => {
+      chunks.push(chunk);
+      size += chunk.length;
+      if (size > 25_000_000) {
+        req.destroy();
+        reject(new Error('Payload too large'));
+      }
+    });
+    req.on('end', () => resolveBody(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+
 function getToken(req) {
   return req.headers.authorization?.replace('Bearer ', '');
 }
@@ -176,6 +195,7 @@ function sendError(res, error, requestId) {
   const statusCode = Number.isInteger(error?.statusCode)
     ? error.statusCode
     : (/not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400);
+  const statusCode = error?.statusCode || (/not found/i.test(message) ? 404 : /auth|permission/i.test(message) ? 401 : 400);
   json(res, statusCode, {
     message,
     error: {
@@ -215,7 +235,7 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === '/ready' && (req.method === 'GET' || req.method === 'HEAD')) {
       const database = ensureDatabaseReady();
-      const storageHealth = readStorageHealth();
+      const storageHealth = { ...readStorageHealth(), objectStorage: store.objectStorage.describeHealth?.() || null };
       const queue = readExportWorkerStatus();
       finalizeLog(200);
       return json(res, 200, {
@@ -249,7 +269,7 @@ const server = createServer(async (req, res) => {
         },
         data: {
           querySummary: readQuerySummary(),
-          storageHealth: readStorageHealth(),
+          storageHealth: { ...readStorageHealth(), objectStorage: store.objectStorage.describeHealth?.() || null },
           queue,
           exportWorker: { byStatus, total: exports.length, latest: exports.slice().sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] || null },
           audit: { total: auditEvents.length, latest: auditEvents[0] || null }
@@ -276,6 +296,42 @@ const server = createServer(async (req, res) => {
         return json(res, csrfError.statusCode, csrfError.body, csrfError.headers);
       }
     }
+
+    if (pathname.startsWith('/api/storage/presigned/') && req.method === 'PUT') {
+      const token = url.searchParams.get('token');
+      const operation = pathname.endsWith('/upload') ? 'upload' : null;
+      if (!token || !operation || typeof store.objectStorage.provider.consumePresignedToken !== 'function') {
+        finalizeLog(404);
+        return notFound(res, requestId);
+      }
+      const object = store.objectStorage.provider.consumePresignedToken(token, operation);
+      if (!object) {
+        finalizeLog(403);
+        return json(res, 403, { message: 'Invalid or expired presigned token.' }, { 'X-Request-Id': requestId });
+      }
+      const payload = await parseRawBody(req);
+      await store.objectStorage.putObject({ ...object, body: payload, contentType: req.headers['content-type'] || object.contentType || 'application/octet-stream' });
+      finalizeLog(200);
+      return json(res, 200, { ok: true }, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/storage/presigned/') && req.method === 'GET') {
+      const token = url.searchParams.get('token');
+      const operation = pathname.endsWith('/download') ? 'download' : null;
+      if (!token || !operation || typeof store.objectStorage.provider.consumePresignedToken !== 'function') {
+        finalizeLog(404);
+        return notFound(res, requestId);
+      }
+      const object = store.objectStorage.provider.consumePresignedToken(token, operation);
+      if (!object) {
+        finalizeLog(403);
+        return json(res, 403, { message: 'Invalid or expired presigned token.' }, { 'X-Request-Id': requestId });
+      }
+      const fetched = await store.objectStorage.getObject(object);
+      res.writeHead(200, { ...baseHeaders(), 'X-Request-Id': requestId, 'Content-Type': object.contentType || fetched.contentType || 'application/octet-stream' });
+      res.end(fetched.body);
+      finalizeLog(200);
+      return;
+    }
     if (pathname === '/api/register' && req.method === 'POST') { const result = store.auth.register(await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/login' && req.method === 'POST') { const result = store.auth.login(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/invites' && req.method === 'POST') { const result = store.inviteUser(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
@@ -292,7 +348,30 @@ const server = createServer(async (req, res) => {
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.listNotes(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'POST') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.addNote(requireUser(req), id, body.body || ''); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/profiles/') && pathname.split('/').length === 4 && req.method === 'GET') { const id = pathname.split('/')[3]; const user = requireUser(req); const result = { ...store.getProfileDetail(user, id), profileRecord: reads.getProfileDetail(user.firmId, id) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-    if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage') && req.method === 'PATCH') { const id = pathname.split('/')[3]; const body = await parseBody(req); const result = store.moveProfileStage(requireUser(req), id, body.stage, body.beforeProfileId || null); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage') && req.method === 'PATCH') {
+      const id = pathname.split('/')[3];
+      const body = await parseBody(req);
+      const result = store.reorderBoard(requireUser(req), {
+        profileId: id,
+        toStage: body.stage,
+        beforeProfileId: body.beforeProfileId || null,
+        expectedVersion: body.expectedVersion ?? null,
+        expectedUpdatedAt: body.expectedUpdatedAt ?? null,
+        expectedBoardVersion: body.expectedBoardVersion ?? null
+      });
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/board/reorder' && req.method === 'POST') {
+      const result = store.reorderBoard(requireUser(req), await parseBody(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/board/normalize' && req.method === 'POST') {
+      const result = store.normalizeBoardOrdering(requireUser(req));
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname.startsWith('/api/profiles/') && req.method === 'PATCH') { const id = pathname.split('/')[3]; const result = store.updateProfile(requireUser(req), id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/board' && req.method === 'GET') { const result = store.getBoard(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/households' && req.method === 'GET') { const result = store.listHouseholds(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
@@ -306,8 +385,28 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/forms/submissions' && req.method === 'GET') { const result = store.listFormSubmissions(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/forms/drafts' && req.method === 'GET') { const result = store.listFormDrafts(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/forms/submissions' && req.method === 'POST') { const result = store.createFormSubmission(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/forms/drafts/') && pathname.endsWith('/lock') && req.method === 'POST') {
+      const id = pathname.split('/')[4];
+      const result = store.acquireDraftLock(requireUser(req), id, await parseBody(req));
+      finalizeLog(result.conflict ? 409 : 200);
+      return json(res, result.conflict ? 409 : 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/forms/drafts/') && pathname.endsWith('/lock') && req.method === 'DELETE') {
+      const id = pathname.split('/')[4];
+      const body = await parseBody(req);
+      const result = store.releaseDraftLock(requireUser(req), id, body.leaseId || '');
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
+    if (pathname.startsWith('/api/forms/drafts/') && req.method === 'PATCH') {
+      const id = pathname.split('/')[4];
+      const result = store.reviseDraftSubmission(requireUser(req), id, await parseBody(req));
+      finalizeLog(result.conflict ? 409 : 200);
+      return json(res, result.conflict ? 409 : 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname === '/api/client/workspace' && req.method === 'GET') { const result = store.getClientWorkspace(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/client/forms/submissions' && req.method === 'POST') { const result = store.submitClientForm(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/client/uploads/presign' && req.method === 'POST') { const result = await store.createClientUploadPresign(requireUser(req), await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/client/uploads' && req.method === 'POST') { const result = store.submitClientUpload(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/forms/submissions/') && pathname.split('/').length === 5 && req.method === 'PATCH') { const id = pathname.split('/')[4]; const result = store.updateSubmission(requireUser(req), id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/forms/submissions/') && pathname.includes('/sections/') && pathname.endsWith('/items') && req.method === 'POST') {
@@ -336,6 +435,8 @@ const server = createServer(async (req, res) => {
       finalizeLog(200);
       return json(res, 200, result, { 'X-Request-Id': requestId });
     }
+    if (pathname.startsWith('/api/client/uploads/') && pathname.endsWith('/download-url') && req.method === 'POST') { const id = pathname.split('/')[4]; const result = await store.createClientUploadDownloadUrl(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/forms/submissions/') && req.method === 'PATCH') { const id = pathname.split('/')[4]; const result = store.updateSubmission(requireUser(req), id, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/forms/submissions/') && req.method === 'DELETE') { const id = pathname.split('/')[4]; const result = store.deleteSubmission(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/templates' && req.method === 'GET') { const result = store.listDocumentTemplates(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/templates' && req.method === 'POST') { const result = store.createDocumentTemplate(requireUser(req), await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
@@ -347,25 +448,39 @@ const server = createServer(async (req, res) => {
     if (pathname === '/api/exports/process' && req.method === 'POST') {
       const user = requireUser(req);
       store.assertPermission(user, 'exports:write');
-      const result = store.processQueuedExports();
+      const result = await store.processQueuedExports();
       finalizeLog(200);
       return json(res, 200, { ...result, deprecated: true, message: 'Manual processing endpoint is deprecated; prefer running scripts/export-worker.mjs.' }, { 'X-Request-Id': requestId });
     }
     if (pathname.startsWith('/api/exports/') && pathname.endsWith('/retry') && req.method === 'POST') { const id = pathname.split('/')[3]; const result = store.retryExport(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/exports/') && pathname.endsWith('/download-url') && req.method === 'POST') { const id = pathname.split('/')[3]; const result = await store.createExportDownloadUrl(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/ops/lifecycle/run' && req.method === 'POST') { const result = await store.runLifecyclePolicies(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/audit' && req.method === 'GET') { const result = store.listAudit(requireUser(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
-    if (pathname === '/api/analytics' && req.method === 'GET') { const user = requireUser(req); const result = { stageCounts: reads.getAnalytics(user.firmId), summary: store.getAnalytics(user) }; finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
+    if (pathname === '/api/analytics' && req.method === 'GET') {
+      const user = requireUser(req);
+      const result = {
+        stageCounts: reads.getAnalytics(user.firmId),
+        summary: store.getAnalytics(user),
+        materialized: readAnalyticsMaterializedSummary(user.firmId)
+      };
+      finalizeLog(200);
+      return json(res, 200, result, { 'X-Request-Id': requestId });
+    }
     if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/sensitive') && req.method === 'GET') { const id = pathname.split('/')[3]; const result = store.getMaskedSensitiveData(requireUser(req), id); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/portal-links' && req.method === 'POST') { const body = await parseBody(req); const result = store.createPortalLink(requireUser(req), body.profileId); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/portal/') && pathname.split('/').length === 4 && req.method === 'GET') { const token = pathname.split('/')[3]; const result = store.getPortalData(token); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/portal/') && pathname.endsWith('/submissions') && req.method === 'POST') { const token = pathname.split('/')[3]; const result = store.portalSubmit(token, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads/presign') && req.method === 'POST') { const token = pathname.split('/')[3]; const result = await store.createPortalUploadPresign(token, await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads') && req.method === 'POST') { const token = pathname.split('/')[3]; const result = store.portalUpload(token, await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
+    if (pathname.startsWith('/api/portal/') && pathname.includes('/uploads/') && pathname.endsWith('/download-url') && req.method === 'POST') { const [, , , token, , uploadId] = pathname.split('/'); const result = await store.createPortalUploadDownloadUrl(token, uploadId); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/portal' && req.method === 'GET') { finalizeLog(200); return serveStatic('portal.html', res, requestId); }
 
     finalizeLog(200, { static: true });
     return serveStatic(pathname, res, requestId);
   } catch (error) {
     log('error', 'request.failed', { requestId, method: req.method, path: req.url, error: error.message || String(error) });
-    finalizeLog(/not found/i.test(error?.message || '') ? 404 : 400);
+    const statusCode = error?.statusCode || (/not found/i.test(error?.message || '') ? 404 : 400);
+    finalizeLog(statusCode);
     return sendError(res, error, requestId);
   }
 });
