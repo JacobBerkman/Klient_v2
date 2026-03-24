@@ -54,7 +54,7 @@ Open:
 Smoke test the full runtime:
 
 ```bash
-node scripts/smoke-test.mjs
+npm run test:smoke
 ```
 
 Run the full local validation bundle:
