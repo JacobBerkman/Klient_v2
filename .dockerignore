@@ -1,0 +1,5 @@
+.git
+node_modules
+data/*.db
+data/backup-*.db
+.env

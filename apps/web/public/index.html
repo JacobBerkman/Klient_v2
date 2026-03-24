@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Kinetic Klient</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar">
+        <h1>Kinetic Klient</h1>
+        <p class="muted">Advisory onboarding OS</p>
+        <button id="demo-login">Use Demo Login</button>
+        <nav>
+          <button data-view="dashboard">Dashboard</button>
+          <button data-view="prospects">Prospects</button>
+          <button data-view="clients">Clients</button>
+          <button data-view="households">Households</button>
+          <button data-view="forms">Forms</button>
+          <button data-view="templates">Templates</button>
+          <button data-view="exports">Exports</button>
+          <button data-view="analytics">Analytics</button>
+          <button data-view="audit">Audit</button>
+        </nav>
+      </aside>
+      <main class="content">
+        <section class="auth-panel card">
+          <h2>Authenticate</h2>
+          <div class="grid two">
+            <form id="register-form" class="card inner">
+              <h3>Register Firm Admin</h3>
+              <input name="firmName" placeholder="Firm name" required />
+              <input name="firstName" placeholder="First name" required />
+              <input name="lastName" placeholder="Last name" required />
+              <input name="email" type="email" placeholder="Email" required />
+              <input name="password" type="password" placeholder="Password" required />
+              <button type="submit">Register</button>
+            </form>
+            <form id="login-form" class="card inner">
+              <h3>Sign In</h3>
+              <input name="email" type="email" placeholder="Email" required />
+              <input name="password" type="password" placeholder="Password" required />
+              <button type="submit">Sign In</button>
+              <p class="muted">Demo login: admin@demo.test / ChangeMe123!</p>
+            </form>
+          </div>
+          <pre id="auth-status"></pre>
+        </section>
+
+        <section class="actions grid two">
+          <form id="profile-form" class="card">
+            <h3>Create Prospect / Client</h3>
+            <select name="kind"><option value="prospect">Prospect</option><option value="client">Client</option></select>
+            <input name="firstName" placeholder="First name" required />
+            <input name="lastName" placeholder="Last name" required />
+            <input name="email" type="email" placeholder="Email" />
+            <input name="phone" placeholder="Phone" />
+            <select name="stage"><option value="discovery">Discovery</option><option value="gather_oi">Gather OI</option><option value="analysis">Analysis</option><option value="advisor_proposal_meeting">Advisor Proposal Meeting</option><option value="intake">Intake</option><option value="on_boarding">On Boarding</option><option value="investment_strategy">Investment Strategy</option><option value="completed">Completed</option><option value="drop_dead_lead">Drop / Dead Lead</option><option value="drop_nurture">Drop / Nurture</option></select>
+            <input name="cityOrLocation" placeholder="Source city/location" />
+            <input name="venue" placeholder="Source venue" />
+            <input name="occurredOn" type="date" placeholder="Source date" />
+            <button type="submit">Create Profile</button>
+          </form>
+
+          <form id="household-form" class="card">
+            <h3>Create Household</h3>
+            <input name="name" placeholder="Household name" required />
+            <select name="primaryClientId" required></select>
+            <button type="submit">Create Household</button>
+          </form>
+
+          <form id="form-template-form" class="card">
+            <h3>Create Form Template</h3>
+            <input name="name" placeholder="Form template name" required />
+            <input name="description" placeholder="Description" />
+            <button type="submit">Create Form Template</button>
+          </form>
+
+          <form id="doc-template-form" class="card">
+            <h3>Create Document Template</h3>
+            <input name="name" placeholder="Document template name" required />
+            <input name="fileName" placeholder="File name" value="template.pdf" />
+            <button type="submit">Create Template</button>
+          </form>
+        </section>
+
+        <section class="actions grid two">
+          <form id="invite-form" class="card">
+            <h3>Invite User</h3>
+            <input name="email" type="email" placeholder="User email" required />
+            <select name="role"><option value="advisor">Advisor</option><option value="readonly">Readonly</option><option value="client">Client</option></select>
+            <button type="submit">Create Invite</button>
+          </form>
+
+          <form id="portal-form" class="card">
+            <h3>Create Portal Link</h3>
+            <select name="profileId" required></select>
+            <button type="submit">Create Link</button>
+          </form>
+        </section>
+
+        <section id="view" class="card"></section>
+      </main>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

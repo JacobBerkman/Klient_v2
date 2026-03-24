@@ -1,0 +1,18 @@
+{
+  "name": "kinetic-klient-rebuild",
+  "private": true,
+  "version": "0.3.0",
+  "type": "module",
+  "packageManager": "pnpm@10.6.5",
+  "scripts": {
+    "check": "git diff --check",
+    "dev": "node apps/api/src/server.mjs",
+    "start": "node apps/api/src/server.mjs",
+    "test": "node scripts/smoke-test.mjs",
+    "backup": "node scripts/backup-db.mjs",
+    "restore": "node scripts/restore-db.mjs",
+    "worker": "node scripts/export-worker.mjs",
+    "test:smoke": "node scripts/smoke-test.mjs",
+    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node scripts/smoke-test.mjs && git diff --check"
+  }
+}

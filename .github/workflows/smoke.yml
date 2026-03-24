@@ -1,0 +1,25 @@
+name: smoke
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: node --check apps/api/src/runtime.mjs
+      - run: node --check apps/api/src/storage.mjs
+      - run: node --check apps/api/src/server.mjs
+      - run: node --check apps/api/src/store.mjs
+      - run: node --check apps/web/public/app.js
+      - run: node --check scripts/backup-db.mjs
+      - run: node --check scripts/export-worker.mjs
+      - run: node --check scripts/restore-db.mjs
+      - run: node --check scripts/smoke-test.mjs
+      - run: node scripts/smoke-test.mjs
+      - run: git diff --check
