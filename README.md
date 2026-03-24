@@ -105,6 +105,12 @@ Expected outputs:
 - `OK: 'main' is fully merged into 'work'.` from `verify-main-merge.sh` plus `OK: 'work' is fully merged with 'main'.` when parity is complete (or a `MISSING:` line when work is behind)
 - `artifacts/main-parity.json` containing `workBranch`, `mainBranch`, `mergeBase`, `aheadCount`, `behindCount`, and `missingCommitShas`
 
+Run the standard integration coverage (tenancy, RBAC, templates, exports, portal lifecycle, analytics, and CSRF):
+
+```bash
+npm run test:integration
+```
+
 ## Health checks
 ```bash
 curl http://localhost:3000/health
