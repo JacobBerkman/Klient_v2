@@ -11,6 +11,8 @@
     "check:merge-main": "bash scripts/verify-main-merge.sh",
     "dev": "node apps/api/src/server.mjs",
     "start": "node apps/api/src/server.mjs",
+    "test": "node scripts/smoke-test.mjs",
+    "test:contract": "node scripts/api-contract-test.mjs",
     "test": "npm run test:smoke",
     "test:runtime-contract": "node --test apps/api/src/test/runtime-contract.test.mjs",
     "test:csrf": "node scripts/integration-csrf.mjs",
@@ -21,5 +23,15 @@
     "backup": "node scripts/backup-db.mjs",
     "restore": "node scripts/restore-db.mjs",
     "worker": "node scripts/export-worker.mjs"
+    "test:integration": "node scripts/master-integration.mjs",
+    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/master-integration.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/smoke-test.mjs && npm run test:integration && git diff --check",
+    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/api-contract-test.mjs && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node scripts/api-contract-test.mjs && node scripts/smoke-test.mjs && git diff --check"
+    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --check scripts/role-portal-test.mjs && node scripts/smoke-test.mjs && node scripts/role-portal-test.mjs && git diff --check"
+    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/smoke-test.mjs && git diff --check"
+    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/integration-csrf.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/integration-csrf.mjs && node scripts/smoke-test.mjs && git diff --check",
+    "test:integration": "node scripts/integration-tenancy.mjs && node scripts/integration-rbac.mjs && node scripts/integration-templates.mjs && node scripts/integration-exports.mjs && node scripts/integration-portal-lifecycle.mjs && node scripts/integration-analytics.mjs",
+    "test:all": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/restore-db.mjs && node --check scripts/smoke-test.mjs && node --test apps/api/src/test/runtime-contract.test.mjs && node scripts/smoke-test.mjs && npm run test:integration && git diff --check",
+    "check:merge-main": "bash scripts/verify-main-merge.sh",
+    "check:main-parity": "bash scripts/sync-main-and-report.sh"
   }
 }

@@ -1,6 +1,6 @@
 # Kinetic Klient Rebuild
 
-This repository contains a **single-command runnable advisory onboarding app** with persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and smoke-test coverage for the main user flows.
+This repository contains a **single-command runnable advisory onboarding app** with a plain Node.js HTTP server as the production backend, persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and end-to-end contract coverage for the main user flows.
 
 ## What is included
 - admin firm bootstrap and sign-in
@@ -75,6 +75,13 @@ Open:
 - Sensitive identifiers are stored encrypted and only returned in masked form.
 
 ## Testing
+Run the production server contract test:
+
+```bash
+npm run test:contract
+```
+
+Run the smoke test:
 Smoke test the full runtime:
 
 ```bash
@@ -96,6 +103,22 @@ npm run validate:master
 ```
 
 `npm run test:all` remains available and now delegates to `validate:master`.
+## Main parity check
+Run the parity sync/report command:
+
+```bash
+npm run check:main-parity
+```
+
+Expected outputs:
+- `OK: 'main' is fully merged into 'work'.` from `verify-main-merge.sh` plus `OK: 'work' is fully merged with 'main'.` when parity is complete (or a `MISSING:` line when work is behind)
+- `artifacts/main-parity.json` containing `workBranch`, `mainBranch`, `mergeBase`, `aheadCount`, `behindCount`, and `missingCommitShas`
+
+Run the standard integration coverage (tenancy, RBAC, templates, exports, portal lifecycle, analytics, and CSRF):
+
+```bash
+npm run test:integration
+```
 
 ## Health checks
 ```bash
@@ -110,6 +133,14 @@ Authenticated operational diagnostics:
 curl -H "Authorization: Bearer <token>" http://localhost:3000/api/ops/diagnostics
 ```
 
+## API shape
+The supported runtime API is the plain Node server mounted under `/api`, for example:
+
+```bash
+curl -X POST http://localhost:3000/api/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@demo.test","password":"ChangeMe123!"}'
+```
 `/ready` now includes config validation output, SQLite quick-check results, export worker status summary, and audit event counts. `/api/ops/diagnostics` adds richer startup/runtime metadata for on-call troubleshooting.
 
 ## Portal view
