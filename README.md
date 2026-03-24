@@ -1,22 +1,31 @@
 # Kinetic Klient Rebuild
 
-This repository contains a **single-command runnable advisory onboarding app** with persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and smoke-test coverage for the main user flows.
+This repository contains a **single-command runnable advisory onboarding app** using the shipped Node runtime at `apps/api/src/server.mjs`.
 
-## What is included
-- admin firm bootstrap and sign-in
-- persistent SQLite-backed local data storage in `data/app.db`
-- dashboard with stats and recent activity
+## Current implemented scope
+The following flows are implemented in this codebase today:
+- firm admin bootstrap and sign-in
+- persistent SQLite runtime storage in `data/app.db`
+- dashboard with basic stats and recent activity
 - prospects and clients management
-- persisted prospect pipeline board
+- persisted prospect pipeline board with stage updates
 - households and member linking
-- dynamic form template and submission flows
-- guided client portal for draft and submitted onboarding responses
-- document template and export job foundations
-- audit trail and analytics views
-- invite flow and password reset endpoints
+- form templates plus draft/submitted onboarding responses
+- token-based client portal for draft and submitted responses
+- document template records and export job processing
+- audit trail list and analytics summary view
+- invite creation and password reset endpoints
 - internal web UI served by the backend
 - Docker + compose deployment artifacts
 - backup, restore, and export worker scripts
+
+## Roadmap (not fully implemented yet)
+These are planned platform improvements and should not be treated as complete production capabilities yet:
+- advanced RBAC and policy enforcement across every endpoint
+- hardened portal security controls beyond token access (for example, expiry/rotation workflows)
+- full asynchronous queue infrastructure for exports (current worker is SQLite state based)
+- richer analytics/reporting and compliance-specific dashboards
+- deeper template/version governance workflows
 
 ## Environment
 Copy `.env.example` to `.env` for deployment-oriented runs.

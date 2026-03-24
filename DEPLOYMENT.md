@@ -1,5 +1,7 @@
 # Deployment
 
+This document describes how to run the current shipped Node runtime (`apps/api/src/server.mjs`) in production-like environments.
+
 ## Environment contract
 Copy `.env.example` to `.env` and set at least:
 
@@ -51,3 +53,7 @@ node scripts/restore-db.mjs data/backup-<timestamp>.db
 The API emits structured JSON logs to stdout/stderr.
 Use your container/runtime log collector to ship them to your observability stack.
 The server also handles `SIGTERM`/`SIGINT` for graceful shutdown.
+
+## Scope note
+Current deployment artifacts are appropriate for demo/sandbox and internal evaluation usage.
+Production hardening items (for example, secret rotation, external queueing, and deeper access controls) remain roadmap work.
