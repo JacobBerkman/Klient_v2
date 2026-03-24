@@ -21,6 +21,8 @@ async function run() {
   await wait(700);
   const ready = await jsonFetch('/ready');
   if (!ready.querySummary) throw new Error('Readiness summary missing');
+  if (!ready.storageHealth?.connected) throw new Error('Storage health missing');
+  if (!ready.exportWorker) throw new Error('Export worker diagnostics missing');
 
   const login = await jsonFetch('/api/login', {
     method: 'POST',
@@ -76,6 +78,7 @@ async function run() {
   const analytics = await jsonFetch('/api/analytics', { headers: { Authorization: `Bearer ${login.token}` } });
   const detail = await jsonFetch(`/api/profiles/${profile.id}`, { headers: { Authorization: `Bearer ${login.token}` } });
   const dashboard = await jsonFetch('/api/dashboard', { headers: { Authorization: `Bearer ${login.token}` } });
+  const diagnostics = await jsonFetch('/api/ops/diagnostics', { headers: { Authorization: `Bearer ${login.token}` } });
   await jsonFetch('/api/logout', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } });
 
   if (!analytics.stageCounts) throw new Error('Analytics missing');
@@ -86,6 +89,8 @@ async function run() {
   if (!detail.notes.length || !detail.profileRecord) throw new Error('Profile detail failed');
   if (readonlySession.user.role !== 'readonly') throw new Error('Invite acceptance failed');
   if (published.status !== 'published') throw new Error('Template publish failed');
+  if (!diagnostics.data?.audit?.total) throw new Error('Ops diagnostics audit summary missing');
+  if (!diagnostics.data?.storageHealth?.connected) throw new Error('Ops diagnostics storage summary missing');
 
   console.log(JSON.stringify({
     login: login.user.email,
@@ -95,7 +100,8 @@ async function run() {
     draftCount: drafts.length,
     exportStatus: exportsList.find((job) => job.id === exportJob.id)?.status,
     totalProfiles: dashboard.stats.totalProfiles,
-    templateStatus: published.status
+    templateStatus: published.status,
+    diagnosticsAuditTotal: diagnostics.data.audit.total
   }, null, 2));
 }
 

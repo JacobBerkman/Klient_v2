@@ -5,14 +5,23 @@ import { extname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { SqliteReadRepository } from './repositories/sqlite-read-repository.mjs';
-import { runtime, log } from './runtime.mjs';
-import { ensureDatabaseReady, closeDatabase, readQuerySummary } from './storage.mjs';
+import { runtime, log, validateRuntimeConfig } from './runtime.mjs';
+import {
+  ensureDatabaseReady,
+  closeDatabase,
+  readQuerySummary,
+  readExportWorkerStatus,
+  readStorageHealth,
+  readAuditEventSummary
+} from './storage.mjs';
 import { createStore } from './store.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(__dirname, '../../web/public');
 const store = createStore();
 const reads = new SqliteReadRepository();
+const bootedAt = new Date().toISOString();
+const startupDiagnostics = validateRuntimeConfig();
 
 function json(res, status, body, headers = {}) {
   res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
@@ -99,8 +108,42 @@ const server = createServer(async (req, res) => {
     }
     if (pathname === '/ready') {
       const database = ensureDatabaseReady();
+      const storageHealth = readStorageHealth();
       finalizeLog(200);
-      return json(res, 200, { status: 'ready', querySummary: readQuerySummary(), database }, { 'X-Request-Id': requestId });
+      return json(res, 200, {
+        status: 'ready',
+        querySummary: readQuerySummary(),
+        database,
+        storageHealth,
+        exportWorker: readExportWorkerStatus(),
+        auditEvents: readAuditEventSummary(),
+        startupDiagnostics
+      }, { 'X-Request-Id': requestId });
+    }
+    if (pathname === '/api/ops/diagnostics' && req.method === 'GET') {
+      const user = requireUser(req);
+      const auditEvents = store.listAudit(user);
+      const exports = store.listExports(user);
+      const byStatus = exports.reduce((acc, job) => {
+        acc[job.status] = (acc[job.status] || 0) + 1;
+        return acc;
+      }, {});
+      finalizeLog(200);
+      return json(res, 200, {
+        generatedAt: new Date().toISOString(),
+        startup: {
+          bootedAt,
+          uptimeSeconds: Math.round(process.uptime()),
+          pid: process.pid,
+          runtime: startupDiagnostics
+        },
+        data: {
+          querySummary: readQuerySummary(),
+          storageHealth: readStorageHealth(),
+          exportWorker: { byStatus, total: exports.length, latest: exports.slice().sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] || null },
+          audit: { total: auditEvents.length, latest: auditEvents[0] || null }
+        }
+      }, { 'X-Request-Id': requestId });
     }
     if (pathname === '/api/register' && req.method === 'POST') { const result = store.register(await parseBody(req)); finalizeLog(201); return json(res, 201, result, { 'X-Request-Id': requestId }); }
     if (pathname === '/api/login' && req.method === 'POST') { const result = store.login(await parseBody(req)); finalizeLog(200); return json(res, 200, result, { 'X-Request-Id': requestId }); }
@@ -187,5 +230,20 @@ process.on('unhandledRejection', (error) => {
 });
 
 server.listen(runtime.port, runtime.host, () => {
-  log('info', 'server.started', { host: runtime.host, port: runtime.port, dbPath: ensureDatabaseReady().dbPath });
+  const ready = ensureDatabaseReady();
+  const diag = {
+    bootedAt,
+    config: startupDiagnostics,
+    storageHealth: readStorageHealth(),
+    querySummary: readQuerySummary(),
+    exportWorker: readExportWorkerStatus(),
+    auditEvents: readAuditEventSummary()
+  };
+  log('info', 'server.started', { host: runtime.host, port: runtime.port, dbPath: ready.dbPath, diagnostics: diag });
+  if (!startupDiagnostics.ok) {
+    log('error', 'runtime.config.invalid', { issues: startupDiagnostics.issues });
+  }
+  if (startupDiagnostics.warnings.length) {
+    log('warn', 'runtime.config.warnings', { warnings: startupDiagnostics.warnings });
+  }
 });

@@ -15,6 +15,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - audit trail and analytics views
 - invite flow and password reset endpoints
 - internal web UI served by the backend
+- operational diagnostics for runtime config, storage health, export worker queue, and audit counts
 - Docker + compose deployment artifacts
 - backup, restore, and export worker scripts
 
@@ -65,6 +66,14 @@ See `DEPLOYMENT.md` for deployment details, environment variables, health checks
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
 ```
+
+Authenticated operational diagnostics:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:3000/api/ops/diagnostics
+```
+
+`/ready` now includes config validation output, SQLite quick-check results, export worker status summary, and audit event counts. `/api/ops/diagnostics` adds richer startup/runtime metadata for on-call troubleshooting.
 
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
