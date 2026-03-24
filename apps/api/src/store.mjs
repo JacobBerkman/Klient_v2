@@ -11,6 +11,7 @@ import { createLocalAuthProvider } from './auth/local-provider.mjs';
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs';
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8;
+const CSRF_TOKEN_TTL_MS = 1000 * 60 * 15;
 const PERMISSIONS = {
   admin: ['*'],
   advisor: ['profiles:read', 'profiles:write', 'pipeline:write', 'households:write', 'forms:write', 'templates:write', 'exports:write', 'analytics:read'],
@@ -282,6 +283,7 @@ function seedState() {
       createdAt
     }],
     sessions: [],
+    csrfTokens: [],
     profiles: [
       {
         id: clientId,
@@ -431,6 +433,7 @@ export function createStore(options = {}) {
   });
 export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   const state = loadState(seedState);
+  if (!Array.isArray(state.csrfTokens)) state.csrfTokens = [];
   migrateTemplateSystems(state);
   saveState(state);
 
@@ -612,11 +615,25 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     return { token, user: publicUser(user) };
   }
 
+  function pruneExpiredCsrfTokens(persistChanges = true) {
+    const cutoff = Date.now();
+    const activeSessionTokens = new Set(state.sessions.map((entry) => entry.token));
+    const nextTokens = state.csrfTokens.filter((entry) => {
+      const expiresAt = new Date(entry.expiresAt).getTime();
+      return activeSessionTokens.has(entry.sessionToken) && Number.isFinite(expiresAt) && expiresAt > cutoff;
+    });
+    if (nextTokens.length !== state.csrfTokens.length) {
+      state.csrfTokens = nextTokens;
+      if (persistChanges) persist();
+    }
+  }
+
   function pruneExpiredSessions() {
     const cutoff = Date.now();
     const nextSessions = state.sessions.filter((entry) => new Date(entry.expiresAt).getTime() > cutoff);
     if (nextSessions.length !== state.sessions.length) {
       state.sessions = nextSessions;
+      pruneExpiredCsrfTokens(false);
       persist();
     }
   }
@@ -799,6 +816,59 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return auth.login(input);
     },
     requireUser,
+    getSession(token) {
+      pruneExpiredSessions();
+      const session = state.sessions.find((entry) => entry.token === token);
+      if (!session) return null;
+      return { ...session };
+    },
+    issueCsrfToken(sessionToken) {
+      pruneExpiredSessions();
+      const session = state.sessions.find((entry) => entry.token === sessionToken);
+      if (!session) throw new Error('Authentication required.');
+      const issuedAt = now();
+      const record = {
+        id: randomUUID(),
+        sessionToken,
+        token: randomUUID(),
+        issuedAt,
+        expiresAt: new Date(Date.now() + CSRF_TOKEN_TTL_MS).toISOString()
+      };
+      state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== sessionToken);
+      state.csrfTokens.push(record);
+      persist();
+      return { ...record };
+    },
+    validateCsrfToken(sessionToken, csrfTokenId, csrfToken) {
+      pruneExpiredSessions();
+      const session = state.sessions.find((entry) => entry.token === sessionToken);
+      if (!session) {
+        return { ok: false, reason: 'Missing or expired authenticated session.' };
+      }
+      const record = state.csrfTokens.find((entry) => entry.sessionToken === sessionToken && entry.id === csrfTokenId);
+      if (!record) {
+        return { ok: false, reason: 'Missing CSRF session.' };
+      }
+      if (new Date(record.expiresAt).getTime() <= Date.now()) {
+        state.csrfTokens = state.csrfTokens.filter((entry) => entry.id !== record.id);
+        persist();
+        return { ok: false, reason: 'Stale CSRF token.' };
+      }
+      if (!csrfToken || record.token !== csrfToken) {
+        return { ok: false, reason: 'Invalid or missing CSRF token.' };
+      }
+      const nextToken = {
+        id: randomUUID(),
+        sessionToken,
+        token: randomUUID(),
+        issuedAt: now(),
+        expiresAt: new Date(Date.now() + CSRF_TOKEN_TTL_MS).toISOString()
+      };
+      state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== sessionToken);
+      state.csrfTokens.push(nextToken);
+      persist();
+      return { ok: true, nextToken };
+    },
     _internal: { piiCrypto },
     getDashboard(user) {
       requirePermission(user, 'profiles:read');
@@ -1515,6 +1585,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     logout(token) {
       state.sessions = state.sessions.filter((entry) => entry.token !== token);
+      state.csrfTokens = state.csrfTokens.filter((entry) => entry.sessionToken !== token);
       persist();
       return { ok: true };
     },
