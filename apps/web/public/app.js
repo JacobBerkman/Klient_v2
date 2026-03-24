@@ -2,6 +2,7 @@ const state = { token: localStorage.getItem('klient-token') || '', view: 'dashbo
 
 const view = document.querySelector('#view');
 const authStatus = document.querySelector('#auth-status');
+const operationStatus = document.querySelector('#operation-status');
 const householdPrimary = document.querySelector('select[name="primaryClientId"]');
 const portalProfileSelect = document.querySelector('select[name="profileId"]');
 
@@ -17,8 +18,42 @@ async function api(path, options = {}) {
     }
   });
   const data = await response.json();
-  if (!response.ok) throw new Error(data.message || 'Request failed');
+  if (!response.ok) {
+    const error = new Error(data.message || 'Request failed');
+    error.statusCode = response.status;
+    error.details = data.details || null;
+    if (response.status === 409) {
+      const currentVersion = data.details?.currentVersion;
+      error.message = currentVersion
+        ? `Update conflict: this record is already on version ${currentVersion}. Refresh and re-apply your changes.`
+        : 'Update conflict: someone else changed this record. Refresh and re-apply your changes.';
+    }
+    throw error;
+  }
   return data;
+}
+
+function showStatus(message, type = 'info') {
+  operationStatus.textContent = message;
+  operationStatus.className = `status-banner ${type}`;
+}
+
+function clearStatus() {
+  operationStatus.textContent = '';
+  operationStatus.className = 'status-banner hidden';
+}
+
+async function runAction(action, successMessage = '') {
+  try {
+    await action();
+    if (successMessage) {
+      showStatus(successMessage, 'info');
+    } else {
+      clearStatus();
+    }
+  } catch (error) {
+    showStatus(error.message || 'Request failed.', 'error');
+  }
 }
 
 function renderItems(items, render) {
@@ -227,71 +262,85 @@ document.querySelectorAll('[data-view]').forEach((button) => {
 });
 
 document.querySelector('#demo-login').addEventListener('click', async () => {
-  const session = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' }) });
-  state.token = session.token;
-  localStorage.setItem('klient-token', state.token);
-  authStatus.textContent = JSON.stringify(session.user, null, 2);
-  await refreshPrimaryClientOptions();
-  await renderCurrentView();
+  await runAction(async () => {
+    const session = await api('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' }) });
+    state.token = session.token;
+    localStorage.setItem('klient-token', state.token);
+    authStatus.textContent = JSON.stringify(session.user, null, 2);
+    await refreshPrimaryClientOptions();
+    await renderCurrentView();
+  }, 'Signed in with demo account.');
 });
 
 document.querySelector('#register-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = new FormData(event.target);
-  const payload = Object.fromEntries(form.entries());
-  const session = await api('/api/register', { method: 'POST', body: JSON.stringify(payload) });
-  state.token = session.token;
-  localStorage.setItem('klient-token', state.token);
-  authStatus.textContent = JSON.stringify(session.user, null, 2);
-  await refreshPrimaryClientOptions();
-  await renderCurrentView();
+  await runAction(async () => {
+    const form = new FormData(event.target);
+    const payload = Object.fromEntries(form.entries());
+    const session = await api('/api/register', { method: 'POST', body: JSON.stringify(payload) });
+    state.token = session.token;
+    localStorage.setItem('klient-token', state.token);
+    authStatus.textContent = JSON.stringify(session.user, null, 2);
+    await refreshPrimaryClientOptions();
+    await renderCurrentView();
+  }, 'Account registered and signed in.');
 });
 
 document.querySelector('#login-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = new FormData(event.target);
-  const session = await api('/api/login', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
-  state.token = session.token;
-  localStorage.setItem('klient-token', state.token);
-  authStatus.textContent = JSON.stringify(session.user, null, 2);
-  await refreshPrimaryClientOptions();
-  await renderCurrentView();
+  await runAction(async () => {
+    const form = new FormData(event.target);
+    const session = await api('/api/login', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+    state.token = session.token;
+    localStorage.setItem('klient-token', state.token);
+    authStatus.textContent = JSON.stringify(session.user, null, 2);
+    await refreshPrimaryClientOptions();
+    await renderCurrentView();
+  }, 'Signed in successfully.');
 });
 
 document.querySelector('#profile-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = new FormData(event.target);
-  const source = form.get('cityOrLocation') ? { cityOrLocation: form.get('cityOrLocation'), venue: form.get('venue'), occurredOn: form.get('occurredOn') } : null;
-  await api('/api/profiles', { method: 'POST', body: JSON.stringify({ kind: form.get('kind'), firstName: form.get('firstName'), lastName: form.get('lastName'), email: form.get('email'), phone: form.get('phone'), stage: form.get('stage'), source }) });
-  event.target.reset();
-  await refreshPrimaryClientOptions();
-  await renderCurrentView();
+  await runAction(async () => {
+    const form = new FormData(event.target);
+    const source = form.get('cityOrLocation') ? { cityOrLocation: form.get('cityOrLocation'), venue: form.get('venue'), occurredOn: form.get('occurredOn') } : null;
+    await api('/api/profiles', { method: 'POST', body: JSON.stringify({ kind: form.get('kind'), firstName: form.get('firstName'), lastName: form.get('lastName'), email: form.get('email'), phone: form.get('phone'), stage: form.get('stage'), source }) });
+    event.target.reset();
+    await refreshPrimaryClientOptions();
+    await renderCurrentView();
+  }, 'Profile created.');
 });
 
 document.querySelector('#household-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = new FormData(event.target);
-  await api('/api/households', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
-  event.target.reset();
-  await renderCurrentView();
+  await runAction(async () => {
+    const form = new FormData(event.target);
+    await api('/api/households', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+    event.target.reset();
+    await renderCurrentView();
+  }, 'Household created.');
 });
 
 document.querySelector('#form-template-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = new FormData(event.target);
-  await api('/api/forms/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), sections: [] }) });
-  event.target.reset();
-  state.view = 'forms';
-  await renderCurrentView();
+  await runAction(async () => {
+    const form = new FormData(event.target);
+    await api('/api/forms/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), sections: [] }) });
+    event.target.reset();
+    state.view = 'forms';
+    await renderCurrentView();
+  }, 'Form template created.');
 });
 
 document.querySelector('#doc-template-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = new FormData(event.target);
-  await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), blueprint: { sections: [] }, mappings: [] }) });
-  event.target.reset();
-  state.view = 'templates';
-  await renderCurrentView();
+  await runAction(async () => {
+    const form = new FormData(event.target);
+    await api('/api/templates', { method: 'POST', body: JSON.stringify({ ...Object.fromEntries(form.entries()), blueprint: { sections: [] }, mappings: [] }) });
+    event.target.reset();
+    state.view = 'templates';
+    await renderCurrentView();
+  }, 'Document template created.');
 });
 
 refreshPrimaryClientOptions();
@@ -300,15 +349,19 @@ renderCurrentView();
 
 document.querySelector('#invite-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = new FormData(event.target);
-  const invite = await api('/api/invites', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
-  alert(`Invite token: ${invite.token}`);
-  event.target.reset();
+  await runAction(async () => {
+    const form = new FormData(event.target);
+    const invite = await api('/api/invites', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+    alert(`Invite token: ${invite.token}`);
+    event.target.reset();
+  }, 'Invite created.');
 });
 
 document.querySelector('#portal-form').addEventListener('submit', async (event) => {
   event.preventDefault();
-  const form = new FormData(event.target);
-  const link = await api('/api/portal-links', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
-  alert(`Portal token: ${link.token}`);
+  await runAction(async () => {
+    const form = new FormData(event.target);
+    const link = await api('/api/portal-links', { method: 'POST', body: JSON.stringify(Object.fromEntries(form.entries())) });
+    alert(`Portal token: ${link.token}`);
+  }, 'Portal link created.');
 });

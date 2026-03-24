@@ -12,6 +12,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - dynamic form template and submission flows
 - guided client portal for draft and submitted onboarding responses
 - document template and export job foundations
+- optimistic concurrency controls on profile, form submission, and template edits
 - audit trail and analytics views
 - invite flow and password reset endpoints
 - internal web UI served by the backend
@@ -65,6 +66,16 @@ See `DEPLOYMENT.md` for deployment details, environment variables, health checks
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
 ```
+
+## Concurrent edit handling
+Mutating endpoints for existing records now use optimistic version checks:
+
+- `PATCH /api/profiles/:id`
+- `PATCH /api/forms/submissions/:id`
+- `POST /api/templates/:id/mappings`
+- `POST /api/templates/:id/publish`
+
+Each request must include `expectedVersion` from the record currently loaded in the UI. If another user/session has already edited the same record, the API returns `409` with conflict details (`currentVersion`, `expectedVersion`, `entityId`, `entityType`) so the UI can prompt a refresh.
 
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.

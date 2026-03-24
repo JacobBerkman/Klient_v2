@@ -41,6 +41,27 @@ function now() {
   return new Date().toISOString();
 }
 
+function conflictError(message, details = {}) {
+  const error = new Error(message);
+  error.statusCode = 409;
+  error.details = details;
+  return error;
+}
+
+function validateExpectedVersion(expectedVersion, record, entityType) {
+  if (!Number.isInteger(expectedVersion) || expectedVersion <= 0) {
+    throw new Error(`${entityType} update requires expectedVersion.`);
+  }
+  if (record.version !== expectedVersion) {
+    throw conflictError(`${entityType} has changed since you loaded it. Refresh and retry.`, {
+      entityType,
+      entityId: record.id,
+      currentVersion: record.version,
+      expectedVersion
+    });
+  }
+}
+
 function slugify(value) {
   return value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
 }
@@ -96,6 +117,7 @@ function seedState() {
         customProfile: { investableAssets: 850000 },
         householdId,
         spouseClientId: spouseId,
+        version: 1,
         createdAt,
         updatedAt: createdAt
       },
@@ -113,6 +135,7 @@ function seedState() {
         customProfile: {},
         householdId,
         spouseClientId: clientId,
+        version: 1,
         createdAt,
         updatedAt: createdAt
       },
@@ -130,6 +153,7 @@ function seedState() {
         source: { cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10', displayValue: sourceDisplay({ cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10' }) },
         address: { city: 'Austin', state: 'TX' },
         customProfile: {},
+        version: 1,
         createdAt,
         updatedAt: createdAt
       },
@@ -147,6 +171,7 @@ function seedState() {
         source: { cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15', displayValue: sourceDisplay({ cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15' }) },
         address: { city: 'Houston', state: 'TX' },
         customProfile: {},
+        version: 1,
         createdAt,
         updatedAt: createdAt
       }
@@ -182,6 +207,7 @@ function seedState() {
       templateId: formTemplateId,
       status: 'submitted',
       data: { goals: 'Retire at 60', riskTolerance: 'Moderate', assets: [{ accountName: '401k', value: 450000 }] },
+      version: 1,
       createdAt,
       updatedAt: createdAt
     }],
@@ -192,6 +218,7 @@ function seedState() {
       fileName: 'client-intake.pdf',
       blueprint: { sections: ['client', 'household', 'assets'] },
       mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName' }],
+      version: 1,
       createdAt,
       updatedAt: createdAt
     }],
@@ -314,6 +341,7 @@ export function createStore() {
         customProfile: input.customProfile || {},
         householdId: input.householdId || null,
         spouseClientId: input.spouseClientId || null,
+        version: 1,
         createdAt,
         updatedAt: createdAt
       };
@@ -331,7 +359,9 @@ export function createStore() {
       if (patch.kind === 'prospect' && !patch.stage) { patch.stage = 'discovery'; }
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId);
       if (!profile) throw new Error('Profile not found.');
+      validateExpectedVersion(patch.expectedVersion, profile, 'Profile');
       const nextPatch = { ...patch };
+      delete nextPatch.expectedVersion;
       if ('ssn' in nextPatch) {
         profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: encryptValue(nextPatch.ssn), taxIdCiphertext: profile.pii?.taxIdCiphertext || null };
         delete nextPatch.ssn;
@@ -340,7 +370,7 @@ export function createStore() {
         profile.pii = { ...(profile.pii || { maskingPolicy: 'role_based' }), ssnCiphertext: profile.pii?.ssnCiphertext || null, taxIdCiphertext: encryptValue(nextPatch.taxId) };
         delete nextPatch.taxId;
       }
-      Object.assign(profile, nextPatch, { updatedAt: now() });
+      Object.assign(profile, nextPatch, { updatedAt: now(), version: profile.version + 1 });
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) });
       persist();
       return profile;
@@ -363,6 +393,7 @@ export function createStore() {
       profile.stage = stage;
       profile.stageOrderIndex = nextIndex;
       profile.updatedAt = now();
+      profile.version = (profile.version || 1) + 1;
       state.stageChanges.push({ id: randomUUID(), firmId: user.firmId, clientId: profile.id, fromStage: previousStage, toStage: stage, changedByUserId: user.id, changedAt: profile.updatedAt });
       addAudit(user.firmId, user.id, 'profile', profile.id, 'pipeline.stage_changed', { fromStage: previousStage, toStage: stage });
       persist();
@@ -447,6 +478,7 @@ export function createStore() {
     createFormSubmission(user, input) {
       requirePermission(user, 'forms:write');
       const submission = { id: randomUUID(), firmId: user.firmId, clientId: input.clientId, templateId: input.templateId, status: input.status || 'draft', data: input.data || {}, createdAt: now(), updatedAt: now() };
+      submission.version = 1;
       state.formSubmissions.push(submission);
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', { templateId: input.templateId, clientId: input.clientId });
       persist();
@@ -458,29 +490,33 @@ export function createStore() {
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write');
-      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], status: 'draft', createdAt: now(), updatedAt: now() };
+      const template = { id: randomUUID(), firmId: user.firmId, name: input.name, fileName: input.fileName || 'template.pdf', blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], versions: [{ version: 1, blueprint: input.blueprint || { sections: [] }, mappings: input.mappings || [], createdAt: now() }], version: 1, status: 'draft', createdAt: now(), updatedAt: now() };
       state.documentTemplates.push(template);
       addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.created', { name: template.name });
       persist();
       return template;
     },
-    updateTemplateMappings(user, templateId, mappings) {
+    updateTemplateMappings(user, templateId, mappings, expectedVersion) {
       requirePermission(user, 'templates:write');
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
+      validateExpectedVersion(expectedVersion, template, 'Template');
       template.mappings = mappings;
       template.versions.push({ version: template.versions.length + 1, blueprint: template.blueprint, mappings, createdAt: now() });
       template.updatedAt = now();
+      template.version = template.version + 1;
       addAudit(user.firmId, user.id, 'document_template', template.id, 'document_template.mappings_updated', { count: mappings.length });
       persist();
       return template;
     },
-    publishTemplate(user, templateId) {
+    publishTemplate(user, templateId, expectedVersion) {
       requirePermission(user, 'templates:write');
       const template = state.documentTemplates.find((entry) => entry.id === templateId && entry.firmId === user.firmId);
       if (!template) throw new Error('Template not found.');
+      validateExpectedVersion(expectedVersion, template, 'Template');
       template.status = 'published';
       template.updatedAt = now();
+      template.version = template.version + 1;
       persist();
       return template;
     },
@@ -598,7 +634,10 @@ export function createStore() {
       requirePermission(user, 'forms:write');
       const submission = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId);
       if (!submission) throw new Error('Submission not found.');
-      Object.assign(submission, patch, { updatedAt: now() });
+      validateExpectedVersion(patch.expectedVersion, submission, 'Form submission');
+      const nextPatch = { ...patch };
+      delete nextPatch.expectedVersion;
+      Object.assign(submission, nextPatch, { updatedAt: now(), version: submission.version + 1 });
       persist();
       return submission;
     },
@@ -653,6 +692,7 @@ export function createStore() {
         templateId,
         status,
         data: input.data && typeof input.data === 'object' ? input.data : {},
+        version: 1,
         createdAt: now(),
         updatedAt: now(),
         source: 'portal'

@@ -42,6 +42,10 @@ textarea { min-height: 84px; }
 .portal-hero { background: linear-gradient(135deg, #111827, #1d4ed8); }
 .eyebrow { text-transform: uppercase; letter-spacing: 0.08em; font-size: 12px; color: #bfdbfe; }
 .badge.subtle { background: #334155; }
+.status-banner { margin-bottom: 12px; padding: 10px 12px; border-radius: 10px; border: 1px solid transparent; }
+.status-banner.info { background: #172554; border-color: #1d4ed8; color: #bfdbfe; }
+.status-banner.error { background: #3f1d1d; border-color: #991b1b; color: #fecaca; }
+.status-banner.hidden { display: none; }
 .section-card { display: grid; gap: 12px; }
 .repeat-block { display: grid; gap: 8px; padding-top: 8px; border-top: 1px solid #1e293b; }
 
