@@ -42,7 +42,8 @@ export const routes = {
   portalLinks: () => joinPath(API_PREFIX, 'portal-links'),
   exports: () => joinPath(API_PREFIX, 'exports'),
   audit: () => joinPath(API_PREFIX, 'audit'),
-  analytics: () => joinPath(API_PREFIX, 'analytics'),
+  analytics: (query = {}) => withQuery(joinPath(API_PREFIX, 'analytics'), query),
+  analyticsExport: (query = {}) => withQuery(joinPath(API_PREFIX, 'analytics', 'export'), query),
   board: () => joinPath(API_PREFIX, 'board'),
   portal: (token) => joinPath(API_PREFIX, 'portal', token),
   portalSubmissions: (token) => joinPath(API_PREFIX, 'portal', token, 'submissions')
