@@ -1,4 +1,5 @@
 import { createHmac, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { assertStrongPassword } from './password-policy.mjs';
 
 const LOGIN_WINDOW_MS = 1000 * 60 * 15;
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -64,14 +65,6 @@ function verifyTotpCode(secret, code, window = 1) {
     if (computeTotp(secret, step + drift) === normalizedCode) return true;
   }
   return false;
-}
-
-function assertStrongPassword(password) {
-  const value = String(password || '');
-  if (value.length < 12) throw new Error('Password must be at least 12 characters long.');
-  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value)) {
-    throw new Error('Password must include uppercase, lowercase, and numeric characters.');
-  }
 }
 
 function slugify(value) {

@@ -3,6 +3,7 @@ import { runtime } from './runtime.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
 import { createAuthService } from './auth/service.mjs';
 import { createLocalAuthProvider } from './auth/local-provider.mjs';
+import { assertStrongPassword } from './auth/password-policy.mjs';
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs';
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest();
@@ -58,14 +59,6 @@ function average(values) {
 
 function hash(password) {
   return createHash('sha256').update(password).digest('hex');
-}
-
-function assertStrongPassword(password) {
-  const value = String(password || '');
-  if (value.length < 12) throw new Error('Password must be at least 12 characters long.');
-  if (!/[a-z]/.test(value) || !/[A-Z]/.test(value) || !/[0-9]/.test(value)) {
-    throw new Error('Password must include uppercase, lowercase, and numeric characters.');
-  }
 }
 
 
