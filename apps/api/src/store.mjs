@@ -258,7 +258,7 @@ function createTemplateVersion(template, event, overrides = {}) {
 
 function normalizeTemplateAggregate(template, fallbackKind = 'document') {
   const kind = template.kind || fallbackKind
-  const formSchema = template.formSchema || { sections: template.sections || [] }
+  const formSchema = convertLegacyFormDefinition(template.formSchema || { sections: template.sections || [] })
   const blueprint = template.blueprint || { sections: [] }
   const mappings = template.mappings || template.mappingRules || []
   const publishState = normalizeTemplateState(template.publishState || template.status || 'draft')
@@ -1429,6 +1429,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     createFormTemplate(user, input) {
       requirePermission(user, 'forms:write')
       const createdAt = now()
+      const formSchema = validateFormDefinitionSchema({ sections: input.sections || [] }, { contextPath: '/sections' }).schema
       const template = normalizeTemplateAggregate(
         {
           id: randomUUID(),
@@ -1436,7 +1437,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           kind: 'form',
           name: input.name,
           description: input.description || '',
-          formSchema: { sections: input.sections || [] },
+          formSchema,
           blueprint: { sections: [] },
           mappings: [],
           publishState: 'draft',
@@ -1444,7 +1445,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
             {
               version: 1,
               event: 'created',
-              formSchema: { sections: input.sections || [] },
+              formSchema,
               blueprint: { sections: [] },
               mappings: [],
               publishState: 'draft',
@@ -1753,6 +1754,11 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write')
       const createdAt = now()
+      const formSchemaResult = validateFormDefinitionSchema(input.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const mappings = validateMappingRules(input.mappings || [], {
+        contextPath: '/mappings',
+        repeaterPaths: formSchemaResult.repeaterPaths
+      })
       const template = normalizeTemplateAggregate(
         {
           id: randomUUID(),
@@ -1762,14 +1768,16 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           description: input.description || '',
           documentMetadata: { fileName: input.fileName || 'template.pdf' },
           blueprint: input.blueprint || { sections: [] },
-          mappings: input.mappings || [],
+          mappings,
+          formSchema: formSchemaResult.schema,
           publishState: 'draft',
           versions: [
             {
               version: 1,
               event: 'created',
               blueprint: input.blueprint || { sections: [] },
-              mappings: input.mappings || [],
+              mappings,
+              formSchema: formSchemaResult.schema,
               publishState: 'draft',
               createdAt,
               actorUserId: user.id
