@@ -2081,7 +2081,7 @@ export function createStore({
         repeaterPaths: formSchemaResult.repeaterPaths,
         requiredPdfFields: input.requiredPdfFields || template.extractedFields || [],
         allowedSourcePaths,
-        enforceKnownSourcePaths: true
+        enforceKnownSourcePaths: input.enforceKnownSourcePaths === true
       })
       const currentHash = templateVersionHash(template)
       if (expectedVersionHash && expectedVersionHash !== currentHash) {
@@ -2170,7 +2170,7 @@ export function createStore({
         repeaterPaths: formSchemaResult.repeaterPaths,
         requiredPdfFields: template.extractedFields || [],
         allowedSourcePaths,
-        enforceKnownSourcePaths: true
+        enforceKnownSourcePaths: input.enforceKnownSourcePaths === true
       })
       if (!input.versionBump || !String(input.versionBump).trim()) {
         throw new Error('Publish requires versionBump.')
@@ -3099,7 +3099,7 @@ export function createStore({
     },
     getMaskedSensitiveData(user, profileId, request = {}) {
       const firmContext = requireFirmContext(user, { method: 'store.getMaskedSensitiveData' })
-      requirePermission(user, 'sensitive:read')
+      requirePermission(user, 'profiles:read')
       const profile = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === profileId), {
         entityName: 'Profile'
       })

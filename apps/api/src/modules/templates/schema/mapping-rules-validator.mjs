@@ -41,7 +41,7 @@ export function convertLegacyMappingRules(input) {
   return input.map((rule) => {
     if (!isObject(rule)) return rule
     const next = { ...rule }
-    next.pdfField ||= rule.targetField || rule.field
+    next.pdfField ||= rule.targetField || rule.field || rule.key
     next.sourcePath ||= rule.path || rule.source
     if ('transform' in next) {
       next.transform = toTransformObject(next.transform)
