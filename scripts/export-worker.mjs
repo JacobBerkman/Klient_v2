@@ -5,6 +5,8 @@ import {
   readExportWorkerStatus,
   readStorageHealth
 } from '../apps/api/src/storage.mjs'
+import { buildExportArtifact } from '../apps/api/src/export-artifact.mjs'
+import { objectStorage } from '../apps/api/src/object-storage/index.mjs'
 
 const workerId = process.env.EXPORT_WORKER_ID || `export-worker-${process.pid}-${randomUUID().slice(0, 8)}`
 const pollMs = Number(process.env.EXPORT_WORKER_POLL_MS || 500)
@@ -23,9 +25,17 @@ function processJob(job) {
     error.failureClass = 'transient'
     throw error
   }
+  const artifact = buildExportArtifact(job)
+  const key = `${job.firmId}/exports/${artifact.fileName}`
   return {
-    fileName: `${job.type}-${Date.now()}.json`,
-    preview: { clientId: job.clientId, templateId: job.templateId },
+    ...artifact,
+    object: {
+      bucket: objectStorage.bucketExports,
+      key,
+      checksum: artifact.object.checksum,
+      contentType: artifact.object.contentType,
+      retentionClass: artifact.object.retentionClass
+    },
     idempotencyKey: job.execution?.idempotencyKey || job.idempotencyKey || job.id,
     execution: job.execution || null,
     workerId,

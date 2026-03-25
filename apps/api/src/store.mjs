@@ -15,6 +15,7 @@ import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
 import { createSamlAuthProvider } from './auth/saml-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
 import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
+import { buildExportArtifact } from './export-artifact.mjs'
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
 const PERMISSIONS = {
@@ -2111,17 +2112,18 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
             job.metadata.simulateFailuresRemaining = failCount - 1
             throw new Error(`Simulated export failure for ${job.id}`)
           }
-          const fileName = `${job.type}-${Date.now()}.json`
-          const key = `${job.firmId}/exports/${fileName}`
+          const artifact = buildExportArtifact(job)
+          const key = `${job.firmId}/exports/${artifact.fileName}`
           return {
-            fileName,
-            preview: { clientId: job.clientId, templateId: job.templateId },
+            ...artifact,
+            idempotencyKey: job.execution?.idempotencyKey || job.idempotencyKey || job.id,
+            execution: job.execution || null,
             object: {
               bucket: objectStorage.bucketExports,
               key,
-              checksum: null,
-              contentType: 'application/json',
-              retentionClass: 'export_artifact'
+              checksum: artifact.object.checksum,
+              contentType: artifact.object.contentType,
+              retentionClass: artifact.object.retentionClass
             }
           }
         }
