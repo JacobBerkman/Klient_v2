@@ -351,16 +351,18 @@ async function renderAnalytics() {
   const analytics = await request(routes.analytics(analyticsQuery))
   const dashboard = await request(routes.analyticsDashboard(analyticsQuery))
   const summary = analytics.summary || {}
+  const stageMetadata = summary.stageMetadata || dashboard.stageMetadata || []
+  const stageLabelById = new Map(stageMetadata.map((entry) => [entry.id, entry.label]))
   const funnelRows = (summary.funnel || [])
     .map(
       (entry) =>
-        `<tr><td>${escapeHtml(entry.stage)}</td><td>${entry.count}</td><td>${Math.round((entry.conversionRate || 0) * 100)}%</td></tr>`
+        `<tr><td>${escapeHtml(entry.stageLabel || stageLabelById.get(entry.stageId || entry.stage) || entry.stageId || entry.stage)}</td><td>${escapeHtml(entry.stageId || entry.stage)}</td><td>${entry.count}</td><td>${Math.round((entry.conversionRate || 0) * 100)}%</td></tr>`
     )
     .join('')
-  const agingRows = Object.entries(summary.stageAging || {})
+  const agingRows = (summary.stageAgingOrdered || dashboard.stageAgingOrdered || [])
     .map(
-      ([stage, value]) =>
-        `<tr><td>${escapeHtml(stage)}</td><td>${value.count || 0}</td><td>${value.avgDays || 0}</td></tr>`
+      (entry) =>
+        `<tr><td>${escapeHtml(entry.stageLabel || stageLabelById.get(entry.stageId || entry.stage) || entry.stageId || entry.stage)}</td><td>${escapeHtml(entry.stageId || entry.stage)}</td><td>${entry.count || 0}</td><td>${entry.avgDays || 0}</td></tr>`
     )
     .join('')
   const completionRows = (summary.formCompletionRates || [])
@@ -377,7 +379,7 @@ async function renderAnalytics() {
     .join('')
   const mat = analytics.materialized
   const bottleneckRows = (dashboard.bottlenecks || [])
-    .map((entry) => `<tr><td>${escapeHtml(entry.stage)}</td><td>${entry.count}</td><td>${entry.avgDays}</td></tr>`)
+    .map((entry) => `<tr><td>${escapeHtml(entry.stageLabel || stageLabelById.get(entry.stageId || entry.stage) || entry.stageId || entry.stage)}</td><td>${escapeHtml(entry.stageId || entry.stage)}</td><td>${entry.count}</td><td>${entry.avgDays}</td></tr>`)
     .join('')
   const latencyRows = (dashboard.formCompletionLatency || [])
     .map((entry) => `<tr><td>${escapeHtml(entry.templateId)}</td><td>${entry.submissions}</td><td>${entry.avgHours}</td></tr>`)
@@ -395,12 +397,12 @@ async function renderAnalytics() {
       ${metricCard('overall conversion', `${Math.round((summary.overallConversionRate || 0) * 100)}%`)}
       ${metricCard('avg stage age (days)', summary.avgProspectStageAgeDays || 0)}
     </div>
-    ${analyticsPanel('Funnel Conversion', `<table><thead><tr><th>Stage</th><th>Count</th><th>Conversion</th></tr></thead><tbody>${funnelRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
-    ${analyticsPanel('Stage Aging', `<table><thead><tr><th>Stage</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${agingRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Funnel Conversion', `<table><thead><tr><th>Stage</th><th>Stage ID</th><th>Count</th><th>Conversion</th></tr></thead><tbody>${funnelRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Stage Aging', `<table><thead><tr><th>Stage</th><th>Stage ID</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${agingRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Form Completion Rates', `<table><thead><tr><th>Template</th><th>Drafts</th><th>Submitted</th><th>Completion</th></tr></thead><tbody>${completionRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Form Completion Latency', `<table><thead><tr><th>Template</th><th>Submissions</th><th>Avg hours</th></tr></thead><tbody>${latencyRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Advisor Productivity', `<table><thead><tr><th>Advisor</th><th>Managed</th><th>Notes</th><th>Stage moves</th><th>Score</th></tr></thead><tbody>${productivityRows || '<tr><td colspan="5">No advisor events yet</td></tr>'}</tbody></table>`)}
-    ${analyticsPanel('Stage Bottlenecks', `<table><thead><tr><th>Stage</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${bottleneckRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Stage Bottlenecks', `<table><thead><tr><th>Stage</th><th>Stage ID</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${bottleneckRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Export Usage', `<table><thead><tr><th>Advisor</th><th>Exports</th></tr></thead><tbody>${exportRows || '<tr><td colspan="2">No exports yet</td></tr>'}</tbody></table><button id="download-analytics-csv">Download CSV</button>`)}
     ${analyticsPanel('Materialized Summary Health', `<div class="muted">${mat ? `Refreshed ${new Date(mat.updatedAt).toLocaleString()} for firm ${escapeHtml(mat.firmId)}` : 'Materialized summary unavailable.'}</div>`)}
   `
