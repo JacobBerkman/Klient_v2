@@ -78,3 +78,7 @@ Each module exposes `service.mjs` and is composed in `apps/api/src/modules/index
 - Start: `node apps/api/src/server.mjs`
 - Wiring tests: `node --test apps/api/src/test/server-route-wiring.test.mjs`
 - Smoke: `node scripts/smoke-test.mjs`
+
+## ADR references
+- Canonical template domain model: `docs/architecture/template-domain-adr.md`
+- Domain modernization sequencing addendum: `docs/architecture/domain-modernization-adr-addendum.md`
