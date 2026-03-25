@@ -16,6 +16,7 @@ NODE_ENV=production
 PORT=3000
 HOST=0.0.0.0
 LOG_LEVEL=info
+ENABLE_DEMO_MODE=false
 ```
 
 ### Production requirements
@@ -23,6 +24,13 @@ LOG_LEVEL=info
 - Passwords accepted by registration, invite acceptance, and password reset must satisfy the runtime password policy.
 - Sessions expire after 8 hours.
 - Failed login attempts are rate limited per email over a 15-minute window.
+
+## Demo mode vs production
+Production deployments should keep `ENABLE_DEMO_MODE=false` (or omit it). Even if set to `true`, runtime forces demo mode off in production (`NODE_ENV=production`).
+
+For local demonstrations only:
+- set `ENABLE_DEMO_MODE=true`
+- start with a clean `data/app.db` if you want a fresh seeded demo account (`admin@demo.test`)
 
 ## Hard release gate (required before every deploy)
 Run this command and require a **zero-exit** outcome:

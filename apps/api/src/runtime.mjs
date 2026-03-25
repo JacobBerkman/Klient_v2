@@ -42,6 +42,13 @@ function readAuthProvider(value) {
   return normalized;
 }
 
+
+function readEnableDemoMode() {
+  const requested = readBoolean('ENABLE_DEMO_MODE', false);
+  if (nodeEnv === 'production') return false;
+  return requested;
+}
+
 function readPiiKeyProvider(value) {
   const normalized = String(value || 'env').toLowerCase();
   if (!['env', 'kms'].includes(normalized)) {
@@ -82,7 +89,8 @@ export const runtime = {
   storageExportPurgeAfterDays: readNumber('STORAGE_EXPORT_PURGE_AFTER_DAYS', 30),
   storageUploadTtlDays: readNumber('STORAGE_UPLOAD_TTL_DAYS', 365),
   storageUploadArchiveAfterDays: readNumber('STORAGE_UPLOAD_ARCHIVE_AFTER_DAYS', 90),
-  storageUploadPurgeAfterDays: readNumber('STORAGE_UPLOAD_PURGE_AFTER_DAYS', 730)
+  storageUploadPurgeAfterDays: readNumber('STORAGE_UPLOAD_PURGE_AFTER_DAYS', 730),
+  enableDemoMode: readEnableDemoMode()
 };
 
 export function validateRuntimeConfig() {
@@ -99,6 +107,9 @@ export function validateRuntimeConfig() {
   }
   if (!process.env.APP_SECRET) {
     warnings.push('APP_SECRET is using fallback development secret.');
+  }
+  if (runtime.nodeEnv === 'production' && readBoolean('ENABLE_DEMO_MODE', false)) {
+    warnings.push('ENABLE_DEMO_MODE is ignored in production and forced off.');
   }
   return {
     ok: issues.length === 0,

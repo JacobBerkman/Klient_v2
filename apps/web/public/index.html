@@ -11,7 +11,7 @@
       <aside class="sidebar">
         <h1>Kinetic Klient</h1>
         <p class="muted">Advisory onboarding workspace with analytics + draft collaboration controls</p>
-        <button id="demo-login">Use Demo Login</button>
+        <button id="demo-login" hidden>Use Demo Login</button>
         <nav>
           <button data-view="dashboard" data-roles="admin,advisor,readonly">Dashboard</button>
           <button data-view="prospects" data-roles="admin,advisor">Prospects</button>
@@ -43,7 +43,7 @@
               <input name="email" type="email" placeholder="Email" required />
               <input name="password" type="password" placeholder="Password" required />
               <button type="submit">Sign In</button>
-              <p class="muted">Demo login: admin@demo.test / ChangeMe123!</p>
+              <p id="demo-credentials" class="muted" hidden>Demo login: admin@demo.test / ChangeMe123!</p>
             </form>
           </div>
           <pre id="auth-status"></pre>

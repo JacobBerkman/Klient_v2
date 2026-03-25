@@ -206,6 +206,32 @@ function pipelineConflict(message, details = {}) {
 }
 
 function seedState() {
+  if (!runtime.enableDemoMode) {
+    return {
+      firms: [],
+      users: [],
+      sessions: [],
+      profiles: [],
+      households: [],
+      householdMembers: [],
+      stageChanges: [],
+      auditEvents: [],
+      notes: [],
+      documentTemplates: [],
+      formTemplates: [],
+      templateAggregates: [],
+      formSubmissions: [],
+      draftResponses: [],
+      exportJobs: [],
+      documentUploads: [],
+      pendingUploadIntents: [],
+      invites: [],
+      passwordResets: [],
+      portalLinks: [],
+      authAttempts: [],
+      boardVersions: {}
+    };
+  }
   const createdAt = now();
   const firmId = randomUUID();
   const adminId = randomUUID();

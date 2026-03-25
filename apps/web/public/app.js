@@ -2,7 +2,8 @@ const state = {
   token: localStorage.getItem('klient-token') || '',
   user: null,
   view: 'dashboard',
-  flash: null
+  flash: null,
+  enableDemoMode: false
 };
 
 const viewEl = document.querySelector('#view');
@@ -61,6 +62,18 @@ async function request(path, options = {}) {
   const data = await response.json();
   if (!response.ok) throw new Error(data?.error?.message || data?.message || 'Request failed');
   return data;
+}
+
+
+async function hydrateRuntime() {
+  try {
+    const runtimeConfig = await request('/api/runtime');
+    state.enableDemoMode = Boolean(runtimeConfig.enableDemoMode);
+  } catch {
+    state.enableDemoMode = false;
+  }
+  document.querySelector('#demo-login').hidden = !state.enableDemoMode;
+  document.querySelector('#demo-credentials').hidden = !state.enableDemoMode;
 }
 
 function roleAllowed(buttonRoleCsv = '') {
@@ -254,7 +267,9 @@ document.querySelectorAll('[data-view]').forEach((button) => {
   });
 });
 
-document.querySelector('#demo-login').addEventListener('click', async () => {
+const demoLoginButton = document.querySelector('#demo-login');
+demoLoginButton.addEventListener('click', async () => {
+  if (!state.enableDemoMode) return;
   try {
     const session = await request('/api/login', { method: 'POST', body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' }) });
     await finishAuth(session, 'Signed in with demo account.');
@@ -376,5 +391,6 @@ document.querySelector('#portal-form').addEventListener('submit', async (event) 
   }
 });
 
+await hydrateRuntime();
 await hydrateSession();
 await renderCurrentView();
