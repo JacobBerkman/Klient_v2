@@ -96,7 +96,9 @@
               <strong>Collaborative draft editing safeguards</strong>
               <span class="badge claim-status partial">partial</span>
               <span class="badge subtle">Feature flag: FF_DRAFT_CONFLICT_GUARD</span>
-              <a href="/docs/milestones/claims-roadmap.html#milestone-m2-draft-collaboration-hardening">Planned milestone</a>
+              <a href="/docs/milestones/claims-roadmap.html#milestone-m2-draft-collaboration-hardening"
+                >Planned milestone</a
+              >
             </li>
             <li>
               <strong>Automated document processing and queue orchestration</strong>
@@ -118,22 +120,14 @@
             <input name="lastName" placeholder="Last name" required />
             <input name="email" type="email" placeholder="Email" />
             <input name="phone" placeholder="Phone" />
-            <select name="stage">
-              <option value="discovery">Discovery</option>
-              <option value="gather_oi">Gather OI</option>
-              <option value="analysis">Analysis</option>
-              <option value="advisor_proposal_meeting">Advisor Proposal Meeting</option>
-              <option value="intake">Intake</option>
-              <option value="on_boarding">On Boarding</option>
-              <option value="investment_strategy">Investment Strategy</option>
-              <option value="completed">Completed</option>
-              <option value="drop_dead_lead">Drop / Dead Lead</option>
-              <option value="drop_nurture">Drop / Nurture</option>
+            <select id="profile-stage-select" name="stage">
+              <option value="">Loading stages…</option>
             </select>
             <input name="cityOrLocation" placeholder="Source city/location" />
             <input name="venue" placeholder="Source venue" />
             <input name="occurredOn" type="date" placeholder="Source date" />
             <button type="submit">Create Profile</button>
+            <p class="muted compact" data-form-feedback aria-live="polite"></p>
           </form>
 
           <form id="household-form" class="card">
@@ -148,6 +142,7 @@
             <input name="name" placeholder="Form template name" required />
             <input name="description" placeholder="Description" />
             <button type="submit">Create Form Template</button>
+            <p class="muted compact" data-form-feedback aria-live="polite"></p>
           </form>
 
           <form id="doc-template-form" class="card">
@@ -155,10 +150,11 @@
             <input name="name" placeholder="Document template name" required />
             <input name="fileName" placeholder="File name" value="template.pdf" />
             <button type="submit">Create Template</button>
+            <p class="muted compact" data-form-feedback aria-live="polite"></p>
           </form>
         </section>
 
-        <section class="actions grid two" data-requires-role="admin,advisor">
+        <section class="actions grid two" data-requires-role="admin">
           <form id="invite-form" class="card">
             <h3>Invite User</h3>
             <input name="email" type="email" placeholder="User email" required />
@@ -168,17 +164,23 @@
               <option value="client">Client</option>
             </select>
             <button type="submit">Create Invite</button>
+            <p class="muted compact" data-form-feedback aria-live="polite"></p>
           </form>
+        </section>
 
+        <section class="actions grid two" data-requires-role="admin,advisor">
           <form id="portal-form" class="card">
             <h3>Create Portal Link</h3>
             <select name="profileId" required></select>
             <button type="submit">Create Link</button>
+            <p class="muted compact" data-form-feedback aria-live="polite"></p>
           </form>
         </section>
 
         <section id="view" class="card"></section>
-        <p class="muted" aria-live="polite">Use drag-and-drop in Prospects/Clients to reorder cards and move stage transitions.</p>
+        <p class="muted" aria-live="polite">
+          Use drag-and-drop in Prospects/Clients to reorder cards and move stage transitions.
+        </p>
       </main>
     </div>
     <script type="module" src="/app.js"></script>

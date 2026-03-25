@@ -57,6 +57,18 @@ Run this command and require a **zero-exit** outcome:
 npm run validate:master
 ```
 
+Evidence artifact (machine-readable, produced automatically):
+
+```text
+artifacts/release-evidence/validate-master-summary.json
+```
+
+Optional explicit destination:
+
+```bash
+RELEASE_EVIDENCE_FILE=artifacts/release-evidence/<release-id>.json npm run validate:master
+```
+
 The gate is objective and fails if any required suite fails:
 1. API contract tests (`npm run test:contract`)
 2. Integration suites (`npm run test:integration`)
@@ -138,14 +150,18 @@ node scripts/restore-db.mjs data/backup-<timestamp>.db
 ## Deployment playbook
 1. **Pre-flight**
    - Ensure backup created (`npm run backup`).
+   - Capture backup evidence (`ls -l data/backup-*.db | tail -n 1 > artifacts/release-evidence/backup-latest.txt`).
    - Confirm branch parity (`npm run check:merge-main`).
+   - Capture parity evidence (`npm run check:merge-main | tee artifacts/release-evidence/branch-parity.txt`).
    - Run full release gate (`npm run validate:master`).
 2. **Deploy**
    - Build and launch (`docker compose --env-file .env up --build -d`).
    - Confirm `/health` and `/ready` are green.
+   - Capture health evidence (`curl -fsS "$KLIENT_BASE_URL/health" | tee artifacts/release-evidence/health.json && curl -fsS "$KLIENT_BASE_URL/ready" | tee artifacts/release-evidence/ready.json`).
    - Login and verify key advisor flow in UI.
 3. **Post-deploy validation**
    - Execute smoke test against deployed environment (or equivalent canary route checks).
+   - Capture smoke evidence (`npm run test:smoke | tee artifacts/release-evidence/post-deploy-smoke.txt`).
    - Validate export queue processing and analytics endpoints.
 
 ## Rollback playbook

@@ -27,6 +27,13 @@ try {
   assert(setCookie.includes('SameSite=Strict'), 'CSRF cookie must use SameSite=Strict')
   assert(setCookie.includes('Max-Age='), 'CSRF cookie must include Max-Age')
 
+  const continuitySession = await context.request('/api/session', {
+    headers: {
+      Cookie: context.sessionCookie
+    }
+  })
+  assert(continuitySession.user?.email === 'admin@demo.test', 'CSRF bootstrap should preserve authenticated session continuity')
+
   const mutatingHeaders = {
     'Content-Type': 'application/json',
     Origin: baseUrl,
@@ -71,6 +78,7 @@ try {
   })
   const freshCsrfData = await freshCsrfResponse.json()
   const freshCookie = (freshCsrfResponse.headers.get('set-cookie') || '').split(';')[0]
+  assert(Boolean(freshCsrfData.csrfToken), 'Fresh CSRF issuance should return a token for active session')
 
   const staleTokenResponse = await fetch(`${baseUrl}/api/exports/process`, {
     method: 'POST',

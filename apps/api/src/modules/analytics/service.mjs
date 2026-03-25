@@ -4,7 +4,11 @@ export function createAnalyticsService({ store, reads, policy }) {
   return {
     get(user, filters = {}) {
       policy.requireGuard(user, 'canReadAnalytics')
-      return { stageCounts: reads.getAnalytics(user.firmId), summary: store.getAnalytics(user, filters) }
+      const summary = store.getAnalytics(user, filters)
+      return {
+        stageCounts: summary.stageCountsOrdered || reads.getAnalytics(user.firmId),
+        summary
+      }
     },
     getDashboard(user, filters = {}) {
       policy.requireGuard(user, 'canReadAnalytics')
