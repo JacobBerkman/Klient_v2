@@ -1,6 +1,6 @@
 import { createFirmContext } from '../shared/tenancy.mjs'
 
-export function createFormsService({ store, policy }) {
+export function createFormsService({ store, policy, templatesCompatibility = null }) {
   function getSubmissionOrThrow(user, submissionId) {
     const submission = store.listFormSubmissions(user).find((entry) => entry.id === submissionId)
     if (!submission) throw new Error('Submission not found.')
@@ -112,15 +112,15 @@ export function createFormsService({ store, policy }) {
     },
     getClientWorkspace(user) {
       policy.requireGuard(user, 'canReadClientWorkspace')
-      return store.getClientWorkspace(createFirmContext(user))
+      return store.getClientWorkspace(user)
     },
     submitClientForm(user, input) {
       policy.requireGuard(user, 'canWriteClientWorkspace')
-      return store.submitClientForm(createFirmContext(user), input)
+      return store.submitClientForm(user, input)
     },
     submitClientUpload(user, input) {
       policy.requireGuard(user, 'canWriteClientWorkspace')
-      return store.submitClientUpload(createFirmContext(user), input)
+      return store.submitClientUpload(user, input)
     },
     createClientUploadPresign(user, input) {
       policy.requireGuard(user, 'canWriteClientWorkspace')

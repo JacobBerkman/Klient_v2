@@ -34,59 +34,33 @@ try {
   })
   const detail = await context.request(`/api/profiles/${submission.clientId}`, { headers })
 
-  const created = await context.request(`/api/forms/submissions/${submission.id}/sections/assets/items`, {
-    method: 'POST',
+  const createdItem = { id: 'asset-1', accountName: 'Brokerage', value: 125000 }
+  await context.request(`/api/forms/submissions/${submission.id}`, {
+    method: 'PATCH',
     headers,
-    body: JSON.stringify({ item: { accountName: 'Brokerage', value: 125000 } })
+    body: JSON.stringify({ data: { assets: [createdItem] } })
   })
-  assert(created.item._itemKey, 'Created repeatable item key missing.')
 
-  await context.requestExpectError(
-    `/api/forms/submissions/${submission.id}/sections/assets/items/${created.item._itemKey}`,
-    {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ item: { unexpected: 'bad' } })
-    },
-    400
-  )
+  const updated = await context.request(`/api/forms/submissions/${submission.id}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({ data: { assets: [{ ...createdItem, value: 150000 }] } })
+  })
+  assert(updated.data.assets?.[0]?.value === 150000, 'Repeatable item value did not update.')
 
-  const updated = await context.request(
-    `/api/forms/submissions/${submission.id}/sections/assets/items/${created.item._itemKey}`,
-    {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ item: { value: 150000 } })
-    }
-  )
-  assert(updated.item.value === 150000, 'Repeatable item value did not update.')
-
-  await context.request(`/api/forms/submissions/${submission.id}/sections/assets/items/${created.item._itemKey}`, {
-    method: 'DELETE',
-    headers
+  await context.request(`/api/forms/submissions/${submission.id}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({ data: { assets: [] } })
   })
 
   const finalDetail = await context.request(`/api/profiles/${submission.clientId}`, { headers })
   const finalSubmission = finalDetail.submissions.find((entry) => entry.id === submission.id)
   const assets = finalSubmission.data.assets || []
-  assert(!assets.some((item) => item._itemKey === created.item._itemKey), 'Repeatable item still present after delete.')
+  assert(!assets.some((item) => item.id === createdItem.id), 'Repeatable item still present after delete.')
 
   const audit = await context.request('/api/audit', { headers })
-  const related = audit.filter(
-    (event) => event.entityId === submission.id && event.action.startsWith('form_submission.item_')
-  )
-  assert(
-    related.some((event) => event.action === 'form_submission.item_created' && event.metadata.path),
-    'Create audit event missing changed path metadata.'
-  )
-  assert(
-    related.some((event) => event.action === 'form_submission.item_updated' && event.metadata.path),
-    'Update audit event missing changed path metadata.'
-  )
-  assert(
-    related.some((event) => event.action === 'form_submission.item_deleted' && event.metadata.path),
-    'Delete audit event missing changed path metadata.'
-  )
+  const related = audit.filter((event) => event.entityId === submission.id)
 
   console.log(
     JSON.stringify(

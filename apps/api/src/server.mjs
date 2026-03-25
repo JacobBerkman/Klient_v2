@@ -129,7 +129,7 @@ function getExpectedOrigins(req) {
 }
 
 function isCsrfExempt(pathname) {
-  return pathname === CSRF_BOOTSTRAP_PATH || CSRF_EXEMPT_PATHS.has(pathname)
+  return pathname === CSRF_BOOTSTRAP_PATH || CSRF_EXEMPT_PATHS.has(pathname) || pathname.startsWith('/api/portal/')
 }
 
 function validateOriginAndReferer(req, requestId) {
@@ -438,6 +438,14 @@ export function createHttpServer({ modules }) {
       modules.forms.getPortalSession(token)
       return { token }
     }
+    const replyJson = (statusCode, body, headers = {}) => {
+      if (!rotateCsrfAfterResponse || !sessionToken || !authenticatedUser?.id) {
+        return json(res, statusCode, body, headers)
+      }
+      const csrf = issueCsrfForSession(req, sessionToken, authenticatedUser.id)
+      rotateCsrfAfterResponse = false
+      return json(res, statusCode, body, { ...headers, ...csrf.headers })
+    }
 
     try {
       if (pathname === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -510,7 +518,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canReadExports')
         const result = modules.exports.getQueueHealth(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/ops/exports/retry-failed' && req.method === 'POST') {
         const user = requireUser()
@@ -518,7 +526,7 @@ export function createHttpServer({ modules }) {
         const body = await parseBody(req)
         const result = modules.exports.retryFailed(user, body || {})
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/csrf' && req.method === 'GET') {
         sessionToken = getToken(req)
@@ -732,7 +740,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canMovePipeline')
         const result = modules.pipeline.reorderBoard(user, body)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/profiles/') && req.method === 'PATCH') {
         const id = pathname.split('/')[3]
@@ -857,7 +865,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canWriteClientWorkspace')
         const result = await modules.forms.createClientUploadPresign(user, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/forms/submissions/') && req.method === 'PATCH') {
         const id = pathname.split('/')[4]
@@ -913,7 +921,7 @@ export function createHttpServer({ modules }) {
           expectedVersionHash: body.expectedVersionHash || null
         })
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/templates/') && pathname.endsWith('/versions') && req.method === 'GET') {
         const id = pathname.split('/')[3]
@@ -921,7 +929,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canReadTemplate')
         const result = modules.templates.listVersions(user, id)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/templates/') && pathname.endsWith('/publish-transitions') && req.method === 'GET') {
         const id = pathname.split('/')[3]
@@ -929,7 +937,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canReadTemplate')
         const result = modules.templates.listPublishTransitions(user, id)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/templates/') && pathname.endsWith('/compare') && req.method === 'GET') {
         const id = pathname.split('/')[3]
@@ -939,7 +947,7 @@ export function createHttpServer({ modules }) {
         const targetVersion = Number(url.searchParams.get('targetVersion'))
         const result = modules.templates.compareVersions(user, id, baseVersion, targetVersion)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/templates/') && pathname.endsWith('/revert') && req.method === 'POST') {
         const id = pathname.split('/')[3]
@@ -1004,7 +1012,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canReadAnalytics')
         const result = modules.analytics.get(user, analyticsFiltersFrom(url))
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/analytics/dashboard' && req.method === 'GET') {
         const user = requireUser()
@@ -1040,7 +1048,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canCreatePortalLink')
         const result = modules.forms.createPortalLink(user, body.profileId, body)
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/portal-links/') && pathname.endsWith('/revoke') && req.method === 'POST') {
         const linkId = pathname.split('/')[3]
@@ -1066,7 +1074,7 @@ export function createHttpServer({ modules }) {
         const { token } = requirePortalSession()
         const result = await modules.forms.createPortalUploadPresign(token, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads') && req.method === 'POST') {
         const { token } = requirePortalSession()

@@ -9,7 +9,10 @@ function runNode(scriptPath, cwd, args = []) {
   return new Promise((resolveRun, rejectRun) => {
     const child = spawn(process.execPath, [scriptPath, ...args], {
       cwd,
-      env: process.env,
+      env: {
+        ...process.env,
+        ALLOW_DEV_FALLBACK_APP_SECRET: 'true'
+      },
       stdio: ['ignore', 'pipe', 'pipe']
     })
 

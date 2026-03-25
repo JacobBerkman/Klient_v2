@@ -1,6 +1,7 @@
 import { runAuditedMutation } from '../audit/service.mjs'
+import { createFirmContext } from '../shared/tenancy.mjs'
 
-export function createTemplatesService({ templateRepository, policy, store = null }) {
+export function createTemplatesService({ templateRepository, policy, store = null, templatesCompatibility = null }) {
   const runMutation = (fn) => (store ? runAuditedMutation(store, fn) : fn())
 
   return {

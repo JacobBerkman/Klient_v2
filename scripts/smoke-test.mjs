@@ -30,7 +30,8 @@ try {
 
   const publishResult = await context.request(`/api/templates/${template.id}/publish`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${login.token}` }
+    headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Smoke publish validation' })
   })
 
   const exportJob = await context.request('/api/exports', {

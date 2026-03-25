@@ -94,6 +94,17 @@ export async function createTestContext(name) {
           async request(path, options = {}) {
             const method = (options.method || 'GET').toUpperCase()
             const headers = { ...(options.headers || {}) }
+            const explicitAuthToken =
+              typeof headers.Authorization === 'string' && headers.Authorization.startsWith('Bearer ')
+                ? headers.Authorization.slice('Bearer '.length).trim()
+                : ''
+            if (explicitAuthToken) {
+              if (explicitAuthToken !== this.authToken) {
+                this.authToken = explicitAuthToken
+              }
+              this.csrfToken = ''
+              this.csrfCookie = ''
+            }
             if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path.startsWith('/api/') && !isCsrfExemptPath(path)) {
               const { csrfToken, csrfCookie } = await this.ensureCsrf()
               headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
@@ -111,7 +122,7 @@ export async function createTestContext(name) {
             if (nextCsrfToken) this.csrfToken = nextCsrfToken
             if (nextCookie.startsWith('__Host-klient-csrf=')) this.csrfCookie = nextCookie
             if (!response.ok) {
-              throw new Error(`${path}: ${data.message || 'Request failed'}`)
+              throw new Error(`${path}: ${data.message || data.error?.message || 'Request failed'}`)
             }
             if (data && typeof data === 'object' && !('message' in data) && data.error?.message) {
               return { ...data, message: data.error.message }
@@ -121,6 +132,17 @@ export async function createTestContext(name) {
           async requestExpectError(path, options = {}, expectedStatus = 400) {
             const method = (options.method || 'GET').toUpperCase()
             const headers = { ...(options.headers || {}) }
+            const explicitAuthToken =
+              typeof headers.Authorization === 'string' && headers.Authorization.startsWith('Bearer ')
+                ? headers.Authorization.slice('Bearer '.length).trim()
+                : ''
+            if (explicitAuthToken) {
+              if (explicitAuthToken !== this.authToken) {
+                this.authToken = explicitAuthToken
+              }
+              this.csrfToken = ''
+              this.csrfCookie = ''
+            }
             if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path.startsWith('/api/') && !isCsrfExemptPath(path)) {
               const { csrfToken, csrfCookie } = await this.ensureCsrf()
               headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
