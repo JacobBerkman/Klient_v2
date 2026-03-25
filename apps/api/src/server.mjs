@@ -29,16 +29,23 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const publicDir = resolve(__dirname, '../../web/public')
 const bootedAt = new Date().toISOString()
 const startupDiagnostics = validateRuntimeConfig()
-const AUTH_SESSION_COOKIE = '__Host-klient-session'
-const CSRF_SESSION_COOKIE = '__Host-klient-csrf'
-const AUTH_COMPATIBILITY_HEADER = 'x-klient-auth-compat'
-const AUTH_COMPATIBILITY_MODE = 'bearer'
-const AUTH_COMPATIBILITY_SUNSET = 'Tue, 30 Jun 2026 00:00:00 GMT'
+const COOKIE_POLICY = Object.freeze({
+  session: {
+    name: '__Host-klient-session',
+    path: '/',
+    sameSite: 'Strict'
+  },
+  csrf: {
+    name: '__Host-klient-csrf',
+    path: '/',
+    sameSite: 'Strict'
+  }
+})
 const CSRF_HEADER = 'x-csrf-token'
 const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const CSRF_BOOTSTRAP_PATH = '/api/csrf'
 const CSRF_TTL_SECONDS = 60 * 15
-const SESSION_TTL_SECONDS = 60 * 60 * 8
+const SESSION_IDLE_TIMEOUT_SECONDS = 60 * 30
 const CSRF_EXEMPT_PATHS = new Set([
   '/api/login',
   '/api/register',
@@ -46,6 +53,18 @@ const CSRF_EXEMPT_PATHS = new Set([
   '/api/password-resets',
   '/api/password-resets/confirm'
 ])
+const securityDiagnostics = {
+  csrf: {
+    rejectedTotal: 0,
+    rejectedByReason: {}
+  },
+  session: {
+    rejectedTotal: 0,
+    rejectedByReason: {},
+    rotatedTotal: 0,
+    invalidatedTotal: 0
+  }
+}
 
 function json(res, status, body, headers = {}) {
   res.writeHead(status, { ...baseHeaders(), 'Content-Type': 'application/json', ...headers })
@@ -79,11 +98,10 @@ function cookieConfig(req, overrides = {}) {
   const secure = runtime.isProduction ? true : xfProto === 'https'
   return {
     secure,
-    sameSite: runtime.isProduction ? 'Strict' : secure ? 'Strict' : 'Lax',
+    sameSite: overrides.sameSite || 'Strict',
     httpOnly: true,
-    path: '/api',
-    maxAge: CSRF_TTL_SECONDS,
-    ...overrides
+    path: overrides.path || '/',
+    maxAge: overrides.maxAge
   }
 }
 
@@ -142,6 +160,8 @@ function requiresCsrfProtection(method = 'GET') {
 }
 
 function getCsrfErrorResponse(reason, requestId) {
+  securityDiagnostics.csrf.rejectedTotal += 1
+  securityDiagnostics.csrf.rejectedByReason[reason] = (securityDiagnostics.csrf.rejectedByReason[reason] || 0) + 1
   return {
     statusCode: 403,
     body: {
@@ -253,16 +273,36 @@ function issueCsrfForSession(req, sessionToken, userId) {
     expiresAt,
     headers: {
       [CSRF_HEADER]: token.rawToken,
-      'Set-Cookie': serializeCookie(CSRF_SESSION_COOKIE, token.tokenId, cookieConfig(req))
+      'Set-Cookie': serializeCookie(
+        COOKIE_POLICY.csrf.name,
+        token.tokenId,
+        cookieConfig(req, {
+          path: COOKIE_POLICY.csrf.path,
+          sameSite: COOKIE_POLICY.csrf.sameSite,
+          maxAge: Math.min(CSRF_TTL_SECONDS, SESSION_IDLE_TIMEOUT_SECONDS)
+        })
+      )
     }
   }
+}
+
+function clearCsrfCookie(req) {
+  return serializeCookie(
+    COOKIE_POLICY.csrf.name,
+    '',
+    cookieConfig(req, {
+      path: COOKIE_POLICY.csrf.path,
+      sameSite: COOKIE_POLICY.csrf.sameSite,
+      maxAge: 0
+    })
+  )
 }
 
 function validateCsrf(req, requestId, sessionToken, user) {
   const originError = validateOriginAndReferer(req, requestId)
   if (originError) return originError
   const cookies = parseCookies(req)
-  const cookieTokenId = String(cookies[CSRF_SESSION_COOKIE] || '').trim()
+  const cookieTokenId = String(cookies[COOKIE_POLICY.csrf.name] || '').trim()
   const headerToken = String(req.headers[CSRF_HEADER] || '').trim()
   if (!cookieTokenId || !headerToken) return getCsrfErrorResponse('Missing CSRF token.', requestId)
   const [headerTokenId, nonce, signature] = headerToken.split('.')
@@ -461,14 +501,38 @@ export function createHttpServer({ modules }) {
     let sessionToken = null
     let authenticatedUser = null
     let rotateCsrfAfterResponse = false
-    const requireUser = () => modules.auth.requireUser(resolveSessionToken(req))
+    const rejectSession = (reason) => {
+      securityDiagnostics.session.rejectedTotal += 1
+      securityDiagnostics.session.rejectedByReason[reason] = (securityDiagnostics.session.rejectedByReason[reason] || 0) + 1
+    }
+    const requireUser = () => {
+      const token = getToken(req)
+      try {
+        return modules.auth.requireUser(token)
+      } catch (error) {
+        if (token) {
+          deleteCsrfTokensBySession(token)
+        }
+        rejectSession('authentication_required')
+        throw error
+      }
+    }
     const authorize = (guard, { allowAnonymous = false } = {}) => {
       const token = resolveSessionToken(req)
       if (!token && allowAnonymous) {
         modules.policy.requireGuard({ role: 'anonymous' }, guard)
         return null
       }
-      const user = modules.auth.requireUser(token)
+      let user
+      try {
+        user = modules.auth.requireUser(token)
+      } catch (error) {
+        if (token) {
+          deleteCsrfTokensBySession(token)
+        }
+        rejectSession('authentication_required')
+        throw error
+      }
       modules.policy.requireGuard(user, guard)
       return user
     }
@@ -548,7 +612,19 @@ export function createHttpServer({ modules }) {
                     .slice()
                     .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())[0] || null
               },
-              audit: { total: auditEvents.length, latest: auditEvents[0] || null }
+              audit: { total: auditEvents.length, latest: auditEvents[0] || null },
+              security: {
+                csrf: {
+                  rejectedTotal: securityDiagnostics.csrf.rejectedTotal,
+                  rejectedByReason: securityDiagnostics.csrf.rejectedByReason
+                },
+                sessions: {
+                  rejectedTotal: securityDiagnostics.session.rejectedTotal,
+                  rejectedByReason: securityDiagnostics.session.rejectedByReason,
+                  rotatedTotal: securityDiagnostics.session.rotatedTotal,
+                  invalidatedTotal: securityDiagnostics.session.invalidatedTotal
+                }
+              }
             }
           },
           { 'X-Request-Id': requestId }
@@ -606,7 +682,12 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/register' && req.method === 'POST') {
         authorize('canRegister', { allowAnonymous: true })
         const result = modules.auth.register(await parseBody(req))
-        const responseBody = shouldIssueCompatibilityBearer(req) ? result : { ...result, token: undefined }
+        const priorToken = getToken(req)
+        if (priorToken && priorToken !== result.token) {
+          modules.auth.logout(priorToken)
+          deleteCsrfTokensBySession(priorToken)
+          securityDiagnostics.session.rotatedTotal += 1
+        }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(201)
         return replyJson(
@@ -626,6 +707,12 @@ export function createHttpServer({ modules }) {
         if (result?.mfaRequired) {
           finalizeLog(200, { mfaRequired: true })
           return replyJson(200, { ...result, csrfToken: null, csrfExpiresAt: null }, { 'X-Request-Id': requestId })
+        }
+        const priorToken = getToken(req)
+        if (priorToken && priorToken !== result.token) {
+          modules.auth.logout(priorToken)
+          deleteCsrfTokensBySession(priorToken)
+          securityDiagnostics.session.rotatedTotal += 1
         }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         const responseBody = shouldIssueCompatibilityBearer(req) ? result : { ...result, token: undefined }
@@ -651,7 +738,12 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/invites/accept' && req.method === 'POST') {
         authorize('canAcceptInvite', { allowAnonymous: true })
         const result = modules.firmsUsers.acceptInvite(await parseBody(req))
-        const responseBody = shouldIssueCompatibilityBearer(req) ? result : { ...result, token: undefined }
+        const priorToken = getToken(req)
+        if (priorToken && priorToken !== result.token) {
+          modules.auth.logout(priorToken)
+          deleteCsrfTokensBySession(priorToken)
+          securityDiagnostics.session.rotatedTotal += 1
+        }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(200)
         return replyJson(
@@ -699,8 +791,17 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/auth/mfa/verify' && req.method === 'POST') {
         const user = authorize('canReadSession')
         const result = modules.auth.verifyMfaChallenge(user, await parseBody(req))
+        const priorToken = getToken(req)
+        const rotatedSession = modules.auth.rotateSession(priorToken, 'mfa_verified')
+        deleteCsrfTokensBySession(priorToken)
+        securityDiagnostics.session.rotatedTotal += 1
+        const csrf = issueCsrfForSession(req, rotatedSession.token, rotatedSession.user.id)
         finalizeLog(200)
-        return replyJson(200, { ok: true, mfa: result }, { 'X-Request-Id': requestId })
+        return replyJson(
+          200,
+          { ok: true, mfa: result, token: rotatedSession.token, user: rotatedSession.user, sessionRotated: true },
+          { 'X-Request-Id': requestId, ...csrf.headers }
+        )
       }
       if (pathname === '/api/auth/mfa/backup-codes/rotate' && req.method === 'POST') {
         const user = authorize('canReadSession')
@@ -725,10 +826,7 @@ export function createHttpServer({ modules }) {
         const result = modules.auth.logout(token)
         deleteCsrfTokensBySession(token)
         finalizeLog(200)
-        return replyJson(200, result, {
-          'X-Request-Id': requestId,
-          'Set-Cookie': [clearSessionCookie(req), clearCsrfCookie(req)]
-        })
+        return replyJson(200, result, { 'X-Request-Id': requestId, 'Set-Cookie': clearCsrfCookie(req) })
       }
       if (pathname === '/api/dashboard' && req.method === 'GET') {
         const user = requireUser()
@@ -1169,7 +1267,14 @@ export function createHttpServer({ modules }) {
 
 function startServer() {
   const piiKeyProvider = bootstrapPiiKeyProvider()
-  const store = createStore({ piiKeyProvider })
+  const store = createStore({
+    piiKeyProvider,
+    onSessionInvalidated: ({ token }) => {
+      if (!token) return
+      deleteCsrfTokensBySession(token)
+      securityDiagnostics.session.invalidatedTotal += 1
+    }
+  })
   const reads = new SqliteReadRepository()
   const modules = createModules({ store, reads })
   const server = createHttpServer({ modules })

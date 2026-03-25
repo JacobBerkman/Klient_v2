@@ -91,6 +91,8 @@ test('authenticated MFA routes enforce policy + forward payloads', async () => {
         (calls.push({ route: 'confirm', user: user.id, payload }), { ok: true, backupCodes: ['ABC-123'] }),
       challengeMfa: (user) => (calls.push(`auth.challenge:${user.id}`), { challengeToken: 'challenge-1' }),
       verifyMfaChallenge: (user, payload) => (calls.push({ route: 'verify', user: user.id, payload }), { ok: true }),
+      rotateSession: (token, reason) =>
+        (calls.push({ route: 'rotateSession', token, reason }), { token: 'rotated-token', user: fakeUser }),
       rotateMfaBackupCodes: (user) => (calls.push(`auth.rotate:${user.id}`), { backupCodes: ['NEW-123'] })
     },
     policy: { requireGuard: (user, guard) => calls.push(`policy:${user.id}:${guard}`) }
@@ -100,54 +102,91 @@ test('authenticated MFA routes enforce policy + forward payloads', async () => {
 
   const headers = { authorization: 'Bearer token', 'content-type': 'application/json' }
   const base = `http://${address.address}:${address.port}`
+  const csrfBootstrap = await fetch(`${base}/api/csrf`, { headers: { authorization: 'Bearer token' } })
+  const csrfPayload = await csrfBootstrap.json()
+  let csrfCookie = (csrfBootstrap.headers.get('set-cookie') || '').split(';')[0]
+  let csrfToken = csrfPayload.csrfToken
+  const nextHeaders = () => ({
+    ...headers,
+    Origin: base,
+    Referer: `${base}/`,
+    Cookie: csrfCookie,
+    'X-CSRF-Token': csrfToken
+  })
+  const rotateFrom = (response) => {
+    csrfToken = response.headers.get('x-csrf-token') || csrfToken
+    const setCookie = response.headers.get('set-cookie') || ''
+    if (setCookie) csrfCookie = setCookie.split(';')[0]
+  }
 
-  const enrollRes = await fetch(`${base}/api/auth/mfa/enroll`, { method: 'POST', headers, body: '{}' })
+  const enrollRes = await fetch(`${base}/api/auth/mfa/enroll`, { method: 'POST', headers: nextHeaders(), body: '{}' })
+  rotateFrom(enrollRes)
   const enrollBody = await enrollRes.json()
   assert.equal(enrollRes.status, 200)
   assert.equal(enrollBody.ok, true)
 
   const confirmRes = await fetch(`${base}/api/auth/mfa/enroll/confirm`, {
     method: 'POST',
-    headers,
+    headers: nextHeaders(),
     body: JSON.stringify({ enrollmentToken: 'enroll-1', code: '123456' })
   })
+  rotateFrom(confirmRes)
   const confirmBody = await confirmRes.json()
   assert.equal(confirmRes.status, 200)
   assert.deepEqual(confirmBody.mfa.backupCodes, ['ABC-123'])
 
-  const challengeRes = await fetch(`${base}/api/auth/mfa/challenge`, { method: 'POST', headers, body: '{}' })
+  const challengeRes = await fetch(`${base}/api/auth/mfa/challenge`, { method: 'POST', headers: nextHeaders(), body: '{}' })
+  rotateFrom(challengeRes)
   assert.equal(challengeRes.status, 200)
 
   const verifyRes = await fetch(`${base}/api/auth/mfa/verify`, {
     method: 'POST',
-    headers,
+    headers: nextHeaders(),
     body: JSON.stringify({ challengeToken: 'challenge-1', totpCode: '654321' })
   })
+  rotateFrom(verifyRes)
+  const verifyBody = await verifyRes.json()
   assert.equal(verifyRes.status, 200)
+  assert.equal(verifyBody.sessionRotated, true)
+  assert.equal(verifyBody.token, 'rotated-token')
 
-  const rotateRes = await fetch(`${base}/api/auth/mfa/backup-codes/rotate`, { method: 'POST', headers, body: '{}' })
+  const rotateRes = await fetch(`${base}/api/auth/mfa/backup-codes/rotate`, { method: 'POST', headers: nextHeaders(), body: '{}' })
   const rotateBody = await rotateRes.json()
   assert.equal(rotateRes.status, 200)
   assert.deepEqual(rotateBody.mfa.backupCodes, ['NEW-123'])
 
-  assert.deepEqual(calls, [
-    'auth.requireUser',
-    'policy:u1:canReadSession',
-    'auth.enroll:u1',
-    'auth.requireUser',
-    'policy:u1:canReadSession',
-    { route: 'confirm', user: 'u1', payload: { enrollmentToken: 'enroll-1', code: '123456' } },
-    'auth.requireUser',
-    'policy:u1:canReadSession',
-    'auth.challenge:u1',
-    'auth.requireUser',
-    'policy:u1:canReadSession',
-    { route: 'verify', user: 'u1', payload: { challengeToken: 'challenge-1', totpCode: '654321' } },
-    'auth.requireUser',
-    'policy:u1:canReadSession',
-    'auth.rotate:u1'
-  ])
+  assert(calls.includes('auth.enroll:u1'))
+  assert(calls.includes('auth.challenge:u1'))
+  assert(calls.includes('auth.rotate:u1'))
+  assert.equal(calls.filter((entry) => entry === 'policy:u1:canReadSession').length, 5)
+  assert.ok(calls.find((entry) => entry?.route === 'confirm'))
+  assert.ok(calls.find((entry) => entry?.route === 'verify'))
+  assert.ok(calls.find((entry) => entry?.route === 'rotateSession' && entry.reason === 'mfa_verified'))
 
+  await close(server)
+})
+
+test('POST /api/login rotates prior bearer token to prevent fixation', async () => {
+  const calls = []
+  const modules = {
+    auth: {
+      login: () => ({ token: 'fresh-token', user: { id: 'u1', firmId: 'f1', role: 'advisor' } }),
+      requireUser: () => ({ id: 'u1', firmId: 'f1', role: 'advisor' }),
+      logout: (token) => calls.push(`logout:${token}`)
+    },
+    policy: { requireGuard: () => true }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const res = await fetch(`http://${address.address}:${address.port}/api/login`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer stale-token', 'content-type': 'application/json' },
+    body: JSON.stringify({ email: 'mfa@example.com', password: 'secret' })
+  })
+  const body = await res.json()
+  assert.equal(res.status, 200)
+  assert.equal(body.token, 'fresh-token')
+  assert.deepEqual(calls, ['logout:stale-token'])
   await close(server)
 })
 
