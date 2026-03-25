@@ -539,7 +539,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     }
   }
 
-  function createUploadIntent({ firmId, clientId, fileName, contentType, checksum, category, source }) {
+  function createUploadIntent({ firmId, clientId, fileName, contentType, checksum, category, source, retentionClass }) {
     const id = randomUUID()
     const key = `${firmId}/documents/${clientId}/${Date.now()}-${id}-${sanitizeFileName(fileName || 'upload.bin')}`
     const object = normalizeObjectMetadata({
@@ -547,7 +547,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       key,
       checksum: checksum || null,
       contentType: contentType || 'application/octet-stream',
-      retentionClass: 'uploaded_document'
+      retentionClass: retentionClass || 'uploaded_document'
     })
     const intent = {
       id,
@@ -562,6 +562,56 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     }
     state.pendingUploadIntents.push(intent)
     return intent
+  }
+
+  function normalizePortalScope(scope = {}) {
+    return {
+      templateIds: Array.isArray(scope.templateIds) ? [...new Set(scope.templateIds.filter(Boolean))] : null,
+      uploadCategories: Array.isArray(scope.uploadCategories) ? [...new Set(scope.uploadCategories.filter(Boolean))] : null
+    }
+  }
+
+  function resolvePortalLinkByToken(token) {
+    const link = state.portalLinks.find((entry) => entry.token === token)
+    if (!link) throw new Error('Portal link not found.')
+    const nowMs = Date.now()
+    if (link.revokedAt) throw new Error('Portal link revoked.')
+    if (link.expiresAt && new Date(link.expiresAt).getTime() <= nowMs) throw new Error('Portal link expired.')
+    if (Number(link.maxUses || 0) > 0 && Number(link.usedCount || 0) >= Number(link.maxUses)) {
+      throw new Error('Portal link use limit reached.')
+    }
+    return link
+  }
+
+  function assertPortalTemplateScope(link, templateId) {
+    if (!Array.isArray(link.scope?.templateIds) || link.scope.templateIds.length === 0) return
+    if (!link.scope.templateIds.includes(templateId)) {
+      throw new Error('Portal link cannot access this form.')
+    }
+  }
+
+  function assertPortalUploadScope(link, category) {
+    if (!Array.isArray(link.scope?.uploadCategories) || link.scope.uploadCategories.length === 0) return
+    if (!link.scope.uploadCategories.includes(category || 'general')) {
+      throw new Error('Portal link cannot upload this category.')
+    }
+  }
+
+  function consumePortalLinkUse(link) {
+    link.usedCount = Number(link.usedCount || 0) + 1
+    link.lastUsedAt = now()
+  }
+
+  function normalizeMalwareScan(scan = {}) {
+    const status = String(scan.status || 'pending').toLowerCase()
+    const allowedStatus = new Set(['pending', 'clean', 'infected'])
+    const normalizedStatus = allowedStatus.has(status) ? status : 'pending'
+    return {
+      status: normalizedStatus,
+      provider: scan.provider || null,
+      reference: scan.reference || null,
+      checkedAt: scan.checkedAt || now()
+    }
   }
 
   async function applyLifecyclePolicies() {
@@ -1294,7 +1344,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         contentType: input.contentType,
         checksum: input.checksum,
         category: input.category,
-        source: 'client'
+        source: 'client',
+        retentionClass: input.retentionClass
       })
       const presigned = await objectStorage.createPresignedUploadUrl({
         ...intent.object,
@@ -1309,7 +1360,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       const intent = input.uploadId
         ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === user.firmId)
         : null
-      const object = normalizeObjectMetadata(input.object || intent?.object || {}, 'uploaded_document')
+      const object = normalizeObjectMetadata(input.object || intent?.object || {}, input.retentionClass || 'uploaded_document')
+      const malwareScan = normalizeMalwareScan(input.malwareScan)
       const upload = {
         id: randomUUID(),
         firmId: user.firmId,
@@ -1320,6 +1372,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         status: 'uploaded',
         uploadedBy: 'client',
         notes: input.notes || '',
+        malwareScan,
         object,
         createdAt: now(),
         updatedAt: now()
@@ -1794,24 +1847,70 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         }))
       })
     },
-    createPortalLink(user, profileId) {
+    createPortalLink(user, profileId, options = {}) {
       requirePermission(user, 'profiles:read')
-      const link = { id: randomUUID(), firmId: user.firmId, profileId, token: randomUUID(), createdAt: now() }
+      const createdAt = now()
+      const expiresAt = options.expiresAt || new Date(Date.now() + Number(options.expiresInHours || 24) * 3600 * 1000).toISOString()
+      const maxUses = Math.max(1, Number(options.maxUses || 1))
+      const link = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        profileId,
+        token: randomUUID(),
+        createdAt,
+        expiresAt,
+        maxUses,
+        usedCount: 0,
+        revokedAt: null,
+        lastUsedAt: null,
+        scope: normalizePortalScope(options.scope || options)
+      }
       state.portalLinks.push(link)
       persist()
       return link
     },
-    getPortalData(token) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
+    revokePortalLink(user, linkId) {
+      requirePermission(user, 'profiles:read')
+      const link = state.portalLinks.find((entry) => entry.id === linkId && entry.firmId === user.firmId)
       if (!link) throw new Error('Portal link not found.')
+      if (!link.revokedAt) {
+        link.revokedAt = now()
+      }
+      persist()
+      return link
+    },
+    getPortalSession(token) {
+      const link = resolvePortalLinkByToken(token)
+      return {
+        id: link.id,
+        firmId: link.firmId,
+        profileId: link.profileId,
+        token: link.token,
+        scope: link.scope,
+        expiresAt: link.expiresAt,
+        maxUses: link.maxUses,
+        usedCount: link.usedCount,
+        revokedAt: link.revokedAt
+      }
+    },
+    getPortalData(token) {
+      const link = resolvePortalLinkByToken(token)
       const firm = state.firms.find((entry) => entry.id === link.firmId) || null
       const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId)
       const submissions = state.formSubmissions
         .filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId)
+        .filter(
+          (entry) =>
+            !Array.isArray(link.scope?.templateIds) ||
+            link.scope.templateIds.length === 0 ||
+            entry.templateId === 'portal' ||
+            link.scope.templateIds.includes(entry.templateId)
+        )
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
       const availableTemplates = state.templateAggregates
         .filter((entry) => entry.firmId === link.firmId && entry.kind === 'form')
+        .filter((entry) => !Array.isArray(link.scope?.templateIds) || link.scope.templateIds.length === 0 || link.scope.templateIds.includes(entry.id))
         .map((entry) => ({
           id: entry.id,
           name: entry.name,
@@ -1820,13 +1919,18 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         }))
       const uploads = state.documentUploads
         .filter((entry) => entry.firmId === link.firmId && entry.clientId === link.profileId)
+        .filter(
+          (entry) =>
+            !Array.isArray(link.scope?.uploadCategories) ||
+            link.scope.uploadCategories.length === 0 ||
+            link.scope.uploadCategories.includes(entry.category || 'general')
+        )
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
       return { firm, profile, submissions, availableTemplates, uploads }
     },
     portalSubmit(token, input) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
-      if (!link) throw new Error('Portal link not found.')
+      const link = resolvePortalLinkByToken(token)
       const templateId = input.templateId || 'portal'
       const template =
         templateId === 'portal'
@@ -1835,6 +1939,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
               (entry) => entry.id === templateId && entry.firmId === link.firmId && entry.kind === 'form'
             )
       if (templateId !== 'portal' && !template) throw new Error('Form template not found.')
+      if (templateId !== 'portal') assertPortalTemplateScope(link, templateId)
       const status = input.status === 'draft' ? 'draft' : 'submitted'
       const submission = {
         id: randomUUID(),
@@ -1848,13 +1953,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         updatedAt: now(),
         source: 'portal'
       }
+      consumePortalLinkUse(link)
       state.formSubmissions.push(submission)
       persist()
       return submission
     },
     async createPortalUploadPresign(token, input) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
-      if (!link) throw new Error('Portal link not found.')
+      const link = resolvePortalLinkByToken(token)
+      assertPortalUploadScope(link, input.category)
       const intent = createUploadIntent({
         firmId: link.firmId,
         clientId: link.profileId,
@@ -1862,7 +1968,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         contentType: input.contentType,
         checksum: input.checksum,
         category: input.category,
-        source: 'portal'
+        source: 'portal',
+        retentionClass: input.retentionClass
       })
       const presigned = await objectStorage.createPresignedUploadUrl({
         ...intent.object,
@@ -1872,34 +1979,40 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { uploadId: intent.id, object: intent.object, presigned }
     },
     portalUpload(token, input) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
-      if (!link) throw new Error('Portal link not found.')
+      const link = resolvePortalLinkByToken(token)
       const intent = input.uploadId
         ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === link.firmId)
         : null
-      const object = normalizeObjectMetadata(input.object || intent?.object || {}, 'uploaded_document')
+      const uploadCategory = input.category || intent?.category || 'general'
+      assertPortalUploadScope(link, uploadCategory)
+      const object = normalizeObjectMetadata(
+        input.object || intent?.object || {},
+        input.retentionClass || intent?.object?.retentionClass || 'uploaded_document'
+      )
+      const malwareScan = normalizeMalwareScan(input.malwareScan)
       const upload = {
         id: randomUUID(),
         firmId: link.firmId,
         clientId: link.profileId,
         name: input.name || input.fileName || intent?.fileName || 'Portal upload',
-        category: input.category || intent?.category || 'general',
+        category: uploadCategory,
         visibility: 'shared',
         status: 'uploaded',
         uploadedBy: 'portal',
         notes: input.notes || '',
+        malwareScan,
         object,
         createdAt: now(),
         updatedAt: now()
       }
+      consumePortalLinkUse(link)
       state.pendingUploadIntents = state.pendingUploadIntents.filter((entry) => entry.id !== input.uploadId)
       state.documentUploads.push(upload)
       persist()
       return upload
     },
     async createPortalUploadDownloadUrl(token, uploadId) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
-      if (!link) throw new Error('Portal link not found.')
+      const link = resolvePortalLinkByToken(token)
       const upload = state.documentUploads.find(
         (entry) => entry.id === uploadId && entry.firmId === link.firmId && entry.clientId === link.profileId
       )

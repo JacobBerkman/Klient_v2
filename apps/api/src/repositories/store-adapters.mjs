@@ -144,11 +144,23 @@ export class StoreFormsRepository extends FormsRepository {
   submitClientUpload(user, input) {
     return this.store.submitClientUpload(user, input)
   }
-  createPortalLink(user, profileId) {
-    return this.store.createPortalLink(user, profileId)
+  createClientUploadPresign(user, input) {
+    return this.store.createClientUploadPresign(user, input)
+  }
+  createPortalLink(user, profileId, options) {
+    return this.store.createPortalLink(user, profileId, options)
+  }
+  revokePortalLink(user, linkId) {
+    return this.store.revokePortalLink(user, linkId)
+  }
+  getPortalSession(token) {
+    return this.store.getPortalSession(token)
   }
   getPortalData(token) {
     return this.store.getPortalData(token)
+  }
+  createPortalUploadPresign(token, input) {
+    return this.store.createPortalUploadPresign(token, input)
   }
   portalSubmit(token, input) {
     return this.store.portalSubmit(token, input)

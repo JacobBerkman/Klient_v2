@@ -321,6 +321,13 @@ export function createHttpServer({ modules }) {
     const { pathname } = url
     const finalizeLog = requestLogger(req, requestId)
     const requireUser = () => modules.auth.requireUser(getToken(req))
+    const requirePortalSession = () => {
+      if (!pathname.startsWith('/api/portal/')) throw new Error('Portal path required.')
+      const token = pathname.split('/')[3]
+      if (!token) throw new Error('Portal token required.')
+      modules.forms.getPortalSession(token)
+      return { token }
+    }
 
     try {
       if (pathname === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -647,6 +654,13 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
+      if (pathname === '/api/client/uploads/presign' && req.method === 'POST') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteClientWorkspace')
+        const result = await modules.forms.createClientUploadPresign(user, await parseBody(req))
+        finalizeLog(201)
+        return json(res, 201, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/forms/submissions/') && req.method === 'PATCH') {
         const id = pathname.split('/')[4]
         const user = requireUser()
@@ -765,24 +779,38 @@ export function createHttpServer({ modules }) {
         const body = await parseBody(req)
         const user = requireUser()
         modules.policy.requireGuard(user, 'canCreatePortalLink')
-        const result = modules.forms.createPortalLink(user, body.profileId)
+        const result = modules.forms.createPortalLink(user, body.profileId, body)
+        finalizeLog(201)
+        return json(res, 201, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/portal-links/') && pathname.endsWith('/revoke') && req.method === 'POST') {
+        const linkId = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canCreatePortalLink')
+        const result = modules.forms.revokePortalLink(user, linkId)
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/portal/') && pathname.split('/').length === 4 && req.method === 'GET') {
-        const token = pathname.split('/')[3]
+        const { token } = requirePortalSession()
         const result = modules.forms.getPortalData(token)
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/portal/') && pathname.endsWith('/submissions') && req.method === 'POST') {
-        const token = pathname.split('/')[3]
+        const { token } = requirePortalSession()
         const result = modules.forms.portalSubmit(token, await parseBody(req))
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
+      if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads/presign') && req.method === 'POST') {
+        const { token } = requirePortalSession()
+        const result = await modules.forms.createPortalUploadPresign(token, await parseBody(req))
+        finalizeLog(201)
+        return json(res, 201, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads') && req.method === 'POST') {
-        const token = pathname.split('/')[3]
+        const { token } = requirePortalSession()
         const result = modules.forms.portalUpload(token, await parseBody(req))
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
