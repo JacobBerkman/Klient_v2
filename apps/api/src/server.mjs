@@ -417,7 +417,20 @@ export function createHttpServer({ modules }) {
     const url = new URL(req.url || '/', `http://${req.headers.host || `${runtime.host}:${runtime.port}`}`)
     const { pathname } = url
     const finalizeLog = requestLogger(req, requestId)
+    let sessionToken = null
+    let authenticatedUser = null
+    let rotateCsrfAfterResponse = false
     const requireUser = () => modules.auth.requireUser(getToken(req))
+    const authorize = (guard, { allowAnonymous = false } = {}) => {
+      const token = getToken(req)
+      if (!token && allowAnonymous) {
+        modules.policy.requireGuard({ role: 'anonymous' }, guard)
+        return null
+      }
+      const user = modules.auth.requireUser(token)
+      modules.policy.requireGuard(user, guard)
+      return user
+    }
     const requirePortalSession = () => {
       if (!pathname.startsWith('/api/portal/')) throw new Error('Portal path required.')
       const token = pathname.split('/')[3]
@@ -554,6 +567,10 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/login' && req.method === 'POST') {
         authorize('canLogin', { allowAnonymous: true })
         const result = modules.auth.login(await parseBody(req))
+        if (result?.mfaRequired) {
+          finalizeLog(200, { mfaRequired: true })
+          return replyJson(200, { ...result, csrfToken: null, csrfExpiresAt: null }, { 'X-Request-Id': requestId })
+        }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(200)
         return replyJson(200, { ...result, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt }, {
@@ -589,6 +606,37 @@ export function createHttpServer({ modules }) {
         const result = modules.auth.resetPassword(await parseBody(req))
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+
+      if (pathname === '/api/auth/mfa/enroll' && req.method === 'POST') {
+        const user = authorize('canReadSession')
+        const result = modules.auth.enrollMfa(user)
+        finalizeLog(200)
+        return replyJson(200, { ok: true, mfa: result }, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/auth/mfa/enroll/confirm' && req.method === 'POST') {
+        const user = authorize('canReadSession')
+        const result = modules.auth.confirmMfaEnrollment(user, await parseBody(req))
+        finalizeLog(200)
+        return replyJson(200, { ok: true, mfa: result }, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/auth/mfa/challenge' && req.method === 'POST') {
+        const user = authorize('canReadSession')
+        const result = modules.auth.challengeMfa(user)
+        finalizeLog(200)
+        return replyJson(200, { ok: true, mfa: result }, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/auth/mfa/verify' && req.method === 'POST') {
+        const user = authorize('canReadSession')
+        const result = modules.auth.verifyMfaChallenge(user, await parseBody(req))
+        finalizeLog(200)
+        return replyJson(200, { ok: true, mfa: result }, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/auth/mfa/backup-codes/rotate' && req.method === 'POST') {
+        const user = authorize('canReadSession')
+        const result = modules.auth.rotateMfaBackupCodes(user)
+        finalizeLog(200)
+        return replyJson(200, { ok: true, mfa: result }, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/users' && req.method === 'GET') {
         const user = requireUser()

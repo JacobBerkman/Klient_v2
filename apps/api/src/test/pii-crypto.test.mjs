@@ -6,6 +6,8 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createCipheriv, createHash, randomBytes } from 'node:crypto'
 
+const repoRoot = resolve(new URL('../../../../', import.meta.url).pathname)
+
 function encryptLegacy(value, keySeed) {
   const key = createHash('sha256').update(keySeed).digest()
   const iv = randomBytes(12)
@@ -32,8 +34,7 @@ function withStoreEnv(fn, env = {}) {
     }),
     ...env
   })
-  const moduleUrl =
-    pathToFileURL(resolve(previousCwd, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
+  const moduleUrl = pathToFileURL(resolve(repoRoot, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
   return import(moduleUrl)
     .then((mod) => fn(mod.createStore()))
     .finally(() => {
@@ -115,6 +116,9 @@ test('unauthorized unmask reads are denied and audited', async () => {
     assert.match(denyEvent.metadata.denialReason, /least-privilege|denied/i)
     assert.equal(denyEvent.metadata.actor.userId, user.id)
     assert.equal(denyEvent.metadata.actor.role, 'readonly')
+    assert.equal(denyEvent.after.requestedUnmask, true)
+    assert.equal(denyEvent.after.reason.code, 'regulatory_review')
+    assert.equal(denyEvent.after.actor.userId, user.id)
   })
 })
 
@@ -157,6 +161,9 @@ test('authorized unmask reads return clear values and emit audit events', async 
     assert.equal(auditEvent.metadata.reason.privilegedPolicy, 'privileged_sensitive_read_v1')
     assert.equal(auditEvent.metadata.actor.userId, user.id)
     assert.equal(auditEvent.metadata.actor.role, 'admin')
+    assert.equal(auditEvent.after.grantedUnmask, true)
+    assert.deepEqual(auditEvent.after.fieldScope, ['ssn', 'taxId'])
+    assert.equal(auditEvent.after.reason.code, 'compliance_review')
   })
 })
 

@@ -42,12 +42,24 @@ Each module exposes `service.mjs` and is composed in `apps/api/src/modules/index
 - Interfaces:
   - `apps/api/src/modules/profiles/repository.mjs` (`ProfileRepository`)
   - `apps/api/src/modules/templates/repository.mjs` (`TemplateRepository`)
+  - `apps/api/src/modules/exports/repository.mjs` (`ExportsRepository`)
 - Adapters:
   - `apps/api/src/repositories/store-adapters.mjs`
+  - Export queue orchestration adapter: `apps/api/src/modules/exports/store-repository.mjs`
 
 ### 4) Runtime storage implementation
 - Current stateful runtime remains in `apps/api/src/store.mjs`.
 - Repository adapters bridge module services to legacy state logic during migration.
+- Export queue orchestration (queue list/create/retry/process + bulk retry + health snapshot) is now extracted from `store.mjs` into `modules/exports/store-repository.mjs`, with `store.mjs` retaining thin permission-checked delegation methods for backward compatibility.
+
+## Incremental migration delta (Task 9)
+- **Chosen high-churn domain:** exports queue lifecycle (`/api/exports`, `/api/exports/process`, retry endpoints).
+- **What moved now:** export orchestration logic moved behind explicit module/repository boundaries:
+  - Module service now depends on `ExportsRepository` instead of directly mutating `store`.
+  - A dedicated store-backed repository (`modules/exports/store-repository.mjs`) owns queue orchestration and state persistence coordination.
+  - `store.mjs` export methods became thin delegators, avoiding additional direct-mutation growth in transport/module layers.
+- **What did not change:** API routes in `server.mjs` remain thin transport handlers and keep policy checks + single service calls.
+- **Why incremental:** this avoids a big-bang rewrite by preserving existing state shape and endpoint contracts while isolating a churn-heavy domain behind repository seams for future persistence swaps.
 
 ## Dependency rules
 1. `server.mjs` may depend on module services and policy helpers, but must not implement business rules.

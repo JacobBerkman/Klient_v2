@@ -1,20 +1,57 @@
-import { appRoutes } from './api-contract.js'
+import { appRoutes, routes } from './api-contract.js'
 
 const state = {
   token: localStorage.getItem('klient-token') || '',
   user: null,
   view: 'dashboard',
   flash: null,
-  board: null
+  board: null,
+  clientBoard: null
+  mfa: {
+    login: null,
+    enrollment: null
+  }
 }
 
 const viewEl = document.querySelector('#view')
 const authStatusEl = document.querySelector('#auth-status')
+const mfaHintEl = document.querySelector('#mfa-hint')
+const mfaLoginFormEl = document.querySelector('#mfa-login-form')
+const mfaEnrollStartEl = document.querySelector('#mfa-enroll-start')
+const mfaEnrollDetailsEl = document.querySelector('#mfa-enroll-details')
+const mfaSecretEl = document.querySelector('#mfa-secret')
+const mfaOtpAuthEl = document.querySelector('#mfa-otpauth')
+const mfaEnrollConfirmFormEl = document.querySelector('#mfa-enroll-confirm-form')
 const householdPrimaryEl = document.querySelector('select[name="primaryClientId"]')
 const portalProfileEl = document.querySelector('select[name="profileId"]')
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 let csrfToken = ''
+const BOARD_STAGES = [
+  'discovery',
+  'gather_oi',
+  'analysis',
+  'advisor_proposal_meeting',
+  'intake',
+  'on_boarding',
+  'investment_strategy',
+  'completed',
+  'drop_dead_lead',
+  'drop_nurture'
+]
+
+const STAGE_LABELS = {
+  discovery: 'Discovery',
+  gather_oi: 'Gather OI',
+  analysis: 'Analysis',
+  advisor_proposal_meeting: 'Advisor Proposal Meeting',
+  intake: 'Intake',
+  on_boarding: 'On Boarding',
+  investment_strategy: 'Investment Strategy',
+  completed: 'Completed',
+  drop_dead_lead: 'Drop / Dead Lead',
+  drop_nurture: 'Drop / Nurture'
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -29,8 +66,37 @@ function setFlash(type, message) {
   state.flash = { type, message }
 }
 
+function stageLabel(stage) {
+  return STAGE_LABELS[stage] || stage || 'Unassigned'
+}
+
 function findBoardColumn(board, stage) {
   return board?.columns?.find((column) => column.stage === stage) || null
+}
+
+function buildBoardFromProfiles(profiles = []) {
+  return {
+    boardVersion: null,
+    columns: BOARD_STAGES.map((stage) => ({
+      stage,
+      cards: profiles
+        .filter((profile) => (profile.stage || 'discovery') === stage)
+        .sort((a, b) => (a.stageOrderIndex || a.orderIndex || 999) - (b.stageOrderIndex || b.orderIndex || 999))
+    }))
+  }
+}
+
+function updateCardInBoard(board, profileId, patch) {
+  if (!board?.columns) return board
+  const nextBoard = structuredClone(board)
+  for (const column of nextBoard.columns) {
+    const card = column.cards.find((entry) => entry.id === profileId)
+    if (card) {
+      Object.assign(card, patch)
+      break
+    }
+  }
+  return nextBoard
 }
 
 function applyOptimisticReorder(board, move) {
@@ -70,7 +136,7 @@ async function reorderPipelineOptimistically(move) {
       ...move,
       expectedBoardVersion: previousBoard?.boardVersion ?? null
     }
-    const result = await request('/api/pipeline/reorder', {
+    const result = await request(routes.pipelineReorder(), {
       method: 'PATCH',
       body: JSON.stringify(payload)
     })
@@ -92,7 +158,7 @@ function flashMarkup() {
 async function request(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase()
   if (MUTATING_METHODS.has(method) && path.startsWith('/api/') && !csrfToken) {
-    const boot = await fetch('/api/csrf')
+    const boot = await fetch(routes.csrf())
     const data = await boot.json()
     if (!boot.ok) throw new Error(data.message || 'CSRF bootstrap failed')
     csrfToken = data.csrfToken
@@ -132,13 +198,54 @@ async function requestText(path, options = {}) {
 
 async function hydrateRuntime() {
   try {
-    const runtimeConfig = await request('/api/runtime');
+    const runtimeConfig = await request(routes.runtime());
     state.enableDemoMode = Boolean(runtimeConfig.enableDemoMode);
   } catch {
     state.enableDemoMode = false;
   }
   document.querySelector('#demo-login').hidden = !state.enableDemoMode;
   document.querySelector('#demo-credentials').hidden = !state.enableDemoMode;
+}
+
+
+function updateMfaUi() {
+  const hasLoginChallenge = Boolean(state.mfa.login)
+  const hasEnrollment = Boolean(state.mfa.enrollment)
+  mfaLoginFormEl.hidden = !hasLoginChallenge
+  mfaEnrollStartEl.hidden = !state.user || hasLoginChallenge || hasEnrollment
+  mfaEnrollDetailsEl.hidden = !hasEnrollment
+
+  if (hasLoginChallenge) {
+    mfaHintEl.textContent = 'Enter an authenticator code or backup code to complete sign-in.'
+  } else if (hasEnrollment) {
+    mfaHintEl.textContent = 'Confirm enrollment with a fresh authenticator code.'
+    mfaSecretEl.textContent = state.mfa.enrollment.secret
+    mfaOtpAuthEl.textContent = state.mfa.enrollment.otpauthUrl
+  } else if (state.user) {
+    mfaHintEl.textContent = 'You are signed in. You can enroll MFA for this account.'
+    mfaSecretEl.textContent = ''
+    mfaOtpAuthEl.textContent = ''
+  } else {
+    mfaHintEl.textContent = 'Sign in to enroll MFA, or complete an MFA challenge during login.'
+    mfaSecretEl.textContent = ''
+    mfaOtpAuthEl.textContent = ''
+  }
+}
+
+function setPendingMfaLogin(result, credentials) {
+  state.mfa.login = {
+    email: credentials.email,
+    password: credentials.password,
+    challengeToken: result.challengeToken
+  }
+  setFlash('success', 'MFA required. Complete the challenge below to finish signing in.')
+  updateMfaUi()
+}
+
+function clearMfaState() {
+  state.mfa.login = null
+  state.mfa.enrollment = null
+  updateMfaUi()
 }
 
 function roleAllowed(buttonRoleCsv = '') {
@@ -159,8 +266,8 @@ function updateRoleVisibility() {
 
 async function refreshSelects() {
   if (!state.token || !state.user || state.user.role === 'client') return
-  const clients = await request('/api/profiles?kind=client')
-  const profiles = await request('/api/profiles')
+  const clients = await request(routes.profiles({ kind: 'client' }))
+  const profiles = await request(routes.profiles())
   householdPrimaryEl.innerHTML = clients
     .map(
       (profile) =>
@@ -180,7 +287,7 @@ function metricCard(label, value) {
 }
 
 async function renderDashboard() {
-  const data = await request('/api/dashboard')
+  const data = await request(routes.dashboard())
   viewEl.innerHTML = `
     ${flashMarkup()}
     <div class="section-header"><h2>Dashboard</h2></div>
@@ -199,8 +306,9 @@ function analyticsPanel(title, body) {
 
 async function renderAnalytics() {
   const filters = new URLSearchParams({ startDate: '2026-01-01', endDate: '2026-12-31', cohortBy: 'all' })
-  const analytics = await request(`/api/analytics?${filters.toString()}`)
-  const dashboard = await request(`/api/analytics/dashboard?${filters.toString()}`)
+  const analyticsQuery = Object.fromEntries(filters.entries())
+  const analytics = await request(routes.analytics(analyticsQuery))
+  const dashboard = await request(routes.analyticsDashboard(analyticsQuery))
   const summary = analytics.summary || {}
   const funnelRows = (summary.funnel || [])
     .map(
@@ -257,8 +365,8 @@ async function renderAnalytics() {
   `
   document.querySelector('#download-analytics-csv')?.addEventListener('click', async () => {
     try {
-      const csv = await requestText(`/api/analytics/export?${filters.toString()}`)
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const csvText = await requestText(routes.analyticsExport(analyticsQuery))
+      const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
@@ -273,7 +381,7 @@ async function renderAnalytics() {
 }
 
 async function renderForms() {
-  const [templates, drafts] = await Promise.all([request('/api/forms/templates'), request('/api/forms/drafts')])
+  const [templates, drafts] = await Promise.all([request(routes.formTemplates()), request(routes.formDrafts())])
   const rows = drafts
     .map(
       (draft) => `
@@ -306,7 +414,7 @@ async function renderForms() {
   document.querySelectorAll('[data-lock]').forEach((button) => {
     button.addEventListener('click', async () => {
       try {
-        const result = await request(`/api/forms/drafts/${button.dataset.lock}/lock`, {
+        const result = await request(routes.formDraftLock(button.dataset.lock), {
           method: 'POST',
           body: JSON.stringify({ leaseMs: 30000 })
         })
@@ -323,7 +431,7 @@ async function renderForms() {
       const draftId = button.dataset.save
       const draft = drafts.find((item) => item.id === draftId)
       try {
-        const response = await request(`/api/forms/drafts/${draftId}`, {
+        const response = await request(routes.formDraft(draftId), {
           method: 'PATCH',
           body: JSON.stringify({
             leaseId: draft?.lock?.leaseId,
@@ -342,6 +450,206 @@ async function renderForms() {
       await renderForms()
     })
   })
+}
+
+function boardCardMarkup(card, kind) {
+  const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
+  return `
+    <article class="board-card" draggable="true" data-card-id="${card.id}" data-stage="${card.stage || 'discovery'}">
+      <header class="row between wrap">
+        <strong>${escapeHtml(displayName)}</strong>
+        <button type="button" class="secondary tiny" data-edit-profile="${card.id}" aria-expanded="false">Edit</button>
+      </header>
+      <div class="muted compact-meta">${escapeHtml(card.email || 'No email')} · ${escapeHtml(card.phone || 'No phone')}</div>
+      <div class="muted compact-meta">Stage: ${escapeHtml(stageLabel(card.stage || 'discovery'))}</div>
+      <div class="row gap-sm wrap top-gap">
+        <label class="sr-only" for="stage-${card.id}">Move ${escapeHtml(displayName)} to stage</label>
+        <select id="stage-${card.id}" data-stage-select="${card.id}">
+          ${BOARD_STAGES.map((stage) => `<option value="${stage}" ${stage === (card.stage || 'discovery') ? 'selected' : ''}>${escapeHtml(stageLabel(stage))}</option>`).join('')}
+        </select>
+      </div>
+      <form class="inline-edit hidden top-gap" data-edit-form="${card.id}">
+        <div class="grid two">
+          <input name="firstName" value="${escapeHtml(card.firstName || '')}" placeholder="First name" required />
+          <input name="lastName" value="${escapeHtml(card.lastName || '')}" placeholder="Last name" required />
+        </div>
+        <input name="email" type="email" value="${escapeHtml(card.email || '')}" placeholder="Email" />
+        <input name="phone" value="${escapeHtml(card.phone || '')}" placeholder="Phone" />
+        <div class="actions-row">
+          <button type="submit" class="tiny">Save</button>
+          <button type="button" class="secondary tiny" data-cancel-edit="${card.id}">Cancel</button>
+        </div>
+      </form>
+      <div class="muted compact-meta">Type: ${escapeHtml(kind)}</div>
+    </article>
+  `
+}
+
+function boardMarkup(kind, board) {
+  return `
+    ${flashMarkup()}
+    <div class="section-header">
+      <div>
+        <h2>${escapeHtml(kind === 'prospect' ? 'Prospects' : 'Clients')} Board</h2>
+        <p class="muted">Drag cards to reorder or move across stages. Inline edits save optimistically.</p>
+      </div>
+    </div>
+    <div class="kanban-board" data-board-kind="${kind}">
+      ${board.columns
+        .map(
+          (column) => `
+        <section class="kanban-column" data-stage="${column.stage}" aria-label="${escapeHtml(stageLabel(column.stage))}">
+          <header class="row between"><h3>${escapeHtml(stageLabel(column.stage))}</h3><span class="badge subtle">${column.cards.length}</span></header>
+          <div class="kanban-dropzone" data-drop-stage="${column.stage}">
+            ${column.cards.map((card) => boardCardMarkup(card, kind)).join('') || '<p class="muted">Drop profiles here.</p>'}
+          </div>
+        </section>`
+        )
+        .join('')}
+    </div>
+  `
+}
+
+async function reorderCard(kind, move) {
+  if (kind === 'prospect') {
+    return reorderPipelineOptimistically(move)
+  }
+  const previousBoard = state.clientBoard ? structuredClone(state.clientBoard) : null
+  if (previousBoard) state.clientBoard = applyOptimisticReorder(previousBoard, move)
+  const optimisticColumn = findBoardColumn(state.clientBoard, move.toStage)
+  const optimisticCard = optimisticColumn?.cards.find((entry) => entry.id === move.profileId)
+  const newIndex = optimisticColumn ? optimisticColumn.cards.indexOf(optimisticCard) + 1 : 1
+  try {
+    const latest = await request(`/api/profiles/${move.profileId}`)
+    const previousCard = previousBoard?.columns?.flatMap((column) => column.cards).find((entry) => entry.id === move.profileId)
+    if (previousCard?.updatedAt && latest?.profile?.updatedAt && previousCard.updatedAt !== latest.profile.updatedAt) {
+      throw new Error('This client changed on the server. Reloaded latest board.')
+    }
+    await request(`/api/profiles/${move.profileId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ stage: move.toStage, stageOrderIndex: newIndex, orderIndex: newIndex })
+    })
+  } catch (error) {
+    state.clientBoard = previousBoard
+    throw error
+  }
+}
+
+async function saveInlineProfile(kind, profileId, patch) {
+  const boardKey = kind === 'prospect' ? 'board' : 'clientBoard'
+  const previousBoard = state[boardKey] ? structuredClone(state[boardKey]) : null
+  if (previousBoard) state[boardKey] = updateCardInBoard(previousBoard, profileId, patch)
+  try {
+    await request(`/api/profiles/${profileId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch)
+    })
+  } catch (error) {
+    state[boardKey] = previousBoard
+    throw error
+  }
+}
+
+function wireBoardInteractions(kind) {
+  let activeCardId = null
+  document.querySelectorAll('[data-card-id]').forEach((cardEl) => {
+    cardEl.addEventListener('dragstart', (event) => {
+      activeCardId = cardEl.dataset.cardId
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('text/plain', activeCardId)
+      cardEl.classList.add('dragging')
+    })
+    cardEl.addEventListener('dragend', () => {
+      cardEl.classList.remove('dragging')
+      activeCardId = null
+    })
+    cardEl.addEventListener('dragover', (event) => event.preventDefault())
+    cardEl.addEventListener('drop', async (event) => {
+      event.preventDefault()
+      const profileId = event.dataTransfer.getData('text/plain') || activeCardId
+      const toStage = cardEl.dataset.stage
+      const beforeProfileId = cardEl.dataset.cardId
+      if (!profileId || profileId === beforeProfileId) return
+      try {
+        await reorderCard(kind, { profileId, toStage, beforeProfileId })
+        setFlash('success', 'Board updated.')
+      } catch (error) {
+        setFlash('error', error.message)
+      }
+      await renderCurrentView()
+    })
+  })
+
+  document.querySelectorAll('[data-drop-stage]').forEach((zone) => {
+    zone.addEventListener('dragover', (event) => event.preventDefault())
+    zone.addEventListener('drop', async (event) => {
+      event.preventDefault()
+      const profileId = event.dataTransfer.getData('text/plain') || activeCardId
+      const toStage = zone.dataset.dropStage
+      if (!profileId || !toStage) return
+      try {
+        await reorderCard(kind, { profileId, toStage, beforeProfileId: null })
+        setFlash('success', 'Board updated.')
+      } catch (error) {
+        setFlash('error', error.message)
+      }
+      await renderCurrentView()
+    })
+  })
+
+  document.querySelectorAll('[data-edit-profile]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const profileId = button.dataset.editProfile
+      const form = document.querySelector(`[data-edit-form="${profileId}"]`)
+      form?.classList.toggle('hidden')
+      button.setAttribute('aria-expanded', String(!form?.classList.contains('hidden')))
+    })
+  })
+  document.querySelectorAll('[data-cancel-edit]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await renderCurrentView()
+    })
+  })
+  document.querySelectorAll('[data-edit-form]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const profileId = form.dataset.editForm
+      const payload = Object.fromEntries(new FormData(form).entries())
+      try {
+        await saveInlineProfile(kind, profileId, payload)
+        setFlash('success', 'Profile updated.')
+      } catch (error) {
+        setFlash('error', `Failed to save profile: ${error.message}`)
+      }
+      await renderCurrentView()
+    })
+  })
+  document.querySelectorAll('[data-stage-select]').forEach((select) => {
+    select.addEventListener('change', async () => {
+      const profileId = select.dataset.stageSelect
+      const toStage = select.value
+      try {
+        await reorderCard(kind, { profileId, toStage, beforeProfileId: null })
+        setFlash('success', `Moved to ${stageLabel(toStage)}.`)
+      } catch (error) {
+        setFlash('error', error.message)
+      }
+      await renderCurrentView()
+    })
+  })
+}
+
+async function renderBoard(kind) {
+  if (kind === 'prospect') {
+    state.board = await request('/api/board')
+    viewEl.innerHTML = boardMarkup(kind, state.board)
+    wireBoardInteractions(kind)
+    return
+  }
+  const clients = await request('/api/profiles?kind=client')
+  state.clientBoard = buildBoardFromProfiles(clients)
+  viewEl.innerHTML = boardMarkup(kind, state.clientBoard)
+  wireBoardInteractions(kind)
 }
 
 function applyHashRoute() {
@@ -366,6 +674,8 @@ async function renderCurrentView() {
   if (state.view === 'dashboard') return renderDashboard()
   if (state.view === 'analytics') return renderAnalytics()
   if (state.view === 'forms') return renderForms()
+  if (state.view === 'prospects') return renderBoard('prospect')
+  if (state.view === 'clients') return renderBoard('client')
   return renderFallback(state.view)
 }
 
@@ -377,17 +687,19 @@ async function hydrateSession() {
     return
   }
   try {
-    const session = await request('/api/session')
+    const session = await request(routes.session())
     state.user = session.user
     authStatusEl.textContent = JSON.stringify(session.user, null, 2)
     updateRoleVisibility()
     await refreshSelects()
+    updateMfaUi()
   } catch {
     state.token = ''
     localStorage.removeItem('klient-token')
     state.user = null
     authStatusEl.textContent = 'Not signed in'
     updateRoleVisibility()
+    updateMfaUi()
   }
 }
 
@@ -399,6 +711,7 @@ async function finishAuth(session, message) {
   state.view = session.user.role === 'client' ? 'forms' : 'dashboard'
   updateRoleVisibility()
   await refreshSelects()
+  clearMfaState()
   setFlash('success', message)
   await renderCurrentView()
 }
@@ -415,10 +728,15 @@ const demoLoginButton = document.querySelector('#demo-login');
 demoLoginButton.addEventListener('click', async () => {
   if (!state.enableDemoMode) return;
   try {
-    const session = await request('/api/login', {
+    const session = await request(routes.login(), {
       method: 'POST',
       body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' })
     })
+    if (session.mfaRequired) {
+      setPendingMfaLogin(session, { email: 'admin@demo.test', password: 'ChangeMe123!' })
+      await renderCurrentView()
+      return
+    }
     await finishAuth(session, 'Signed in with demo account.')
   } catch (error) {
     setFlash('error', error.message)
@@ -430,7 +748,7 @@ document.querySelector('#register-form').addEventListener('submit', async (event
   event.preventDefault()
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
-    const session = await request('/api/register', { method: 'POST', body: JSON.stringify(payload) })
+    const session = await request(routes.register(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     await finishAuth(session, 'Firm admin account created.')
   } catch (error) {
@@ -443,7 +761,13 @@ document.querySelector('#login-form').addEventListener('submit', async (event) =
   event.preventDefault()
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
+    const session = await request(routes.login(), { method: 'POST', body: JSON.stringify(payload) })
     const session = await request('/api/login', { method: 'POST', body: JSON.stringify(payload) })
+    if (session.mfaRequired) {
+      setPendingMfaLogin(session, payload)
+      await renderCurrentView()
+      return
+    }
     event.target.reset()
     await finishAuth(session, 'Signed in successfully.')
   } catch (error) {
@@ -459,7 +783,7 @@ document.querySelector('#profile-form').addEventListener('submit', async (event)
     const source = form.get('cityOrLocation')
       ? { cityOrLocation: form.get('cityOrLocation'), venue: form.get('venue'), occurredOn: form.get('occurredOn') }
       : null
-    await request('/api/profiles', {
+    await request(routes.profiles(), {
       method: 'POST',
       body: JSON.stringify({
         kind: form.get('kind'),
@@ -485,7 +809,7 @@ document.querySelector('#household-form').addEventListener('submit', async (even
   event.preventDefault()
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
-    await request('/api/households', { method: 'POST', body: JSON.stringify(payload) })
+    await request(routes.households(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     setFlash('success', 'Household created.')
     await renderCurrentView()
@@ -499,7 +823,7 @@ document.querySelector('#form-template-form').addEventListener('submit', async (
   event.preventDefault()
   try {
     const payload = { ...Object.fromEntries(new FormData(event.target).entries()), sections: [] }
-    await request('/api/forms/templates', { method: 'POST', body: JSON.stringify(payload) })
+    await request(routes.formTemplates(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     state.view = 'forms'
     setFlash('success', 'Form template created.')
@@ -518,7 +842,7 @@ document.querySelector('#doc-template-form').addEventListener('submit', async (e
       blueprint: { sections: [] },
       mappings: []
     }
-    await request('/api/templates', { method: 'POST', body: JSON.stringify(payload) })
+    await request(routes.documentTemplates(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     setFlash('success', 'Document template created.')
     await renderCurrentView()
@@ -532,7 +856,7 @@ document.querySelector('#invite-form').addEventListener('submit', async (event) 
   event.preventDefault()
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
-    const invite = await request('/api/invites', { method: 'POST', body: JSON.stringify(payload) })
+    const invite = await request(routes.invites(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     setFlash('success', `Invite created (${invite.token}).`)
     await renderCurrentView()
@@ -546,7 +870,7 @@ document.querySelector('#portal-form').addEventListener('submit', async (event) 
   event.preventDefault()
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
-    const link = await request('/api/portal-links', { method: 'POST', body: JSON.stringify(payload) })
+    const link = await request(routes.portalLinks(), { method: 'POST', body: JSON.stringify(payload) })
     setFlash('success', `Portal link created: /portal?token=${link.token}`)
     await renderCurrentView()
   } catch (error) {
@@ -554,6 +878,68 @@ document.querySelector('#portal-form').addEventListener('submit', async (event) 
     await renderCurrentView()
   }
 })
+
+
+mfaLoginFormEl.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  if (!state.mfa.login) return
+  const form = new FormData(event.target)
+  const totpCode = String(form.get('totpCode') || '').trim()
+  const backupCode = String(form.get('backupCode') || '').trim()
+  try {
+    const session = await request('/api/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: state.mfa.login.email,
+        password: state.mfa.login.password,
+        mfaChallengeToken: state.mfa.login.challengeToken,
+        ...(totpCode ? { totpCode } : {}),
+        ...(backupCode ? { backupCode } : {})
+      })
+    })
+    event.target.reset()
+    await finishAuth(session, 'Signed in successfully with MFA.')
+  } catch (error) {
+    setFlash('error', error.message)
+    await renderCurrentView()
+  }
+})
+
+mfaEnrollStartEl.addEventListener('click', async () => {
+  try {
+    const result = await request('/api/auth/mfa/enroll', { method: 'POST', body: JSON.stringify({}) })
+    state.mfa.enrollment = result.mfa
+    setFlash('success', 'MFA enrollment started. Confirm with your authenticator app code.')
+    updateMfaUi()
+    await renderCurrentView()
+  } catch (error) {
+    setFlash('error', error.message)
+    await renderCurrentView()
+  }
+})
+
+mfaEnrollConfirmFormEl.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  if (!state.mfa.enrollment) return
+  const code = String(new FormData(event.target).get('code') || '').trim()
+  try {
+    const result = await request('/api/auth/mfa/enroll/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ enrollmentToken: state.mfa.enrollment.enrollmentToken, code })
+    })
+    event.target.reset()
+    state.mfa.enrollment = null
+    const backupCodes = result?.mfa?.backupCodes || []
+    setFlash('success', `MFA enabled. Save backup codes: ${backupCodes.join(', ')}`)
+    updateMfaUi()
+    await renderCurrentView()
+  } catch (error) {
+    setFlash('error', error.message)
+    await renderCurrentView()
+  }
+})
+
+updateMfaUi()
 
 await hydrateSession()
 applyHashRoute()

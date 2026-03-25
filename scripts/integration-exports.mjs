@@ -57,6 +57,13 @@ try {
     body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' })
   })
 
+
+  const xlsxJob = await context.request('/api/exports', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'xlsx' })
+  })
+
   const flakyJob = await context.request('/api/exports', {
     method: 'POST',
     headers,
@@ -99,11 +106,22 @@ try {
 
   const completed = exportsList.find((entry) => entry.id === completedJob.id)
   const duplicate = exportsList.find((entry) => entry.id === duplicateA.id)
+  const xlsx = exportsList.find((entry) => entry.id === xlsxJob.id)
   const flaky = exportsList.find((entry) => entry.id === flakyJob.id)
   const poison = exportsList.find((entry) => entry.id === poisonJob.id)
   assert(completed?.status === 'completed', 'Expected queued export processing to complete')
   assert(duplicateA.id === duplicateB.id, 'Expected duplicate create request to reuse idempotent export job')
   assert(duplicate?.status === 'completed', 'Expected idempotent duplicate job to complete once')
+
+  assert(xlsx?.status === 'completed', 'Expected XLSX export to complete')
+  assert(xlsx?.output?.fileName?.endsWith('.xlsx'), 'Expected XLSX export file extension')
+  assert(
+    xlsx?.output?.object?.contentType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Expected XLSX content type metadata'
+  )
+  assert(completed?.output?.fileName?.endsWith('.pdf'), 'Expected PDF export file extension')
+  assert(completed?.output?.object?.contentType === 'application/pdf', 'Expected PDF content type metadata')
+  assert(typeof completed?.output?.object?.checksum === 'string', 'Expected checksum on completed export artifact')
   assert(flaky?.status === 'completed', 'Expected retrying export to complete after worker restart')
   assert((flaky?.attempts || 0) >= 1, 'Expected retrying export attempts to increment')
   assert(poison?.status === 'dead-letter', 'Expected poison job to dead-letter')
@@ -124,6 +142,7 @@ try {
         suite: 'integration-exports',
         completedId: completedJob.id,
         duplicateId: duplicateA.id,
+        xlsxId: xlsxJob.id,
         flakyId: flakyJob.id,
         flakyAttempts: flaky.attempts,
         poisonStatus: poison?.status,
