@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { runtime } from './runtime.mjs'
 import {
   enqueueExportJob,
@@ -11,8 +11,10 @@ import {
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
+import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs'
+import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
+import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
 
-const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest()
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
 const PERMISSIONS = {
   admin: ['*'],
@@ -52,22 +54,6 @@ function requirePermission(user, permission) {
   }
 }
 
-function encryptValue(value) {
-  if (!value) return null
-  const iv = randomBytes(12)
-  const cipher = createCipheriv('aes-256-gcm', APP_SECRET, iv)
-  const encrypted = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()])
-  const tag = cipher.getAuthTag()
-  return `${iv.toString('hex')}:${tag.toString('hex')}:${encrypted.toString('hex')}`
-}
-
-function decryptValue(payload) {
-  if (!payload) return null
-  const [ivHex, tagHex, dataHex] = payload.split(':')
-  const decipher = createDecipheriv('aes-256-gcm', APP_SECRET, Buffer.from(ivHex, 'hex'))
-  decipher.setAuthTag(Buffer.from(tagHex, 'hex'))
-  return Buffer.concat([decipher.update(Buffer.from(dataHex, 'hex')), decipher.final()]).toString('utf8')
-}
 
 function now() {
   return new Date().toISOString()
@@ -523,7 +509,7 @@ function seedState() {
   }
 }
 
-export function createStore({ objectStorage = defaultObjectStorage } = {}) {
+export function createStore({ objectStorage = defaultObjectStorage, piiCrypto = null, piiKeyProvider = null } = {}) {
   const state = loadState(seedState)
   migrateTemplateSystems(state)
   saveState(state)
@@ -598,6 +584,18 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     persist()
   }
   let testHooks = {}
+
+  const kmsAdapter = runtime.piiKeyProvider === 'kms' ? createRuntimeKmsAdapter(runtime) : null
+  const keyProvider = piiKeyProvider || createKeyProvider(runtime, { kmsAdapter })
+  const piiService = piiCrypto || new PiiCryptoService({ keyProvider })
+
+  function encryptSensitiveValue(value) {
+    return piiService.encrypt(value)
+  }
+
+  function decryptSensitiveValue(payload) {
+    return piiService.decrypt(payload)
+  }
 
   function persist() {
     migrateTemplateSystems(state)
@@ -856,6 +854,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .filter((entry) => entry.profileId === profile.id && entry.firmId === user.firmId)
         .slice()
         .reverse()
+        .map((entry) => ({ ...entry, body: entry.body || decryptSensitiveValue(entry.bodyEncrypted) || '' }))
       return { profile, household, householdMembers, submissions, stageHistory, notes }
     },
     createProfile(user, input) {
@@ -870,8 +869,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       const profile = {
         pii: {
           maskingPolicy: 'role_based',
-          ssnCiphertext: encryptValue(input.ssn),
-          taxIdCiphertext: encryptValue(input.taxId)
+          ssnEncrypted: encryptSensitiveValue(input.ssn),
+          taxIdEncrypted: encryptSensitiveValue(input.taxId),
+          dobEncrypted: encryptSensitiveValue(input.dateOfBirth || '')
         },
         id: randomUUID(),
         firmId: user.firmId,
@@ -881,7 +881,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         lastName: input.lastName,
         email: input.email || '',
         phone: input.phone || '',
-        dateOfBirth: input.dateOfBirth || '',
+        dateOfBirth: '',
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
         stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
@@ -923,18 +923,27 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       if ('ssn' in nextPatch) {
         profile.pii = {
           ...(profile.pii || { maskingPolicy: 'role_based' }),
-          ssnCiphertext: encryptValue(nextPatch.ssn),
-          taxIdCiphertext: profile.pii?.taxIdCiphertext || null
+          ssnEncrypted: encryptSensitiveValue(nextPatch.ssn),
+          taxIdEncrypted: profile.pii?.taxIdEncrypted || profile.pii?.taxIdCiphertext || null
         }
         delete nextPatch.ssn
       }
       if ('taxId' in nextPatch) {
         profile.pii = {
           ...(profile.pii || { maskingPolicy: 'role_based' }),
-          ssnCiphertext: profile.pii?.ssnCiphertext || null,
-          taxIdCiphertext: encryptValue(nextPatch.taxId)
+          ssnEncrypted: profile.pii?.ssnEncrypted || profile.pii?.ssnCiphertext || null,
+          taxIdEncrypted: encryptSensitiveValue(nextPatch.taxId)
         }
         delete nextPatch.taxId
+      }
+      if ('dateOfBirth' in nextPatch) {
+        profile.pii = {
+          ...(profile.pii || { maskingPolicy: 'role_based' }),
+          ssnEncrypted: profile.pii?.ssnEncrypted || profile.pii?.ssnCiphertext || null,
+          taxIdEncrypted: profile.pii?.taxIdEncrypted || profile.pii?.taxIdCiphertext || null,
+          dobEncrypted: encryptSensitiveValue(nextPatch.dateOfBirth || '')
+        }
+        nextPatch.dateOfBirth = ''
       }
       Object.assign(profile, nextPatch, { updatedAt: now() })
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) })
@@ -1150,6 +1159,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .filter((entry) => entry.firmId === user.firmId && entry.profileId === profileId)
         .slice()
         .reverse()
+        .map((entry) => ({ ...entry, body: entry.body || decryptSensitiveValue(entry.bodyEncrypted) || '' }))
     },
     addNote(user, profileId, body) {
       requirePermission(user, 'profiles:write')
@@ -1159,7 +1169,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         id: randomUUID(),
         firmId: user.firmId,
         profileId,
-        body,
+        body: '',
+        bodyEncrypted: encryptSensitiveValue(body),
         createdByUserId: user.id,
         createdAt: now()
       }
@@ -2042,17 +2053,75 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         retention: objectStorage.retentionPolicies
       }
     },
-    getMaskedSensitiveData(user, profileId) {
+    getMaskedSensitiveData(user, profileId, request = {}) {
       requirePermission(user, 'profiles:read')
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId)
       if (!profile) throw new Error('Profile not found.')
-      const ssn = decryptValue(profile.pii?.ssnCiphertext)
-      const taxId = decryptValue(profile.pii?.taxIdCiphertext)
+
+      const ssn = decryptSensitiveValue(profile.pii?.ssnEncrypted || profile.pii?.ssnCiphertext)
+      const taxId = decryptSensitiveValue(profile.pii?.taxIdEncrypted || profile.pii?.taxIdCiphertext)
+      const canUnmask = canUnmaskSensitiveData(user, request)
+
+      if (request.unmask === true) {
+        validateUnmaskRequest(request)
+        if (!canUnmask) {
+          addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', {
+            requestedUnmask: true,
+            reason: { code: request.reasonCode, justification: request.justification || '' },
+            actor: { userId: user.id, role: user.role }
+          })
+          throw new Error('sensitive read denied')
+        }
+      }
+
+      addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
+        requestedUnmask: request.unmask === true,
+        grantedUnmask: canUnmask,
+        fieldScope: ['ssn', 'taxId'],
+        reason: { code: request.reasonCode || 'profile_view', justification: request.justification || '' },
+        actor: { userId: user.id, role: user.role }
+      })
+
+      if (canUnmask) {
+        return { ssn, taxId, ssnMasked: maskSsn(ssn), taxIdMasked: maskTaxId(taxId) }
+      }
       return {
-        ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
-        taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
+        ssnMasked: maskSsn(ssn),
+        taxIdMasked: maskTaxId(taxId)
       }
     },
+    reencryptSensitiveData({ firmId, actorUserId }) {
+      let rotatedProfiles = 0
+      for (const profile of state.profiles) {
+        if (firmId && profile.firmId !== firmId) continue
+        const pii = profile.pii || {}
+        const fields = ['ssnEncrypted', 'taxIdEncrypted', 'dobEncrypted']
+        let changed = false
+        for (const field of fields) {
+          const legacy = field === 'ssnEncrypted' ? 'ssnCiphertext' : field === 'taxIdEncrypted' ? 'taxIdCiphertext' : null
+          const current = pii[field] || (legacy ? pii[legacy] : null)
+          if (!current) continue
+          if (piiService.needsReencryption(current)) {
+            pii[field] = piiService.reencrypt(current)
+            changed = true
+          }
+        }
+        if (changed) {
+          profile.pii = pii
+          profile.updatedAt = now()
+          rotatedProfiles += 1
+        }
+      }
+      if (rotatedProfiles > 0) {
+        addAudit(firmId, actorUserId || null, 'profile', firmId || 'all', 'sensitive.write_reencrypted', { rotatedProfiles })
+      }
+      return { rotatedProfiles }
+    },
+    addAuditEvent(user, payload = {}) {
+      addAudit(user.firmId, user.id, payload.entityType || 'generic', payload.entityId || 'n/a', payload.action || 'event', payload.metadata || {})
+      return true
+    },
+    _internal: { piiCrypto: piiService, keyProvider },
     __setTestHooks(hooks = {}) {
       testHooks = { ...hooks }
     },
