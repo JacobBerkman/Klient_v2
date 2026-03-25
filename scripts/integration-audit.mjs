@@ -86,6 +86,12 @@ try {
   for (const field of ['actor', 'firmId', 'entityType', 'entityId', 'action', 'before', 'after', 'requestId', 'ip', 'timestamp']) {
     assert(Object.prototype.hasOwnProperty.call(sample, field), `missing canonical audit field ${field}`)
   }
+  for (const action of requiredActions) {
+    const event = audit.find((entry) => entry.action === action)
+    assert(event.actor?.id, `audit action ${action} is missing actor.id`)
+    assert(event.firmId, `audit action ${action} is missing firmId`)
+    assert(event.requestId, `audit action ${action} is missing requestId`)
+  }
 
   console.log(JSON.stringify({ suite: 'integration-audit', total: audit.length, checkedActions: requiredActions }, null, 2))
 } finally {

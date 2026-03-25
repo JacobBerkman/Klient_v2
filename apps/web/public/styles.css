@@ -251,3 +251,51 @@ li button {
   padding: 4px 8px;
   border-radius: 999px;
 }
+
+.kanban-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 12px;
+  align-items: start;
+}
+.kanban-column {
+  background: #0b1220;
+  border: 1px solid #1e293b;
+  border-radius: 12px;
+  padding: 10px;
+  min-height: 260px;
+}
+.kanban-dropzone {
+  display: grid;
+  gap: 8px;
+  min-height: 120px;
+}
+.board-card {
+  background: #111827;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 10px;
+}
+.board-card.dragging {
+  opacity: 0.55;
+}
+.compact-meta {
+  font-size: 12px;
+}
+.tiny {
+  font-size: 12px;
+  padding: 6px 8px;
+}
+.hidden {
+  display: none;
+}
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}

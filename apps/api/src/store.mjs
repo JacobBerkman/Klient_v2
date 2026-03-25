@@ -1,12 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { runtime } from './runtime.mjs'
 import {
-  enqueueExportJob,
-  listExportQueueJobs,
   loadState,
-  processExportQueueTick,
-  readExportWorkerStatus,
-  requeueExportJob,
   saveState
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
@@ -16,8 +11,15 @@ import { createSamlAuthProvider } from './auth/saml-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
 import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
 import { buildExportArtifact } from './export-artifact.mjs'
+import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
+import { convertLegacyFormDefinition } from './modules/forms/schema/form-definition-validator.mjs'
+import { createCanonicalAuditEvent } from './modules/audit/schema.mjs'
+import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
+import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs'
+import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
+const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7
 const PERMISSIONS = {
   admin: ['*'],
   advisor: [
@@ -684,7 +686,7 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
   }
 }
 
-export function createStore({ objectStorage = defaultObjectStorage } = {}) {
+export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvider = null, piiCrypto = null } = {}) {
   const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
   state.profiles = (state.profiles || []).map(normalizeProfileRecord)
@@ -831,6 +833,23 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     }
     saveState(state)
   }
+
+  const exportsRepository = createStoreExportsRepository({
+    state,
+    persist,
+    addAuditEvent: (user, payload) => {
+      addAudit(
+        user.firmId,
+        user.id,
+        payload.entityType || 'generic',
+        payload.entityId || 'n/a',
+        payload.action || 'event',
+        payload.metadata || {}
+      )
+    },
+    objectStorage,
+    now
+  })
 
   function getBoardVersion(firmId) {
     if (!state.boardVersions || typeof state.boardVersions !== 'object') {
@@ -2026,80 +2045,23 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     listExports(user) {
       requirePermission(user, 'exports:write')
-      state.exportJobs = listExportQueueJobs()
-      return state.exportJobs.filter((entry) => entry.firmId === user.firmId)
+      return exportsRepository.list(user)
     },
     createExport(user, input) {
       requirePermission(user, 'exports:write')
-      const template = state.templateAggregates.find(
-        (entry) => entry.id === input.templateId && entry.firmId === user.firmId && entry.kind !== 'form'
-      )
-      if (!template) throw new Error('Template not found.')
-      const queued = enqueueExportJob({
-        id: randomUUID(),
-        firmId: user.firmId,
-        clientId: input.clientId,
-        templateId: input.templateId,
-        createdByUserId: user.id,
-        type: input.type || 'pdf',
-        idempotencyKey: input.idempotencyKey || null,
-        maxAttempts: Number(input.maxAttempts || 3),
-        metadata: input.metadata || {}
-      })
-      addAudit(user.firmId, user.id, 'export_job', queued.id, 'export_job.created', {
-        clientId: input.clientId,
-        templateId: input.templateId,
-        type: queued.type
-      })
-      state.exportJobs = state.exportJobs.filter((entry) => entry.id !== queued.id)
-      state.exportJobs.push(queued)
-      persist()
-      return queued
+      return exportsRepository.create(user, input)
     },
     retryExport(user, exportId) {
-      const firmContext = requireFirmContext(user, { method: 'store.retryExport' })
       requirePermission(user, 'exports:write')
-      validateEntityOwnership(firmContext, state.exportJobs.find((entry) => entry.id === exportId), {
-        entityName: 'Export'
-      })
-      const updated = requeueExportJob(exportId)
-      if (!updated) throw new Error('Export not found.')
-      state.exportJobs = state.exportJobs.map((entry) => (entry.id === exportId ? updated : entry))
-      addAudit(user.firmId, user.id, 'export_job', exportId, 'export_job.retry_requested', {
-        before: { attempts: job.attempts || 0, status: job.status },
-        after: { attempts: updated.attempts || 0, status: updated.status }
-      })
-      persist()
-      return updated
+      return exportsRepository.retry(user, exportId)
     },
     getExportQueueHealth(user) {
       requirePermission(user, 'exports:read')
-      const queue = readExportWorkerStatus()
-      return {
-        generatedAt: now(),
-        queue
-      }
+      return exportsRepository.getQueueHealth()
     },
     retryFailedExports(user, options = {}) {
       requirePermission(user, 'exports:write')
-      const limit = Math.max(1, Math.min(Number(options.limit || 25), 200))
-      const includeDeadLetter = options.includeDeadLetter === true
-      const dryRun = options.dryRun === true
-      const candidates = listExportQueueJobs()
-        .filter((entry) => entry.firmId === user.firmId)
-        .filter((entry) => entry.status === 'failed' || (includeDeadLetter && entry.status === 'dead-letter'))
-        .slice(0, limit)
-      if (dryRun) {
-        return { dryRun: true, limit, includeDeadLetter, candidateCount: candidates.length, ids: candidates.map((c) => c.id) }
-      }
-      const retried = []
-      for (const candidate of candidates) {
-        const updated = requeueExportJob(candidate.id)
-        if (updated) retried.push(updated.id)
-      }
-      state.exportJobs = listExportQueueJobs()
-      persist()
-      return { dryRun: false, limit, includeDeadLetter, retriedCount: retried.length, ids: retried }
+      return exportsRepository.retryFailed(user, options)
     },
     async processQueuedExports() {
       const result = processExportQueueTick({
@@ -2129,6 +2091,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         }
       })
       return { processed: result.processed, leased: result.leased, failed: result.failed }
+      return exportsRepository.processQueued()
     },
     listAudit(user) {
       requirePermission(user, 'profiles:read')
@@ -2154,14 +2117,20 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     inviteUser(user, input) {
       requirePermission(user, 'profiles:write')
+      const allowedRoles = new Set(['advisor', 'readonly', 'client'])
+      const role = input.role || 'advisor'
+      if (!allowedRoles.has(role)) {
+        throw new Error('Invalid invite role.')
+      }
       const invite = {
         id: randomUUID(),
         firmId: user.firmId,
         email: input.email.toLowerCase(),
-        role: input.role || 'advisor',
+        role,
         invitedByUserId: user.id,
         token: randomUUID(),
-        createdAt: now()
+        createdAt: now(),
+        expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString()
       }
       state.invites.push(invite)
       addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role })
@@ -2172,6 +2141,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       assertStrongPassword(input.password)
       const invite = state.invites.find((entry) => entry.token === input.token)
       if (!invite) throw new Error('Invite not found.')
+      if (invite.expiresAt && new Date(invite.expiresAt).getTime() <= Date.now()) {
+        throw new Error('Invite expired.')
+      }
       const user = {
         id: randomUUID(),
         firmId: invite.firmId,
@@ -2196,6 +2168,21 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     resetPassword(input) {
       return auth.resetPassword(input)
+    },
+    startTotpEnrollment(user) {
+      return auth.startTotpEnrollment(user)
+    },
+    confirmTotpEnrollment(user, input) {
+      return auth.confirmTotpEnrollment(user, input)
+    },
+    createMfaChallenge(user) {
+      return auth.createMfaChallenge(user)
+    },
+    verifyMfaChallenge(user, input) {
+      return auth.verifyMfaChallenge(user, input)
+    },
+    rotateBackupCodes(user) {
+      return auth.rotateBackupCodes(user)
     },
     objectStorage,
     removeHouseholdMember(user, householdId, clientId) {
@@ -2792,15 +2779,40 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       requirePermission(user, 'profiles:read')
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId)
       if (!profile) throw new Error('Profile not found.')
-      const ssn = decryptValue(profile.pii?.ssnCiphertext)
-      const taxId = decryptValue(profile.pii?.taxIdCiphertext)
-      addAudit(user.firmId, user.id, 'profile', profileId, 'profile.sensitive_read', {
-        after: { fields: ['ssnMasked', 'taxIdMasked'] }
-      })
-      return {
-        ssnMasked: maskSsn(ssn),
-        taxIdMasked: maskTaxId(taxId)
+      const ssn = decryptSensitiveValue(profile.pii?.ssnEncrypted || profile.pii?.ssnCiphertext)
+      const taxId = decryptSensitiveValue(profile.pii?.taxIdEncrypted || profile.pii?.taxIdCiphertext)
+
+      if (request.unmask === true) {
+        validateUnmaskRequest(request)
+        if (!canUnmaskSensitiveData(user, request)) {
+          addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', {
+            requestedUnmask: true,
+            reason: {
+              code: request.reasonCode || null,
+              justification: String(request.justification || '').trim() || null
+            },
+            actor: { userId: user.id, role: user.role }
+          })
+          throw new Error('Sensitive unmask request denied.')
+        }
+
+        addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
+          grantedUnmask: true,
+          fieldScope: ['ssn', 'taxId'],
+          reason: {
+            code: request.reasonCode,
+            justification: String(request.justification || '').trim()
+          }
+        })
+        return { ssnMasked: maskSsn(ssn), taxIdMasked: maskTaxId(taxId), ssn, taxId }
       }
+
+      addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
+        grantedUnmask: false,
+        fieldScope: ['ssn', 'taxId'],
+        reason: { code: request.reasonCode || null }
+      })
+      return { ssnMasked: maskSsn(ssn), taxIdMasked: maskTaxId(taxId) }
     },
     reencryptSensitiveData({ firmId, actorUserId }) {
       let rotatedProfiles = 0

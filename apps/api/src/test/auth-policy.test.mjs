@@ -5,21 +5,28 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
+const repoRoot = resolve(new URL('../../../../', import.meta.url).pathname)
+
 async function loadStoreWithIsolatedState() {
   const previousCwd = process.cwd()
   const tempDir = mkdtempSync(join(tmpdir(), 'klient-auth-policy-'))
-  process.chdir(tempDir)
-  process.env.APP_SECRET = 'test-secret-for-auth-policy'
-  process.env.AUTH_PROVIDER = 'local'
+  const previousEnv = { ...process.env }
+  try {
+    process.chdir(tempDir)
+    process.env.APP_SECRET = 'test-secret-for-auth-policy'
+    process.env.AUTH_PROVIDER = 'local'
 
-  const stamp = `${Date.now()}-${Math.random()}`
-  const storeModule = await import(pathToFileURL(resolve(previousCwd, 'apps/api/src/store.mjs')).href + `?t=${stamp}`)
-  const providerModule = await import(
-    pathToFileURL(resolve(previousCwd, 'apps/api/src/auth/local-provider.mjs')).href + `?t=${stamp}`
-  )
-  const store = storeModule.createStore()
-  process.chdir(previousCwd)
-  return { store, computeTotp: providerModule.__testUtils.computeTotp }
+    const stamp = `${Date.now()}-${Math.random()}`
+    const storeModule = await import(pathToFileURL(resolve(repoRoot, 'apps/api/src/store.mjs')).href + `?t=${stamp}`)
+    const providerModule = await import(
+      pathToFileURL(resolve(repoRoot, 'apps/api/src/auth/local-provider.mjs')).href + `?t=${stamp}`
+    )
+    const store = storeModule.createStore()
+    return { store, computeTotp: providerModule.__testUtils.computeTotp }
+  } finally {
+    process.chdir(previousCwd)
+    process.env = previousEnv
+  }
 }
 
 test('invite lifecycle enforces role constraints, expiration, and single-use', async () => {
@@ -81,7 +88,9 @@ test('password reset policy enforces TTL, one-time usage, and user/IP rate limit
     () => store.auth.resetPassword({ token: firstReset.token, password: 'NextSecure123!' }),
     /Reset token not found/
   )
-  assert.deepEqual(store.auth.resetPassword({ token: secondReset.token, password: 'NextSecure123!' }), { ok: true })
+  const resetResult = store.auth.resetPassword({ token: secondReset.token, password: 'NextSecure123!' })
+  assert.equal(resetResult.ok, true)
+  assert.ok(Number.isFinite(resetResult.revokedSessions))
   assert.throws(
     () => store.auth.resetPassword({ token: secondReset.token, password: 'AnotherSecure123!' }),
     /Reset token not found/

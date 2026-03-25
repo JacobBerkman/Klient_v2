@@ -10,13 +10,19 @@ import { createTemplatesV2Service } from './templates-v2/service.mjs'
 import { createExportsService } from './exports/service.mjs'
 import { createAuditService } from './audit/service.mjs'
 import { createAnalyticsService } from './analytics/service.mjs'
-import { StoreProfileRepository, StoreTemplateRepository, StoreTemplatesV2Repository } from '../repositories/store-adapters.mjs'
+import {
+  StoreProfileRepository,
+  StoreTemplateRepository,
+  StoreTemplatesV2Repository,
+  StoreExportsRepository
+} from '../repositories/store-adapters.mjs'
 
 export function createModules({ store, reads }) {
   const policy = createPolicy({ store })
   const profileRepository = new StoreProfileRepository(store, reads)
   const templateRepository = new StoreTemplateRepository(store)
   const templatesV2Repository = new StoreTemplatesV2Repository(store)
+  const exportsRepository = new StoreExportsRepository(store)
   const templatesCompatibility = createTemplatesV2Service({ templatesV2Repository, policy })
 
   return {
@@ -28,7 +34,7 @@ export function createModules({ store, reads }) {
     households: createHouseholdsService({ store, policy }),
     forms: createFormsService({ store, policy }),
     templates: createTemplatesService({ templateRepository, policy, store }),
-    exports: createExportsService({ store, policy }),
+    exports: createExportsService({ exportsRepository, policy, store }),
     audit: createAuditService({ store, policy }),
     analytics: createAnalyticsService({ store, reads, policy })
   }
