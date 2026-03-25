@@ -407,6 +407,21 @@ export function createHttpServer({ modules }) {
           { 'X-Request-Id': requestId }
         )
       }
+      if (pathname === '/api/ops/exports/queue' && req.method === 'GET') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadExports')
+        const result = modules.exports.getQueueHealth(user)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/ops/exports/retry-failed' && req.method === 'POST') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteExports')
+        const body = await parseBody(req)
+        const result = modules.exports.retryFailed(user, body || {})
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname === '/api/csrf' && req.method === 'GET') {
         finalizeLog(200)
         return json(
@@ -782,7 +797,12 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/exports' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteExports')
-        const result = modules.exports.create(user, await parseBody(req))
+        const body = await parseBody(req)
+        const idempotencyKey = req.headers['idempotency-key']
+        const result = modules.exports.create(user, {
+          ...body,
+          idempotencyKey: body.idempotencyKey || (typeof idempotencyKey === 'string' ? idempotencyKey : null)
+        })
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
