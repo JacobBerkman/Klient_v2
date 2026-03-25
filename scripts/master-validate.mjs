@@ -1,4 +1,6 @@
 import { spawn } from 'node:child_process'
+import { mkdirSync, writeFileSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
 
 const gateSteps = [
   { name: 'Static syntax checks', command: 'npm', args: ['run', 'check:syntax'] },
@@ -52,17 +54,34 @@ function runStep(step, index, total) {
   })
 }
 
+function toIsoTimestamp(dateValue) {
+  return new Date(dateValue).toISOString()
+}
+
 const results = []
 let failure = null
+const startedAt = Date.now()
 
 for (let index = 0; index < gateSteps.length; index += 1) {
   const step = gateSteps[index]
   try {
     // eslint-disable-next-line no-await-in-loop
     const result = await runStep(step, index, gateSteps.length)
-    results.push({ ...step, status: 'passed', durationMs: result.durationMs })
+    results.push({
+      ...step,
+      status: 'passed',
+      durationMs: result.durationMs,
+      startedAt: toIsoTimestamp(Date.now() - result.durationMs),
+      finishedAt: toIsoTimestamp(Date.now())
+    })
   } catch (error) {
-    results.push({ ...step, status: 'failed' })
+    results.push({
+      ...step,
+      status: 'failed',
+      durationMs: null,
+      startedAt: null,
+      finishedAt: toIsoTimestamp(Date.now())
+    })
     failure = error
     break
   }
@@ -93,3 +112,41 @@ if (failure) {
 } else {
   process.stdout.write('\n✅ Hard release gate passed.\n')
 }
+
+const summary = {
+  schemaVersion: '1.0.0',
+  generatedAt: toIsoTimestamp(Date.now()),
+  nodeEnv: process.env.NODE_ENV || null,
+  status: failure ? 'failed' : 'passed',
+  startedAt: toIsoTimestamp(startedAt),
+  finishedAt: toIsoTimestamp(Date.now()),
+  failedStep: failure ? results[results.length - 1]?.name || null : null,
+  steps: gateSteps.map((step) => {
+    const executed = results.find((result) => result.name === step.name)
+    if (!executed) {
+      return {
+        name: step.name,
+        command: formatCommand(step),
+        status: 'skipped',
+        durationMs: null,
+        startedAt: null,
+        finishedAt: null
+      }
+    }
+    return {
+      name: executed.name,
+      command: formatCommand(executed),
+      status: executed.status,
+      durationMs: Number.isFinite(executed.durationMs) ? executed.durationMs : null,
+      startedAt: executed.startedAt,
+      finishedAt: executed.finishedAt
+    }
+  })
+}
+
+const defaultEvidenceFile = 'artifacts/release-evidence/validate-master-summary.json'
+const evidenceFile = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_FILE || defaultEvidenceFile)
+mkdirSync(dirname(evidenceFile), { recursive: true })
+writeFileSync(evidenceFile, JSON.stringify(summary, null, 2))
+process.stdout.write(`\nRelease evidence summary written to ${evidenceFile}\n`)
+process.stdout.write(`RELEASE_EVIDENCE_JSON=${evidenceFile}\n`)

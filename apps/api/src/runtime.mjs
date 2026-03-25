@@ -68,9 +68,13 @@ function readList(name) {
     .filter(Boolean)
 }
 
-function providerRuntimeDiagnostics(authProvider) {
+function providerRuntimeDiagnostics(authProvider, { strict = false } = {}) {
   const issues = []
   const warnings = []
+  const pushMissing = (message) => {
+    if (strict) issues.push(message)
+    else warnings.push(message)
+  }
 
   if (authProvider === 'local') {
     warnings.push('AUTH_PROVIDER=local enables built-in password authentication flows.')
@@ -83,10 +87,10 @@ function providerRuntimeDiagnostics(authProvider) {
     const clientSecret = readNonEmptyString('OIDC_CLIENT_SECRET')
     const redirectUri = readNonEmptyString('OIDC_REDIRECT_URI')
 
-    if (!issuerUrl) issues.push('OIDC provider requires OIDC_ISSUER_URL.')
-    if (!clientId) issues.push('OIDC provider requires OIDC_CLIENT_ID.')
-    if (!clientSecret) issues.push('OIDC provider requires OIDC_CLIENT_SECRET.')
-    if (!redirectUri) issues.push('OIDC provider requires OIDC_REDIRECT_URI.')
+    if (!issuerUrl) pushMissing('OIDC provider requires OIDC_ISSUER_URL.')
+    if (!clientId) pushMissing('OIDC provider requires OIDC_CLIENT_ID.')
+    if (!clientSecret) pushMissing('OIDC provider requires OIDC_CLIENT_SECRET.')
+    if (!redirectUri) pushMissing('OIDC provider requires OIDC_REDIRECT_URI.')
 
     const allowedAlgs = readList('OIDC_ALLOWED_ALGS')
     if (allowedAlgs.length === 0) warnings.push('OIDC_ALLOWED_ALGS is unset; provider defaults will be used.')
@@ -98,9 +102,9 @@ function providerRuntimeDiagnostics(authProvider) {
     const issuer = readNonEmptyString('SAML_ISSUER')
     const cert = readNonEmptyString('SAML_CERT')
 
-    if (!entryPoint) issues.push('SAML provider requires SAML_ENTRY_POINT.')
-    if (!issuer) issues.push('SAML provider requires SAML_ISSUER.')
-    if (!cert) issues.push('SAML provider requires SAML_CERT.')
+    if (!entryPoint) pushMissing('SAML provider requires SAML_ENTRY_POINT.')
+    if (!issuer) pushMissing('SAML provider requires SAML_ISSUER.')
+    if (!cert) pushMissing('SAML provider requires SAML_CERT.')
 
     const clockSkewSeconds = Number(process.env.SAML_CLOCK_SKEW_SECONDS || 0)
     if (!Number.isFinite(clockSkewSeconds) || clockSkewSeconds < 0) {
@@ -142,6 +146,12 @@ const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
 if (nodeEnv === 'production' && enableTestCsrfBypass) {
   throw new Error('ENABLE_TEST_CSRF_BYPASS cannot be enabled in production.')
 }
+if (nodeEnv === 'production' && allowUnsafeAppSecret) {
+  throw new Error('UNSAFE_ALLOW_WEAK_APP_SECRET cannot be enabled in production.')
+}
+if (nodeEnv === 'production' && allowDevFallbackSecret) {
+  throw new Error('ALLOW_DEV_FALLBACK_APP_SECRET cannot be enabled in production.')
+}
 
 const appSecretHealth = {
   usingFallback: appSecret === DEFAULT_APP_SECRET,
@@ -168,7 +178,7 @@ if (
   !allowUnsafeAppSecret
 ) {
   throw new Error(
-    'APP_SECRET does not meet minimum security requirements. If you must bypass temporarily, set UNSAFE_ALLOW_WEAK_APP_SECRET=true.'
+    'APP_SECRET does not meet minimum security requirements for production.'
   )
 }
 
@@ -184,7 +194,9 @@ export const runtime = {
   enableTestCsrfBypass: nodeEnv === 'test' && enableTestCsrfBypass,
   enableBearerAuthCompat,
   authProvider: readAuthProvider(process.env.AUTH_PROVIDER),
-  authStartupDiagnostics: providerRuntimeDiagnostics(readAuthProvider(process.env.AUTH_PROVIDER)),
+  authStartupDiagnostics: providerRuntimeDiagnostics(readAuthProvider(process.env.AUTH_PROVIDER), {
+    strict: nodeEnv === 'production'
+  }),
   piiKeyProvider: readPiiKeyProvider(process.env.PII_KEY_PROVIDER),
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',
@@ -214,16 +226,18 @@ export function validateRuntimeConfig() {
   if (!runtime.serviceName) issues.push('SERVICE_NAME must be provided.')
   if (runtime.port < 1 || runtime.port > 65535) issues.push('PORT must be between 1 and 65535.')
 
-  if (
-    runtime.storageProvider === 's3' &&
-    (!runtime.storageEndpoint ||
+  if (runtime.storageProvider === 's3') {
+    const missingS3Config =
+      !runtime.storageEndpoint ||
       !runtime.storageRegion ||
       !runtime.storageAccessKeyId ||
-      !runtime.storageSecretAccessKey)
-  ) {
-    issues.push(
-      'S3 storage provider requires STORAGE_ENDPOINT, STORAGE_REGION, STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY.'
-    )
+      !runtime.storageSecretAccessKey
+    if (missingS3Config) {
+      const message =
+        'S3 storage provider requires STORAGE_ENDPOINT, STORAGE_REGION, STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY.'
+      if (runtime.nodeEnv === 'production') issues.push(message)
+      else warnings.push(message)
+    }
   }
 
   if (runtime.authStartupDiagnostics.issues.length) {
@@ -235,10 +249,15 @@ export function validateRuntimeConfig() {
 
   if (runtime.piiKeyProvider === 'kms') {
     if (!process.env.PII_KMS_KEYRING) {
-      issues.push('KMS PII key provider requires PII_KMS_KEYRING.')
+      if (runtime.nodeEnv === 'production') issues.push('KMS PII key provider requires PII_KMS_KEYRING.')
+      else warnings.push('KMS PII key provider requires PII_KMS_KEYRING.')
     }
     if (!(process.env.PII_KMS_ACTIVE_KEY_ID || process.env.PII_ACTIVE_KEY_ID)) {
-      issues.push('KMS PII key provider requires PII_KMS_ACTIVE_KEY_ID (or PII_ACTIVE_KEY_ID).')
+      if (runtime.nodeEnv === 'production') {
+        issues.push('KMS PII key provider requires PII_KMS_ACTIVE_KEY_ID (or PII_ACTIVE_KEY_ID).')
+      } else {
+        warnings.push('KMS PII key provider requires PII_KMS_ACTIVE_KEY_ID (or PII_ACTIVE_KEY_ID).')
+      }
     }
   }
 
@@ -254,14 +273,6 @@ export function validateRuntimeConfig() {
         'APP_SECRET is using fallback development secret because ALLOW_DEV_FALLBACK_APP_SECRET=true.'
       )
     }
-  }
-
-  if (
-    runtime.nodeEnv === 'production' &&
-    (!runtime.appSecretHealth.meetsLengthRequirement || !runtime.appSecretHealth.meetsEntropyRequirement) &&
-    runtime.allowUnsafeAppSecret
-  ) {
-    warnings.push('Weak APP_SECRET accepted because UNSAFE_ALLOW_WEAK_APP_SECRET=true.')
   }
 
   if (runtime.nodeEnv === 'production' && readBoolean('ENABLE_DEMO_MODE', false)) {
