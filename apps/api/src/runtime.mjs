@@ -33,10 +33,15 @@ function readStorageProvider(value) {
   }
   return normalized
 }
+const acceptedAuthProviders = ['local', 'oidc', 'saml'];
+
 function readAuthProvider(value) {
-  const normalized = String(value || 'local').toLowerCase()
-  if (!['local', 'oidc', 'saml'].includes(normalized)) {
-    return 'local'
+  const raw = value === undefined || value === null || value === '' ? 'local' : String(value);
+  const normalized = raw.toLowerCase();
+  if (!acceptedAuthProviders.includes(normalized)) {
+    throw new Error(
+      `Invalid AUTH_PROVIDER: received "${raw}". Accepted values: ${acceptedAuthProviders.join(', ')}.`
+    );
   }
   return normalized
 }

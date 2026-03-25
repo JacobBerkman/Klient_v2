@@ -29,3 +29,11 @@ jobs:
       - run: npm run lint
       - run: npm run format:check
       - run: npm run test:all
+      - name: Container security scan (fail on critical)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true

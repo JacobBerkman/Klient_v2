@@ -1,16 +1,24 @@
-FROM node:22-alpine
+# Keep runtime on current Node.js LTS major and pin the image by digest.
+# Update NODE_IMAGE when the LTS line rolls forward or when refreshing the digest.
+FROM node:22-alpine@sha256:8094c002d08262dba12645a3b4a15cd6cd627d30bc782f53229a2ec13ee22a00
 
 ENV NODE_ENV=production \
     HOST=0.0.0.0 \
-    PORT=3000
+    PORT=3000 \
+    TMPDIR=/tmp
 
 WORKDIR /app
 
-COPY . .
+# Copy only runtime files required by the production server.
+COPY package.json package-lock.json ./
+COPY apps ./apps
+COPY scripts ./scripts
+COPY docs ./docs
+COPY DEPLOYMENT.md README.md ./
 
 RUN addgroup -S klient && adduser -S klient -G klient \
-  && mkdir -p /app/data \
-  && chown -R klient:klient /app
+  && mkdir -p /app/data /tmp /app/tmp \
+  && chown -R klient:klient /app /tmp
 
 USER klient
 
