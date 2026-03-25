@@ -40,9 +40,23 @@ export function createFormsService({ store, policy }) {
       policy.requireGuard(user, 'canWriteClientWorkspace')
       return store.submitClientUpload(user, input)
     },
-    createPortalLink(user, profileId) {
+    createClientUploadPresign(user, input) {
+      policy.requireGuard(user, 'canWriteClientWorkspace')
+      return store.createClientUploadPresign(user, input)
+    },
+    createPortalLink(user, profileId, options) {
       policy.requireGuard(user, 'canCreatePortalLink')
-      return store.createPortalLink(user, profileId)
+      return store.createPortalLink(user, profileId, options)
+    },
+    revokePortalLink(user, linkId) {
+      policy.requireGuard(user, 'canCreatePortalLink')
+      return store.revokePortalLink(user, linkId)
+    },
+    getPortalSession(token) {
+      return store.getPortalSession(token)
+    },
+    createPortalUploadPresign(token, input) {
+      return store.createPortalUploadPresign(token, input)
     },
     getPortalData(token) {
       return store.getPortalData(token)
