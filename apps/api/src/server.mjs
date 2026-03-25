@@ -923,6 +923,18 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/mappings/preview') && req.method === 'POST') {
+        const id = pathname.split('/')[3]
+        const body = await parseBody(req)
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadTemplate')
+        const result = modules.templates.previewMappings(user, id, {
+          clientId: body.clientId,
+          submissionId: body.submissionId
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/templates/') && pathname.endsWith('/versions') && req.method === 'GET') {
         const id = pathname.split('/')[3]
         const user = requireUser()

@@ -6,7 +6,7 @@ const state = {
   view: 'dashboard',
   flash: null,
   board: null,
-  clientBoard: null
+  clientBoard: null,
   mfa: {
     login: null,
     enrollment: null
@@ -452,6 +452,219 @@ async function renderForms() {
   })
 }
 
+function knownProfileSourcePaths() {
+  return new Map([
+    ['profile.firstName', 'text'],
+    ['profile.lastName', 'text'],
+    ['profile.email', 'text'],
+    ['profile.phone', 'text'],
+    ['profile.kind', 'text'],
+    ['profile.stage', 'text'],
+    ['profile.source.sourceCity', 'text'],
+    ['profile.source.sourceVenue', 'text'],
+    ['profile.source.sourceDate', 'date']
+  ])
+}
+
+function collectTemplateSchemaPaths(fields = [], parentPath = '', output = new Map()) {
+  fields.forEach((field) => {
+    const segment = String(field?.path || field?.key || '').trim()
+    if (!segment) return
+    const fullPath = parentPath ? `${parentPath}.${segment}` : segment
+    output.set(fullPath, String(field?.type || 'text'))
+    if (String(field?.type || '') === 'repeater') {
+      collectTemplateSchemaPaths(field.fields || [], fullPath, output)
+    }
+  })
+  return output
+}
+
+function mappingLocalIssues(mapping, knownPaths) {
+  const issues = []
+  const sourcePath = String(mapping.sourcePath || '').trim()
+  const targetType = String(mapping.targetType || '').trim()
+  if (sourcePath && !knownPaths.has(sourcePath)) issues.push('Unknown source path')
+  const sourceType = sourcePath ? knownPaths.get(sourcePath) : ''
+  if (sourceType && targetType && sourceType !== targetType) issues.push(`Type mismatch (${sourceType} → ${targetType})`)
+  return issues
+}
+
+async function renderTemplates() {
+  const [templates, clients, submissions] = await Promise.all([
+    request(routes.documentTemplates()),
+    request(routes.profiles({ kind: 'client' })),
+    request(routes.formSubmissions())
+  ])
+  if (!state.selectedTemplateId && templates[0]?.id) state.selectedTemplateId = templates[0].id
+  const template = templates.find((entry) => entry.id === state.selectedTemplateId) || templates[0] || null
+  const knownPaths = knownProfileSourcePaths()
+  ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
+  const mappingIssuesByIndex = new Map((template?.mappings || []).map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
+  const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
+
+  viewEl.innerHTML = `
+    ${flashMarkup()}
+    <div class="section-header"><h2>Template Detail</h2></div>
+    <label>Template
+      <select id="template-select">${templates.map((entry) => `<option value="${entry.id}" ${entry.id === template?.id ? 'selected' : ''}>${escapeHtml(entry.name)}</option>`).join('')}</select>
+    </label>
+    ${template ? `
+      <section class="item">
+        <h3>Extracted Fields</h3>
+        <ul>${(template.extractedFields || []).map((field, index) => `<li>${escapeHtml(field)} <button data-remove-extracted="${index}" class="secondary tiny">Remove</button></li>`).join('') || '<li class="muted">No extracted fields yet.</li>'}</ul>
+        <div class="row gap-sm">
+          <input id="new-extracted-field" placeholder="pdf_field_name" />
+          <button id="add-extracted-field" class="tiny">Add</button>
+        </div>
+      </section>
+      <section class="item">
+        <h3>Source Path Discovery</h3>
+        <div class="muted">Known paths from profile + form schema: ${[...knownPaths.keys()].map((path) => `<code>${escapeHtml(path)}</code>`).join(', ')}</div>
+      </section>
+      <section class="item">
+        <h3>Mapping Rows</h3>
+        <table><thead><tr><th>PDF Field</th><th>Source Path</th><th>Type</th><th>Validation</th><th>Actions</th></tr></thead><tbody>
+          ${(template.mappings || []).map((mapping, index) => {
+            const issues = mappingIssuesByIndex.get(index) || []
+            return `<tr>
+              <td>${escapeHtml(mapping.pdfField || '')}</td>
+              <td>${escapeHtml(mapping.sourcePath || '')}</td>
+              <td>${escapeHtml(mapping.targetType || '')}</td>
+              <td>${issues.length ? `<span class="badge">${escapeHtml(issues.join('; '))}</span>` : '<span class="muted">OK</span>'}</td>
+              <td><button data-edit-mapping="${index}" class="tiny secondary">Edit</button> <button data-remove-mapping="${index}" class="tiny secondary">Remove</button></td>
+            </tr>`
+          }).join('')}
+        </tbody></table>
+        <button id="add-mapping-row" class="tiny">Add Mapping</button>
+        <button id="save-mappings" class="tiny">Save Mappings</button>
+      </section>
+      <section class="item">
+        <h3>Mapping Preview</h3>
+        <div class="row gap-sm wrap">
+          <select id="preview-client">${clients.map((profile) => `<option value="${profile.id}">${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</option>`).join('')}</select>
+          <select id="preview-submission">${submissions.map((entry) => `<option value="${entry.id}">${escapeHtml(entry.id)} · ${escapeHtml(entry.templateId)}</option>`).join('')}</select>
+          <button id="run-preview" class="tiny">Run Preview</button>
+        </div>
+        <div id="preview-results" class="muted"></div>
+      </section>
+      <section class="item">
+        <h3>Publish</h3>
+        <button id="publish-template" class="tiny" ${hasLocalMappingErrors ? 'disabled' : ''}>Publish</button>
+        ${hasLocalMappingErrors ? '<p class="muted">Publish is blocked until local mapping errors are resolved.</p>' : ''}
+      </section>` : '<p class="muted">No document templates found.</p>'}
+  `
+
+  document.querySelector('#template-select')?.addEventListener('change', async (event) => {
+    state.selectedTemplateId = event.target.value
+    await renderTemplates()
+  })
+  document.querySelectorAll('[data-remove-extracted]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const next = [...(template.extractedFields || [])]
+      next.splice(Number(button.dataset.removeExtracted), 1)
+      await request(routes.documentTemplateMappings(template.id), {
+        method: 'POST',
+        body: JSON.stringify({ mappings: template.mappings || [], requiredPdfFields: next })
+      })
+      setFlash('success', 'Extracted field removed.')
+      await renderTemplates()
+    })
+  })
+  document.querySelector('#add-extracted-field')?.addEventListener('click', async () => {
+    const input = document.querySelector('#new-extracted-field')
+    const value = String(input?.value || '').trim()
+    if (!value) return
+    const next = Array.from(new Set([...(template.extractedFields || []), value]))
+    await request(routes.documentTemplateMappings(template.id), {
+      method: 'POST',
+      body: JSON.stringify({ mappings: template.mappings || [], requiredPdfFields: next })
+    })
+    setFlash('success', 'Extracted field added.')
+    await renderTemplates()
+  })
+  document.querySelectorAll('[data-remove-mapping]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const next = [...(template.mappings || [])]
+      next.splice(Number(button.dataset.removeMapping), 1)
+      await request(routes.documentTemplateMappings(template.id), {
+        method: 'POST',
+        body: JSON.stringify({ mappings: next, requiredPdfFields: template.extractedFields || [] })
+      })
+      setFlash('success', 'Mapping removed.')
+      await renderTemplates()
+    })
+  })
+  document.querySelectorAll('[data-edit-mapping]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const index = Number(button.dataset.editMapping)
+      const current = template.mappings[index] || {}
+      const pdfField = window.prompt('PDF field', current.pdfField || '')
+      if (!pdfField) return
+      const sourcePath = window.prompt('Source path', current.sourcePath || '')
+      if (!sourcePath) return
+      const targetType = window.prompt('Target type (optional)', current.targetType || '') || ''
+      const next = [...(template.mappings || [])]
+      next[index] = { ...current, pdfField, sourcePath, targetType }
+      await request(routes.documentTemplateMappings(template.id), {
+        method: 'POST',
+        body: JSON.stringify({ mappings: next, requiredPdfFields: template.extractedFields || [] })
+      })
+      setFlash('success', 'Mapping updated.')
+      await renderTemplates()
+    })
+  })
+  document.querySelector('#add-mapping-row')?.addEventListener('click', async () => {
+    const pdfField = window.prompt('PDF field')
+    if (!pdfField) return
+    const sourcePath = window.prompt('Source path')
+    if (!sourcePath) return
+    const targetType = window.prompt('Target type (optional)') || ''
+    const next = [...(template.mappings || []), { pdfField, sourcePath, targetType }]
+    await request(routes.documentTemplateMappings(template.id), {
+      method: 'POST',
+      body: JSON.stringify({ mappings: next, requiredPdfFields: template.extractedFields || [] })
+    })
+    setFlash('success', 'Mapping added.')
+    await renderTemplates()
+  })
+  document.querySelector('#save-mappings')?.addEventListener('click', async () => {
+    await request(routes.documentTemplateMappings(template.id), {
+      method: 'POST',
+      body: JSON.stringify({ mappings: template.mappings || [], requiredPdfFields: template.extractedFields || [] })
+    })
+    setFlash('success', 'Mappings saved.')
+    await renderTemplates()
+  })
+  document.querySelector('#run-preview')?.addEventListener('click', async () => {
+    try {
+      const clientId = document.querySelector('#preview-client')?.value
+      const submissionId = document.querySelector('#preview-submission')?.value
+      const preview = await request(routes.documentTemplateMappingsPreview(template.id), {
+        method: 'POST',
+        body: JSON.stringify({ clientId, submissionId })
+      })
+      const resultEl = document.querySelector('#preview-results')
+      resultEl.innerHTML = `<pre>${escapeHtml(JSON.stringify(preview.rows, null, 2))}</pre>`
+    } catch (error) {
+      setFlash('error', error.message)
+      await renderTemplates()
+    }
+  })
+  document.querySelector('#publish-template')?.addEventListener('click', async () => {
+    try {
+      await request(routes.documentTemplatePublish(template.id), {
+        method: 'POST',
+        body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Publish template mapping updates.' })
+      })
+      setFlash('success', 'Template published.')
+    } catch (error) {
+      const issues = error.details?.issues || []
+      setFlash('error', issues.length ? issues.map((issue) => `${issue.path}: ${issue.message}`).join(' | ') : error.message)
+    }
+    await renderTemplates()
+  })
+}
+
 function boardCardMarkup(card, kind) {
   const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
   return `
@@ -674,6 +887,7 @@ async function renderCurrentView() {
   if (state.view === 'dashboard') return renderDashboard()
   if (state.view === 'analytics') return renderAnalytics()
   if (state.view === 'forms') return renderForms()
+  if (state.view === 'templates') return renderTemplates()
   if (state.view === 'prospects') return renderBoard('prospect')
   if (state.view === 'clients') return renderBoard('client')
   return renderFallback(state.view)
@@ -762,7 +976,6 @@ document.querySelector('#login-form').addEventListener('submit', async (event) =
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
     const session = await request(routes.login(), { method: 'POST', body: JSON.stringify(payload) })
-    const session = await request('/api/login', { method: 'POST', body: JSON.stringify(payload) })
     if (session.mfaRequired) {
       setPendingMfaLogin(session, payload)
       await renderCurrentView()

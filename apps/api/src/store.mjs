@@ -328,7 +328,9 @@ function documentTemplateAdapter(entry) {
     name: entry.name,
     fileName: entry.documentMetadata?.fileName || 'template.pdf',
     blueprint: deepClone(entry.blueprint || { sections: [] }),
+    formSchema: deepClone(entry.formSchema || { sections: [] }),
     mappings: deepClone(entry.mappings || []),
+    extractedFields: deepClone(entry.extractedFields || []),
     versions: deepClone(entry.versions || []),
     status: entry.publishState || 'draft',
     publishState: entry.publishState || 'draft',
@@ -336,6 +338,42 @@ function documentTemplateAdapter(entry) {
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt
   }
+}
+
+function collectSchemaPaths(fields = [], parentPath = '', output = new Map()) {
+  for (const field of fields) {
+    const segment = String(field?.path || field?.key || '').trim()
+    if (!segment) continue
+    const fullPath = parentPath ? `${parentPath}.${segment}` : segment
+    const normalizedType = String(field?.type || 'text').trim() || 'text'
+    output.set(fullPath, { source: 'formSchema', type: normalizedType })
+    if (normalizedType === 'repeater') {
+      collectSchemaPaths(field.fields || [], fullPath, output)
+    }
+  }
+  return output
+}
+
+function profileSourcePaths() {
+  return new Map([
+    ['profile.firstName', { source: 'profile', type: 'text' }],
+    ['profile.lastName', { source: 'profile', type: 'text' }],
+    ['profile.email', { source: 'profile', type: 'text' }],
+    ['profile.phone', { source: 'profile', type: 'text' }],
+    ['profile.dateOfBirth', { source: 'profile', type: 'date' }],
+    ['profile.kind', { source: 'profile', type: 'text' }],
+    ['profile.stage', { source: 'profile', type: 'text' }],
+    ['profile.source.sourceCity', { source: 'profile', type: 'text' }],
+    ['profile.source.sourceVenue', { source: 'profile', type: 'text' }],
+    ['profile.source.sourceDate', { source: 'profile', type: 'date' }]
+  ])
+}
+
+function resolvePathFromObject(value, path) {
+  return String(path || '')
+    .split('.')
+    .filter(Boolean)
+    .reduce((current, segment) => (current == null ? undefined : current[segment]), value)
 }
 
 function migrateTemplateSystems(state) {
@@ -1871,9 +1909,14 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       requirePermission(user, 'templates:write')
       const createdAt = now()
       const formSchemaResult = validateFormDefinitionSchema(input.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const allowedSourcePaths = profileSourcePaths()
+      collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
       const mappings = validateMappingRules(input.mappings || [], {
         contextPath: '/mappings',
-        repeaterPaths: formSchemaResult.repeaterPaths
+        repeaterPaths: formSchemaResult.repeaterPaths,
+        requiredPdfFields: input.requiredPdfFields || [],
+        allowedSourcePaths,
+        enforceKnownSourcePaths: input.enforceKnownSourcePaths === true
       })
       const template = normalizeTemplateAggregate(
         {
@@ -1885,6 +1928,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
           documentMetadata: { fileName: input.fileName || 'template.pdf' },
           blueprint: input.blueprint || { sections: [] },
           mappings,
+          extractedFields: deepClone(input.requiredPdfFields || []),
           formSchema: formSchemaResult.schema,
           publishState: 'draft',
           versions: [
@@ -1893,6 +1937,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
               event: 'created',
               blueprint: input.blueprint || { sections: [] },
               mappings,
+              extractedFields: deepClone(input.requiredPdfFields || []),
               formSchema: formSchemaResult.schema,
               publishState: 'draft',
               createdAt,
@@ -1917,6 +1962,16 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
         (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
       )
       if (!template) throw new Error('Template not found.')
+      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const allowedSourcePaths = profileSourcePaths()
+      collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      const normalizedMappings = validateMappingRules(mappings || [], {
+        contextPath: '/mappings',
+        repeaterPaths: formSchemaResult.repeaterPaths,
+        requiredPdfFields: input.requiredPdfFields || template.extractedFields || [],
+        allowedSourcePaths,
+        enforceKnownSourcePaths: true
+      })
       const currentHash = templateVersionHash(template)
       if (expectedVersionHash && expectedVersionHash !== currentHash) {
         const error = new Error('Template has changed since last load.')
@@ -1926,8 +1981,12 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
         throw error
       }
       const previousMappings = deepClone(template.mappings || [])
-      template.mappings = mappings || []
+      const previousExtractedFields = deepClone(template.extractedFields || [])
+      template.mappings = normalizedMappings
       template.mappingRules = template.mappings
+      if (Array.isArray(input.requiredPdfFields)) {
+        template.extractedFields = input.requiredPdfFields.map((value) => String(value || '').trim()).filter(Boolean)
+      }
       template.versions.push(
         createTemplateVersion(template, 'mappings_updated', {
           mappings: template.mappings,
@@ -1937,11 +1996,52 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       )
       template.updatedAt = now()
       addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.mappings_updated', {
-        before: { mappings: previousMappings, count: previousMappings.length },
-        after: { mappings: deepClone(template.mappings), count: template.mappings.length }
+        before: { mappings: previousMappings, extractedFields: previousExtractedFields, count: previousMappings.length },
+        after: {
+          mappings: deepClone(template.mappings),
+          extractedFields: deepClone(template.extractedFields || []),
+          count: template.mappings.length
+        }
       })
       persist()
       return documentTemplateAdapter(template)
+    },
+    previewTemplateMappings(user, templateId, input = {}) {
+      requirePermission(user, 'templates:read')
+      const template = validateEntityOwnership(
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'),
+        user,
+        'Template not found.'
+      )
+      const clientId = String(input.clientId || '').trim()
+      const submissionId = String(input.submissionId || '').trim()
+      const profile = validateEntityOwnership(
+        state.profiles.find((entry) => entry.id === clientId && entry.firmId === user.firmId),
+        user,
+        'Client profile not found.'
+      )
+      const submission = validateEntityOwnership(
+        state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId),
+        user,
+        'Submission not found.'
+      )
+      const rows = (template.mappings || []).map((rule) => {
+        const sourcePath = String(rule.sourcePath || '')
+        const resolvedValue = sourcePath.startsWith('profile.')
+          ? resolvePathFromObject(profile, sourcePath.replace(/^profile\./, ''))
+          : resolvePathFromObject(submission.data || {}, sourcePath)
+        return {
+          pdfField: rule.pdfField,
+          sourcePath,
+          value: resolvedValue === undefined ? null : resolvedValue
+        }
+      })
+      return {
+        templateId: template.id,
+        clientId,
+        submissionId,
+        rows
+      }
     },
     publishTemplate(user, templateId, input = {}) {
       requirePermission(user, 'templates:write')
@@ -1953,6 +2053,16 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
         'Template not found.'
       )
       const previousState = normalizeTemplateState(template.publishState || 'draft')
+      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const allowedSourcePaths = profileSourcePaths()
+      collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      validateMappingRules(template.mappings || [], {
+        contextPath: '/mappings',
+        repeaterPaths: formSchemaResult.repeaterPaths,
+        requiredPdfFields: template.extractedFields || [],
+        allowedSourcePaths,
+        enforceKnownSourcePaths: true
+      })
       if (!input.versionBump || !String(input.versionBump).trim()) {
         throw new Error('Publish requires versionBump.')
       }

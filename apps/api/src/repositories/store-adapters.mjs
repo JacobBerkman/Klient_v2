@@ -76,6 +76,9 @@ export class StoreTemplateRepository extends TemplateRepository {
   publishTemplate(user, templateId, input) {
     return this.store.publishTemplate(user, templateId, input)
   }
+  previewTemplateMappings(user, templateId, input) {
+    return this.store.previewTemplateMappings(user, templateId, input)
+  }
   compareTemplateVersions(user, templateId, baseVersion, targetVersion) {
     return this.store.compareTemplateVersions(user, templateId, baseVersion, targetVersion)
   }
