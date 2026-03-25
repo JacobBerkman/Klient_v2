@@ -111,3 +111,40 @@ test('publish enforces known source-path validation when requested', () => {
 })
 
 process.chdir(previousCwd)
+
+
+test('mapping inspector edits persist and create version snapshots', () => {
+  const admin = loginAdmin()
+  const created = store.createDocumentTemplate(admin, {
+    name: 'Template Inspector Persist',
+    mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName', targetType: 'text' }],
+    requiredPdfFields: ['client_name']
+  })
+
+  const updated = store.updateTemplateMappings(
+    admin,
+    created.id,
+    [
+      {
+        pdfField: 'client_name',
+        fieldLabel: 'Client Name',
+        sourcePath: 'profile.firstName',
+        targetType: 'text',
+        defaultValue: 'Unknown',
+        required: true,
+        enabled: true,
+        transform: { type: 'expression', expression: 'value' }
+      }
+    ],
+    { expectedVersionHash: created.versionHash, requiredPdfFields: ['client_name'] }
+  )
+
+  assert.equal(updated.mappings[0].fieldLabel, 'Client Name')
+  assert.equal(updated.mappings[0].defaultValue, 'Unknown')
+  assert.equal(updated.mappings[0].required, true)
+  assert.equal(updated.mappings[0].enabled, true)
+  assert.equal(updated.mappings[0].transform.type, 'expression')
+  assert.ok(updated.versions.length >= 2)
+  const mappingVersion = updated.versions.find((entry) => entry.event === 'mappings_updated')
+  assert.ok(mappingVersion)
+})

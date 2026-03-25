@@ -74,10 +74,20 @@ function summarizeTransform(transform) {
 
 function resolveSourceValue({ sourcePath, profile, submission }) {
   if (!sourcePath) return undefined
+  if (sourcePath.startsWith('submission.')) {
+    return resolvePathFromObject(submission?.data || {}, sourcePath.replace(/^submission\./, ''))
+  }
+  if (sourcePath.startsWith('form.')) {
+    return resolvePathFromObject(submission?.data || {}, sourcePath.replace(/^form\./, ''))
+  }
   if (sourcePath.startsWith('profile.')) {
     return resolvePathFromObject(profile || {}, sourcePath.replace(/^profile\./, ''))
   }
-  return resolvePathFromObject(submission?.data || {}, sourcePath)
+  const submissionValue = resolvePathFromObject(submission?.data || {}, sourcePath)
+  if (submissionValue !== undefined) return submissionValue
+  const profileValue = resolvePathFromObject(profile || {}, sourcePath)
+  if (profileValue !== undefined) return profileValue
+  return resolvePathFromObject(submission || {}, sourcePath)
 }
 
 function normalizeResolvedValue(rule, rawValue) {
