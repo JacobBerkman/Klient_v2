@@ -321,6 +321,11 @@ export function createHttpServer({ modules }) {
     const { pathname } = url
     const finalizeLog = requestLogger(req, requestId)
     const requireUser = () => modules.auth.requireUser(getToken(req))
+    const authorize = (guardName, { allowAnonymous = false } = {}) => {
+      const user = allowAnonymous ? (getToken(req) ? requireUser() : null) : requireUser()
+      modules.policy.requireGuard(user, guardName)
+      return user
+    }
 
     try {
       if (pathname === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
@@ -353,7 +358,7 @@ export function createHttpServer({ modules }) {
         )
       }
       if (pathname === '/api/ops/diagnostics' && req.method === 'GET') {
-        const user = requireUser()
+        const user = authorize('canReadDiagnostics')
         const { auditEvents, exports } = modules.analytics.getDiagnosticsContext(user)
         const queue = readExportWorkerStatus()
         const byStatus = exports.reduce((acc, job) => {
@@ -392,6 +397,7 @@ export function createHttpServer({ modules }) {
         )
       }
       if (pathname === '/api/csrf' && req.method === 'GET') {
+        authorize('canBootstrapCsrf', { allowAnonymous: true })
         finalizeLog(200)
         return json(
           res,
@@ -404,6 +410,7 @@ export function createHttpServer({ modules }) {
         )
       }
       if (pathname === '/api/runtime' && req.method === 'GET') {
+        authorize('canAccessRuntime', { allowAnonymous: true })
         finalizeLog(200);
         return json(res, 200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId });
       }
@@ -415,11 +422,13 @@ export function createHttpServer({ modules }) {
         }
       }
       if (pathname === '/api/register' && req.method === 'POST') {
+        authorize('canRegister', { allowAnonymous: true })
         const result = modules.auth.register(await parseBody(req))
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/login' && req.method === 'POST') {
+        authorize('canLogin', { allowAnonymous: true })
         const result = modules.auth.login(await parseBody(req))
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
@@ -432,16 +441,19 @@ export function createHttpServer({ modules }) {
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/invites/accept' && req.method === 'POST') {
+        authorize('canAcceptInvite', { allowAnonymous: true })
         const result = modules.firmsUsers.acceptInvite(await parseBody(req))
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/password-resets' && req.method === 'POST') {
+        authorize('canRequestPasswordReset', { allowAnonymous: true })
         const result = modules.auth.requestReset(await parseBody(req))
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/password-resets/confirm' && req.method === 'POST') {
+        authorize('canConfirmPasswordReset', { allowAnonymous: true })
         const result = modules.auth.resetPassword(await parseBody(req))
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
@@ -454,11 +466,12 @@ export function createHttpServer({ modules }) {
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/session' && req.method === 'GET') {
-        const result = { user: requireUser() }
+        const result = { user: authorize('canReadSession') }
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/logout' && req.method === 'POST') {
+        authorize('canLogout')
         const result = modules.auth.logout(getToken(req))
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
@@ -770,18 +783,21 @@ export function createHttpServer({ modules }) {
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/portal/') && pathname.split('/').length === 4 && req.method === 'GET') {
+        authorize('canReadPortal')
         const token = pathname.split('/')[3]
         const result = modules.forms.getPortalData(token)
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/portal/') && pathname.endsWith('/submissions') && req.method === 'POST') {
+        authorize('canSubmitPortal')
         const token = pathname.split('/')[3]
         const result = modules.forms.portalSubmit(token, await parseBody(req))
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads') && req.method === 'POST') {
+        authorize('canUploadPortal')
         const token = pathname.split('/')[3]
         const result = modules.forms.portalUpload(token, await parseBody(req))
         finalizeLog(201)

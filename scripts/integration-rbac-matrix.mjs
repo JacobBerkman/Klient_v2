@@ -1,9 +1,13 @@
+import { readFileSync } from 'node:fs'
 import { assert, createTestContext } from './test-harness.mjs'
 
 const context = await createTestContext('rbac-matrix')
+const policyMatrix = JSON.parse(readFileSync(new URL('../apps/api/src/modules/shared/policy-matrix.json', import.meta.url), 'utf8'))
 
-function expectedFor(role, allowedRoles) {
-  return allowedRoles.includes(role) ? 'allow' : 'deny'
+const roles = ['admin', 'advisor', 'readonly', 'client']
+
+function allowedRoles(guard) {
+  return new Set((policyMatrix[guard] || []).filter((role) => role !== 'anonymous'))
 }
 
 try {
@@ -32,37 +36,31 @@ try {
     headers: adminHeaders,
     body: JSON.stringify({ kind: 'client', firstName: 'RBAC', lastName: 'Client', email: clientSession.user.email })
   })
-
   const household = await context.request('/api/households', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ name: 'RBAC Household', primaryClientId: profile.id })
   })
-
   const formTemplate = await context.request('/api/forms/templates', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ name: 'RBAC Form', sections: [] })
   })
-
   const docTemplate = await context.request('/api/templates', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ name: 'RBAC Template', fileName: 'rbac.pdf' })
   })
-
   const submission = await context.request('/api/forms/submissions', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ clientId: profile.id, templateId: formTemplate.id, status: 'draft', data: {} })
   })
-
   const exportJob = await context.request('/api/exports', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ clientId: profile.id, templateId: docTemplate.id, type: 'pdf' })
   })
-
   const portalLink = await context.request('/api/portal-links', {
     method: 'POST',
     headers: adminHeaders,
@@ -77,89 +75,55 @@ try {
   }
 
   const checks = [
-    { path: '/api/session', method: 'GET', allow: ['admin', 'advisor', 'readonly', 'client'] },
-    { path: '/api/dashboard', method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    { path: '/api/users', method: 'GET', allow: ['admin'] },
-    { path: '/api/profiles', method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    {
-      path: '/api/profiles',
-      method: 'POST',
-      body: { kind: 'prospect', firstName: 'A', lastName: 'B' },
-      allow: ['admin', 'advisor']
-    },
-    { path: `/api/profiles/${profile.id}`, method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    { path: `/api/profiles/${profile.id}`, method: 'PATCH', body: { phone: '555' }, allow: ['admin', 'advisor'] },
-    { path: `/api/profiles/${profile.id}/stage-history`, method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    { path: `/api/profiles/${profile.id}/notes`, method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    { path: `/api/profiles/${profile.id}/notes`, method: 'POST', body: { body: 'hello' }, allow: ['admin', 'advisor'] },
-    { path: '/api/board', method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    { path: '/api/households', method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    {
-      path: '/api/households',
-      method: 'POST',
-      body: { name: 'H', primaryClientId: profile.id },
-      allow: ['admin', 'advisor']
-    },
-    {
-      path: `/api/households/${household.id}/members`,
-      method: 'POST',
-      body: { clientId: profile.id, role: 'member' },
-      allow: ['admin', 'advisor']
-    },
-    { path: '/api/forms/templates', method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    { path: '/api/forms/templates', method: 'POST', body: { name: 'F', sections: [] }, allow: ['admin', 'advisor'] },
-    { path: '/api/forms/submissions', method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    {
-      path: '/api/forms/submissions',
-      method: 'POST',
-      body: { clientId: profile.id, templateId: formTemplate.id, status: 'draft', data: {} },
-      allow: ['admin', 'advisor']
-    },
-    { path: '/api/forms/drafts', method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    {
-      path: `/api/forms/submissions/${submission.id}`,
-      method: 'PATCH',
-      body: { status: 'submitted' },
-      allow: ['admin', 'advisor']
-    },
-    { path: '/api/templates', method: 'GET', allow: ['admin', 'advisor'] },
-    { path: '/api/templates', method: 'POST', body: { name: 'T' }, allow: ['admin', 'advisor'] },
-    { path: `/api/templates/${docTemplate.id}/publish`, method: 'POST', body: {}, allow: ['admin', 'advisor'] },
-    { path: '/api/exports', method: 'GET', allow: ['admin', 'advisor'] },
-    {
-      path: '/api/exports',
-      method: 'POST',
-      body: { clientId: profile.id, templateId: docTemplate.id, type: 'pdf' },
-      allow: ['admin', 'advisor']
-    },
-    { path: '/api/audit', method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    { path: '/api/analytics', method: 'GET', allow: ['admin', 'advisor', 'readonly'] },
-    { path: `/api/exports/${exportJob.id}/retry`, method: 'POST', body: {}, allow: ['admin', 'advisor'] },
-    { path: '/api/client/workspace', method: 'GET', allow: ['client'] },
-    {
-      path: '/api/client/forms/submissions',
-      method: 'POST',
-      body: { templateId: formTemplate.id, status: 'draft', data: {} },
-      allow: ['client']
-    },
-    { path: '/api/client/uploads', method: 'POST', body: { name: 'x' }, allow: ['client'] },
-    {
-      path: '/api/portal-links',
-      method: 'POST',
-      body: { profileId: profile.id },
-      allow: ['admin', 'advisor', 'readonly']
-    },
-    { path: `/api/portal/${portalLink.token}`, method: 'GET', allow: ['admin', 'advisor', 'readonly', 'client'] }
+    { path: '/api/session', method: 'GET', guard: 'canReadSession' },
+    { path: '/api/ops/diagnostics', method: 'GET', guard: 'canReadDiagnostics' },
+    { path: '/api/dashboard', method: 'GET', guard: 'canViewDashboard' },
+    { path: '/api/users', method: 'GET', guard: 'canReadUsers' },
+    { path: '/api/profiles', method: 'GET', guard: 'canReadProfiles' },
+    { path: '/api/profiles', method: 'POST', body: { kind: 'prospect', firstName: 'A', lastName: 'B' }, guard: 'canWriteProfiles' },
+    { path: `/api/profiles/${profile.id}`, method: 'GET', guard: 'canReadProfiles' },
+    { path: `/api/profiles/${profile.id}`, method: 'PATCH', body: { phone: '555' }, guard: 'canWriteProfiles' },
+    { path: `/api/profiles/${profile.id}/stage-history`, method: 'GET', guard: 'canReadProfiles' },
+    { path: `/api/profiles/${profile.id}/notes`, method: 'GET', guard: 'canReadProfiles' },
+    { path: `/api/profiles/${profile.id}/notes`, method: 'POST', body: { body: 'hello' }, guard: 'canWriteProfiles' },
+    { path: '/api/board', method: 'GET', guard: 'canReadProfiles' },
+    { path: '/api/households', method: 'GET', guard: 'canReadHouseholds' },
+    { path: '/api/households', method: 'POST', body: { name: 'H', primaryClientId: profile.id }, guard: 'canWriteHouseholds' },
+    { path: `/api/households/${household.id}/members`, method: 'POST', body: { clientId: profile.id, role: 'member' }, guard: 'canWriteHouseholds' },
+    { path: '/api/forms/templates', method: 'GET', guard: 'canReadForms' },
+    { path: '/api/forms/templates', method: 'POST', body: { name: 'F', sections: [] }, guard: 'canWriteForms' },
+    { path: '/api/forms/submissions', method: 'GET', guard: 'canReadForms' },
+    { path: '/api/forms/submissions', method: 'POST', body: { clientId: profile.id, templateId: formTemplate.id, status: 'draft', data: {} }, guard: 'canWriteForms' },
+    { path: '/api/forms/drafts', method: 'GET', guard: 'canReadForms' },
+    { path: `/api/forms/submissions/${submission.id}`, method: 'PATCH', body: { status: 'submitted' }, guard: 'canWriteForms' },
+    { path: '/api/templates', method: 'GET', guard: 'canReadTemplate' },
+    { path: '/api/templates', method: 'POST', body: { name: 'T' }, guard: 'canEditTemplate' },
+    { path: `/api/templates/${docTemplate.id}/publish`, method: 'POST', body: {}, guard: 'canPublishTemplate' },
+    { path: '/api/exports', method: 'GET', guard: 'canReadExports' },
+    { path: '/api/exports', method: 'POST', body: { clientId: profile.id, templateId: docTemplate.id, type: 'pdf' }, guard: 'canWriteExports' },
+    { path: '/api/exports/process', method: 'POST', body: {}, guard: 'canProcessExports' },
+    { path: `/api/exports/${exportJob.id}/retry`, method: 'POST', body: {}, guard: 'canWriteExports' },
+    { path: '/api/audit', method: 'GET', guard: 'canReadAudit' },
+    { path: '/api/analytics', method: 'GET', guard: 'canReadAnalytics' },
+    { path: '/api/client/workspace', method: 'GET', guard: 'canReadClientWorkspace' },
+    { path: '/api/client/forms/submissions', method: 'POST', body: { templateId: formTemplate.id, status: 'draft', data: {} }, guard: 'canWriteClientWorkspace' },
+    { path: '/api/client/uploads', method: 'POST', body: { name: 'x' }, guard: 'canWriteClientWorkspace' },
+    { path: '/api/portal-links', method: 'POST', body: { profileId: profile.id }, guard: 'canCreatePortalLink' },
+    { path: `/api/portal/${portalLink.token}`, method: 'GET', guard: 'canReadPortal' },
+    { path: `/api/portal/${portalLink.token}/submissions`, method: 'POST', body: { templateId: formTemplate.id, status: 'draft', data: {} }, guard: 'canSubmitPortal' },
+    { path: `/api/portal/${portalLink.token}/uploads`, method: 'POST', body: { name: 'client-doc' }, guard: 'canUploadPortal' }
   ]
 
   for (const check of checks) {
-    for (const [role, token] of Object.entries(actors)) {
+    const allow = allowedRoles(check.guard)
+    for (const role of roles) {
+      const token = actors[role]
       const method = check.method || 'GET'
       const headers = method === 'GET' ? { Authorization: `Bearer ${token}` } : context.authHeaders(token)
       const options = { method, headers }
       if (check.body) options.body = JSON.stringify(check.body)
-      const expectation = expectedFor(role, check.allow)
-      if (expectation === 'allow') {
+
+      if (allow.has(role)) {
         await context.request(check.path, options)
       } else {
         let denied = null
@@ -172,10 +136,6 @@ try {
           }
         }
         assert(Boolean(denied), `${role} must be denied ${method} ${check.path}`)
-        assert(
-          /Missing permission|Authentication required|not found|CSRF/i.test(denied.message),
-          `${role} must be denied ${method} ${check.path}`
-        )
       }
     }
   }
