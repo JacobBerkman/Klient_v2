@@ -16,30 +16,54 @@ import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
 import { buildExportArtifact } from './export-artifact.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
-import { requireFirmContext } from './modules/shared/tenancy.mjs'
+import { requireFirmContext, validateEntityOwnership as validateTenantEntityOwnership } from './modules/shared/tenancy.mjs'
 import {
   convertLegacyFormDefinition,
   validateFormDefinitionSchema
 } from './modules/forms/schema/form-definition-validator.mjs'
 import { validateMappingRules } from './modules/templates/schema/mapping-rules-validator.mjs'
+import { extractTemplateFieldsFromPdfBytes } from './modules/templates/template-ingestion.mjs'
 
-const SESSION_TTL_MS = 1000 * 60 * 60 * 8
+const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 8
+const SESSION_IDLE_TIMEOUT_MS = 1000 * 60 * 30
 const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7
 const PERMISSIONS = {
   admin: ['*'],
   advisor: [
+    'dashboard:read',
     'profiles:read',
     'profiles:write',
+    'pipeline:read',
     'pipeline:write',
+    'households:read',
     'households:write',
+    'forms:read',
     'forms:write',
     'templates:read',
     'templates:write',
+    'audit:read',
     'exports:write',
-    'analytics:read'
+    'exports:read',
+    'users:read',
+    'users:manage',
+    'analytics:read',
+    'diagnostics:read',
+    'sensitive:read',
+    'portal:manage'
   ],
-  readonly: ['profiles:read', 'templates:read', 'analytics:read'],
-  client: ['portal:read', 'client:write']
+  readonly: [
+    'dashboard:read',
+    'profiles:read',
+    'pipeline:read',
+    'households:read',
+    'forms:read',
+    'templates:read',
+    'audit:read',
+    'analytics:read',
+    'users:read'
+  ],
+  client: ['portal:read', 'client:write'],
+  anonymous: []
 }
 const BOARD_COLUMNS = [
   'discovery',
@@ -63,14 +87,6 @@ function requirePermission(user, permission) {
     throw new Error(`Missing permission: ${permission}`)
   }
 }
-
-function validateEntityOwnership(entity, user, notFoundMessage = 'Resource not found.') {
-  if (!entity || entity.firmId !== user.firmId) {
-    throw new Error(notFoundMessage)
-  }
-  return entity
-}
-
 
 function now() {
   return new Date().toISOString()
@@ -242,12 +258,16 @@ function createTemplateVersion(template, event, overrides = {}) {
   const blueprint = deepClone(overrides.blueprint || template.blueprint || { sections: [] })
   const mappings = deepClone(overrides.mappings || template.mappings || [])
   const formSchema = deepClone(overrides.formSchema || template.formSchema || { sections: [] })
+  const extractedFields = deepClone(overrides.extractedFields || template.extractedFields || [])
+  const extraction = deepClone(overrides.extraction || template.extraction || { status: 'completed', reasonCode: null })
   return {
     version: (template.versions?.length || 0) + 1,
     event,
     blueprint,
     mappings,
     formSchema,
+    extractedFields,
+    extraction,
     publishState,
     immutable: overrides.immutable === true,
     changelog: overrides.changelog || null,
@@ -276,6 +296,7 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
     mappings,
     mappingRules: mappings,
     extractedFields: template.extractedFields || [],
+    extraction: template.extraction || { status: 'completed', reasonCode: null },
     publishState,
     status: publishState, // deprecated internal alias for compatibility payloads
     versions: (template.versions || []).map((entry, index) => ({
@@ -284,6 +305,8 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
       blueprint: deepClone(entry.blueprint || blueprint),
       mappings: deepClone(entry.mappings || mappings),
       formSchema: deepClone(entry.formSchema || formSchema),
+      extractedFields: deepClone(entry.extractedFields || template.extractedFields || []),
+      extraction: deepClone(entry.extraction || template.extraction || { status: 'completed', reasonCode: null }),
       publishState: entry.publishState || publishState,
       immutable: entry.immutable === true,
       changelog: entry.changelog || null,
@@ -737,13 +760,30 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
   }
 }
 
-export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvider = null, piiCrypto = null } = {}) {
+export function createStore({
+  objectStorage = defaultObjectStorage,
+  piiKeyProvider = null,
+  piiCrypto = null,
+  onSessionInvalidated = () => {}
+} = {}) {
   const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
   state.profiles = (state.profiles || []).map(normalizeProfileRecord)
   saveState(state)
   state.pendingUploadIntents ||= []
   state.draftStepStates ||= []
+  state.sessions = (state.sessions || []).map((session) => {
+    const createdAt = session.createdAt || now()
+    const lastActivityAt = session.lastActivityAt || createdAt
+    return {
+      ...session,
+      createdAt,
+      lastActivityAt,
+      expiresAt: session.expiresAt || new Date(new Date(createdAt).getTime() + SESSION_MAX_AGE_MS).toISOString(),
+      idleExpiresAt:
+        session.idleExpiresAt || new Date(new Date(lastActivityAt).getTime() + SESSION_IDLE_TIMEOUT_MS).toISOString()
+    }
+  })
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
     return {
@@ -1001,22 +1041,58 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
 
   function createSession(user) {
     const token = randomUUID()
+    const createdAt = now()
+    const lastActivityAt = createdAt
     state.sessions.push({
       token,
       userId: user.id,
       firmId: user.firmId,
-      createdAt: now(),
-      expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString()
+      createdAt,
+      lastActivityAt,
+      expiresAt: new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString(),
+      idleExpiresAt: new Date(Date.now() + SESSION_IDLE_TIMEOUT_MS).toISOString()
     })
     persist()
     return { token, user: publicUser(user) }
   }
 
+  function invalidateSession(session, reason = 'unknown') {
+    if (!session?.token) return false
+    const previousLength = state.sessions.length
+    state.sessions = state.sessions.filter((entry) => entry.token !== session.token)
+    const removed = state.sessions.length !== previousLength
+    if (removed) {
+      onSessionInvalidated({
+        token: session.token,
+        userId: session.userId,
+        firmId: session.firmId,
+        reason
+      })
+    }
+    return removed
+  }
+
   function pruneExpiredSessions() {
-    const cutoff = Date.now()
-    const nextSessions = state.sessions.filter((entry) => new Date(entry.expiresAt).getTime() > cutoff)
-    if (nextSessions.length !== state.sessions.length) {
-      state.sessions = nextSessions
+    const nowMs = Date.now()
+    const activeSessions = []
+    let changed = false
+    for (const entry of state.sessions) {
+      const absoluteValid = new Date(entry.expiresAt).getTime() > nowMs
+      const idleValid = new Date(entry.idleExpiresAt || 0).getTime() > nowMs
+      if (absoluteValid && idleValid) {
+        activeSessions.push(entry)
+        continue
+      }
+      changed = true
+      onSessionInvalidated({
+        token: entry.token,
+        userId: entry.userId,
+        firmId: entry.firmId,
+        reason: absoluteValid ? 'idle_timeout' : 'max_age_expired'
+      })
+    }
+    if (changed) {
+      state.sessions = activeSessions
       persist()
     }
   }
@@ -1038,7 +1114,21 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     if (!session) throw new Error('Authentication required.')
     const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId)
     if (!user) throw new Error('Authentication required.')
+    session.lastActivityAt = now()
+    session.idleExpiresAt = new Date(Date.now() + SESSION_IDLE_TIMEOUT_MS).toISOString()
+    persist()
     return publicUser(user)
+  }
+
+  function rotateSession(token, reason = 'privilege_transition') {
+    pruneExpiredSessions()
+    const session = state.sessions.find((entry) => entry.token === token)
+    if (!session) throw new Error('Authentication required.')
+    const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId)
+    if (!user) throw new Error('Authentication required.')
+    invalidateSession(session, reason)
+    persist()
+    return createSession(user)
   }
 
   function addAudit(firmId, actorUserId, entityType, entityId, action, changeSet = {}, options = {}) {
@@ -1101,7 +1191,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     },
     requireUser,
     getDashboard(user) {
-      requirePermission(user, 'profiles:read')
+      requirePermission(user, 'dashboard:read')
       const profiles = state.profiles.filter((profile) => profile.firmId === user.firmId)
       const prospects = profiles.filter((profile) => profile.kind === 'prospect')
       const clients = profiles.filter((profile) => profile.kind === 'client')
@@ -1139,9 +1229,11 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
         )
     },
     getProfileDetail(user, profileId) {
+      const firmContext = requireFirmContext(user, { method: 'store.getProfileDetail' })
       requirePermission(user, 'profiles:read')
-      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId)
-      if (!profile) throw new Error('Profile not found.')
+      const profile = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === profileId), {
+        entityName: 'Profile'
+      })
       const household = profile.householdId
         ? state.households.find((entry) => entry.id === profile.householdId && entry.firmId === user.firmId)
         : null
@@ -1231,7 +1323,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       if (patch.kind === 'prospect' && !patch.stage) {
         patch.stage = 'discovery'
       }
-      const profile = validateEntityOwnership(
+      const profile = validateTenantEntityOwnership(
         firmContext,
         state.profiles.find((entry) => entry.id === profileId),
         { entityName: 'Profile' }
@@ -1281,6 +1373,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return this.reorderBoard(user, { profileId, toStage: stage, beforeProfileId })
     },
     reorderBoard(user, input) {
+      const firmContext = requireFirmContext(user, { method: 'store.reorderBoard' })
       requirePermission(user, 'pipeline:write')
       const {
         profileId,
@@ -1299,8 +1392,11 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
 
       try {
         return executePipelineTransaction(() => {
-          const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId)
-          if (!profile) throw new Error('Profile not found.')
+          const profile = validateTenantEntityOwnership(
+            firmContext,
+            state.profiles.find((entry) => entry.id === profileId),
+            { entityName: 'Profile' }
+          )
 
           const currentVersion = Number(profile.pipelineVersion || 1)
           if (expectedVersion !== null && Number(expectedVersion) !== currentVersion) {
@@ -1426,16 +1522,20 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       })
     },
     getBoard(user) {
-      requirePermission(user, 'profiles:read')
+      requirePermission(user, 'pipeline:read')
       normalizePipelineIndices(user.firmId)
       return buildBoardPayload(user)
     },
     listStageHistory(user, profileId) {
-      requirePermission(user, 'profiles:read')
+      requirePermission(user, 'pipeline:read')
       return state.stageChanges.filter((entry) => entry.firmId === user.firmId && entry.clientId === profileId)
     },
     createHousehold(user, input) {
+      const firmContext = requireFirmContext(user, { method: 'store.createHousehold' })
       requirePermission(user, 'households:write')
+      validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === input.primaryClientId), {
+        entityName: 'Profile'
+      })
       const household = {
         id: randomUUID(),
         firmId: user.firmId,
@@ -1460,11 +1560,14 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     addHouseholdMember(user, householdId, input) {
       const firmContext = requireFirmContext(user, { method: 'store.addHouseholdMember' })
       requirePermission(user, 'households:write')
-      const household = validateEntityOwnership(
+      const household = validateTenantEntityOwnership(
         firmContext,
         state.households.find((entry) => entry.id === householdId),
         { entityName: 'Household' }
       )
+      validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === input.clientId), {
+        entityName: 'Profile'
+      })
       const member = { householdId, clientId: input.clientId, role: input.role, firmId: user.firmId, createdAt: now() }
       state.householdMembers.push(member)
       const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId)
@@ -1474,7 +1577,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return member
     },
     listHouseholds(user) {
-      requirePermission(user, 'profiles:read')
+      requirePermission(user, 'households:read')
       return state.households
         .filter((entry) => entry.firmId === user.firmId)
         .map((household) => ({
@@ -1493,9 +1596,11 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
         .map((entry) => ({ ...entry, body: entry.body || decryptSensitiveValue(entry.bodyEncrypted) || '' }))
     },
     addNote(user, profileId, body) {
+      const firmContext = requireFirmContext(user, { method: 'store.addNote' })
       requirePermission(user, 'profiles:write')
-      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId)
-      if (!profile) throw new Error('Profile not found.')
+      validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === profileId), {
+        entityName: 'Profile'
+      })
       const note = {
         id: randomUUID(),
         firmId: user.firmId,
@@ -1561,9 +1666,13 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return template
     },
     updateTemplateAggregate(user, templateId, patch = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.updateTemplateAggregate' })
       requirePermission(user, 'templates:write')
-      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId)
-      if (!template) throw new Error('Template not found.')
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId),
+        { entityName: 'Template' }
+      )
       if (patch.mappings) {
         template.mappings = patch.mappings
         template.mappingRules = patch.mappings
@@ -1586,9 +1695,13 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return template
     },
     transitionTemplateLifecycle(user, templateId, nextState) {
+      const firmContext = requireFirmContext(user, { method: 'store.transitionTemplateLifecycle' })
       requirePermission(user, 'templates:write')
-      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId)
-      if (!template) throw new Error('Template not found.')
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId),
+        { entityName: 'Template' }
+      )
       const allowed = new Set(['draft', 'published', 'archived'])
       if (!allowed.has(nextState)) throw new Error('Invalid publish state.')
       const previousState = template.publishState || 'draft'
@@ -1622,7 +1735,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return formTemplateAdapter(template)
     },
     listFormSubmissions(user, status = null) {
-      requirePermission(user, 'profiles:read')
+      requirePermission(user, 'forms:read')
       const currentTime = Date.now()
       return state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
@@ -1956,10 +2069,13 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return documentTemplateAdapter(template)
     },
     updateTemplateMappings(user, templateId, mappings, input = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.updateTemplateMappings' })
       requirePermission(user, 'templates:write')
       const expectedVersionHash = input.expectedVersionHash || null
-      const template = state.templateAggregates.find(
-        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
       )
       if (!template) throw new Error('Template not found.')
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
@@ -2045,12 +2161,11 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     },
     publishTemplate(user, templateId, input = {}) {
       requirePermission(user, 'templates:write')
-      const template = validateEntityOwnership(
-        state.templateAggregates.find(
-          (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
-        ),
-        user,
-        'Template not found.'
+      const firmContext = requireFirmContext(user, { method: 'store.publishTemplate' })
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
       )
       const previousState = normalizeTemplateState(template.publishState || 'draft')
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
@@ -2099,11 +2214,13 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return documentTemplateAdapter(template)
     },
     compareTemplateVersions(user, templateId, baseVersion, targetVersion) {
-      requirePermission(user, 'templates:write')
-      const template = state.templateAggregates.find(
-        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      const firmContext = requireFirmContext(user, { method: 'store.compareTemplateVersions' })
+      requirePermission(user, 'templates:read')
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
       )
-      if (!template) throw new Error('Template not found.')
       const versions = template.versions || []
       const base = versions.find((entry) => Number(entry.version) === Number(baseVersion))
       const target = versions.find((entry) => Number(entry.version) === Number(targetVersion))
@@ -2125,11 +2242,13 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       }
     },
     revertTemplateVersion(user, templateId, targetVersion, input = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.revertTemplateVersion' })
       requirePermission(user, 'templates:write')
-      const template = state.templateAggregates.find(
-        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
       )
-      if (!template) throw new Error('Template not found.')
       const target = (template.versions || []).find((entry) => Number(entry.version) === Number(targetVersion))
       if (!target) throw new Error('Template version not found.')
       if (!input.changelog || !String(input.changelog).trim()) {
@@ -2138,6 +2257,8 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       template.blueprint = deepClone(target.blueprint || { sections: [] })
       template.mappings = deepClone(target.mappings || [])
       template.mappingRules = template.mappings
+      template.extractedFields = deepClone(target.extractedFields || [])
+      template.extraction = deepClone(target.extraction || { status: 'completed', reasonCode: null })
       template.publishState = normalizeTemplateState(target.publishState || 'draft')
       template.status = template.publishState
       template.versions.push(
@@ -2156,23 +2277,27 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       }
     },
     listTemplateVersions(user, templateId) {
+      const firmContext = requireFirmContext(user, { method: 'store.listTemplateVersions' })
       requirePermission(user, 'templates:read')
-      const template = state.templateAggregates.find(
-        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
       )
-      if (!template) throw new Error('Template not found.')
       return template.versions || []
     },
     listPublishTransitions(user, templateId) {
+      const firmContext = requireFirmContext(user, { method: 'store.listPublishTransitions' })
       requirePermission(user, 'templates:read')
-      const template = state.templateAggregates.find(
-        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
       )
-      if (!template) throw new Error('Template not found.')
       return template.publishTransitions || []
     },
     listExports(user) {
-      requirePermission(user, 'exports:write')
+      requirePermission(user, 'exports:read')
       return exportsRepository.list(user)
     },
     createExport(user, input) {
@@ -2222,7 +2347,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return exportsRepository.processQueued()
     },
     listAudit(user) {
-      requirePermission(user, 'profiles:read')
+      requirePermission(user, 'audit:read')
       return state.auditEvents
         .filter((entry) => entry.firmId === user.firmId)
         .slice()
@@ -2230,7 +2355,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     },
     logout(token) {
       const session = state.sessions.find((entry) => entry.token === token)
-      state.sessions = state.sessions.filter((entry) => entry.token !== token)
+      invalidateSession(session, 'logout')
       if (session) {
         addAudit(session.firmId, session.userId, 'user', session.userId, 'auth.logout', {
           after: { sessionToken: token }
@@ -2239,12 +2364,15 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       persist()
       return { ok: true }
     },
+    rotateSession(token, reason = 'privilege_transition') {
+      return rotateSession(token, reason)
+    },
     listUsers(user) {
-      requirePermission(user, 'analytics:read')
+      requirePermission(user, 'users:read')
       return state.users.filter((entry) => entry.firmId === user.firmId).map(publicUser)
     },
     inviteUser(user, input) {
-      requirePermission(user, 'profiles:write')
+      requirePermission(user, 'users:manage')
       const allowedRoles = new Set(['advisor', 'readonly', 'client'])
       const role = input.role || 'advisor'
       if (!allowedRoles.has(role)) {
@@ -2353,6 +2481,12 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     removeHouseholdMember(user, householdId, clientId) {
       const firmContext = requireFirmContext(user, { method: 'store.removeHouseholdMember' })
       requirePermission(user, 'households:write')
+      validateTenantEntityOwnership(firmContext, state.households.find((entry) => entry.id === householdId), {
+        entityName: 'Household'
+      })
+      validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === clientId), {
+        entityName: 'Profile'
+      })
       const beforeCount = state.householdMembers.filter(
         (entry) => entry.householdId === householdId && entry.firmId === user.firmId
       ).length
@@ -2373,10 +2507,14 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return { ok: true }
     },
     linkSpouse(user, primaryClientId, spouseClientId) {
+      const firmContext = requireFirmContext(user, { method: 'store.linkSpouse' })
       requirePermission(user, 'households:write')
-      const primary = state.profiles.find((entry) => entry.id === primaryClientId && entry.firmId === user.firmId)
-      const spouse = state.profiles.find((entry) => entry.id === spouseClientId && entry.firmId === user.firmId)
-      if (!primary || !spouse) throw new Error('Profile not found.')
+      const primary = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === primaryClientId), {
+        entityName: 'Profile'
+      })
+      const spouse = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === spouseClientId), {
+        entityName: 'Profile'
+      })
       primary.spouseClientId = spouse.id
       spouse.spouseClientId = primary.id
       let householdId = primary.householdId
@@ -2411,10 +2549,11 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
         throw new Error('Submission patch must be an object.')
       }
-      const submission = state.formSubmissions.find(
-        (entry) => entry.id === submissionId && entry.firmId === user.firmId
+      const submission = validateTenantEntityOwnership(
+        firmContext,
+        state.formSubmissions.find((entry) => entry.id === submissionId),
+        { entityName: 'Submission' }
       )
-      if (!submission) throw new Error('Submission not found.')
       const nextUpdatedAt = patch?.updatedAt || now()
       Object.assign(submission, patch, { updatedAt: nextUpdatedAt })
       persist()
@@ -2423,8 +2562,11 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     deleteSubmission(user, submissionId) {
       const firmContext = requireFirmContext(user, { method: 'store.deleteSubmission' })
       requirePermission(user, 'forms:write')
-      const existing = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId)
-      if (!existing) throw new Error('Submission not found.')
+      const existing = validateTenantEntityOwnership(
+        firmContext,
+        state.formSubmissions.find((entry) => entry.id === submissionId),
+        { entityName: 'Submission' }
+      )
       state.formSubmissions = state.formSubmissions.filter(
         (entry) => !(entry.id === submissionId && entry.firmId === user.firmId)
       )
@@ -2437,8 +2579,16 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     },
     autoBuildTemplate(user, input) {
       requirePermission(user, 'templates:write')
-      const sections = (input.fields || []).reduce((acc, field) => {
-        const sectionKey = field.split('.')[0] || 'general'
+      const pdfBytes =
+        typeof input.fileBytesBase64 === 'string'
+          ? Buffer.from(input.fileBytesBase64, 'base64')
+          : Array.isArray(input.fileBytes)
+            ? Buffer.from(input.fileBytes)
+            : null
+      const extraction = extractTemplateFieldsFromPdfBytes(pdfBytes)
+      const extractedFieldNames = extraction.fields.map((entry) => entry.fieldName)
+      const sections = extractedFieldNames.reduce((acc, field) => {
+        const sectionKey = String(field).split('.')[0] || 'general'
         acc[sectionKey] ||= []
         acc[sectionKey].push(field)
         return acc
@@ -2447,14 +2597,23 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
         name: input.name,
         fileName: input.fileName || 'uploaded.pdf',
         blueprint: { sections },
-        mappings: (input.fields || []).map((field) => ({
+        mappings: extractedFieldNames.map((field) => ({
           pdfField: field,
           sourcePath: field.replace(/\s+/g, '_').toLowerCase()
-        }))
+        })),
+        extractedFields: extraction.fields,
+        extraction: {
+          status: extraction.status,
+          reasonCode: extraction.reasonCode
+        }
       })
     },
     createPortalLink(user, profileId, options = {}) {
-      requirePermission(user, 'profiles:read')
+      const firmContext = requireFirmContext(user, { method: 'store.createPortalLink' })
+      requirePermission(user, 'portal:manage')
+      validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === profileId), {
+        entityName: 'Profile'
+      })
       const createdAt = now()
       const expiresAt = options.expiresAt || new Date(Date.now() + Number(options.expiresInHours || 24) * 3600 * 1000).toISOString()
       const maxUses = Math.max(1, Number(options.maxUses || 1))
@@ -2476,9 +2635,11 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return link
     },
     revokePortalLink(user, linkId) {
-      requirePermission(user, 'profiles:read')
-      const link = state.portalLinks.find((entry) => entry.id === linkId && entry.firmId === user.firmId)
-      if (!link) throw new Error('Portal link not found.')
+      const firmContext = requireFirmContext(user, { method: 'store.revokePortalLink' })
+      requirePermission(user, 'portal:manage')
+      const link = validateTenantEntityOwnership(firmContext, state.portalLinks.find((entry) => entry.id === linkId), {
+        entityName: 'Portal link'
+      })
       if (!link.revokedAt) {
         link.revokedAt = now()
       }
@@ -2924,9 +3085,11 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     },
 
     async createExportDownloadUrl(user, exportId) {
+      const firmContext = requireFirmContext(user, { method: 'store.createExportDownloadUrl' })
       requirePermission(user, 'exports:write')
-      const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId)
-      if (!job) throw new Error('Export not found.')
+      const job = validateTenantEntityOwnership(firmContext, state.exportJobs.find((entry) => entry.id === exportId), {
+        entityName: 'Export'
+      })
       const object = job.output?.object
       if (!object) throw new Error('Export output object not available.')
       return objectStorage.createPresignedDownloadUrl({ ...object, expiresInSeconds: 900 })
@@ -2941,9 +3104,11 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       }
     },
     getMaskedSensitiveData(user, profileId, request = {}) {
-      requirePermission(user, 'profiles:read')
-      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId)
-      if (!profile) throw new Error('Profile not found.')
+      const firmContext = requireFirmContext(user, { method: 'store.getMaskedSensitiveData' })
+      requirePermission(user, 'sensitive:read')
+      const profile = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === profileId), {
+        entityName: 'Profile'
+      })
       const ssn = decryptSensitiveValue(profile.pii?.ssnEncrypted || profile.pii?.ssnCiphertext)
       const taxId = decryptSensitiveValue(profile.pii?.taxIdEncrypted || profile.pii?.taxIdCiphertext)
       const requestedUnmask = request.unmask === true

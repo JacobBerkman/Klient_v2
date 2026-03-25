@@ -1,0 +1,34 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R /AcroForm 5 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Count 2 /Kids [3 0 R 4 0 R] >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R >>
+endobj
+5 0 obj
+<< /Fields [6 0 R 7 0 R 8 0 R] >>
+endobj
+6 0 obj
+<< /FT /Tx /T (client_name) /P 3 0 R /Ff 2 >>
+endobj
+7 0 obj
+<< /FT /Btn /T (consent_checkbox) /P 3 0 R /Ff 1 >>
+endobj
+8 0 obj
+<< /FT /Btn /T (contact_method) /Kids [9 0 R 10 0 R] /Ff 32768 >>
+endobj
+9 0 obj
+<< /Subtype /Widget /Parent 8 0 R /P 4 0 R >>
+endobj
+10 0 obj
+<< /Subtype /Widget /Parent 8 0 R /P 4 0 R >>
+endobj
+trailer
+<< /Root 1 0 R >>
+%%EOF

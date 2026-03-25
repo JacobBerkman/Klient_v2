@@ -1,7 +1,6 @@
 import { appRoutes, routes } from './api-contract.js'
 
 const state = {
-  token: localStorage.getItem('klient-token') || '',
   user: null,
   view: 'dashboard',
   flash: null,
@@ -158,7 +157,7 @@ function flashMarkup() {
 async function request(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase()
   if (MUTATING_METHODS.has(method) && path.startsWith('/api/') && !csrfToken) {
-    const boot = await fetch(routes.csrf())
+    const boot = await fetch(routes.csrf(), { credentials: 'same-origin' })
     const data = await boot.json()
     if (!boot.ok) throw new Error(data.message || 'CSRF bootstrap failed')
     csrfToken = data.csrfToken
@@ -166,9 +165,9 @@ async function request(path, options = {}) {
 
   const response = await fetch(path, {
     ...options,
+    credentials: 'same-origin',
     headers: {
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
       ...(MUTATING_METHODS.has(method) && path.startsWith('/api/') ? { 'X-CSRF-Token': csrfToken } : {}),
       ...(options.headers || {})
     }
@@ -185,8 +184,8 @@ async function request(path, options = {}) {
 async function requestText(path, options = {}) {
   const response = await fetch(path, {
     ...options,
+    credentials: 'same-origin',
     headers: {
-      ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
       ...(options.headers || {})
     }
   })
@@ -265,7 +264,7 @@ function updateRoleVisibility() {
 }
 
 async function refreshSelects() {
-  if (!state.token || !state.user || state.user.role === 'client') return
+  if (!state.user || state.user.role === 'client') return
   const clients = await request(routes.profiles({ kind: 'client' }))
   const profiles = await request(routes.profiles())
   householdPrimaryEl.innerHTML = clients
@@ -894,12 +893,6 @@ async function renderCurrentView() {
 }
 
 async function hydrateSession() {
-  if (!state.token) {
-    state.user = null
-    authStatusEl.textContent = 'Not signed in'
-    updateRoleVisibility()
-    return
-  }
   try {
     const session = await request(routes.session())
     state.user = session.user
@@ -908,8 +901,6 @@ async function hydrateSession() {
     await refreshSelects()
     updateMfaUi()
   } catch {
-    state.token = ''
-    localStorage.removeItem('klient-token')
     state.user = null
     authStatusEl.textContent = 'Not signed in'
     updateRoleVisibility()
@@ -918,8 +909,6 @@ async function hydrateSession() {
 }
 
 async function finishAuth(session, message) {
-  state.token = session.token
-  localStorage.setItem('klient-token', session.token)
   state.user = session.user
   authStatusEl.textContent = JSON.stringify(session.user, null, 2)
   state.view = session.user.role === 'client' ? 'forms' : 'dashboard'
