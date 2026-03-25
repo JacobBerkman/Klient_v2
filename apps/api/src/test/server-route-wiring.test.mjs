@@ -64,6 +64,39 @@ test('GET /api/profiles forwards query params to profiles service', async () => 
   await close(server)
 })
 
+test('pipeline stage config routes are transport-only and call pipelineStages module', async () => {
+  const calls = []
+  const fakeUser = { id: 'u1', firmId: 'f1', role: 'admin' }
+  const modules = {
+    auth: { requireUser: () => fakeUser },
+    policy: { requireGuard: () => calls.push('policy.requireGuard') },
+    pipelineStages: {
+      listStages: (user) => (calls.push(`list:${user.id}`), { stages: [] }),
+      createStage: (user, payload) => (calls.push({ op: 'create', user: user.id, payload }), { id: 'stage-1' })
+    }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+
+  const listRes = await fetch(`${base}/api/pipeline/stages`, { headers: { authorization: 'Bearer token' } })
+  const listBody = await listRes.json()
+  assert.equal(listRes.status, 200)
+  assert.deepEqual(listBody, { stages: [] })
+
+  const createRes = await fetch(`${base}/api/pipeline/stages`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+    body: JSON.stringify({ key: 'new_stage', label: 'New Stage' })
+  })
+  const createBody = await createRes.json()
+  assert.equal(createRes.status, 201)
+  assert.equal(createBody.id, 'stage-1')
+  assert.deepEqual(calls, ['list:u1', { op: 'create', user: 'u1', payload: { key: 'new_stage', label: 'New Stage' } }])
+
+  await close(server)
+})
+
 test('POST /api/login handles mfaRequired responses without issuing csrf tokens', async () => {
   const modules = {
     auth: {

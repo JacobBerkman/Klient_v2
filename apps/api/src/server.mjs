@@ -928,6 +928,38 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      if (pathname === '/api/pipeline/stages' && req.method === 'GET') {
+        const user = requireUser()
+        const result = modules.pipelineStages.listStages(user)
+        finalizeLog(200, { firmId: user.firmId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/pipeline/stages' && req.method === 'POST') {
+        const user = requireUser()
+        const result = modules.pipelineStages.createStage(user, await parseBody(req))
+        finalizeLog(201, { firmId: user.firmId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/pipeline/stages/reorder' && req.method === 'PATCH') {
+        const user = requireUser()
+        const result = modules.pipelineStages.reorderStages(user, await parseBody(req))
+        finalizeLog(200, { firmId: user.firmId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/pipeline/stages/') && req.method === 'PATCH') {
+        const stageId = pathname.split('/')[4]
+        const user = requireUser()
+        const result = modules.pipelineStages.updateStageMetadata(user, stageId, await parseBody(req))
+        finalizeLog(200, { firmId: user.firmId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/pipeline/stages/') && pathname.endsWith('/deactivate') && req.method === 'POST') {
+        const stageId = pathname.split('/')[4]
+        const user = requireUser()
+        const result = modules.pipelineStages.deactivateStage(user, stageId)
+        finalizeLog(200, { firmId: user.firmId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname === '/api/pipeline/reorder' && req.method === 'PATCH') {
         const body = await parseBody(req)
         const user = requireUser()

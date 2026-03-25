@@ -7,6 +7,7 @@ import { FormsRepository } from '../modules/forms/repository.mjs'
 import { ExportsRepository } from '../modules/exports/repository.mjs'
 import { AuditRepository } from '../modules/audit/repository.mjs'
 import { AnalyticsRepository } from '../modules/analytics/repository.mjs'
+import { PipelineStagesRepository } from '../modules/pipeline-stages/repository.mjs'
 import { requireFirmContext } from '../modules/shared/tenancy.mjs'
 
 export class StoreProfileRepository extends ProfileRepository {
@@ -276,5 +277,32 @@ export class StoreAnalyticsRepository extends AnalyticsRepository {
   listExports(firmContext) {
     const context = requireFirmContext(firmContext, { method: 'analytics.listExports' })
     return this.store.listExports(context)
+  }
+}
+
+export class StorePipelineStagesRepository extends PipelineStagesRepository {
+  constructor(store) {
+    super()
+    this.store = store
+  }
+  listStages(firmContext) {
+    const context = requireFirmContext(firmContext, { method: 'pipelineStages.listStages' })
+    return this.store.listPipelineStages(context)
+  }
+  createStage(firmContext, input) {
+    const context = requireFirmContext(firmContext, { method: 'pipelineStages.createStage' })
+    return this.store.createPipelineStage(context, input)
+  }
+  updateStageMetadata(firmContext, stageId, patch) {
+    const context = requireFirmContext(firmContext, { method: 'pipelineStages.updateStageMetadata' })
+    return this.store.updatePipelineStageMetadata(context, stageId, patch)
+  }
+  deactivateStage(firmContext, stageId) {
+    const context = requireFirmContext(firmContext, { method: 'pipelineStages.deactivateStage' })
+    return this.store.deactivatePipelineStage(context, stageId)
+  }
+  reorderStages(firmContext, input) {
+    const context = requireFirmContext(firmContext, { method: 'pipelineStages.reorderStages' })
+    return this.store.reorderPipelineStages(context, input)
   }
 }

@@ -67,6 +67,28 @@ const PERMISSIONS = {
   client: ['portal:read', 'client:write'],
   anonymous: []
 }
+const BOARD_COLUMNS = [
+  'discovery',
+  'gather_oi',
+  'analysis',
+  'advisor_proposal_meeting',
+  'intake',
+  'on_boarding',
+  'investment_strategy',
+  'completed',
+  'drop_dead_lead',
+  'drop_nurture'
+]
+const STAGE_KEY_PATTERN = /^[a-z0-9]+(?:_[a-z0-9]+)*$/
+
+function defaultStageLabel(stageKey) {
+  return String(stageKey || '')
+    .split('_')
+    .filter(Boolean)
+    .map((segment) => segment[0].toUpperCase() + segment.slice(1))
+    .join(' ')
+}
+
 function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission)
 }
@@ -795,6 +817,7 @@ export function createStore({
   state.pipelineStagesByFirm ||= {}
   state.pendingUploadIntents ||= []
   state.draftStepStates ||= []
+  state.pipelineStages ||= []
   state.sessions = (state.sessions || []).map((session) => {
     const createdAt = session.createdAt || now()
     const lastActivityAt = session.lastActivityAt || createdAt
@@ -1009,17 +1032,33 @@ export function createStore({
     return state.boardVersions[firmId]
   }
 
-  function getFirmStageMetadata(firmId) {
-    const configured = state.pipelineStagesByFirm?.[firmId]
-    const normalized = normalizeStageConfiguration(configured)
-    if (!state.pipelineStagesByFirm[firmId] || state.pipelineStagesByFirm[firmId].length !== normalized.length) {
-      state.pipelineStagesByFirm[firmId] = normalized.map(({ order, ...stage }) => ({ ...stage }))
-    }
-    return normalized
+  function ensureFirmPipelineStages(firmId) {
+    const existing = state.pipelineStages
+      .filter((entry) => entry.firmId === firmId)
+      .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
+    if (existing.length > 0) return existing
+    const createdAt = now()
+    const defaults = BOARD_COLUMNS.map((key, index) => ({
+      id: randomUUID(),
+      firmId,
+      key,
+      label: defaultStageLabel(key),
+      color: null,
+      isActive: true,
+      order: index + 1,
+      createdAt,
+      updatedAt: createdAt,
+      deactivatedAt: null
+    }))
+    state.pipelineStages.push(...defaults)
+    persist()
+    return defaults
   }
 
-  function getOrderedStageIds(firmId) {
-    return getFirmStageMetadata(firmId).map((stage) => stage.id)
+  function listFirmPipelineStages(firmId) {
+    return ensureFirmPipelineStages(firmId)
+      .slice()
+      .sort((a, b) => Number(a.order || 0) - Number(b.order || 0))
   }
 
   function listProspectsByStage(firmId, stage, excludedProfileId = null) {
@@ -1438,6 +1477,105 @@ export function createStore({
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) })
       persist()
       return profile
+    },
+    listPipelineStages(firmContext) {
+      const context = requireFirmContext(firmContext, { method: 'store.listPipelineStages' })
+      requirePermission(context.user || context, 'pipeline:read')
+      return {
+        stages: listFirmPipelineStages(context.firmId)
+      }
+    },
+    createPipelineStage(firmContext, input) {
+      const context = requireFirmContext(firmContext, { method: 'store.createPipelineStage' })
+      requirePermission(context.user || context, 'pipeline:write')
+      const key = String(input?.key || '')
+        .trim()
+        .toLowerCase()
+      if (!STAGE_KEY_PATTERN.test(key)) {
+        throw new Error('Stage key must be snake_case alphanumeric.')
+      }
+      const stages = listFirmPipelineStages(context.firmId)
+      if (stages.some((entry) => entry.key === key)) {
+        throw new Error('Stage key already exists.')
+      }
+      const order = stages.length + 1
+      const createdAt = now()
+      const stage = {
+        id: randomUUID(),
+        firmId: context.firmId,
+        key,
+        label: String(input?.label || defaultStageLabel(key)).trim(),
+        color: input?.color ? String(input.color).trim() : null,
+        isActive: true,
+        order,
+        createdAt,
+        updatedAt: createdAt,
+        deactivatedAt: null
+      }
+      state.pipelineStages.push(stage)
+      addAudit(context.firmId, context.userId, 'pipeline', stage.id, 'pipeline.stage_config_created', {
+        key: stage.key,
+        label: stage.label
+      })
+      persist()
+      return stage
+    },
+    updatePipelineStageMetadata(firmContext, stageId, patch) {
+      const context = requireFirmContext(firmContext, { method: 'store.updatePipelineStageMetadata' })
+      requirePermission(context.user || context, 'pipeline:write')
+      const stage = validateTenantEntityOwnership(
+        context,
+        state.pipelineStages.find((entry) => entry.id === stageId),
+        { entityName: 'Pipeline stage' }
+      )
+      if (patch?.label !== undefined) stage.label = String(patch.label || '').trim() || defaultStageLabel(stage.key)
+      if (patch?.color !== undefined) stage.color = patch.color ? String(patch.color).trim() : null
+      stage.updatedAt = now()
+      addAudit(context.firmId, context.userId, 'pipeline', stage.id, 'pipeline.stage_config_updated', {
+        fields: Object.keys(patch || {})
+      })
+      persist()
+      return stage
+    },
+    deactivatePipelineStage(firmContext, stageId) {
+      const context = requireFirmContext(firmContext, { method: 'store.deactivatePipelineStage' })
+      requirePermission(context.user || context, 'pipeline:write')
+      const stage = validateTenantEntityOwnership(
+        context,
+        state.pipelineStages.find((entry) => entry.id === stageId),
+        { entityName: 'Pipeline stage' }
+      )
+      stage.isActive = false
+      stage.deactivatedAt = now()
+      stage.updatedAt = stage.deactivatedAt
+      addAudit(context.firmId, context.userId, 'pipeline', stage.id, 'pipeline.stage_config_deactivated', {
+        key: stage.key
+      })
+      persist()
+      return stage
+    },
+    reorderPipelineStages(firmContext, input) {
+      const context = requireFirmContext(firmContext, { method: 'store.reorderPipelineStages' })
+      requirePermission(context.user || context, 'pipeline:write')
+      const stageIds = Array.isArray(input?.stageIds) ? input.stageIds.filter(Boolean) : []
+      const stages = listFirmPipelineStages(context.firmId)
+      if (stageIds.length !== stages.length) {
+        throw new Error('stageIds must include every stage id for the firm.')
+      }
+      const idSet = new Set(stageIds)
+      if (idSet.size !== stages.length || stages.some((entry) => !idSet.has(entry.id))) {
+        throw new Error('stageIds must include every stage id exactly once.')
+      }
+      stageIds.forEach((id, index) => {
+        const stage = stages.find((entry) => entry.id === id)
+        stage.order = index + 1
+        stage.updatedAt = now()
+      })
+      addAudit(context.firmId, context.userId, 'pipeline', context.firmId, 'pipeline.stage_config_reordered', {
+        stageIds
+      })
+      persist()
+      return { stages: listFirmPipelineStages(context.firmId) }
     },
     moveProfileStage(user, profileId, stage, beforeProfileId = null) {
       return this.reorderBoard(user, { profileId, toStage: stage, beforeProfileId })
