@@ -9,11 +9,11 @@ export function assertAuthProvider(provider) {
     'createMfaChallenge',
     'verifyMfaChallenge',
     'rotateBackupCodes'
-  ];
+  ]
   for (const method of requiredMethods) {
     if (typeof provider?.[method] !== 'function') {
-      throw new Error(`Invalid auth provider: missing ${method}().`);
+      throw new Error(`Invalid auth provider: missing ${method}().`)
     }
   }
-  return provider;
+  return provider
 }
