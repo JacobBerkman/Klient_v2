@@ -78,7 +78,12 @@ test('board reorder supports cross-stage moves with deterministic index compacti
     analysis.cards.slice(0, 2).map((card) => card.stageOrderIndex),
     [1, 2]
   )
+  assert.deepEqual(
+    analysis.cards.slice(0, 2).map((card) => card.orderIndex),
+    [1, 2]
+  )
   assert.equal(discovery.cards.find((card) => card.id === first.id)?.stageOrderIndex, 1)
+  assert.equal(discovery.cards.find((card) => card.id === first.id)?.orderIndex, 1)
   assert.ok(board.boardVersion > initialBoard.boardVersion)
 })
 
