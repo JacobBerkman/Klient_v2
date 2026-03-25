@@ -23,7 +23,8 @@ import {
 } from './modules/forms/schema/form-definition-validator.mjs'
 import { validateMappingRules } from './modules/templates/schema/mapping-rules-validator.mjs'
 
-const SESSION_TTL_MS = 1000 * 60 * 60 * 8
+const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 8
+const SESSION_IDLE_TIMEOUT_MS = 1000 * 60 * 30
 const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7
 const PERMISSIONS = {
   admin: ['*'],
@@ -699,13 +700,30 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
   }
 }
 
-export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvider = null, piiCrypto = null } = {}) {
+export function createStore({
+  objectStorage = defaultObjectStorage,
+  piiKeyProvider = null,
+  piiCrypto = null,
+  onSessionInvalidated = () => {}
+} = {}) {
   const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
   state.profiles = (state.profiles || []).map(normalizeProfileRecord)
   saveState(state)
   state.pendingUploadIntents ||= []
   state.draftStepStates ||= []
+  state.sessions = (state.sessions || []).map((session) => {
+    const createdAt = session.createdAt || now()
+    const lastActivityAt = session.lastActivityAt || createdAt
+    return {
+      ...session,
+      createdAt,
+      lastActivityAt,
+      expiresAt: session.expiresAt || new Date(new Date(createdAt).getTime() + SESSION_MAX_AGE_MS).toISOString(),
+      idleExpiresAt:
+        session.idleExpiresAt || new Date(new Date(lastActivityAt).getTime() + SESSION_IDLE_TIMEOUT_MS).toISOString()
+    }
+  })
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
     return {
@@ -963,22 +981,58 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
 
   function createSession(user) {
     const token = randomUUID()
+    const createdAt = now()
+    const lastActivityAt = createdAt
     state.sessions.push({
       token,
       userId: user.id,
       firmId: user.firmId,
-      createdAt: now(),
-      expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString()
+      createdAt,
+      lastActivityAt,
+      expiresAt: new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString(),
+      idleExpiresAt: new Date(Date.now() + SESSION_IDLE_TIMEOUT_MS).toISOString()
     })
     persist()
     return { token, user: publicUser(user) }
   }
 
+  function invalidateSession(session, reason = 'unknown') {
+    if (!session?.token) return false
+    const previousLength = state.sessions.length
+    state.sessions = state.sessions.filter((entry) => entry.token !== session.token)
+    const removed = state.sessions.length !== previousLength
+    if (removed) {
+      onSessionInvalidated({
+        token: session.token,
+        userId: session.userId,
+        firmId: session.firmId,
+        reason
+      })
+    }
+    return removed
+  }
+
   function pruneExpiredSessions() {
-    const cutoff = Date.now()
-    const nextSessions = state.sessions.filter((entry) => new Date(entry.expiresAt).getTime() > cutoff)
-    if (nextSessions.length !== state.sessions.length) {
-      state.sessions = nextSessions
+    const nowMs = Date.now()
+    const activeSessions = []
+    let changed = false
+    for (const entry of state.sessions) {
+      const absoluteValid = new Date(entry.expiresAt).getTime() > nowMs
+      const idleValid = new Date(entry.idleExpiresAt || 0).getTime() > nowMs
+      if (absoluteValid && idleValid) {
+        activeSessions.push(entry)
+        continue
+      }
+      changed = true
+      onSessionInvalidated({
+        token: entry.token,
+        userId: entry.userId,
+        firmId: entry.firmId,
+        reason: absoluteValid ? 'idle_timeout' : 'max_age_expired'
+      })
+    }
+    if (changed) {
+      state.sessions = activeSessions
       persist()
     }
   }
@@ -1000,7 +1054,21 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     if (!session) throw new Error('Authentication required.')
     const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId)
     if (!user) throw new Error('Authentication required.')
+    session.lastActivityAt = now()
+    session.idleExpiresAt = new Date(Date.now() + SESSION_IDLE_TIMEOUT_MS).toISOString()
+    persist()
     return publicUser(user)
+  }
+
+  function rotateSession(token, reason = 'privilege_transition') {
+    pruneExpiredSessions()
+    const session = state.sessions.find((entry) => entry.token === token)
+    if (!session) throw new Error('Authentication required.')
+    const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId)
+    if (!user) throw new Error('Authentication required.')
+    invalidateSession(session, reason)
+    persist()
+    return createSession(user)
   }
 
   function addAudit(firmId, actorUserId, entityType, entityId, action, changeSet = {}, options = {}) {
@@ -2120,7 +2188,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     },
     logout(token) {
       const session = state.sessions.find((entry) => entry.token === token)
-      state.sessions = state.sessions.filter((entry) => entry.token !== token)
+      invalidateSession(session, 'logout')
       if (session) {
         addAudit(session.firmId, session.userId, 'user', session.userId, 'auth.logout', {
           after: { sessionToken: token }
@@ -2128,6 +2196,9 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       }
       persist()
       return { ok: true }
+    },
+    rotateSession(token, reason = 'privilege_transition') {
+      return rotateSession(token, reason)
     },
     listUsers(user) {
       requirePermission(user, 'analytics:read')

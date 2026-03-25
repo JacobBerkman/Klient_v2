@@ -176,3 +176,13 @@ test('mfa flow enforces challenge-based login, backup codes, and lockout behavio
     /Too many failed login attempts/
   )
 })
+
+test('session rotation invalidates prior session token during privilege transitions', async () => {
+  const { store } = await loadStoreWithIsolatedState()
+  const session = store.login({ email: 'admin@demo.test', password: 'ChangeMe123!' })
+  const rotated = store.rotateSession(session.token, 'mfa_verified')
+  assert.ok(rotated.token)
+  assert.notEqual(rotated.token, session.token)
+  assert.throws(() => store.requireUser(session.token), /Authentication required/)
+  assert.equal(store.requireUser(rotated.token).id, rotated.user.id)
+})

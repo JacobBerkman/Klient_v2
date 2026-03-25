@@ -21,6 +21,10 @@ try {
   assert(Boolean(csrfData.csrfToken), 'CSRF token missing from issuance response')
   assert(Boolean(csrfData.expiresAt), 'CSRF bootstrap should include TTL metadata')
   assert(csrfCookie.startsWith('__Host-klient-csrf='), 'CSRF cookie missing')
+  assert(setCookie.includes('Path=/'), 'CSRF cookie must be host-scoped with Path=/')
+  assert(setCookie.includes('HttpOnly'), 'CSRF cookie must be HttpOnly')
+  assert(setCookie.includes('SameSite=Strict'), 'CSRF cookie must use SameSite=Strict')
+  assert(setCookie.includes('Max-Age='), 'CSRF cookie must include Max-Age')
 
   const mutatingHeaders = {
     Authorization: `Bearer ${login.token}`,
@@ -116,6 +120,19 @@ try {
     'Origin-failure response should include CSRF error code'
   )
 
+  const secFetchCrossSiteResponse = await fetch(`${baseUrl}/api/logout`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${secondLogin.token}`,
+      'X-CSRF-Token': freshCsrfData.csrfToken,
+      Cookie: freshCookie,
+      Origin: baseUrl,
+      Referer: `${baseUrl}/`,
+      'Sec-Fetch-Site': 'cross-site'
+    }
+  })
+  assert(secFetchCrossSiteResponse.status === 403, 'Cross-site Sec-Fetch-Site must be rejected')
+
   console.log(
     JSON.stringify(
       {
@@ -125,7 +142,8 @@ try {
         replay: replayResponse.status,
         missingToken: missingTokenResponse.status,
         staleToken: staleTokenResponse.status,
-        crossOrigin: invalidOriginResponse.status
+        crossOrigin: invalidOriginResponse.status,
+        secFetchCrossSite: secFetchCrossSiteResponse.status
       },
       null,
       2

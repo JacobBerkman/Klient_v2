@@ -30,6 +30,9 @@ export function createAuthService({ store }) {
     logout(token) {
       return store.logout(token)
     },
+    rotateSession(token, reason) {
+      return store.rotateSession(token, reason)
+    },
     requireUser(token) {
       return store.requireUser(token)
     }
