@@ -118,7 +118,7 @@ try {
   assert(!secondFirmProfiles.some((profile) => profile.id === ownProfile.id), 'Secondary firm can see foreign profile')
   assert(firstFirmDashboard.firm.id !== secondFirmDashboard.firm.id, 'Dashboard firm IDs should differ across tenants')
 
-  await context.requestExpectError(`/api/profiles/${ownProfile.id}`, { headers: secondHeaders }, [400, 403, 404])
+  await context.requestExpectError(`/api/profiles/${ownProfile.id}`, { headers: secondHeaders }, 404)
   await context.requestExpectError(
     `/api/profiles/${ownProfile.id}`,
     {
@@ -126,7 +126,7 @@ try {
       headers: secondHeaders,
       body: JSON.stringify({ firstName: 'Compromised' })
     },
-    [400, 403, 404]
+    404
   )
   await context.requestExpectError(
     `/api/households/${household.id}/members`,
@@ -135,7 +135,7 @@ try {
       headers: secondHeaders,
       body: JSON.stringify({ clientId: secondProfile.id, role: 'member' })
     },
-    [400, 403, 404]
+    404
   )
   await context.requestExpectError(
     `/api/forms/submissions/${submission.id}`,
@@ -144,7 +144,7 @@ try {
       headers: secondHeaders,
       body: JSON.stringify({ status: 'submitted' })
     },
-    [400, 403, 404]
+    404
   )
   await context.requestExpectError(
     `/api/forms/submissions/${submission.id}`,
@@ -152,7 +152,7 @@ try {
       method: 'DELETE',
       headers: secondHeaders
     },
-    [400, 403, 404]
+    404
   )
   await context.requestExpectError(
     `/api/templates/${documentTemplate.id}/mappings`,
@@ -161,7 +161,7 @@ try {
       headers: secondHeaders,
       body: JSON.stringify({ mappings: [{ key: 'x', source: 'y' }] })
     },
-    [400, 403, 404]
+    404
   )
   await context.requestExpectError(
     `/api/templates/${documentTemplate.id}/publish`,
@@ -169,7 +169,7 @@ try {
       method: 'POST',
       headers: secondHeaders
     },
-    [400, 403, 404]
+    404
   )
   await context.requestExpectError(
     `/api/exports/${exportJob.id}/retry`,
@@ -177,7 +177,7 @@ try {
       method: 'POST',
       headers: secondHeaders
     },
-    [400, 403, 404]
+    404
   )
 
   const secondAudit = await context.request('/api/audit', { headers: secondHeaders })

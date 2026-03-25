@@ -160,16 +160,8 @@ try {
       if (allow.has(role)) {
         await context.request(check.path, options)
       } else {
-        let denied = null
-        for (const status of [401, 403, 404]) {
-          try {
-            denied = await context.requestExpectError(check.path, options, status)
-            observedDenials.add(`${role}:${check.guard}`)
-            break
-          } catch {
-            // try alternate denial status
-          }
-        }
+        const denied = await context.requestExpectError(check.path, options, 403)
+        observedDenials.add(`${role}:${check.guard}`)
         assert(Boolean(denied), `${role} must be denied ${method} ${check.path}`)
       }
     }
