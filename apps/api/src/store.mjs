@@ -11,6 +11,7 @@ import {
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
+import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest()
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
@@ -412,10 +413,11 @@ function seedState() {
         phone: '555-000-1111',
         dateOfBirth: '1981-04-12',
         source: {
-          cityOrLocation: 'Dallas',
-          venue: 'Referral',
-          occurredOn: '2026-03-01',
-          displayValue: sourceDisplay({ cityOrLocation: 'Dallas', venue: 'Referral', occurredOn: '2026-03-01' })
+          sourceCity: 'Dallas',
+          sourceVenue: 'Referral',
+          sourceDate: '2026-03-01',
+          campaignId: null,
+          displayValue: formatProfileSourceDisplay({ sourceCity: 'Dallas', sourceVenue: 'Referral', sourceDate: '2026-03-01' })
         },
         status: 'active',
         address: { city: 'Dallas', state: 'TX' },
@@ -462,10 +464,11 @@ function seedState() {
         stageOrderIndex: 1,
         pipelineVersion: 1,
         source: {
-          cityOrLocation: 'Austin',
-          venue: 'Seminar',
-          occurredOn: '2026-03-10',
-          displayValue: sourceDisplay({ cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10' })
+          sourceCity: 'Austin',
+          sourceVenue: 'Seminar',
+          sourceDate: '2026-03-10',
+          campaignId: null,
+          displayValue: formatProfileSourceDisplay({ sourceCity: 'Austin', sourceVenue: 'Seminar', sourceDate: '2026-03-10' })
         },
         status: 'new',
         address: { city: 'Austin', state: 'TX' },
@@ -487,10 +490,11 @@ function seedState() {
         stageOrderIndex: 1,
         pipelineVersion: 1,
         source: {
-          cityOrLocation: 'Houston',
-          venue: 'CPA Referral',
-          occurredOn: '2026-03-15',
-          displayValue: sourceDisplay({ cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15' })
+          sourceCity: 'Houston',
+          sourceVenue: 'CPA Referral',
+          sourceDate: '2026-03-15',
+          campaignId: null,
+          displayValue: formatProfileSourceDisplay({ sourceCity: 'Houston', sourceVenue: 'CPA Referral', sourceDate: '2026-03-15' })
         },
         status: 'qualified',
         address: { city: 'Houston', state: 'TX' },
