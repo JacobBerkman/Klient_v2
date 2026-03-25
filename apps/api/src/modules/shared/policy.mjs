@@ -1,89 +1,18 @@
-const POLICY_MATRIX = {
-  admin: {
-    users: { manage: true, read: true },
-    profiles: { read: true, write: true, sensitiveRead: true },
-    pipeline: { move: true, read: true },
-    households: { read: true, write: true },
-    forms: { read: true, write: true },
-    templates: { read: true, write: true, publish: true },
-    exports: { read: true, write: true, process: true },
-    analytics: { read: true },
-    audit: { read: true },
-    diagnostics: { read: true },
-    portal: { read: true, create: true },
-    clientWorkspace: { read: true, write: true }
-  },
-  advisor: {
-    users: { manage: false, read: false },
-    profiles: { read: true, write: true, sensitiveRead: true },
-    pipeline: { move: true, read: true },
-    households: { read: true, write: true },
-    forms: { read: true, write: true },
-    templates: { read: true, write: true, publish: true },
-    exports: { read: true, write: true, process: true },
-    analytics: { read: true },
-    audit: { read: true },
-    diagnostics: { read: true },
-    portal: { read: true, create: true },
-    clientWorkspace: { read: false, write: false }
-  },
-  readonly: {
-    users: { manage: false, read: false },
-    profiles: { read: true, write: false, sensitiveRead: false },
-    pipeline: { move: false, read: true },
-    households: { read: true, write: false },
-    forms: { read: true, write: false },
-    templates: { read: false, write: false, publish: false },
-    exports: { read: false, write: false, process: false },
-    analytics: { read: true },
-    audit: { read: true },
-    diagnostics: { read: false },
-    portal: { read: true, create: true },
-    clientWorkspace: { read: false, write: false }
-  },
-  client: {
-    users: { manage: false, read: false },
-    profiles: { read: false, write: false, sensitiveRead: false },
-    pipeline: { move: false, read: false },
-    households: { read: false, write: false },
-    forms: { read: false, write: false },
-    templates: { read: false, write: false, publish: false },
-    exports: { read: false, write: false, process: false },
-    analytics: { read: false },
-    audit: { read: false },
-    diagnostics: { read: false },
-    portal: { read: true, create: false },
-    clientWorkspace: { read: true, write: true }
-  }
-}
+import { readFileSync } from 'node:fs'
 
-const GUARD_TO_POLICY = {
-  canManageUsers: ['users', 'manage'],
-  canReadUsers: ['users', 'read'],
-  canViewDashboard: ['profiles', 'read'],
-  canReadProfiles: ['profiles', 'read'],
-  canWriteProfiles: ['profiles', 'write'],
-  canReadSensitiveProfileData: ['profiles', 'sensitiveRead'],
-  canReadPipeline: ['pipeline', 'read'],
-  canMovePipeline: ['pipeline', 'move'],
-  canReadHouseholds: ['households', 'read'],
-  canWriteHouseholds: ['households', 'write'],
-  canReadForms: ['forms', 'read'],
-  canWriteForms: ['forms', 'write'],
-  canReadTemplate: ['templates', 'read'],
-  canEditTemplate: ['templates', 'write'],
-  canPublishTemplate: ['templates', 'publish'],
-  canReadExports: ['exports', 'read'],
-  canWriteExports: ['exports', 'write'],
-  canProcessExports: ['exports', 'process'],
-  canReadAudit: ['audit', 'read'],
-  canReadAnalytics: ['analytics', 'read'],
-  canReadDiagnostics: ['diagnostics', 'read'],
-  canReadClientWorkspace: ['clientWorkspace', 'read'],
-  canWriteClientWorkspace: ['clientWorkspace', 'write'],
-  canCreatePortalLink: ['portal', 'create'],
-  canReadPortal: ['portal', 'read']
-}
+const POLICY_MATRIX = Object.freeze(
+  JSON.parse(readFileSync(new URL('./policy-matrix.json', import.meta.url), 'utf8'))
+)
+
+const ROLE_PERMISSIONS = Object.freeze(
+  Object.entries(POLICY_MATRIX).reduce((acc, [guardName, roles]) => {
+    for (const role of roles) {
+      if (!acc[role]) acc[role] = {}
+      acc[role][guardName] = true
+    }
+    return acc
+  }, {})
+)
 
 function createPolicyError(message, code, details = null) {
   const error = new Error(message)
@@ -95,25 +24,26 @@ function createPolicyError(message, code, details = null) {
 
 export function createPolicy() {
   function evaluateGuard(user, guardName) {
-    const mapping = GUARD_TO_POLICY[guardName]
-    if (!mapping) {
+    const allowedRoles = POLICY_MATRIX[guardName]
+    if (!allowedRoles) {
       return { allowed: false, reasonCode: 'POLICY_GUARD_UNKNOWN', details: { guardName } }
     }
-    if (!user?.role) {
+
+    const role = user?.role || 'anonymous'
+    if (role === 'anonymous' && !allowedRoles.includes('anonymous')) {
       return { allowed: false, reasonCode: 'POLICY_USER_ROLE_MISSING', details: { guardName } }
     }
 
-    const [resource, action] = mapping
-    const allowed = Boolean(POLICY_MATRIX[user.role]?.[resource]?.[action])
+    const allowed = allowedRoles.includes(role)
     if (!allowed) {
       return {
         allowed: false,
         reasonCode: 'POLICY_ACCESS_DENIED',
-        details: { guardName, role: user.role, resource, action }
+        details: { guardName, role, allowedRoles }
       }
     }
 
-    return { allowed: true, reasonCode: 'POLICY_ALLOW', details: { guardName, role: user.role, resource, action } }
+    return { allowed: true, reasonCode: 'POLICY_ALLOW', details: { guardName, role, allowedRoles } }
   }
 
   function requireGuard(user, guardName) {
@@ -126,7 +56,8 @@ export function createPolicy() {
 
   return {
     matrix: POLICY_MATRIX,
-    guards: GUARD_TO_POLICY,
+    roleMatrix: ROLE_PERMISSIONS,
+    guards: POLICY_MATRIX,
     evaluateGuard,
     requireGuard,
     requirePermission(user, permission) {

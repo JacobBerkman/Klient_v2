@@ -88,12 +88,12 @@ const operations = [
   {
     key: 'forms.getClientWorkspace',
     invoke: (s, u) => s.forms.getClientWorkspace(u),
-    allowed: new Set(['admin', 'client'])
+    allowed: new Set(['client'])
   },
   {
     key: 'forms.submitClientForm',
     invoke: (s, u) => s.forms.submitClientForm(u, {}),
-    allowed: new Set(['admin', 'client'])
+    allowed: new Set(['client'])
   },
   { key: 'templates.list', invoke: (s, u) => s.templates.list(u), allowed: new Set(['admin', 'advisor']) },
   { key: 'templates.create', invoke: (s, u) => s.templates.create(u, {}), allowed: new Set(['admin', 'advisor']) },
