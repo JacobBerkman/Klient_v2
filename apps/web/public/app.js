@@ -2,7 +2,8 @@ const state = {
   token: localStorage.getItem('klient-token') || '',
   user: null,
   view: 'dashboard',
-  flash: null
+  flash: null,
+  board: null
 }
 
 const viewEl = document.querySelector('#view')
@@ -22,16 +23,62 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;')
 }
 
-function parseJson(value, fallback = {}) {
-  try {
-    return JSON.parse(value)
-  } catch {
-    return fallback
-  }
-}
-
 function setFlash(type, message) {
   state.flash = { type, message }
+}
+
+function findBoardColumn(board, stage) {
+  return board?.columns?.find((column) => column.stage === stage) || null
+}
+
+function applyOptimisticReorder(board, move) {
+  if (!board?.columns?.length) return board
+  const nextBoard = structuredClone(board)
+  const fromColumn = nextBoard.columns.find((column) => column.cards.some((card) => card.id === move.profileId))
+  const toColumn = findBoardColumn(nextBoard, move.toStage)
+  if (!fromColumn || !toColumn) return board
+  const sourceIndex = fromColumn.cards.findIndex((card) => card.id === move.profileId)
+  if (sourceIndex < 0) return board
+
+  const [card] = fromColumn.cards.splice(sourceIndex, 1)
+  card.stage = move.toStage
+  let targetIndex = toColumn.cards.length
+  if (move.beforeProfileId) {
+    const beforeIndex = toColumn.cards.findIndex((entry) => entry.id === move.beforeProfileId)
+    targetIndex = beforeIndex >= 0 ? beforeIndex : toColumn.cards.length
+  }
+  toColumn.cards.splice(targetIndex, 0, card)
+
+  for (const column of nextBoard.columns) {
+    column.cards.forEach((entry, index) => {
+      entry.orderIndex = index + 1
+      entry.stageOrderIndex = index + 1
+    })
+  }
+  return nextBoard
+}
+
+async function reorderPipelineOptimistically(move) {
+  const previousBoard = state.board ? structuredClone(state.board) : null
+  if (previousBoard) {
+    state.board = applyOptimisticReorder(previousBoard, move)
+  }
+  try {
+    const payload = {
+      ...move,
+      expectedBoardVersion: previousBoard?.boardVersion ?? null
+    }
+    const result = await request('/api/pipeline/reorder', {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    })
+    state.board = result.board
+    return result
+  } catch (error) {
+    const conflictBoard = error?.details?.serverBoard || null
+    state.board = conflictBoard || previousBoard
+    throw error
+  }
 }
 
 function flashMarkup() {
@@ -59,7 +106,11 @@ async function request(path, options = {}) {
     }
   })
   const data = await response.json()
-  if (!response.ok) throw new Error(data?.error?.message || data?.message || 'Request failed')
+  if (!response.ok) {
+    const error = new Error(data?.error?.message || data?.message || 'Request failed')
+    error.details = data?.error?.details || null
+    throw error
+  }
   return data
 }
 

@@ -36,6 +36,7 @@ db.exec(`
     last_name TEXT NOT NULL,
     stage TEXT,
     stage_order_index INTEGER,
+    order_index INTEGER,
     payload TEXT NOT NULL
   );
 
@@ -156,7 +157,17 @@ function ensureExportJobsColumns() {
   }
 }
 
+function ensureProfilesOrderingColumns() {
+  const definitions = [['order_index', 'INTEGER']]
+  for (const [column, ddl] of definitions) {
+    if (!hasColumn('profiles', column)) {
+      db.exec(`ALTER TABLE profiles ADD COLUMN ${column} ${ddl}`)
+    }
+  }
+}
+
 ensureExportJobsColumns()
+ensureProfilesOrderingColumns()
 db.exec(
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_export_jobs_firm_idempotency ON export_jobs (firm_id, idempotency_key) WHERE idempotency_key IS NOT NULL'
 )
@@ -169,6 +180,11 @@ db.exec(`
     created_at = COALESCE(created_at, json_extract(payload, '$.createdAt'), datetime('now')),
     updated_at = COALESCE(updated_at, json_extract(payload, '$.updatedAt'), datetime('now')),
     next_attempt_at = COALESCE(next_attempt_at, json_extract(payload, '$.nextAttemptAt'), created_at)
+`)
+
+db.exec(`
+  UPDATE profiles
+  SET order_index = COALESCE(order_index, stage_order_index, json_extract(payload, '$.orderIndex'), json_extract(payload, '$.stageOrderIndex'))
 `)
 
 function nowIso() {
@@ -350,6 +366,7 @@ function syncQueryTables(state) {
     profile.lastName,
     profile.stage || null,
     profile.stageOrderIndex || null,
+    profile.orderIndex || profile.stageOrderIndex || null,
     JSON.stringify(profile)
   ])
   replaceRows('households', state.households || [], (household) => [

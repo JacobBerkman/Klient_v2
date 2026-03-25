@@ -25,7 +25,13 @@ export class SqliteReadRepository {
 
     const rows = db
       .prepare(
-        `SELECT payload FROM profiles WHERE ${conditions.join(' AND ')} ORDER BY coalesce(stage_order_index, 0), last_name, first_name`
+        `SELECT payload FROM profiles
+         WHERE ${conditions.join(' AND ')}
+         ORDER BY
+           coalesce(stage, ''),
+           coalesce(order_index, stage_order_index, 2147483647),
+           coalesce(json_extract(payload, '$.updatedAt'), json_extract(payload, '$.createdAt'), ''),
+           id`
       )
       .all(...params)
     return parsePayloadRows(rows)
