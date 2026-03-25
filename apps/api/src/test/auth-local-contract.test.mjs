@@ -1,9 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { hashPassword } from '../auth/passwords.mjs';
 
 function loadStoreWithIsolatedState() {
   const previousCwd = process.cwd();
@@ -87,4 +89,39 @@ test('legacy store auth methods remain backward-compatible aliases', async () =>
   assert.deepEqual(store.resetPassword({ token: reset.token, password: 'AliasReset123!' }), { ok: true });
   const session = store.login({ email: 'morgan@example.com', password: 'AliasReset123!' });
   assert.equal(store.requireUser(session.token).email, 'morgan@example.com');
+});
+
+
+test('local auth provider upgrades legacy SHA-256 password hashes on login', async () => {
+  const store = await loadStoreWithIsolatedState();
+
+  const legacyPassword = 'LegacySecure123!';
+  const legacyHash = createHash('sha256').update(legacyPassword).digest('hex');
+  const user = store.state.users.find((entry) => entry.email === 'admin@demo.test');
+  user.passwordHash = legacyHash;
+
+  const session = store.auth.login({ email: 'admin@demo.test', password: legacyPassword });
+  assert.ok(session.token);
+
+  const upgraded = store.state.users.find((entry) => entry.id === user.id).passwordHash;
+  assert.notEqual(upgraded, legacyHash);
+  assert.match(upgraded, /^scrypt_v1\$/);
+  assert.equal(store.requireUser(session.token).email, 'admin@demo.test');
+});
+
+test('local auth provider stores new registrations with scrypt hashes', async () => {
+  const store = await loadStoreWithIsolatedState();
+
+  store.auth.register({
+    firmName: 'Hash Forward LLC',
+    firstName: 'Taylor',
+    lastName: 'Nguyen',
+    email: 'taylor@example.com',
+    password: 'ModernHash123!'
+  });
+
+  const user = store.state.users.find((entry) => entry.email === 'taylor@example.com');
+  assert.match(user.passwordHash, /^scrypt_v1\$/);
+  assert.notEqual(user.passwordHash, createHash('sha256').update('ModernHash123!').digest('hex'));
+  assert.notEqual(user.passwordHash, hashPassword('ModernHash123!'));
 });

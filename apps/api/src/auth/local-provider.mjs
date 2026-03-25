@@ -1,4 +1,5 @@
 import { createHmac, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { hashPassword, verifyPassword } from './passwords.mjs';
 
 const LOGIN_WINDOW_MS = 1000 * 60 * 15;
 const MAX_LOGIN_ATTEMPTS = 5;
@@ -14,8 +15,9 @@ function nowIso() {
   return new Date().toISOString();
 }
 
-function hash(password) {
-  return createHash('sha256').update(password).digest('hex');
+
+function hashValue(value) {
+  return createHash('sha256').update(String(value || ''), 'utf8').digest('hex');
 }
 
 function base32Decode(input) {
@@ -131,14 +133,14 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
     for (let idx = 0; idx < BACKUP_CODE_COUNT; idx += 1) {
       const code = randomBytes(4).toString('hex').toUpperCase();
       plainCodes.push(code);
-      hashedCodes.push(hash(code));
+      hashedCodes.push(hashValue(code));
     }
     return { plainCodes, hashedCodes };
   }
 
   function consumeBackupCode(user, backupCode) {
     const mfa = ensureMfaData(user);
-    const lookup = hash(String(backupCode || '').trim().toUpperCase());
+    const lookup = hashValue(String(backupCode || '').trim().toUpperCase());
     const index = mfa.backupCodes.findIndex((entry) => entry === lookup);
     if (index === -1) return false;
     mfa.backupCodes.splice(index, 1);
@@ -164,10 +166,15 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
     authenticate({ email, password, mfaChallengeToken, totpCode, backupCode }) {
       const normalizedEmail = normalizeEmail(email);
       ensureLoginAllowed(normalizedEmail);
-      const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password));
-      if (!user) {
+      const user = state.users.find((entry) => entry.email === normalizedEmail);
+      const passwordResult = user ? verifyPassword(password, user.passwordHash) : { verified: false, needsRehash: false };
+      if (!passwordResult.verified) {
         recordLoginAttempt(normalizedEmail, false);
         throw new Error('Invalid email or password.');
+      }
+      if (passwordResult.needsRehash) {
+        user.passwordHash = hashPassword(password);
+        persist();
       }
       recordLoginAttempt(normalizedEmail, true);
       const mfa = ensureMfaData(user);
@@ -203,7 +210,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         id: randomUUID(),
         firmId: firm.id,
         email: normalizedEmail,
-        passwordHash: hash(password),
+        passwordHash: hashPassword(password),
         firstName,
         lastName,
         role: 'admin',
@@ -247,7 +254,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       }
       const user = state.users.find((entry) => entry.id === reset.userId);
       if (!user) throw new Error('User not found.');
-      user.passwordHash = hash(password);
+      user.passwordHash = hashPassword(password);
       state.passwordResets = state.passwordResets.filter((entry) => entry.userId !== user.id);
       addAudit(user.firmId, user.id, 'user', user.id, 'auth.password_reset.completed', {});
       persist();

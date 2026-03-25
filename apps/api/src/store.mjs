@@ -1,4 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes, randomUUID } from 'node:crypto';
+import { hashPassword } from './auth/passwords.mjs';
 import { runtime } from './runtime.mjs';
 import { enqueueExportJob, listExportQueueJobs, loadState, processExportQueueTick, requeueExportJob, saveState } from './storage.mjs';
 import { createAuthService } from './auth/service.mjs';
@@ -56,9 +57,6 @@ function average(values) {
   return values.reduce((sum, value) => sum + value, 0) / values.length;
 }
 
-function hash(password) {
-  return createHash('sha256').update(password).digest('hex');
-}
 
 function assertStrongPassword(password) {
   const value = String(password || '');
@@ -226,7 +224,7 @@ function seedState() {
       id: adminId,
       firmId,
       email: 'admin@demo.test',
-      passwordHash: hash('ChangeMe123!'),
+      passwordHash: hashPassword('ChangeMe123!'),
       firstName: 'Demo',
       lastName: 'Admin',
       role: 'admin',
@@ -1298,7 +1296,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       assertStrongPassword(input.password);
       const invite = state.invites.find((entry) => entry.token === input.token);
       if (!invite) throw new Error('Invite not found.');
-      const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hash(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, createdAt: now() };
+      const user = { id: randomUUID(), firmId: invite.firmId, email: invite.email, passwordHash: hashPassword(input.password), firstName: input.firstName, lastName: input.lastName, role: invite.role, createdAt: now() };
       state.users.push(user);
       state.invites = state.invites.filter((entry) => entry.id !== invite.id);
       persist();
