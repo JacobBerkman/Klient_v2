@@ -1,9 +1,9 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { resolve } from 'node:path'
+import { pathToFileURL } from 'node:url'
 
-const runtimePath = pathToFileURL(resolve('apps/api/src/runtime.mjs')).href;
+const runtimePath = pathToFileURL(resolve('apps/api/src/runtime.mjs')).href
 
 async function importRuntime(authProvider) {
   if (authProvider === undefined) {
@@ -20,9 +20,9 @@ async function loadRuntime(authProvider) {
 }
 
 test('runtime allows explicit oidc and saml auth providers', async () => {
-  assert.equal(await loadRuntime('oidc'), 'oidc');
-  assert.equal(await loadRuntime('saml'), 'saml');
-});
+  assert.equal(await loadRuntime('oidc'), 'oidc')
+  assert.equal(await loadRuntime('saml'), 'saml')
+})
 
 test('runtime defaults to local when auth provider is omitted', async () => {
   assert.equal(await loadRuntime(undefined), 'local');

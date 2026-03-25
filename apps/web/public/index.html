@@ -52,12 +52,26 @@
         <section class="actions grid two" data-requires-role="admin,advisor">
           <form id="profile-form" class="card">
             <h3>Create Prospect / Client</h3>
-            <select name="kind"><option value="prospect">Prospect</option><option value="client">Client</option></select>
+            <select name="kind">
+              <option value="prospect">Prospect</option>
+              <option value="client">Client</option>
+            </select>
             <input name="firstName" placeholder="First name" required />
             <input name="lastName" placeholder="Last name" required />
             <input name="email" type="email" placeholder="Email" />
             <input name="phone" placeholder="Phone" />
-            <select name="stage"><option value="discovery">Discovery</option><option value="gather_oi">Gather OI</option><option value="analysis">Analysis</option><option value="advisor_proposal_meeting">Advisor Proposal Meeting</option><option value="intake">Intake</option><option value="on_boarding">On Boarding</option><option value="investment_strategy">Investment Strategy</option><option value="completed">Completed</option><option value="drop_dead_lead">Drop / Dead Lead</option><option value="drop_nurture">Drop / Nurture</option></select>
+            <select name="stage">
+              <option value="discovery">Discovery</option>
+              <option value="gather_oi">Gather OI</option>
+              <option value="analysis">Analysis</option>
+              <option value="advisor_proposal_meeting">Advisor Proposal Meeting</option>
+              <option value="intake">Intake</option>
+              <option value="on_boarding">On Boarding</option>
+              <option value="investment_strategy">Investment Strategy</option>
+              <option value="completed">Completed</option>
+              <option value="drop_dead_lead">Drop / Dead Lead</option>
+              <option value="drop_nurture">Drop / Nurture</option>
+            </select>
             <input name="cityOrLocation" placeholder="Source city/location" />
             <input name="venue" placeholder="Source venue" />
             <input name="occurredOn" type="date" placeholder="Source date" />
@@ -90,7 +104,11 @@
           <form id="invite-form" class="card">
             <h3>Invite User</h3>
             <input name="email" type="email" placeholder="User email" required />
-            <select name="role"><option value="advisor">Advisor</option><option value="readonly">Readonly</option><option value="client">Client</option></select>
+            <select name="role">
+              <option value="advisor">Advisor</option>
+              <option value="readonly">Readonly</option>
+              <option value="client">Client</option>
+            </select>
             <button type="submit">Create Invite</button>
           </form>
 

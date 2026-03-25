@@ -1,9 +1,9 @@
-import { spawn } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { spawn } from 'node:child_process'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join, resolve } from 'node:path'
 
-const repoRoot = resolve(new URL('..', import.meta.url).pathname);
+const repoRoot = resolve(new URL('..', import.meta.url).pathname)
 
 function runNode(scriptPath, cwd) {
   return new Promise((resolveRun, rejectRun) => {
@@ -11,80 +11,86 @@ function runNode(scriptPath, cwd) {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe']
-    });
+    })
 
-    let stdout = '';
-    let stderr = '';
+    let stdout = ''
+    let stderr = ''
 
     child.stdout.on('data', (chunk) => {
-      stdout += chunk.toString();
-    });
+      stdout += chunk.toString()
+    })
     child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
+      stderr += chunk.toString()
+    })
 
-    child.on('error', rejectRun);
+    child.on('error', rejectRun)
     child.on('exit', (code, signal) => {
       if (signal) {
-        rejectRun(new Error(`${scriptPath} terminated by signal ${signal}`));
-        return;
+        rejectRun(new Error(`${scriptPath} terminated by signal ${signal}`))
+        return
       }
       if (code !== 0) {
-        rejectRun(new Error(`${scriptPath} failed with code ${code}\n${stderr}`.trim()));
-        return;
+        rejectRun(new Error(`${scriptPath} failed with code ${code}\n${stderr}`.trim()))
+        return
       }
-      resolveRun(stdout.trim());
-    });
-  });
+      resolveRun(stdout.trim())
+    })
+  })
 }
 
-const tempRoot = await mkdtemp(join(tmpdir(), 'klient-migration-check-'));
+const tempRoot = await mkdtemp(join(tmpdir(), 'klient-migration-check-'))
 try {
-  process.chdir(tempRoot);
-  const { loadState, saveState } = await import('../apps/api/src/storage.mjs');
+  process.chdir(tempRoot)
+  const { loadState, saveState } = await import('../apps/api/src/storage.mjs')
 
-  const seededState = loadState(() => ({}));
-  seededState.formTemplates = [{ id: 'form-legacy-1', firmId: 'firm-default', name: 'Legacy Form', sections: [] }];
-  seededState.documentTemplates = [{ id: 'doc-legacy-1', firmId: 'firm-default', name: 'Legacy Doc', mappings: [] }];
-  saveState(seededState);
+  const seededState = loadState(() => ({}))
+  seededState.formTemplates = [{ id: 'form-legacy-1', firmId: 'firm-default', name: 'Legacy Form', sections: [] }]
+  seededState.documentTemplates = [{ id: 'doc-legacy-1', firmId: 'firm-default', name: 'Legacy Doc', mappings: [] }]
+  saveState(seededState)
 
-  const migrateScript = resolve(repoRoot, 'scripts/migrate-template-aggregate.mjs');
-  const reencryptScript = resolve(repoRoot, 'scripts/reencrypt-pii.mjs');
+  const migrateScript = resolve(repoRoot, 'scripts/migrate-template-aggregate.mjs')
+  const reencryptScript = resolve(repoRoot, 'scripts/reencrypt-pii.mjs')
 
-  const migrationRaw = await runNode(migrateScript, tempRoot);
-  const migration = JSON.parse(migrationRaw || '{}');
+  const migrationRaw = await runNode(migrateScript, tempRoot)
+  const migration = JSON.parse(migrationRaw || '{}')
   if (!migration.migrated || migration.templateAggregateCount !== 2) {
-    throw new Error('Template aggregate migration did not produce expected aggregate count.');
+    throw new Error('Template aggregate migration did not produce expected aggregate count.')
   }
 
-  const secondMigrationRaw = await runNode(migrateScript, tempRoot);
-  const secondMigration = JSON.parse(secondMigrationRaw || '{}');
+  const secondMigrationRaw = await runNode(migrateScript, tempRoot)
+  const secondMigration = JSON.parse(secondMigrationRaw || '{}')
   if (secondMigration.migrated !== false) {
-    throw new Error('Template aggregate migration is not idempotent.');
+    throw new Error('Template aggregate migration is not idempotent.')
   }
 
-  const rotationRaw = await runNode(reencryptScript, tempRoot);
-  const rotation = JSON.parse(rotationRaw || '{}');
+  const rotationRaw = await runNode(reencryptScript, tempRoot)
+  const rotation = JSON.parse(rotationRaw || '{}')
   if (!rotation.ok || !Number.isInteger(rotation.rotatedProfiles) || !Number.isInteger(rotation.rotatedFields)) {
-    throw new Error('PII re-encryption script did not return expected metrics.');
+    throw new Error('PII re-encryption script did not return expected metrics.')
   }
 
-  const postState = loadState(() => ({}));
+  const postState = loadState(() => ({}))
   if (!Array.isArray(postState.templateAggregates) || postState.templateAggregates.length !== 2) {
-    throw new Error('Template aggregate data missing after migration flow.');
+    throw new Error('Template aggregate data missing after migration flow.')
   }
 
-  console.log(JSON.stringify({
-    ok: true,
-    checks: {
-      templateMigration: 'pass',
-      templateMigrationIdempotent: 'pass',
-      piiReencryptionPath: 'pass'
-    },
-    templateAggregateCount: postState.templateAggregates.length,
-    rotatedProfiles: rotation.rotatedProfiles,
-    rotatedFields: rotation.rotatedFields
-  }, null, 2));
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        checks: {
+          templateMigration: 'pass',
+          templateMigrationIdempotent: 'pass',
+          piiReencryptionPath: 'pass'
+        },
+        templateAggregateCount: postState.templateAggregates.length,
+        rotatedProfiles: rotation.rotatedProfiles,
+        rotatedFields: rotation.rotatedFields
+      },
+      null,
+      2
+    )
+  )
 } finally {
-  await rm(tempRoot, { recursive: true, force: true });
+  await rm(tempRoot, { recursive: true, force: true })
 }
