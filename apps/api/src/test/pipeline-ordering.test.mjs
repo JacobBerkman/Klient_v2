@@ -133,6 +133,45 @@ test('board reorder rejects stale optimistic concurrency tokens during concurren
   )
 })
 
+test('board reorder rejects stale board-version token with structured conflict details', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const card = store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'Board',
+    lastName: 'Version',
+    stage: 'discovery'
+  })
+  const board = store.getBoard(user)
+
+  store.reorderBoard(user, {
+    profileId: card.id,
+    toStage: 'analysis',
+    expectedVersion: card.pipelineVersion,
+    expectedUpdatedAt: card.updatedAt,
+    expectedBoardVersion: board.boardVersion
+  })
+
+  assert.throws(
+    () => {
+      store.reorderBoard(user, {
+        profileId: card.id,
+        toStage: 'completed',
+        expectedVersion: null,
+        expectedBoardVersion: board.boardVersion
+      })
+    },
+    (error) => {
+      assert.equal(error.code, 'PIPELINE_ORDER_CONFLICT')
+      assert.equal(error.statusCode, 409)
+      assert.equal(error.details.expectedBoardVersion, board.boardVersion)
+      assert.ok(Number(error.details.actualBoardVersion) > Number(board.boardVersion))
+      return true
+    }
+  )
+})
+
 test('pipeline reorder transaction rolls back index changes when persistence fails', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)

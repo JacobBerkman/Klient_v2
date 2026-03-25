@@ -23,6 +23,20 @@ try {
     body: JSON.stringify({ mappings: [{ key: 'client.address.city', source: 'profile.address.city' }] })
   })
 
+  const guardedPublishError = await context.requestExpectError(
+    `/api/templates/${template.id}/publish`,
+    {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        versionBump: '1.0.0',
+        changelog: 'Guard should block publish',
+        enforceKnownSourcePaths: true
+      })
+    },
+    400
+  )
+
   const published = await context.request(`/api/templates/${template.id}/publish`, {
     method: 'POST',
     headers: { Authorization: `Bearer ${admin.token}` },
@@ -46,6 +60,7 @@ try {
   const templates = await context.request('/api/templates', { headers: { Authorization: `Bearer ${admin.token}` } })
 
   assert(mapped.mappings.length === 1, 'Template mappings update failed')
+  assert(guardedPublishError.error?.code === 'SCHEMA_VALIDATION_FAILED', 'Publish guard should reject unknown mapping path')
   assert(published.status === 'published', 'Template publish failed')
   assert(templates.some((entry) => entry.id === template.id && entry.status === 'draft'), 'Reverted template missing')
   assert(Array.isArray(versions) && versions.length >= 3, 'Template versions history missing')

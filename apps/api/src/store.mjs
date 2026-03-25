@@ -66,18 +66,19 @@ const PERMISSIONS = {
   client: ['portal:read', 'client:write'],
   anonymous: []
 }
-const BOARD_COLUMNS = [
-  'discovery',
-  'gather_oi',
-  'analysis',
-  'advisor_proposal_meeting',
-  'intake',
-  'on_boarding',
-  'investment_strategy',
-  'completed',
-  'drop_dead_lead',
-  'drop_nurture'
+const DEFAULT_STAGE_DEFINITIONS = [
+  { id: 'discovery', label: 'Discovery' },
+  { id: 'gather_oi', label: 'Gather OI' },
+  { id: 'analysis', label: 'Analysis' },
+  { id: 'advisor_proposal_meeting', label: 'Advisor Proposal Meeting' },
+  { id: 'intake', label: 'Intake' },
+  { id: 'on_boarding', label: 'On Boarding' },
+  { id: 'investment_strategy', label: 'Investment Strategy' },
+  { id: 'completed', label: 'Completed', isTerminal: true },
+  { id: 'drop_dead_lead', label: 'Drop / Dead Lead', isTerminal: true, isDrop: true },
+  { id: 'drop_nurture', label: 'Drop / Nurture', isTerminal: true, isDrop: true }
 ]
+const BOARD_COLUMNS = DEFAULT_STAGE_DEFINITIONS.map((stage) => stage.id)
 
 function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission)
@@ -217,6 +218,26 @@ function normalizeProfileRecord(profile) {
     extensions,
     financialSummary: normalizeFinancialSummary(profile.financialSummary || profile.customProfile || {}, extensions)
   }
+}
+
+function normalizeStageConfiguration(input = []) {
+  if (!Array.isArray(input) || !input.length) {
+    return DEFAULT_STAGE_DEFINITIONS.map((stage, index) => ({ ...stage, order: index + 1 }))
+  }
+  return input
+    .map((stage, index) => {
+      const id = String(stage?.id || stage?.stageId || '').trim()
+      if (!id) return null
+      const label = String(stage?.label || stage?.displayLabel || id).trim() || id
+      return {
+        id,
+        label,
+        order: index + 1,
+        isTerminal: Boolean(stage?.isTerminal),
+        isDrop: Boolean(stage?.isDrop)
+      }
+    })
+    .filter(Boolean)
 }
 
 function deepClone(value) {
@@ -751,7 +772,10 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
     passwordResets: [],
     portalLinks: [],
     authAttempts: [],
-    boardVersions: { [firmId]: 1 }
+    boardVersions: { [firmId]: 1 },
+    pipelineStagesByFirm: {
+      [firmId]: DEFAULT_STAGE_DEFINITIONS.map((stage) => ({ ...stage }))
+    }
   }
 }
 
@@ -765,6 +789,7 @@ export function createStore({
   migrateTemplateSystems(state)
   state.profiles = (state.profiles || []).map(normalizeProfileRecord)
   saveState(state)
+  state.pipelineStagesByFirm ||= {}
   state.pendingUploadIntents ||= []
   state.draftStepStates ||= []
   state.sessions = (state.sessions || []).map((session) => {
@@ -953,6 +978,19 @@ export function createStore({
     return state.boardVersions[firmId]
   }
 
+  function getFirmStageMetadata(firmId) {
+    const configured = state.pipelineStagesByFirm?.[firmId]
+    const normalized = normalizeStageConfiguration(configured)
+    if (!state.pipelineStagesByFirm[firmId] || state.pipelineStagesByFirm[firmId].length !== normalized.length) {
+      state.pipelineStagesByFirm[firmId] = normalized.map(({ order, ...stage }) => ({ ...stage }))
+    }
+    return normalized
+  }
+
+  function getOrderedStageIds(firmId) {
+    return getFirmStageMetadata(firmId).map((stage) => stage.id)
+  }
+
   function listProspectsByStage(firmId, stage, excludedProfileId = null) {
     return state.profiles
       .filter(
@@ -986,7 +1024,7 @@ export function createStore({
   }
 
   function normalizePipelineIndices(firmId, stage = null) {
-    const stages = stage ? [stage] : BOARD_COLUMNS
+    const stages = stage ? [stage] : getOrderedStageIds(firmId)
     const normalizedStages = []
     for (const currentStage of stages) {
       if (compactStageIndices(firmId, currentStage)) {
@@ -997,10 +1035,13 @@ export function createStore({
   }
 
   function buildBoardPayload(user, conflict = null) {
-    const columns = BOARD_COLUMNS.map((stage) => ({
-      stage,
+    const columns = getFirmStageMetadata(user.firmId).map((stageMeta) => ({
+      stage: stageMeta.id,
+      stageLabel: stageMeta.label,
+      isTerminal: stageMeta.isTerminal,
+      isDrop: stageMeta.isDrop,
       orderingVersion: getBoardVersion(user.firmId),
-      cards: listProspectsByStage(user.firmId, stage)
+      cards: listProspectsByStage(user.firmId, stageMeta.id)
     }))
     return {
       boardVersion: getBoardVersion(user.firmId),
@@ -1010,7 +1051,8 @@ export function createStore({
         normalized: true
       },
       conflict,
-      columns
+      columns,
+      stageMetadata: getFirmStageMetadata(user.firmId)
     }
   }
 
@@ -1251,11 +1293,13 @@ export function createStore({
     createProfile(user, input) {
       requirePermission(user, 'profiles:write')
       const createdAt = now()
+      const defaultStage = getOrderedStageIds(user.firmId)[0] || 'discovery'
+      const requestedStage = input.stage || defaultStage
       const inStage = state.profiles.filter(
         (profile) =>
           profile.firmId === user.firmId &&
           profile.kind === 'prospect' &&
-          profile.stage === (input.stage || 'discovery')
+          profile.stage === requestedStage
       ).length
       const profile = {
         pii: {
@@ -1275,7 +1319,7 @@ export function createStore({
         dateOfBirth: '',
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
         status: input.status || (input.kind === 'client' ? 'active' : 'new'),
-        stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
+        stage: input.kind === 'prospect' ? requestedStage : null,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
         orderIndex: input.kind === 'prospect' ? inStage + 1 : null,
         pipelineVersion: input.kind === 'prospect' ? 1 : null,
@@ -1316,7 +1360,7 @@ export function createStore({
         patch.orderIndex = null
       }
       if (patch.kind === 'prospect' && !patch.stage) {
-        patch.stage = 'discovery'
+        patch.stage = getOrderedStageIds(user.firmId)[0] || 'discovery'
       }
       const profile = validateTenantEntityOwnership(
         firmContext,
@@ -1381,7 +1425,7 @@ export function createStore({
       if (!profileId || !toStage) {
         throw new Error('Reorder payload must include profileId and toStage.')
       }
-      if (!BOARD_COLUMNS.includes(toStage)) {
+      if (!getOrderedStageIds(user.firmId).includes(toStage)) {
         throw new Error(`Unknown stage: ${toStage}.`)
       }
 
@@ -2335,6 +2379,10 @@ export function createStore({
       requirePermission(user, 'exports:write')
       return exportsRepository.retryFailed(user, options)
     },
+    getExportDownload(user, exportId) {
+      requirePermission(user, 'exports:read')
+      return exportsRepository.getDownload(user, exportId)
+    },
     async processQueuedExports() {
       const result = processExportQueueTick({
         workerId: 'api-process-endpoint',
@@ -2902,22 +2950,27 @@ export function createStore({
         return acc
       }, {})
       const totalProspects = prospects.length || 1
-      const stageOrder = [
-        'discovery',
-        'gather_oi',
-        'analysis',
-        'advisor_proposal_meeting',
-        'intake',
-        'on_boarding',
-        'investment_strategy',
-        'completed'
-      ]
-      const funnel = stageOrder.map((stage) => {
-        const count = stageCounts[stage] || 0
-        return { stage, count, conversionRate: Number((count / totalProspects).toFixed(4)) }
+      const stageMetadata = getFirmStageMetadata(user.firmId)
+      const conversionStages = stageMetadata.filter((stage) => !stage.isDrop)
+      const funnel = conversionStages.map((stage) => {
+        const count = stageCounts[stage.id] || 0
+        return {
+          stage: stage.id,
+          stageId: stage.id,
+          stageLabel: stage.label,
+          isTerminal: stage.isTerminal,
+          isDrop: stage.isDrop,
+          count,
+          conversionRate: Number((count / totalProspects).toFixed(4))
+        }
       })
-      const firstStage = stageCounts[stageOrder[0]] || 0
-      const lastStage = stageCounts.completed || 0
+      const firstStage = stageCounts[conversionStages[0]?.id] || 0
+      const lastConversionStage =
+        conversionStages
+          .slice()
+          .reverse()
+          .find((stage) => stage.isTerminal && !stage.isDrop) || conversionStages[conversionStages.length - 1]
+      const lastStage = stageCounts[lastConversionStage?.id] || 0
 
       const stageEvents = state.stageChanges
         .filter((entry) => entry.firmId === user.firmId)
@@ -2928,18 +2981,31 @@ export function createStore({
         const key = `${event.clientId}:${event.toStage || 'unassigned'}`
         if (!stageEntryTimes.has(key)) stageEntryTimes.set(key, parseIso(event.changedAt))
       })
-      const stageAging = Object.fromEntries(stageOrder.map((stage) => [stage, { count: 0, avgDays: 0 }]))
+      const stageAgingMap = Object.fromEntries(
+        stageMetadata.map((stage) => [stage.id, { count: 0, avgDays: 0, totalDays: 0 }])
+      )
       prospects.forEach((profile) => {
         const stage = profile.stage || 'unassigned'
-        if (!stageAging[stage]) stageAging[stage] = { count: 0, avgDays: 0 }
+        if (!stageAgingMap[stage]) stageAgingMap[stage] = { count: 0, avgDays: 0, totalDays: 0 }
         const enteredAt = stageEntryTimes.get(`${profile.id}:${stage}`) || parseIso(profile.createdAt)
         const ageDays = Math.max(0, (nowMs - enteredAt) / 86_400_000)
-        stageAging[stage].count += 1
-        stageAging[stage].avgDays += ageDays
+        stageAgingMap[stage].count += 1
+        stageAgingMap[stage].totalDays += ageDays
       })
-      Object.values(stageAging).forEach((entry) => {
-        if (entry.count) entry.avgDays = Number((entry.avgDays / entry.count).toFixed(2))
+      Object.values(stageAgingMap).forEach((entry) => {
+        if (entry.count) entry.avgDays = Number((entry.totalDays / entry.count).toFixed(2))
+        delete entry.totalDays
       })
+      const stageAging = stageMetadata.map((stage) => ({
+        stage: stage.id,
+        stageId: stage.id,
+        stageLabel: stage.label,
+        isTerminal: stage.isTerminal,
+        isDrop: stage.isDrop,
+        count: stageAgingMap[stage.id]?.count || 0,
+        avgDays: stageAgingMap[stage.id]?.avgDays || 0
+      }))
+      const stageAgingById = Object.fromEntries(stageAging.map((entry) => [entry.stageId, { count: entry.count, avgDays: entry.avgDays }]))
 
       const templateIds = new Set(
         state.templateAggregates
@@ -3046,17 +3112,27 @@ export function createStore({
         }, {})
       }
 
-      const bottlenecks = Object.entries(stageAging)
-        .map(([stage, value]) => ({ stage, ...value }))
+      const bottlenecks = stageAging
+        .filter((entry) => !entry.isTerminal && !entry.isDrop)
         .filter((entry) => entry.count > 0)
         .sort((a, b) => b.avgDays - a.avgDays)
 
       return {
         filters: { startDate, endDate, cohortBy, cohortValue },
+        stageMetadata,
         stageCounts,
+        stageCountsOrdered: stageMetadata.map((stage) => ({
+          stage: stage.id,
+          stageId: stage.id,
+          stageLabel: stage.label,
+          isTerminal: stage.isTerminal,
+          isDrop: stage.isDrop,
+          count: stageCounts[stage.id] || 0
+        })),
         funnel,
         overallConversionRate: firstStage ? Number((lastStage / firstStage).toFixed(4)) : 0,
-        stageAging,
+        stageAging: stageAgingById,
+        stageAgingOrdered: stageAging,
         bottlenecks,
         formCompletionRates: Object.values(formsByTemplate),
         formCompletionLatency: latencyByTemplate,
@@ -3068,7 +3144,11 @@ export function createStore({
         templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form')
           .length,
         avgProspectStageAgeDays: Number(
-          average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2)
+          average(
+            stageAging
+              .filter((entry) => !entry.isTerminal && !entry.isDrop)
+              .map((entry) => entry.avgDays || 0)
+          ).toFixed(2)
         )
       }
     },
@@ -3079,8 +3159,10 @@ export function createStore({
       const snapshot = this.buildAnalyticsSnapshot(user, filters)
       return {
         filters: snapshot.filters,
+        stageMetadata: snapshot.stageMetadata,
         funnel: snapshot.funnel,
         stageAging: snapshot.stageAging,
+        stageAgingOrdered: snapshot.stageAgingOrdered,
         bottlenecks: snapshot.bottlenecks,
         formCompletionLatency: snapshot.formCompletionLatency,
         exportUsage: snapshot.exportUsage
@@ -3246,6 +3328,10 @@ export function createStore({
       return true
     },
     _internal: { piiCrypto: piiService, keyProvider },
+    __setPipelineStagesForTest(firmId, stages = []) {
+      state.pipelineStagesByFirm ||= {}
+      state.pipelineStagesByFirm[firmId] = normalizeStageConfiguration(stages).map(({ order, ...stage }) => ({ ...stage }))
+    },
     __setTestHooks(hooks = {}) {
       testHooks = { ...hooks }
     },

@@ -85,4 +85,29 @@ test('compare + revert produce deterministic rollback payloads', () => {
   assert.equal(rollbackTwo.revertedToVersion, 1)
 })
 
+test('publish enforces known source-path validation when requested', () => {
+  const admin = loginAdmin()
+  const created = store.createDocumentTemplate(admin, {
+    name: 'Template Publish Guard',
+    blueprint: { sections: [{ title: 'Guard' }] },
+    mappings: [{ pdfField: 'bad_field', sourcePath: 'profile.thisPathDoesNotExist' }]
+  })
+
+  assert.throws(
+    () => {
+      store.publishTemplate(admin, created.id, {
+        versionBump: '2.0.0',
+        changelog: 'Attempt publish with invalid mapping',
+        enforceKnownSourcePaths: true
+      })
+    },
+    (error) => {
+      assert.equal(error.code, 'SCHEMA_VALIDATION_FAILED')
+      assert.equal(error.statusCode, 400)
+      assert.equal(error.details?.issues?.[0]?.path, '/mappings/0/sourcePath')
+      return true
+    }
+  )
+})
+
 process.chdir(previousCwd)
