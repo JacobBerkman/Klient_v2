@@ -9,7 +9,8 @@ const integrationScripts = [
   'integration-portal-lifecycle.mjs',
   'integration-submission-repeatable-items.mjs',
   'integration-analytics.mjs',
-  'integration-csrf.mjs'
+  'integration-csrf.mjs',
+  'integration-audit.mjs'
 ]
 
 function runScript(script) {

@@ -5,12 +5,14 @@ import {
   listExportQueueJobs,
   loadState,
   processExportQueueTick,
+  readExportWorkerStatus,
   requeueExportJob,
   saveState
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
+import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest()
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
@@ -78,9 +80,35 @@ function parseIso(value) {
   return Number.isFinite(time) ? time : 0
 }
 
+function profileOrderIndex(profile) {
+  const raw = profile?.orderIndex ?? profile?.stageOrderIndex ?? null
+  const numeric = Number(raw)
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : Number.MAX_SAFE_INTEGER
+}
+
+function assignProspectOrderIndex(profile, index) {
+  const normalized = Number(index)
+  const next = Number.isFinite(normalized) && normalized > 0 ? normalized : null
+  profile.orderIndex = next
+  profile.stageOrderIndex = next
+}
+
 function average(values) {
   if (!values.length) return 0
   return values.reduce((sum, value) => sum + value, 0) / values.length
+}
+
+function toIsoDate(value) {
+  if (!value) return null
+  const stamp = new Date(value).getTime()
+  if (!Number.isFinite(stamp)) return null
+  return new Date(stamp).toISOString().slice(0, 10)
+}
+
+function csvCell(value) {
+  const text = String(value ?? '')
+  if (/[,"\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`
+  return text
 }
 
 function hash(password) {
@@ -114,18 +142,115 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`
 }
 
+function toFiniteNumber(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function normalizeExtensions(extensions = {}) {
+  if (!extensions || typeof extensions !== 'object' || Array.isArray(extensions)) return {}
+  const schema = extensions.schema && typeof extensions.schema === 'object' ? { ...extensions.schema } : null
+  const values = extensions.values && typeof extensions.values === 'object' ? { ...extensions.values } : {}
+  const schemaVersion = schema?.version || extensions.schemaVersion || '1.0.0'
+  if (schema?.properties && typeof schema.properties === 'object') {
+    const invalid = Object.entries(schema.properties).find(([key, descriptor]) => {
+      const expected = descriptor?.type
+      if (!expected || !(key in values)) return false
+      const actual = values[key]
+      if (actual == null) return false
+      if (expected === 'number') return typeof actual !== 'number' || Number.isNaN(actual)
+      if (expected === 'string') return typeof actual !== 'string'
+      if (expected === 'boolean') return typeof actual !== 'boolean'
+      if (expected === 'array') return !Array.isArray(actual)
+      return false
+    })
+    if (invalid) {
+      const [invalidKey, descriptor] = invalid
+      throw new Error(`Invalid extension field type for "${invalidKey}". Expected ${descriptor.type}.`)
+    }
+  }
+  return { schemaVersion, schema, values }
+}
+
+function normalizeFinancialSummary(input = {}, extensions = {}) {
+  const extensionValues = extensions.values || {}
+  const investableAssets = toFiniteNumber(input.investableAssets ?? extensionValues.investableAssets) || 0
+  const annualIncome = toFiniteNumber(input.annualIncome ?? extensionValues.annualIncome) || 0
+  const totalAssets = toFiniteNumber(input.totalAssets ?? extensionValues.totalAssets ?? investableAssets) || 0
+  const totalLiabilities = toFiniteNumber(input.totalLiabilities ?? extensionValues.totalLiabilities) || 0
+  const netWorth = toFiniteNumber(input.netWorth ?? extensionValues.netWorth ?? totalAssets - totalLiabilities) || 0
+  return {
+    investableAssets,
+    annualIncome,
+    totalAssets,
+    totalLiabilities,
+    netWorth
+  }
+}
+
+function normalizeProfileRecord(profile) {
+  const extensionSeed =
+    profile.extensions ||
+    (profile.customProfile ? { schemaVersion: '1.0.0', values: { ...profile.customProfile } } : {})
+  const extensions = normalizeExtensions(extensionSeed)
+  return {
+    ...profile,
+    status: profile.status || (profile.kind === 'client' ? 'active' : 'new'),
+    extensions,
+    financialSummary: normalizeFinancialSummary(profile.financialSummary || profile.customProfile || {}, extensions)
+  }
+}
+
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+const TEMPLATE_STATES = new Set(['draft', 'review', 'published', 'deprecated'])
+
+function normalizeTemplateState(value, fallback = 'draft') {
+  return TEMPLATE_STATES.has(value) ? value : fallback
+}
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableSerialize(entry)).join(',')}]`
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function templateVersionHash(template) {
+  return createHash('sha256')
+    .update(
+      stableSerialize({
+        blueprint: template.blueprint || { sections: [] },
+        mappings: template.mappings || [],
+        publishState: normalizeTemplateState(template.publishState || template.status || 'draft')
+      })
+    )
+    .digest('hex')
+}
+
 function createTemplateVersion(template, event, overrides = {}) {
+  const publishState = normalizeTemplateState(overrides.publishState || template.publishState || 'draft')
+  const blueprint = deepClone(overrides.blueprint || template.blueprint || { sections: [] })
+  const mappings = deepClone(overrides.mappings || template.mappings || [])
+  const formSchema = deepClone(overrides.formSchema || template.formSchema || { sections: [] })
   return {
     version: (template.versions?.length || 0) + 1,
     event,
-    blueprint: deepClone(overrides.blueprint || template.blueprint || { sections: [] }),
-    mappings: deepClone(overrides.mappings || template.mappings || []),
-    formSchema: deepClone(overrides.formSchema || template.formSchema || { sections: [] }),
-    publishState: overrides.publishState || template.publishState || 'draft',
+    blueprint,
+    mappings,
+    formSchema,
+    publishState,
+    immutable: overrides.immutable === true,
+    changelog: overrides.changelog || null,
+    versionHash: overrides.versionHash || templateVersionHash({ blueprint, mappings, publishState }),
     diff: overrides.diff || null,
     actorUserId: overrides.actorUserId || null,
     createdAt: now()
@@ -134,10 +259,10 @@ function createTemplateVersion(template, event, overrides = {}) {
 
 function normalizeTemplateAggregate(template, fallbackKind = 'document') {
   const kind = template.kind || fallbackKind
-  const formSchema = template.formSchema || { sections: template.sections || [] }
+  const formSchema = convertLegacyFormDefinition(template.formSchema || { sections: template.sections || [] })
   const blueprint = template.blueprint || { sections: [] }
   const mappings = template.mappings || template.mappingRules || []
-  const publishState = template.publishState || template.status || 'draft'
+  const publishState = normalizeTemplateState(template.publishState || template.status || 'draft')
   const normalized = {
     id: template.id,
     firmId: template.firmId,
@@ -159,6 +284,15 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
       mappings: deepClone(entry.mappings || mappings),
       formSchema: deepClone(entry.formSchema || formSchema),
       publishState: entry.publishState || publishState,
+      immutable: entry.immutable === true,
+      changelog: entry.changelog || null,
+      versionHash:
+        entry.versionHash ||
+        templateVersionHash({
+          blueprint: entry.blueprint || blueprint,
+          mappings: entry.mappings || mappings,
+          publishState: entry.publishState || publishState
+        }),
       diff: entry.diff || null,
       actorUserId: entry.actorUserId || null,
       createdAt: entry.createdAt || template.updatedAt || template.createdAt || now()
@@ -197,6 +331,7 @@ function documentTemplateAdapter(entry) {
     versions: deepClone(entry.versions || []),
     status: entry.publishState || 'draft',
     publishState: entry.publishState || 'draft',
+    versionHash: templateVersionHash(entry),
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt
   }
@@ -242,6 +377,28 @@ function migrateTemplateSystems(state) {
     .map(documentTemplateAdapter)
 }
 
+function migrateProspectOrdering(state) {
+  const profiles = Array.isArray(state?.profiles) ? state.profiles : []
+  const byFirmStage = new Map()
+  for (const profile of profiles) {
+    if (profile?.kind !== 'prospect') continue
+    const stage = profile.stage || 'discovery'
+    const key = `${profile.firmId}:${stage}`
+    if (!byFirmStage.has(key)) byFirmStage.set(key, [])
+    byFirmStage.get(key).push(profile)
+  }
+  for (const cards of byFirmStage.values()) {
+    cards.sort((a, b) => {
+      const indexDiff = profileOrderIndex(a) - profileOrderIndex(b)
+      if (indexDiff !== 0) return indexDiff
+      const updatedDiff = parseIso(a.updatedAt || a.createdAt) - parseIso(b.updatedAt || b.createdAt)
+      if (updatedDiff !== 0) return updatedDiff
+      return String(a.id || '').localeCompare(String(b.id || ''))
+    })
+    cards.forEach((card, index) => assignProspectOrderIndex(card, index + 1))
+  }
+}
+
 function pipelineConflict(message, details = {}) {
   const error = new Error(message)
   error.statusCode = 409
@@ -250,7 +407,7 @@ function pipelineConflict(message, details = {}) {
   return error
 }
 
-function seedState() {
+function seedState({ objectStorage = defaultObjectStorage } = {}) {
   const createdAt = now()
   const firmId = randomUUID()
   const adminId = randomUUID()
@@ -292,13 +449,20 @@ function seedState() {
         phone: '555-000-1111',
         dateOfBirth: '1981-04-12',
         source: {
-          cityOrLocation: 'Dallas',
-          venue: 'Referral',
-          occurredOn: '2026-03-01',
-          displayValue: sourceDisplay({ cityOrLocation: 'Dallas', venue: 'Referral', occurredOn: '2026-03-01' })
+          sourceCity: 'Dallas',
+          sourceVenue: 'Referral',
+          sourceDate: '2026-03-01',
+          campaignId: null,
+          displayValue: formatProfileSourceDisplay({ sourceCity: 'Dallas', sourceVenue: 'Referral', sourceDate: '2026-03-01' })
         },
+        status: 'active',
         address: { city: 'Dallas', state: 'TX' },
-        customProfile: { investableAssets: 850000 },
+        financialSummary: normalizeFinancialSummary({ investableAssets: 850000 }),
+        extensions: normalizeExtensions({
+          schemaVersion: '1.0.0',
+          schema: { properties: { legacyInvestableAssets: { type: 'number' } } },
+          values: { legacyInvestableAssets: 850000 }
+        }),
         householdId,
         spouseClientId: spouseId,
         createdAt,
@@ -314,8 +478,10 @@ function seedState() {
         email: 'jamie@example.com',
         phone: '555-000-2222',
         dateOfBirth: '1982-10-21',
+        status: 'active',
         address: { city: 'Dallas', state: 'TX' },
-        customProfile: {},
+        financialSummary: normalizeFinancialSummary({}),
+        extensions: normalizeExtensions({}),
         householdId,
         spouseClientId: clientId,
         createdAt,
@@ -332,15 +498,19 @@ function seedState() {
         phone: '555-111-3333',
         stage: 'discovery',
         stageOrderIndex: 1,
+        orderIndex: 1,
         pipelineVersion: 1,
         source: {
-          cityOrLocation: 'Austin',
-          venue: 'Seminar',
-          occurredOn: '2026-03-10',
-          displayValue: sourceDisplay({ cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10' })
+          sourceCity: 'Austin',
+          sourceVenue: 'Seminar',
+          sourceDate: '2026-03-10',
+          campaignId: null,
+          displayValue: formatProfileSourceDisplay({ sourceCity: 'Austin', sourceVenue: 'Seminar', sourceDate: '2026-03-10' })
         },
+        status: 'new',
         address: { city: 'Austin', state: 'TX' },
-        customProfile: {},
+        financialSummary: normalizeFinancialSummary({}),
+        extensions: normalizeExtensions({}),
         createdAt,
         updatedAt: createdAt
       },
@@ -355,15 +525,19 @@ function seedState() {
         phone: '555-111-4444',
         stage: 'analysis',
         stageOrderIndex: 1,
+        orderIndex: 1,
         pipelineVersion: 1,
         source: {
-          cityOrLocation: 'Houston',
-          venue: 'CPA Referral',
-          occurredOn: '2026-03-15',
-          displayValue: sourceDisplay({ cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15' })
+          sourceCity: 'Houston',
+          sourceVenue: 'CPA Referral',
+          sourceDate: '2026-03-15',
+          campaignId: null,
+          displayValue: formatProfileSourceDisplay({ sourceCity: 'Houston', sourceVenue: 'CPA Referral', sourceDate: '2026-03-15' })
         },
+        status: 'qualified',
         address: { city: 'Houston', state: 'TX' },
-        customProfile: {},
+        financialSummary: normalizeFinancialSummary({}),
+        extensions: normalizeExtensions({}),
         createdAt,
         updatedAt: createdAt
       }
@@ -392,16 +566,16 @@ function seedState() {
       }
     ],
     auditEvents: [
-      {
+      createCanonicalAuditEvent({
         id: randomUUID(),
+        actor: { userId: adminId },
         firmId,
-        actorUserId: adminId,
         entityType: 'seed',
         entityId: 'initial',
         action: 'seed.created',
-        occurredAt: createdAt,
-        metadata: {}
-      }
+        after: {},
+        timestamp: createdAt
+      })
     ],
     formTemplates: [
       {
@@ -472,7 +646,7 @@ function seedState() {
         output: {
           fileName: 'client-intake-demo.json',
           object: {
-            bucket: defaultObjectStorage.bucketExports,
+            bucket: objectStorage.bucketExports,
             key: `${firmId}/exports/client-intake-demo.json`,
             checksum: null,
             contentType: 'application/json',
@@ -494,7 +668,7 @@ function seedState() {
         status: 'uploaded',
         uploadedBy: 'advisor',
         object: {
-          bucket: defaultObjectStorage.bucketDocuments,
+          bucket: objectStorage.bucketDocuments,
           key: `${firmId}/documents/${clientId}/driver-license-demo.pdf`,
           checksum: null,
           contentType: 'application/pdf',
@@ -505,6 +679,7 @@ function seedState() {
       }
     ],
     pendingUploadIntents: [],
+    draftStepStates: [],
     notes: [
       {
         id: randomUUID(),
@@ -524,10 +699,12 @@ function seedState() {
 }
 
 export function createStore({ objectStorage = defaultObjectStorage } = {}) {
-  const state = loadState(seedState)
+  const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
+  state.profiles = (state.profiles || []).map(normalizeProfileRecord)
   saveState(state)
   state.pendingUploadIntents ||= []
+  state.draftStepStates ||= []
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
     return {
@@ -539,7 +716,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     }
   }
 
-  function createUploadIntent({ firmId, clientId, fileName, contentType, checksum, category, source }) {
+  function createUploadIntent({ firmId, clientId, fileName, contentType, checksum, category, source, retentionClass }) {
     const id = randomUUID()
     const key = `${firmId}/documents/${clientId}/${Date.now()}-${id}-${sanitizeFileName(fileName || 'upload.bin')}`
     const object = normalizeObjectMetadata({
@@ -547,7 +724,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       key,
       checksum: checksum || null,
       contentType: contentType || 'application/octet-stream',
-      retentionClass: 'uploaded_document'
+      retentionClass: retentionClass || 'uploaded_document'
     })
     const intent = {
       id,
@@ -562,6 +739,56 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     }
     state.pendingUploadIntents.push(intent)
     return intent
+  }
+
+  function normalizePortalScope(scope = {}) {
+    return {
+      templateIds: Array.isArray(scope.templateIds) ? [...new Set(scope.templateIds.filter(Boolean))] : null,
+      uploadCategories: Array.isArray(scope.uploadCategories) ? [...new Set(scope.uploadCategories.filter(Boolean))] : null
+    }
+  }
+
+  function resolvePortalLinkByToken(token) {
+    const link = state.portalLinks.find((entry) => entry.token === token)
+    if (!link) throw new Error('Portal link not found.')
+    const nowMs = Date.now()
+    if (link.revokedAt) throw new Error('Portal link revoked.')
+    if (link.expiresAt && new Date(link.expiresAt).getTime() <= nowMs) throw new Error('Portal link expired.')
+    if (Number(link.maxUses || 0) > 0 && Number(link.usedCount || 0) >= Number(link.maxUses)) {
+      throw new Error('Portal link use limit reached.')
+    }
+    return link
+  }
+
+  function assertPortalTemplateScope(link, templateId) {
+    if (!Array.isArray(link.scope?.templateIds) || link.scope.templateIds.length === 0) return
+    if (!link.scope.templateIds.includes(templateId)) {
+      throw new Error('Portal link cannot access this form.')
+    }
+  }
+
+  function assertPortalUploadScope(link, category) {
+    if (!Array.isArray(link.scope?.uploadCategories) || link.scope.uploadCategories.length === 0) return
+    if (!link.scope.uploadCategories.includes(category || 'general')) {
+      throw new Error('Portal link cannot upload this category.')
+    }
+  }
+
+  function consumePortalLinkUse(link) {
+    link.usedCount = Number(link.usedCount || 0) + 1
+    link.lastUsedAt = now()
+  }
+
+  function normalizeMalwareScan(scan = {}) {
+    const status = String(scan.status || 'pending').toLowerCase()
+    const allowedStatus = new Set(['pending', 'clean', 'infected'])
+    const normalizedStatus = allowedStatus.has(status) ? status : 'pending'
+    return {
+      status: normalizedStatus,
+      provider: scan.provider || null,
+      reference: scan.reference || null,
+      checkedAt: scan.checkedAt || now()
+    }
   }
 
   async function applyLifecyclePolicies() {
@@ -633,11 +860,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           profile.id !== excludedProfileId
       )
       .sort((a, b) => {
-        const indexDiff =
-          (a.stageOrderIndex || Number.MAX_SAFE_INTEGER) - (b.stageOrderIndex || Number.MAX_SAFE_INTEGER)
+        const indexDiff = profileOrderIndex(a) - profileOrderIndex(b)
         if (indexDiff !== 0) return indexDiff
         const updatedDiff =
-          new Date(a.updatedAt || a.createdAt || 0).getTime() - new Date(b.updatedAt || b.createdAt || 0).getTime()
+          parseIso(a.updatedAt || a.createdAt || 0) - parseIso(b.updatedAt || b.createdAt || 0)
         if (updatedDiff !== 0) return updatedDiff
         return a.id.localeCompare(b.id)
       })
@@ -648,8 +874,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     let changed = false
     cards.forEach((card, index) => {
       const nextIndex = index + 1
-      if (card.stageOrderIndex !== nextIndex) {
-        card.stageOrderIndex = nextIndex
+      if (profileOrderIndex(card) !== nextIndex) {
+        assignProspectOrderIndex(card, nextIndex)
         changed = true
       }
     })
@@ -747,17 +973,21 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     return publicUser(user)
   }
 
-  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}, options = {}) {
-    state.auditEvents.push({
-      id: randomUUID(),
+  function addAudit(firmId, actorUserId, entityType, entityId, action, changeSet = {}, options = {}) {
+    const metadataOnly = !('before' in changeSet) && !('after' in changeSet)
+    const event = createCanonicalAuditEvent({
+      actor: { userId: actorUserId || null },
       firmId,
-      actorUserId,
       entityType,
       entityId,
       action,
-      occurredAt: now(),
-      metadata
+      before: metadataOnly ? null : (changeSet.before ?? null),
+      after: metadataOnly ? (changeSet || null) : (changeSet.after ?? null),
+      requestId: options.requestId || null,
+      ip: options.ip || null,
+      timestamp: now()
     })
+    state.auditEvents.push(event)
     if (options.persist !== false) {
       persist()
     }
@@ -831,9 +1061,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           (profile) => !q || `${profile.firstName} ${profile.lastName} ${profile.email || ''}`.toLowerCase().includes(q)
         )
         .sort((a, b) =>
-          a.stage === b.stage
-            ? (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0)
-            : a.lastName.localeCompare(b.lastName)
+          (a.stage || '').localeCompare(b.stage || '') ||
+          (profileOrderIndex(a) - profileOrderIndex(b)) ||
+          (parseIso(a.updatedAt || a.createdAt) - parseIso(b.updatedAt || b.createdAt)) ||
+          a.id.localeCompare(b.id)
         )
     },
     getProfileDetail(user, profileId) {
@@ -883,11 +1114,19 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         phone: input.phone || '',
         dateOfBirth: input.dateOfBirth || '',
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
+        status: input.status || (input.kind === 'client' ? 'active' : 'new'),
         stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
+        orderIndex: input.kind === 'prospect' ? inStage + 1 : null,
         pipelineVersion: input.kind === 'prospect' ? 1 : null,
         address: input.address || {},
-        customProfile: input.customProfile || {},
+        financialSummary: normalizeFinancialSummary(input.financialSummary, input.extensions || {}),
+        extensions: normalizeExtensions(
+          input.extensions || {
+            schemaVersion: '1.0.0',
+            values: input.customProfile || {}
+          }
+        ),
         householdId: input.householdId || null,
         spouseClientId: input.spouseClientId || null,
         createdAt,
@@ -913,6 +1152,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       if (patch.kind === 'client') {
         patch.stage = null
         patch.stageOrderIndex = null
+        patch.orderIndex = null
       }
       if (patch.kind === 'prospect' && !patch.stage) {
         patch.stage = 'discovery'
@@ -936,6 +1176,25 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         }
         delete nextPatch.taxId
       }
+      if ('source' in nextPatch && nextPatch.source) {
+        nextPatch.source = { ...nextPatch.source, displayValue: sourceDisplay(nextPatch.source) }
+      }
+      if ('extensions' in nextPatch) {
+        nextPatch.extensions = normalizeExtensions(nextPatch.extensions)
+      }
+      if ('customProfile' in nextPatch && !('extensions' in nextPatch)) {
+        nextPatch.extensions = normalizeExtensions({
+          schemaVersion: '1.0.0',
+          values: nextPatch.customProfile || {}
+        })
+      }
+      if ('financialSummary' in nextPatch || 'extensions' in nextPatch) {
+        nextPatch.financialSummary = normalizeFinancialSummary(
+          nextPatch.financialSummary || profile.financialSummary || {},
+          nextPatch.extensions || profile.extensions || {}
+        )
+      }
+      if ('customProfile' in nextPatch) delete nextPatch.customProfile
       Object.assign(profile, nextPatch, { updatedAt: now() })
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) })
       persist()
@@ -1008,7 +1267,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
 
           destinationCards.splice(insertIndex, 0, profile)
           destinationCards.forEach((card, index) => {
-            card.stageOrderIndex = index + 1
+            assignProspectOrderIndex(card, index + 1)
           })
 
           if (previousStage && previousStage !== toStage) {
@@ -1177,6 +1436,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     createFormTemplate(user, input) {
       requirePermission(user, 'forms:write')
       const createdAt = now()
+      const formSchema = validateFormDefinitionSchema({ sections: input.sections || [] }, { contextPath: '/sections' }).schema
       const template = normalizeTemplateAggregate(
         {
           id: randomUUID(),
@@ -1184,7 +1444,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           kind: 'form',
           name: input.name,
           description: input.description || '',
-          formSchema: { sections: input.sections || [] },
+          formSchema,
           blueprint: { sections: [] },
           mappings: [],
           publishState: 'draft',
@@ -1192,7 +1452,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
             {
               version: 1,
               event: 'created',
-              formSchema: { sections: input.sections || [] },
+              formSchema,
               blueprint: { sections: [] },
               mappings: [],
               publishState: 'draft',
@@ -1294,7 +1554,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         contentType: input.contentType,
         checksum: input.checksum,
         category: input.category,
-        source: 'client'
+        source: 'client',
+        retentionClass: input.retentionClass
       })
       const presigned = await objectStorage.createPresignedUploadUrl({
         ...intent.object,
@@ -1309,7 +1570,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       const intent = input.uploadId
         ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === user.firmId)
         : null
-      const object = normalizeObjectMetadata(input.object || intent?.object || {}, 'uploaded_document')
+      const object = normalizeObjectMetadata(input.object || intent?.object || {}, input.retentionClass || 'uploaded_document')
+      const malwareScan = normalizeMalwareScan(input.malwareScan)
       const upload = {
         id: randomUUID(),
         firmId: user.firmId,
@@ -1320,6 +1582,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         status: 'uploaded',
         uploadedBy: 'client',
         notes: input.notes || '',
+        malwareScan,
         object,
         createdAt: now(),
         updatedAt: now()
@@ -1498,6 +1761,11 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write')
       const createdAt = now()
+      const formSchemaResult = validateFormDefinitionSchema(input.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const mappings = validateMappingRules(input.mappings || [], {
+        contextPath: '/mappings',
+        repeaterPaths: formSchemaResult.repeaterPaths
+      })
       const template = normalizeTemplateAggregate(
         {
           id: randomUUID(),
@@ -1507,14 +1775,16 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           description: input.description || '',
           documentMetadata: { fileName: input.fileName || 'template.pdf' },
           blueprint: input.blueprint || { sections: [] },
-          mappings: input.mappings || [],
+          mappings,
+          formSchema: formSchemaResult.schema,
           publishState: 'draft',
           versions: [
             {
               version: 1,
               event: 'created',
               blueprint: input.blueprint || { sections: [] },
-              mappings: input.mappings || [],
+              mappings,
+              formSchema: formSchemaResult.schema,
               publishState: 'draft',
               createdAt,
               actorUserId: user.id
@@ -1532,12 +1802,21 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       persist()
       return documentTemplateAdapter(template)
     },
-    updateTemplateMappings(user, templateId, mappings) {
+    updateTemplateMappings(user, templateId, mappings, input = {}) {
       requirePermission(user, 'templates:write')
+      const expectedVersionHash = input.expectedVersionHash || null
       const template = state.templateAggregates.find(
         (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
       )
       if (!template) throw new Error('Template not found.')
+      const currentHash = templateVersionHash(template)
+      if (expectedVersionHash && expectedVersionHash !== currentHash) {
+        const error = new Error('Template has changed since last load.')
+        error.statusCode = 409
+        error.code = 'TEMPLATE_VERSION_CONFLICT'
+        error.details = { expectedVersionHash, currentVersionHash: currentHash }
+        throw error
+      }
       template.mappings = mappings || []
       template.mappingRules = template.mappings
       template.versions.push(
@@ -1549,32 +1828,110 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       )
       template.updatedAt = now()
       addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.mappings_updated', {
-        count: template.mappings.length
+        before: { mappings: previousMappings, count: previousMappings.length },
+        after: { mappings: deepClone(template.mappings), count: template.mappings.length }
       })
       persist()
       return documentTemplateAdapter(template)
     },
-    publishTemplate(user, templateId) {
+    publishTemplate(user, templateId, input = {}) {
       requirePermission(user, 'templates:write')
       const template = state.templateAggregates.find(
         (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
       )
       if (!template) throw new Error('Template not found.')
-      const previousState = template.publishState || 'draft'
+      const previousState = normalizeTemplateState(template.publishState || 'draft')
+      if (!input.versionBump || !String(input.versionBump).trim()) {
+        throw new Error('Publish requires versionBump.')
+      }
+      if (!input.changelog || !String(input.changelog).trim()) {
+        throw new Error('Publish requires changelog.')
+      }
       template.publishState = 'published'
       template.status = 'published'
       template.publishTransitions ||= []
       template.publishTransitions.push({ from: previousState, to: 'published', at: now(), actorUserId: user.id })
+      const versionHash = templateVersionHash(template)
       template.versions.push(
         createTemplateVersion(template, 'published', {
           publishState: 'published',
-          diff: { publishTransition: { from: previousState, to: 'published' } },
+          immutable: true,
+          changelog: {
+            versionBump: String(input.versionBump),
+            body: String(input.changelog).trim()
+          },
+          versionHash,
+          diff: {
+            publishTransition: { from: previousState, to: 'published' },
+            versionBump: String(input.versionBump)
+          },
+          actorUserId: user.id
+        })
+      )
+      template.updatedAt = now()
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.published', {
+        before: { publishState: previousState },
+        after: { publishState: 'published' }
+      })
+      persist()
+      return documentTemplateAdapter(template)
+    },
+    compareTemplateVersions(user, templateId, baseVersion, targetVersion) {
+      requirePermission(user, 'templates:write')
+      const template = state.templateAggregates.find(
+        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      )
+      if (!template) throw new Error('Template not found.')
+      const versions = template.versions || []
+      const base = versions.find((entry) => Number(entry.version) === Number(baseVersion))
+      const target = versions.find((entry) => Number(entry.version) === Number(targetVersion))
+      if (!base || !target) throw new Error('Template version not found.')
+      return {
+        templateId,
+        baseVersion: Number(base.version),
+        targetVersion: Number(target.version),
+        changed: stableSerialize(base.blueprint) !== stableSerialize(target.blueprint) ||
+          stableSerialize(base.mappings) !== stableSerialize(target.mappings) ||
+          base.publishState !== target.publishState,
+        diff: {
+          blueprintChanged: stableSerialize(base.blueprint) !== stableSerialize(target.blueprint),
+          mappingsChanged: stableSerialize(base.mappings) !== stableSerialize(target.mappings),
+          publishStateChanged: base.publishState !== target.publishState
+        },
+        base,
+        target
+      }
+    },
+    revertTemplateVersion(user, templateId, targetVersion, input = {}) {
+      requirePermission(user, 'templates:write')
+      const template = state.templateAggregates.find(
+        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      )
+      if (!template) throw new Error('Template not found.')
+      const target = (template.versions || []).find((entry) => Number(entry.version) === Number(targetVersion))
+      if (!target) throw new Error('Template version not found.')
+      if (!input.changelog || !String(input.changelog).trim()) {
+        throw new Error('Revert requires changelog.')
+      }
+      template.blueprint = deepClone(target.blueprint || { sections: [] })
+      template.mappings = deepClone(target.mappings || [])
+      template.mappingRules = template.mappings
+      template.publishState = normalizeTemplateState(target.publishState || 'draft')
+      template.status = template.publishState
+      template.versions.push(
+        createTemplateVersion(template, 'reverted', {
+          changelog: { body: String(input.changelog).trim(), fromVersion: Number(target.version) },
+          diff: { revertedToVersion: Number(target.version) },
           actorUserId: user.id
         })
       )
       template.updatedAt = now()
       persist()
-      return documentTemplateAdapter(template)
+      return {
+        template: documentTemplateAdapter(template),
+        revertedToVersion: Number(target.version),
+        currentVersion: template.versions.length
+      }
     },
     listTemplateVersions(user, templateId) {
       requirePermission(user, 'templates:write')
@@ -1608,7 +1965,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         firmId: user.firmId,
         clientId: input.clientId,
         templateId: input.templateId,
+        createdByUserId: user.id,
         type: input.type || 'pdf',
+        idempotencyKey: input.idempotencyKey || null,
         maxAttempts: Number(input.maxAttempts || 3),
         metadata: input.metadata || {}
       })
@@ -1629,8 +1988,41 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       const updated = requeueExportJob(exportId)
       if (!updated) throw new Error('Export not found.')
       state.exportJobs = state.exportJobs.map((entry) => (entry.id === exportId ? updated : entry))
+      addAudit(user.firmId, user.id, 'export_job', exportId, 'export_job.retry_requested', {
+        before: { attempts: job.attempts || 0, status: job.status },
+        after: { attempts: updated.attempts || 0, status: updated.status }
+      })
       persist()
       return updated
+    },
+    getExportQueueHealth(user) {
+      requirePermission(user, 'exports:read')
+      const queue = readExportWorkerStatus()
+      return {
+        generatedAt: now(),
+        queue
+      }
+    },
+    retryFailedExports(user, options = {}) {
+      requirePermission(user, 'exports:write')
+      const limit = Math.max(1, Math.min(Number(options.limit || 25), 200))
+      const includeDeadLetter = options.includeDeadLetter === true
+      const dryRun = options.dryRun === true
+      const candidates = listExportQueueJobs()
+        .filter((entry) => entry.firmId === user.firmId)
+        .filter((entry) => entry.status === 'failed' || (includeDeadLetter && entry.status === 'dead-letter'))
+        .slice(0, limit)
+      if (dryRun) {
+        return { dryRun: true, limit, includeDeadLetter, candidateCount: candidates.length, ids: candidates.map((c) => c.id) }
+      }
+      const retried = []
+      for (const candidate of candidates) {
+        const updated = requeueExportJob(candidate.id)
+        if (updated) retried.push(updated.id)
+      }
+      state.exportJobs = listExportQueueJobs()
+      persist()
+      return { dryRun: false, limit, includeDeadLetter, retriedCount: retried.length, ids: retried }
     },
     async processQueuedExports() {
       const result = processExportQueueTick({
@@ -1668,7 +2060,13 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .reverse()
     },
     logout(token) {
+      const session = state.sessions.find((entry) => entry.token === token)
       state.sessions = state.sessions.filter((entry) => entry.token !== token)
+      if (session) {
+        addAudit(session.firmId, session.userId, 'user', session.userId, 'auth.logout', {
+          after: { sessionToken: token }
+        })
+      }
       persist()
       return { ok: true }
     },
@@ -1708,6 +2106,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       }
       state.users.push(user)
       state.invites = state.invites.filter((entry) => entry.id !== invite.id)
+      addAudit(user.firmId, user.id, 'user', user.id, 'user.role_assigned', {
+        before: { role: null },
+        after: { role: user.role, invitedByUserId: invite.invitedByUserId }
+      })
       persist()
       return createSession(user)
     },
@@ -1720,11 +2122,22 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     objectStorage,
     removeHouseholdMember(user, householdId, clientId) {
       requirePermission(user, 'households:write')
+      const beforeCount = state.householdMembers.filter(
+        (entry) => entry.householdId === householdId && entry.firmId === user.firmId
+      ).length
       state.householdMembers = state.householdMembers.filter(
         (entry) => !(entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId)
       )
       const profile = state.profiles.find((entry) => entry.id === clientId && entry.firmId === user.firmId)
       if (profile) profile.householdId = null
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.split', {
+        before: { memberCount: beforeCount, clientId },
+        after: {
+          memberCount: state.householdMembers.filter(
+            (entry) => entry.householdId === householdId && entry.firmId === user.firmId
+          ).length
+        }
+      })
       persist()
       return { ok: true }
     },
@@ -1750,6 +2163,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         firmId: user.firmId,
         createdAt: now()
       })
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.merge', {
+        after: { primaryClientId: primary.id, spouseClientId: spouse.id }
+      })
       persist()
       return { primary, spouse }
     },
@@ -1767,14 +2183,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         (entry) => entry.id === submissionId && entry.firmId === user.firmId
       )
       if (!submission) throw new Error('Submission not found.')
-      const { auditContext = null, ...nextPatch } = patch
-      Object.assign(submission, nextPatch, { updatedAt: now() })
-      const fields = Object.keys(nextPatch)
-      const action = auditContext?.action || 'form_submission.updated'
-      addAudit(user.firmId, user.id, 'form_submission', submission.id, action, {
-        fields,
-        ...(auditContext && typeof auditContext === 'object' ? auditContext : {})
-      })
+      const nextUpdatedAt = patch?.updatedAt || now()
+      Object.assign(submission, patch, { updatedAt: nextUpdatedAt })
       persist()
       return submission
     },
@@ -1810,24 +2220,70 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         }))
       })
     },
-    createPortalLink(user, profileId) {
+    createPortalLink(user, profileId, options = {}) {
       requirePermission(user, 'profiles:read')
-      const link = { id: randomUUID(), firmId: user.firmId, profileId, token: randomUUID(), createdAt: now() }
+      const createdAt = now()
+      const expiresAt = options.expiresAt || new Date(Date.now() + Number(options.expiresInHours || 24) * 3600 * 1000).toISOString()
+      const maxUses = Math.max(1, Number(options.maxUses || 1))
+      const link = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        profileId,
+        token: randomUUID(),
+        createdAt,
+        expiresAt,
+        maxUses,
+        usedCount: 0,
+        revokedAt: null,
+        lastUsedAt: null,
+        scope: normalizePortalScope(options.scope || options)
+      }
       state.portalLinks.push(link)
       persist()
       return link
     },
-    getPortalData(token) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
+    revokePortalLink(user, linkId) {
+      requirePermission(user, 'profiles:read')
+      const link = state.portalLinks.find((entry) => entry.id === linkId && entry.firmId === user.firmId)
       if (!link) throw new Error('Portal link not found.')
+      if (!link.revokedAt) {
+        link.revokedAt = now()
+      }
+      persist()
+      return link
+    },
+    getPortalSession(token) {
+      const link = resolvePortalLinkByToken(token)
+      return {
+        id: link.id,
+        firmId: link.firmId,
+        profileId: link.profileId,
+        token: link.token,
+        scope: link.scope,
+        expiresAt: link.expiresAt,
+        maxUses: link.maxUses,
+        usedCount: link.usedCount,
+        revokedAt: link.revokedAt
+      }
+    },
+    getPortalData(token) {
+      const link = resolvePortalLinkByToken(token)
       const firm = state.firms.find((entry) => entry.id === link.firmId) || null
       const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId)
       const submissions = state.formSubmissions
         .filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId)
+        .filter(
+          (entry) =>
+            !Array.isArray(link.scope?.templateIds) ||
+            link.scope.templateIds.length === 0 ||
+            entry.templateId === 'portal' ||
+            link.scope.templateIds.includes(entry.templateId)
+        )
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
       const availableTemplates = state.templateAggregates
         .filter((entry) => entry.firmId === link.firmId && entry.kind === 'form')
+        .filter((entry) => !Array.isArray(link.scope?.templateIds) || link.scope.templateIds.length === 0 || link.scope.templateIds.includes(entry.id))
         .map((entry) => ({
           id: entry.id,
           name: entry.name,
@@ -1836,13 +2292,18 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         }))
       const uploads = state.documentUploads
         .filter((entry) => entry.firmId === link.firmId && entry.clientId === link.profileId)
+        .filter(
+          (entry) =>
+            !Array.isArray(link.scope?.uploadCategories) ||
+            link.scope.uploadCategories.length === 0 ||
+            link.scope.uploadCategories.includes(entry.category || 'general')
+        )
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
       return { firm, profile, submissions, availableTemplates, uploads }
     },
     portalSubmit(token, input) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
-      if (!link) throw new Error('Portal link not found.')
+      const link = resolvePortalLinkByToken(token)
       const templateId = input.templateId || 'portal'
       const template =
         templateId === 'portal'
@@ -1851,7 +2312,24 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
               (entry) => entry.id === templateId && entry.firmId === link.firmId && entry.kind === 'form'
             )
       if (templateId !== 'portal' && !template) throw new Error('Form template not found.')
+      if (templateId !== 'portal') assertPortalTemplateScope(link, templateId)
       const status = input.status === 'draft' ? 'draft' : 'submitted'
+      if (status === 'draft') {
+        const existingDraft = state.formSubmissions.find(
+          (entry) =>
+            entry.firmId === link.firmId &&
+            entry.clientId === link.profileId &&
+            entry.templateId === templateId &&
+            entry.status === 'draft' &&
+            entry.source === 'portal'
+        )
+        if (existingDraft) {
+          existingDraft.data = input.data && typeof input.data === 'object' ? input.data : {}
+          existingDraft.updatedAt = now()
+          persist()
+          return existingDraft
+        }
+      }
       const submission = {
         id: randomUUID(),
         firmId: link.firmId,
@@ -1864,13 +2342,71 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         updatedAt: now(),
         source: 'portal'
       }
+      consumePortalLinkUse(link)
       state.formSubmissions.push(submission)
       persist()
       return submission
     },
+    getPortalDraftSectionState(token, draftId, sectionId) {
+      const link = findPortalLink(token)
+      findDraftForScope({ draftId, firmId: link.firmId, clientId: link.profileId })
+      const normalizedSectionId = normalizeSectionIdentifier(sectionId)
+      const entry = state.draftStepStates.find(
+        (item) =>
+          item.firmId === link.firmId &&
+          item.clientId === link.profileId &&
+          item.draftId === draftId &&
+          item.sectionId === normalizedSectionId
+      )
+      if (!entry) return null
+      return deepClone(entry)
+    },
+    listPortalDraftSectionStates(token, draftId) {
+      const link = findPortalLink(token)
+      findDraftForScope({ draftId, firmId: link.firmId, clientId: link.profileId })
+      return state.draftStepStates
+        .filter((item) => item.firmId === link.firmId && item.clientId === link.profileId && item.draftId === draftId)
+        .map((item) => deepClone(item))
+    },
+    savePortalDraftSectionState(token, draftId, sectionId, input = {}) {
+      const link = findPortalLink(token)
+      findDraftForScope({ draftId, firmId: link.firmId, clientId: link.profileId })
+      const normalizedSectionId = normalizeSectionIdentifier(sectionId)
+      const expectedVersion = Number(input.expectedVersion || 0)
+      const nowIso = now()
+      const existing = state.draftStepStates.find(
+        (item) =>
+          item.firmId === link.firmId &&
+          item.clientId === link.profileId &&
+          item.draftId === draftId &&
+          item.sectionId === normalizedSectionId
+      )
+      const currentVersion = Number(existing?.version || 0)
+      if (expectedVersion !== currentVersion) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Section draft state is stale.',
+          state: existing ? deepClone(existing) : null
+        }
+      }
+      const next = {
+        firmId: link.firmId,
+        clientId: link.profileId,
+        draftId,
+        sectionId: normalizedSectionId,
+        version: currentVersion + 1,
+        data: input.data && typeof input.data === 'object' ? deepClone(input.data) : {},
+        updatedAt: nowIso
+      }
+      if (existing) Object.assign(existing, next)
+      else state.draftStepStates.push(next)
+      persist()
+      return { ok: true, state: deepClone(next) }
+    },
     async createPortalUploadPresign(token, input) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
-      if (!link) throw new Error('Portal link not found.')
+      const link = resolvePortalLinkByToken(token)
+      assertPortalUploadScope(link, input.category)
       const intent = createUploadIntent({
         firmId: link.firmId,
         clientId: link.profileId,
@@ -1878,7 +2414,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         contentType: input.contentType,
         checksum: input.checksum,
         category: input.category,
-        source: 'portal'
+        source: 'portal',
+        retentionClass: input.retentionClass
       })
       const presigned = await objectStorage.createPresignedUploadUrl({
         ...intent.object,
@@ -1888,44 +2425,64 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { uploadId: intent.id, object: intent.object, presigned }
     },
     portalUpload(token, input) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
-      if (!link) throw new Error('Portal link not found.')
+      const link = resolvePortalLinkByToken(token)
       const intent = input.uploadId
         ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === link.firmId)
         : null
-      const object = normalizeObjectMetadata(input.object || intent?.object || {}, 'uploaded_document')
+      const uploadCategory = input.category || intent?.category || 'general'
+      assertPortalUploadScope(link, uploadCategory)
+      const object = normalizeObjectMetadata(
+        input.object || intent?.object || {},
+        input.retentionClass || intent?.object?.retentionClass || 'uploaded_document'
+      )
+      const malwareScan = normalizeMalwareScan(input.malwareScan)
       const upload = {
         id: randomUUID(),
         firmId: link.firmId,
         clientId: link.profileId,
         name: input.name || input.fileName || intent?.fileName || 'Portal upload',
-        category: input.category || intent?.category || 'general',
+        category: uploadCategory,
         visibility: 'shared',
         status: 'uploaded',
         uploadedBy: 'portal',
         notes: input.notes || '',
+        malwareScan,
         object,
         createdAt: now(),
         updatedAt: now()
       }
+      consumePortalLinkUse(link)
       state.pendingUploadIntents = state.pendingUploadIntents.filter((entry) => entry.id !== input.uploadId)
       state.documentUploads.push(upload)
       persist()
       return upload
     },
     async createPortalUploadDownloadUrl(token, uploadId) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
-      if (!link) throw new Error('Portal link not found.')
+      const link = resolvePortalLinkByToken(token)
       const upload = state.documentUploads.find(
         (entry) => entry.id === uploadId && entry.firmId === link.firmId && entry.clientId === link.profileId
       )
       if (!upload) throw new Error('Upload not found.')
       return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 })
     },
-    getAnalytics(user) {
+    buildAnalyticsSnapshot(user, filters = {}) {
       requirePermission(user, 'analytics:read')
+      const startDate = toIsoDate(filters.startDate)
+      const endDate = toIsoDate(filters.endDate)
+      const cohortBy = filters.cohortBy || 'all'
+      const cohortValue = filters.cohortValue ? String(filters.cohortValue) : null
+      const nowMs = parseIso(process.env.TEST_NOW || '') || Date.now()
+
       const firmProfiles = state.profiles.filter((entry) => entry.firmId === user.firmId)
-      const prospects = firmProfiles.filter((entry) => entry.kind === 'prospect')
+      const prospects = firmProfiles.filter((entry) => {
+        if (entry.kind !== 'prospect') return false
+        const created = toIsoDate(entry.createdAt)
+        if (startDate && created && created < startDate) return false
+        if (endDate && created && created > endDate) return false
+        if (cohortBy === 'stage' && cohortValue && (entry.stage || 'unassigned') !== cohortValue) return false
+        if (cohortBy === 'advisor' && cohortValue && entry.advisorUserId !== cohortValue) return false
+        return true
+      })
       const stageCounts = prospects.reduce((acc, profile) => {
         const stage = profile.stage || 'unassigned'
         acc[stage] = (acc[stage] || 0) + 1
@@ -1959,12 +2516,11 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         if (!stageEntryTimes.has(key)) stageEntryTimes.set(key, parseIso(event.changedAt))
       })
       const stageAging = Object.fromEntries(stageOrder.map((stage) => [stage, { count: 0, avgDays: 0 }]))
-      const nowTime = Date.now()
       prospects.forEach((profile) => {
         const stage = profile.stage || 'unassigned'
         if (!stageAging[stage]) stageAging[stage] = { count: 0, avgDays: 0 }
         const enteredAt = stageEntryTimes.get(`${profile.id}:${stage}`) || parseIso(profile.createdAt)
-        const ageDays = Math.max(0, (nowTime - enteredAt) / 86_400_000)
+        const ageDays = Math.max(0, (nowMs - enteredAt) / 86_400_000)
         stageAging[stage].count += 1
         stageAging[stage].avgDays += ageDays
       })
@@ -1981,9 +2537,15 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       templateIds.forEach((templateId) => {
         formsByTemplate[templateId] = { templateId, drafts: 0, submitted: 0, completionRate: 0 }
       })
-      state.formSubmissions
+      const relevantSubmissions = state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
-        .forEach((submission) => {
+        .filter((entry) => {
+          const created = toIsoDate(entry.createdAt)
+          if (startDate && created && created < startDate) return false
+          if (endDate && created && created > endDate) return false
+          return true
+        })
+      relevantSubmissions.forEach((submission) => {
           formsByTemplate[submission.templateId] ||= {
             templateId: submission.templateId,
             drafts: 0,
@@ -1997,6 +2559,29 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         const total = entry.drafts + entry.submitted
         entry.completionRate = total ? Number((entry.submitted / total).toFixed(4)) : 0
       })
+      const formCompletionLatency = relevantSubmissions
+        .filter((entry) => entry.status === 'submitted')
+        .map((entry) => {
+          const latencyHours = Number(((parseIso(entry.updatedAt) - parseIso(entry.createdAt)) / 3_600_000).toFixed(2))
+          return {
+            submissionId: entry.id,
+            templateId: entry.templateId || 'unknown',
+            latencyHours: Math.max(0, latencyHours)
+          }
+        })
+
+      const latencyByTemplate = Object.values(
+        formCompletionLatency.reduce((acc, entry) => {
+          acc[entry.templateId] ||= { templateId: entry.templateId, submissions: 0, totalHours: 0 }
+          acc[entry.templateId].submissions += 1
+          acc[entry.templateId].totalHours += entry.latencyHours
+          return acc
+        }, {})
+      ).map((entry) => ({
+        templateId: entry.templateId,
+        submissions: entry.submissions,
+        avgHours: Number((entry.totalHours / entry.submissions).toFixed(2))
+      }))
 
       const advisors = state.users.filter(
         (entry) => entry.firmId === user.firmId && ['advisor', 'admin'].includes(entry.role)
@@ -2023,13 +2608,47 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         }
       })
 
+      const exportJobs = state.exportJobs.filter((entry) => {
+        if (entry.firmId !== user.firmId) return false
+        const created = toIsoDate(entry.createdAt)
+        if (startDate && created && created < startDate) return false
+        if (endDate && created && created > endDate) return false
+        return true
+      })
+      const advisorById = new Map(advisors.map((entry) => [entry.id, `${entry.firstName} ${entry.lastName}`]))
+      const exportUsageByAdvisor = Object.values(
+        exportJobs.reduce((acc, job) => {
+          const advisorUserId = job.createdByUserId || job.metadata?.requestedByUserId || 'unknown'
+          acc[advisorUserId] ||= { advisorUserId, advisorName: advisorById.get(advisorUserId) || 'Unknown', total: 0 }
+          acc[advisorUserId].total += 1
+          return acc
+        }, {})
+      )
+      const exportUsageByFirm = {
+        firmId: user.firmId,
+        total: exportJobs.length,
+        byStatus: exportJobs.reduce((acc, job) => {
+          acc[job.status || 'unknown'] = (acc[job.status || 'unknown'] || 0) + 1
+          return acc
+        }, {})
+      }
+
+      const bottlenecks = Object.entries(stageAging)
+        .map(([stage, value]) => ({ stage, ...value }))
+        .filter((entry) => entry.count > 0)
+        .sort((a, b) => b.avgDays - a.avgDays)
+
       return {
+        filters: { startDate, endDate, cohortBy, cohortValue },
         stageCounts,
         funnel,
         overallConversionRate: firstStage ? Number((lastStage / firstStage).toFixed(4)) : 0,
         stageAging,
+        bottlenecks,
         formCompletionRates: Object.values(formsByTemplate),
+        formCompletionLatency: latencyByTemplate,
         advisorProductivity,
+        exportUsage: { byAdvisor: exportUsageByAdvisor, byFirm: exportUsageByFirm },
         profileCount: firmProfiles.length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
@@ -2039,6 +2658,36 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2)
         )
       }
+    },
+    getAnalytics(user, filters = {}) {
+      return this.buildAnalyticsSnapshot(user, filters)
+    },
+    getAnalyticsDashboard(user, filters = {}) {
+      const snapshot = this.buildAnalyticsSnapshot(user, filters)
+      return {
+        filters: snapshot.filters,
+        funnel: snapshot.funnel,
+        stageAging: snapshot.stageAging,
+        bottlenecks: snapshot.bottlenecks,
+        formCompletionLatency: snapshot.formCompletionLatency,
+        exportUsage: snapshot.exportUsage
+      }
+    },
+    exportAnalyticsCsv(user, filters = {}) {
+      const snapshot = this.buildAnalyticsSnapshot(user, filters)
+      const rows = [['report', 'dimension', 'metric', 'value']]
+      snapshot.funnel.forEach((entry) => rows.push(['funnel', entry.stage, 'count', entry.count]))
+      snapshot.bottlenecks.forEach((entry) => rows.push(['stage_aging', entry.stage, 'avg_days', entry.avgDays]))
+      snapshot.formCompletionLatency.forEach((entry) =>
+        rows.push(['form_latency', entry.templateId, 'avg_hours', entry.avgHours])
+      )
+      snapshot.exportUsage.byAdvisor.forEach((entry) =>
+        rows.push(['export_usage_advisor', entry.advisorName, 'total', entry.total])
+      )
+      Object.entries(snapshot.exportUsage.byFirm.byStatus).forEach(([status, count]) =>
+        rows.push(['export_usage_firm', status, 'total', count])
+      )
+      return rows.map((row) => row.map(csvCell).join(',')).join('\n')
     },
 
     async createExportDownloadUrl(user, exportId) {
@@ -2064,6 +2713,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       if (!profile) throw new Error('Profile not found.')
       const ssn = decryptValue(profile.pii?.ssnCiphertext)
       const taxId = decryptValue(profile.pii?.taxIdCiphertext)
+      addAudit(user.firmId, user.id, 'profile', profileId, 'profile.sensitive_read', {
+        after: { fields: ['ssnMasked', 'taxIdMasked'] }
+      })
       return {
         ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
         taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null

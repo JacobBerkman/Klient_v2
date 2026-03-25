@@ -35,16 +35,37 @@ export class FormsRepository {
   submitClientUpload(_user, _input) {
     throw new Error('Not implemented')
   }
-  createPortalLink(_user, _profileId) {
+  createClientUploadPresign(_user, _input) {
+    throw new Error('Not implemented')
+  }
+  createPortalLink(_user, _profileId, _options) {
+    throw new Error('Not implemented')
+  }
+  revokePortalLink(_user, _linkId) {
+    throw new Error('Not implemented')
+  }
+  getPortalSession(_token) {
     throw new Error('Not implemented')
   }
   getPortalData(_token) {
+    throw new Error('Not implemented')
+  }
+  createPortalUploadPresign(_token, _input) {
     throw new Error('Not implemented')
   }
   portalSubmit(_token, _input) {
     throw new Error('Not implemented')
   }
   portalUpload(_token, _input) {
+    throw new Error('Not implemented')
+  }
+  getPortalDraftSectionState(_token, _draftId, _sectionId) {
+    throw new Error('Not implemented')
+  }
+  listPortalDraftSectionStates(_token, _draftId) {
+    throw new Error('Not implemented')
+  }
+  savePortalDraftSectionState(_token, _draftId, _sectionId, _input) {
     throw new Error('Not implemented')
   }
 }
