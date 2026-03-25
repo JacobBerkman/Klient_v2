@@ -11,6 +11,7 @@ import {
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
+import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest()
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
@@ -108,10 +109,6 @@ function daysBetween(thenIso, nowMs) {
   const thenMs = new Date(thenIso || 0).getTime()
   if (!Number.isFinite(thenMs) || thenMs <= 0) return 0
   return Math.floor((nowMs - thenMs) / (1000 * 60 * 60 * 24))
-}
-
-function sourceDisplay(source) {
-  return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`
 }
 
 function deepClone(value) {
@@ -292,10 +289,11 @@ function seedState() {
         phone: '555-000-1111',
         dateOfBirth: '1981-04-12',
         source: {
-          cityOrLocation: 'Dallas',
-          venue: 'Referral',
-          occurredOn: '2026-03-01',
-          displayValue: sourceDisplay({ cityOrLocation: 'Dallas', venue: 'Referral', occurredOn: '2026-03-01' })
+          sourceCity: 'Dallas',
+          sourceVenue: 'Referral',
+          sourceDate: '2026-03-01',
+          campaignId: null,
+          displayValue: formatProfileSourceDisplay({ sourceCity: 'Dallas', sourceVenue: 'Referral', sourceDate: '2026-03-01' })
         },
         address: { city: 'Dallas', state: 'TX' },
         customProfile: { investableAssets: 850000 },
@@ -334,10 +332,11 @@ function seedState() {
         stageOrderIndex: 1,
         pipelineVersion: 1,
         source: {
-          cityOrLocation: 'Austin',
-          venue: 'Seminar',
-          occurredOn: '2026-03-10',
-          displayValue: sourceDisplay({ cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10' })
+          sourceCity: 'Austin',
+          sourceVenue: 'Seminar',
+          sourceDate: '2026-03-10',
+          campaignId: null,
+          displayValue: formatProfileSourceDisplay({ sourceCity: 'Austin', sourceVenue: 'Seminar', sourceDate: '2026-03-10' })
         },
         address: { city: 'Austin', state: 'TX' },
         customProfile: {},
@@ -357,10 +356,11 @@ function seedState() {
         stageOrderIndex: 1,
         pipelineVersion: 1,
         source: {
-          cityOrLocation: 'Houston',
-          venue: 'CPA Referral',
-          occurredOn: '2026-03-15',
-          displayValue: sourceDisplay({ cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15' })
+          sourceCity: 'Houston',
+          sourceVenue: 'CPA Referral',
+          sourceDate: '2026-03-15',
+          campaignId: null,
+          displayValue: formatProfileSourceDisplay({ sourceCity: 'Houston', sourceVenue: 'CPA Referral', sourceDate: '2026-03-15' })
         },
         address: { city: 'Houston', state: 'TX' },
         customProfile: {},
@@ -526,6 +526,7 @@ function seedState() {
 export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   const state = loadState(seedState)
   migrateTemplateSystems(state)
+  ;(state.profiles || []).forEach((profile) => migrateProfileSource(profile))
   saveState(state)
   state.pendingUploadIntents ||= []
 
@@ -882,7 +883,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         email: input.email || '',
         phone: input.phone || '',
         dateOfBirth: input.dateOfBirth || '',
-        source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
+        source: normalizeProfileSource(input.source),
         stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
         pipelineVersion: input.kind === 'prospect' ? 1 : null,
@@ -935,6 +936,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           taxIdCiphertext: encryptValue(nextPatch.taxId)
         }
         delete nextPatch.taxId
+      }
+      if ('source' in nextPatch) {
+        nextPatch.source = normalizeProfileSource(nextPatch.source)
       }
       Object.assign(profile, nextPatch, { updatedAt: now() })
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) })
