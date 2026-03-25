@@ -1,8 +1,8 @@
 import { hostname } from 'node:os'
 
-const DEFAULT_APP_SECRET = 'kinetic-klient-dev-secret';
-const MIN_APP_SECRET_LENGTH = 24;
-const MIN_APP_SECRET_ENTROPY_BITS = 80;
+const DEFAULT_APP_SECRET = 'kinetic-klient-dev-secret'
+const MIN_APP_SECRET_LENGTH = 24
+const MIN_APP_SECRET_ENTROPY_BITS = 80
 
 function normalizeNodeEnv(value) {
   return ['development', 'test', 'production'].includes(value) ? value : 'development'
@@ -37,24 +37,18 @@ function readStorageProvider(value) {
   }
   return normalized
 }
-const acceptedAuthProviders = ['local', 'oidc', 'saml'];
+
+const acceptedAuthProviders = ['local', 'oidc', 'saml']
 
 function readAuthProvider(value) {
-  const raw = value === undefined || value === null || value === '' ? 'local' : String(value);
-  const normalized = raw.toLowerCase();
+  const raw = value === undefined || value === null || value === '' ? 'local' : String(value)
+  const normalized = raw.toLowerCase()
   if (!acceptedAuthProviders.includes(normalized)) {
     throw new Error(
       `Invalid AUTH_PROVIDER: received "${raw}". Accepted values: ${acceptedAuthProviders.join(', ')}.`
-    );
+    )
   }
   return normalized
-}
-
-
-function readEnableDemoMode() {
-  const requested = readBoolean('ENABLE_DEMO_MODE', false);
-  if (nodeEnv === 'production') return false;
-  return requested;
 }
 
 function readPiiKeyProvider(value) {
@@ -65,11 +59,50 @@ function readPiiKeyProvider(value) {
   return normalized
 }
 
-const nodeEnv = normalizeNodeEnv(process.env.NODE_ENV || 'development')
-const appSecret = process.env.APP_SECRET || 'kinetic-klient-dev-secret'
+function estimateAppSecretEntropyBits(secret) {
+  const pools = [
+    { regex: /[a-z]/, size: 26 },
+    { regex: /[A-Z]/, size: 26 },
+    { regex: /[0-9]/, size: 10 },
+    { regex: /[^a-zA-Z0-9]/, size: 33 }
+  ]
+  const alphabetSize = pools.reduce((size, pool) => (pool.regex.test(secret) ? size + pool.size : size), 0)
+  if (alphabetSize === 0) return 0
+  return Math.log2(alphabetSize) * secret.length
+}
 
-if (nodeEnv === 'production' && appSecret === 'kinetic-klient-dev-secret') {
-  throw new Error('APP_SECRET must be set in production.')
+const nodeEnv = normalizeNodeEnv(process.env.NODE_ENV || 'development')
+const allowDevFallbackSecret = readBoolean('ALLOW_DEV_FALLBACK_APP_SECRET', false)
+const allowUnsafeAppSecret = readBoolean('UNSAFE_ALLOW_WEAK_APP_SECRET', false)
+const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
+
+const appSecretHealth = {
+  usingFallback: appSecret === DEFAULT_APP_SECRET,
+  length: appSecret.length,
+  entropyBits: Math.round(estimateAppSecretEntropyBits(appSecret)),
+  meetsLengthRequirement: appSecret.length >= MIN_APP_SECRET_LENGTH,
+  meetsEntropyRequirement: estimateAppSecretEntropyBits(appSecret) >= MIN_APP_SECRET_ENTROPY_BITS
+}
+
+if (appSecretHealth.usingFallback) {
+  if (nodeEnv === 'production') {
+    throw new Error('APP_SECRET must be set in production.')
+  }
+  if (nodeEnv === 'development' && !allowDevFallbackSecret) {
+    throw new Error(
+      'APP_SECRET is using development fallback secret. Set APP_SECRET or ALLOW_DEV_FALLBACK_APP_SECRET=true for local-only runs.'
+    )
+  }
+}
+
+if (
+  nodeEnv === 'production' &&
+  (!appSecretHealth.meetsLengthRequirement || !appSecretHealth.meetsEntropyRequirement) &&
+  !allowUnsafeAppSecret
+) {
+  throw new Error(
+    'APP_SECRET does not meet minimum security requirements. If you must bypass temporarily, set UNSAFE_ALLOW_WEAK_APP_SECRET=true.'
+  )
 }
 
 export const runtime = {
@@ -106,9 +139,11 @@ export const runtime = {
 export function validateRuntimeConfig() {
   const issues = []
   const warnings = []
+
   if (!runtime.host) issues.push('HOST must be provided.')
   if (!runtime.serviceName) issues.push('SERVICE_NAME must be provided.')
   if (runtime.port < 1 || runtime.port > 65535) issues.push('PORT must be between 1 and 65535.')
+
   if (
     runtime.storageProvider === 's3' &&
     (!runtime.storageEndpoint ||
@@ -120,23 +155,42 @@ export function validateRuntimeConfig() {
       'S3 storage provider requires STORAGE_ENDPOINT, STORAGE_REGION, STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY.'
     )
   }
+
   if (runtime.piiKeyProvider === 'kms') {
     if (!process.env.PII_KMS_KEYRING) {
-      issues.push('KMS PII key provider requires PII_KMS_KEYRING.');
+      issues.push('KMS PII key provider requires PII_KMS_KEYRING.')
     }
     if (!(process.env.PII_KMS_ACTIVE_KEY_ID || process.env.PII_ACTIVE_KEY_ID)) {
-      issues.push('KMS PII key provider requires PII_KMS_ACTIVE_KEY_ID (or PII_ACTIVE_KEY_ID).');
+      issues.push('KMS PII key provider requires PII_KMS_ACTIVE_KEY_ID (or PII_ACTIVE_KEY_ID).')
     }
   }
+
   if (runtime.nodeEnv === 'production' && runtime.logLevel === 'debug') {
     warnings.push('LOG_LEVEL=debug in production may emit sensitive operational details.')
   }
-  if (!process.env.APP_SECRET) {
-    warnings.push('APP_SECRET is using fallback development secret.')
+
+  if (runtime.appSecretHealth.usingFallback) {
+    if (runtime.nodeEnv === 'test') {
+      warnings.push('APP_SECRET is using fallback development secret under NODE_ENV=test.')
+    } else if (runtime.nodeEnv === 'development' && runtime.allowDevFallbackSecret) {
+      warnings.push(
+        'APP_SECRET is using fallback development secret because ALLOW_DEV_FALLBACK_APP_SECRET=true.'
+      )
+    }
   }
+
+  if (
+    runtime.nodeEnv === 'production' &&
+    (!runtime.appSecretHealth.meetsLengthRequirement || !runtime.appSecretHealth.meetsEntropyRequirement) &&
+    runtime.allowUnsafeAppSecret
+  ) {
+    warnings.push('Weak APP_SECRET accepted because UNSAFE_ALLOW_WEAK_APP_SECRET=true.')
+  }
+
   if (runtime.nodeEnv === 'production' && readBoolean('ENABLE_DEMO_MODE', false)) {
-    warnings.push('ENABLE_DEMO_MODE is ignored in production and forced off.');
+    warnings.push('ENABLE_DEMO_MODE is ignored in production and forced off.')
   }
+
   return {
     ok: issues.length === 0,
     issues,

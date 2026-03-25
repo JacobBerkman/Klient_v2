@@ -529,7 +529,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   saveState(state)
   state.pendingUploadIntents ||= []
 
-  const configuredPiiKeyProvider = piiKeyProvider;
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
     return {
       bucket: metadata.bucket,

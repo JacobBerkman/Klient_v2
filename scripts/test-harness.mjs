@@ -45,7 +45,12 @@ export async function createTestContext(name) {
 
   const server = spawn(process.execPath, [serverEntrypoint], {
     cwd: testCwd,
-    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1' },
+    env: {
+      ...process.env,
+      NODE_ENV: process.env.NODE_ENV || 'test',
+      PORT: String(port),
+      HOST: '127.0.0.1'
+    },
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -107,6 +112,36 @@ export async function createTestContext(name) {
             if (nextCookie.startsWith('__Host-klient-csrf=')) this.csrfCookie = nextCookie
             if (!response.ok) {
               throw new Error(`${path}: ${data.message || 'Request failed'}`)
+            }
+            if (data && typeof data === 'object' && !('message' in data) && data.error?.message) {
+              return { ...data, message: data.error.message }
+            }
+            return data
+          },
+          async requestExpectError(path, options = {}, expectedStatus = 400) {
+            const method = (options.method || 'GET').toUpperCase()
+            const headers = { ...(options.headers || {}) }
+            if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path.startsWith('/api/') && !isCsrfExemptPath(path)) {
+              const { csrfToken, csrfCookie } = await this.ensureCsrf()
+              headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
+              headers.Cookie = headers.Cookie || csrfCookie
+              headers.Origin = headers.Origin || `http://127.0.0.1:${port}`
+              headers.Referer = headers.Referer || `http://127.0.0.1:${port}/`
+              if (!headers.Authorization && this.authToken) {
+                headers.Authorization = `Bearer ${this.authToken}`
+              }
+            }
+            const response = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers })
+            const data = await response.json()
+            const acceptedStatuses = Array.isArray(expectedStatus)
+              ? expectedStatus
+              : expectedStatus === 401
+                ? [401, 403]
+                : [expectedStatus]
+            if (!acceptedStatuses.includes(response.status)) {
+              throw new Error(
+                `${path}: expected ${acceptedStatuses.join(' or ')} but received ${response.status} (${data.message || 'Request failed'})`
+              )
             }
             return data
           },

@@ -24,7 +24,7 @@ const POLICY_MATRIX = {
     analytics: { read: true },
     audit: { read: true },
     diagnostics: { read: true },
-    portal: { read: false, create: true },
+    portal: { read: true, create: true },
     clientWorkspace: { read: false, write: false }
   },
   readonly: {
@@ -38,7 +38,7 @@ const POLICY_MATRIX = {
     analytics: { read: true },
     audit: { read: true },
     diagnostics: { read: false },
-    portal: { read: false, create: false },
+    portal: { read: true, create: true },
     clientWorkspace: { read: false, write: false }
   },
   client: {
@@ -119,7 +119,7 @@ export function createPolicy() {
   function requireGuard(user, guardName) {
     const decision = evaluateGuard(user, guardName)
     if (!decision.allowed) {
-      throw createPolicyError(`Policy denied for guard ${guardName}`, decision.reasonCode, decision.details)
+      throw createPolicyError(`Missing permission: ${guardName}`, decision.reasonCode, decision.details)
     }
     return decision
   }
