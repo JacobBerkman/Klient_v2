@@ -92,16 +92,14 @@ export function decodeJsonResponse(response, body, decode = defaultDecode) {
   return decode(body)
 }
 
-export function createJsonApiClient({ getToken = () => '', fetchImpl = fetch } = {}) {
+export function createJsonApiClient({ fetchImpl = fetch } = {}) {
   return async function request(path, options = {}, decode = defaultDecode) {
-    const token = getToken()
     const headers = {
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.headers || {})
     }
 
-    const response = await fetchImpl(path, { ...options, headers })
+    const response = await fetchImpl(path, { ...options, credentials: 'same-origin', headers })
     const text = await response.text()
     const body = text ? JSON.parse(text) : null
     return decodeJsonResponse(response, body, decode)

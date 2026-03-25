@@ -68,17 +68,17 @@ export async function createTestContext(name) {
           testCwd,
           csrfToken: '',
           csrfCookie: '',
-          authToken: '',
+          sessionCookie: '',
           async ensureCsrf() {
-            if (!this.authToken) {
-              throw new Error('Cannot bootstrap CSRF token without auth token.')
+            if (!this.sessionCookie) {
+              throw new Error('Cannot bootstrap CSRF token without session cookie.')
             }
             if (this.csrfToken && this.csrfCookie) {
               return { csrfToken: this.csrfToken, csrfCookie: this.csrfCookie }
             }
             const csrfResponse = await fetch(`http://127.0.0.1:${port}/api/csrf`, {
               headers: {
-                Authorization: `Bearer ${this.authToken}`
+                Cookie: this.sessionCookie
               }
             })
             const csrfData = await csrfResponse.json()
@@ -94,31 +94,23 @@ export async function createTestContext(name) {
           async request(path, options = {}) {
             const method = (options.method || 'GET').toUpperCase()
             const headers = { ...(options.headers || {}) }
-            const explicitAuthToken =
-              typeof headers.Authorization === 'string' && headers.Authorization.startsWith('Bearer ')
-                ? headers.Authorization.slice('Bearer '.length).trim()
-                : ''
-            if (explicitAuthToken) {
-              if (explicitAuthToken !== this.authToken) {
-                this.authToken = explicitAuthToken
-              }
-              this.csrfToken = ''
-              this.csrfCookie = ''
-            }
+            if (!headers.Cookie && this.sessionCookie && path.startsWith('/api/')) headers.Cookie = this.sessionCookie
             if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path.startsWith('/api/') && !isCsrfExemptPath(path)) {
               const { csrfToken, csrfCookie } = await this.ensureCsrf()
               headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
               headers.Cookie = headers.Cookie || csrfCookie
               headers.Origin = headers.Origin || `http://127.0.0.1:${port}`
               headers.Referer = headers.Referer || `http://127.0.0.1:${port}/`
-              if (!headers.Authorization && this.authToken) {
-                headers.Authorization = `Bearer ${this.authToken}`
-              }
             }
             const response = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers })
             const data = await response.json()
             const nextCsrfToken = response.headers.get('x-csrf-token')
             const nextCookie = (response.headers.get('set-cookie') || '').split(';')[0]
+            const nextSessionCookie = (response.headers.get('set-cookie') || '')
+              .split(',')
+              .map((entry) => entry.trim())
+              .find((entry) => entry.startsWith('__Host-klient-session='))
+            if (nextSessionCookie) this.sessionCookie = nextSessionCookie.split(';')[0]
             if (nextCsrfToken) this.csrfToken = nextCsrfToken
             if (nextCookie.startsWith('__Host-klient-csrf=')) this.csrfCookie = nextCookie
             if (!response.ok) {
@@ -132,26 +124,13 @@ export async function createTestContext(name) {
           async requestExpectError(path, options = {}, expectedStatus = 400) {
             const method = (options.method || 'GET').toUpperCase()
             const headers = { ...(options.headers || {}) }
-            const explicitAuthToken =
-              typeof headers.Authorization === 'string' && headers.Authorization.startsWith('Bearer ')
-                ? headers.Authorization.slice('Bearer '.length).trim()
-                : ''
-            if (explicitAuthToken) {
-              if (explicitAuthToken !== this.authToken) {
-                this.authToken = explicitAuthToken
-              }
-              this.csrfToken = ''
-              this.csrfCookie = ''
-            }
+            if (!headers.Cookie && this.sessionCookie && path.startsWith('/api/')) headers.Cookie = this.sessionCookie
             if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path.startsWith('/api/') && !isCsrfExemptPath(path)) {
               const { csrfToken, csrfCookie } = await this.ensureCsrf()
               headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
               headers.Cookie = headers.Cookie || csrfCookie
               headers.Origin = headers.Origin || `http://127.0.0.1:${port}`
               headers.Referer = headers.Referer || `http://127.0.0.1:${port}/`
-              if (!headers.Authorization && this.authToken) {
-                headers.Authorization = `Bearer ${this.authToken}`
-              }
             }
             const response = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers })
             const data = await response.json()
@@ -168,15 +147,23 @@ export async function createTestContext(name) {
             return data
           },
           authHeaders(token) {
-            return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }
+            return { 'Content-Type': 'application/json' }
           },
           async login(email = 'admin@demo.test', password = 'ChangeMe123!') {
-            const data = await this.request('/api/login', {
+            const response = await fetch(`http://127.0.0.1:${port}/api/login`, {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ email, password })
             })
-            this.authToken = data.token
+            const data = await response.json()
+            const sessionCookie = (response.headers.get('set-cookie') || '')
+              .split(',')
+              .map((entry) => entry.trim())
+              .find((entry) => entry.startsWith('__Host-klient-session='))
+            if (!response.ok || !sessionCookie) {
+              throw new Error(`Login failed: ${data?.message || data?.error?.message || 'missing session cookie'}`)
+            }
+            this.sessionCookie = sessionCookie.split(';')[0]
             this.csrfToken = ''
             this.csrfCookie = ''
             return data
