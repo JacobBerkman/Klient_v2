@@ -3,6 +3,13 @@ import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
+import {
+  normalizeStorageObjectDescriptor,
+  STORAGE_PROVIDER_ERROR_CODE,
+  StorageProviderError,
+  wrapStorageError
+} from './provider-interface.mjs'
+
 function nowIso() {
   return new Date().toISOString()
 }
@@ -49,55 +56,115 @@ export function createLocalFilesystemStorageProvider({ rootDir }) {
   return {
     type: 'local',
     baseDir,
-    async putObject({ bucket, key, body }) {
-      const absolutePath = keyPath(bucket, key)
-      await mkdir(dirname(absolutePath), { recursive: true })
-      const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body)
-      await writeFile(absolutePath, buffer)
-      const etag = digest(buffer)
-      objectMetadata.set(metadataKey({ bucket, key }), {
-        checksum: etag,
-        etag,
-        sizeBytes: buffer.length,
-        uploadedAt: nowIso()
-      })
-      return { etag, checksum: etag, sizeBytes: buffer.length }
-    },
-    async getObject({ bucket, key }) {
-      const absolutePath = keyPath(bucket, key)
-      const body = await readFile(absolutePath)
-      const etag = digest(body)
-      return { body, etag, checksum: etag, contentType: null }
-    },
-    async createPresignedUploadUrl(object) {
-      const token = putToken('upload', object, object.expiresInSeconds || 900)
-      const expiresAt = new Date(Date.now() + (object.expiresInSeconds || 900) * 1000).toISOString()
-      return {
-        method: 'PUT',
-        url: `/api/storage/presigned/upload?token=${encodeURIComponent(token)}`,
-        headers: {
-          'Content-Type': object.contentType || 'application/octet-stream',
-          ...(object.actorId ? { 'X-Storage-Actor-Id': object.actorId } : {}),
-          ...(object.context ? { 'X-Storage-Context': object.context } : {}),
-          ...(object.intent ? { 'X-Storage-Intent': object.intent } : {})
-        },
-        expiresAt
+    async putObject(input) {
+      try {
+        const object = normalizeStorageObjectDescriptor(input, { requireBody: true })
+        const absolutePath = keyPath(object.bucket, object.key)
+        await mkdir(dirname(absolutePath), { recursive: true })
+        const buffer = Buffer.isBuffer(object.body) ? object.body : Buffer.from(object.body)
+        await writeFile(absolutePath, buffer)
+        const etag = digest(buffer)
+        const metadata = {
+          ...object.metadata,
+          checksum: etag,
+          retentionClass: object.retentionClass || null,
+          sizeBytes: String(buffer.length),
+          uploadedAt: nowIso()
+        }
+        objectMetadata.set(metadataKey(object), {
+          checksum: etag,
+          etag,
+          contentType: object.contentType,
+          retentionClass: object.retentionClass || null,
+          metadata,
+          sizeBytes: buffer.length,
+          uploadedAt: metadata.uploadedAt
+        })
+        return {
+          etag,
+          checksum: etag,
+          contentType: object.contentType,
+          retentionClass: object.retentionClass,
+          metadata
+        }
+      } catch (error) {
+        throw wrapStorageError(error, { provider: 'local', operation: 'putObject' })
       }
     },
-    async createPresignedDownloadUrl(object) {
-      const token = putToken('download', object, object.expiresInSeconds || 900)
-      const expiresAt = new Date(Date.now() + (object.expiresInSeconds || 900) * 1000).toISOString()
-      return {
-        method: 'GET',
-        url: `/api/storage/presigned/download?token=${encodeURIComponent(token)}`,
-        headers: {},
-        expiresAt
+    async getObject(input) {
+      const object = normalizeStorageObjectDescriptor(input)
+      try {
+        const absolutePath = keyPath(object.bucket, object.key)
+        const body = await readFile(absolutePath)
+        const stored = objectMetadata.get(metadataKey(object)) || {}
+        const etag = stored.etag || digest(body)
+        return {
+          body,
+          etag,
+          checksum: stored.checksum || etag,
+          contentType: stored.contentType || object.contentType,
+          retentionClass: stored.retentionClass || object.retentionClass || null,
+          metadata: stored.metadata || object.metadata
+        }
+      } catch (error) {
+        if (error?.code === 'ENOENT') {
+          throw new StorageProviderError(`Object not found: ${object.bucket}/${object.key}`, {
+            code: STORAGE_PROVIDER_ERROR_CODE.NOT_FOUND,
+            provider: 'local',
+            operation: 'getObject',
+            cause: error
+          })
+        }
+        throw wrapStorageError(error, { provider: 'local', operation: 'getObject' })
       }
     },
-    async deleteObject({ bucket, key }) {
-      const absolutePath = keyPath(bucket, key)
-      if (existsSync(absolutePath)) {
-        await rm(absolutePath, { force: true })
+    async createPresignedUploadUrl(input) {
+      try {
+        const object = normalizeStorageObjectDescriptor(input)
+        const token = putToken('upload', object, object.expiresInSeconds || 900)
+        const expiresAt = new Date(Date.now() + (object.expiresInSeconds || 900) * 1000).toISOString()
+        return {
+          method: 'PUT',
+          url: `/api/storage/presigned/upload?token=${encodeURIComponent(token)}`,
+          headers: {
+            'Content-Type': object.contentType,
+            ...(object.retentionClass ? { 'X-Storage-Retention-Class': object.retentionClass } : {}),
+            ...(object.metadata?.checksum ? { 'X-Storage-Checksum': object.metadata.checksum } : {}),
+            ...(object.actorId ? { 'X-Storage-Actor-Id': object.actorId } : {}),
+            ...(object.context ? { 'X-Storage-Context': object.context } : {}),
+            ...(object.intent ? { 'X-Storage-Intent': object.intent } : {})
+          },
+          expiresAt
+        }
+      } catch (error) {
+        throw wrapStorageError(error, { provider: 'local', operation: 'createPresignedUploadUrl' })
+      }
+    },
+    async createPresignedDownloadUrl(input) {
+      try {
+        const object = normalizeStorageObjectDescriptor(input)
+        const token = putToken('download', object, object.expiresInSeconds || 900)
+        const expiresAt = new Date(Date.now() + (object.expiresInSeconds || 900) * 1000).toISOString()
+        return {
+          method: 'GET',
+          url: `/api/storage/presigned/download?token=${encodeURIComponent(token)}`,
+          headers: {},
+          expiresAt
+        }
+      } catch (error) {
+        throw wrapStorageError(error, { provider: 'local', operation: 'createPresignedDownloadUrl' })
+      }
+    },
+    async deleteObject(input) {
+      try {
+        const object = normalizeStorageObjectDescriptor(input)
+        const absolutePath = keyPath(object.bucket, object.key)
+        if (existsSync(absolutePath)) {
+          await rm(absolutePath, { force: true })
+        }
+        objectMetadata.delete(metadataKey(object))
+      } catch (error) {
+        throw wrapStorageError(error, { provider: 'local', operation: 'deleteObject' })
       }
     },
     consumePresignedToken(token, operation, context = {}) {
@@ -121,8 +188,9 @@ export function createLocalFilesystemStorageProvider({ rootDir }) {
       }
       return entry.object
     },
-    getObjectMetadata({ bucket, key }) {
-      return objectMetadata.get(metadataKey({ bucket, key })) || null
+    getObjectMetadata(input) {
+      const object = normalizeStorageObjectDescriptor(input)
+      return objectMetadata.get(metadataKey(object)) || null
     },
     describeHealth() {
       const info = {
@@ -134,10 +202,11 @@ export function createLocalFilesystemStorageProvider({ rootDir }) {
       }
       return info
     },
-    async statObject({ bucket, key }) {
-      const absolutePath = keyPath(bucket, key)
+    async statObject(input) {
+      const object = normalizeStorageObjectDescriptor(input)
+      const absolutePath = keyPath(object.bucket, object.key)
       const objectStat = await stat(absolutePath)
-      const stored = objectMetadata.get(metadataKey({ bucket, key })) || {}
+      const stored = objectMetadata.get(metadataKey(object)) || {}
       return {
         sizeBytes: objectStat.size,
         updatedAt: objectStat.mtime.toISOString(),

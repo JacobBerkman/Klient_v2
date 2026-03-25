@@ -1,5 +1,12 @@
 import { createHmac, createHash } from 'node:crypto'
 
+import {
+  normalizeStorageObjectDescriptor,
+  STORAGE_PROVIDER_ERROR_CODE,
+  StorageProviderError,
+  wrapStorageError
+} from './provider-interface.mjs'
+
 function sha256(value) {
   return createHash('sha256').update(value).digest('hex')
 }
@@ -40,7 +47,8 @@ export function createS3CompatibleStorageProvider({
   region,
   accessKeyId,
   secretAccessKey,
-  forcePathStyle = true
+  forcePathStyle = true,
+  fetchImpl = fetch
 }) {
   const endpointUrl = new URL(endpoint)
   const service = 's3'
@@ -49,6 +57,20 @@ export function createS3CompatibleStorageProvider({
     const encodedKey = encodePath(String(key || '').replace(/^\/+/, ''))
     if (forcePathStyle) return new URL(`/${bucket}/${encodedKey}`, endpointUrl)
     return new URL(`${endpointUrl.protocol}//${bucket}.${endpointUrl.host}/${encodedKey}`)
+  }
+
+  function toS3MetadataHeaders(metadata = {}) {
+    return Object.fromEntries(Object.entries(metadata).map(([k, v]) => [`x-amz-meta-${k.toLowerCase()}`, String(v)]))
+  }
+
+  function readS3MetadataHeaders(headers) {
+    const metadata = {}
+    for (const [key, value] of headers.entries()) {
+      if (key.toLowerCase().startsWith('x-amz-meta-')) {
+        metadata[key.slice('x-amz-meta-'.length)] = value
+      }
+    }
+    return metadata
   }
 
   function signPresigned({ method, bucket, key, expiresInSeconds = 900, extraHeaders = {}, query = {} }) {
@@ -105,58 +127,121 @@ export function createS3CompatibleStorageProvider({
     }
   }
 
-  async function requestSignedUrl(presigned, body) {
-    const response = await fetch(presigned.url, {
+  async function requestSignedUrl(presigned, body, operation, { allowMissing = false } = {}) {
+    const response = await fetchImpl(presigned.url, {
       method: presigned.method,
       headers: presigned.headers,
       body
     })
-    if (!response.ok) {
-      const message = await response.text()
-      throw new Error(`S3 request failed (${response.status}): ${message.slice(0, 200)}`)
-    }
-    return response
+    if (response.ok) return response
+    const message = await response.text()
+    if (allowMissing && response.status === 404) return response
+
+    const mappedCode =
+      response.status === 404
+        ? STORAGE_PROVIDER_ERROR_CODE.NOT_FOUND
+        : response.status === 401
+          ? STORAGE_PROVIDER_ERROR_CODE.UNAUTHORIZED
+          : response.status === 403
+            ? STORAGE_PROVIDER_ERROR_CODE.FORBIDDEN
+            : response.status === 409
+              ? STORAGE_PROVIDER_ERROR_CODE.CONFLICT
+              : response.status >= 500
+                ? STORAGE_PROVIDER_ERROR_CODE.UNAVAILABLE
+                : STORAGE_PROVIDER_ERROR_CODE.UPSTREAM_ERROR
+
+    throw new StorageProviderError(`S3 request failed (${response.status}): ${message.slice(0, 200)}`, {
+      code: mappedCode,
+      operation,
+      provider: 's3'
+    })
   }
 
   return {
     type: 's3',
     endpoint: endpointUrl.toString(),
-    async putObject({ bucket, key, body, contentType }) {
-      const presigned = signPresigned({
-        method: 'PUT',
-        bucket,
-        key,
-        extraHeaders: contentType ? { 'content-type': contentType } : {}
-      })
-      const response = await requestSignedUrl(presigned, body)
-      return { etag: response.headers.get('etag') }
+    async putObject(input) {
+      try {
+        const object = normalizeStorageObjectDescriptor(input, { requireBody: true })
+        const extraHeaders = {
+          ...(object.contentType ? { 'content-type': object.contentType } : {}),
+          ...toS3MetadataHeaders(object.metadata)
+        }
+        const presigned = signPresigned({
+          method: 'PUT',
+          bucket: object.bucket,
+          key: object.key,
+          extraHeaders
+        })
+        const response = await requestSignedUrl(presigned, object.body, 'putObject')
+        return {
+          etag: response.headers.get('etag'),
+          checksum: object.checksum,
+          contentType: object.contentType,
+          retentionClass: object.retentionClass,
+          metadata: object.metadata
+        }
+      } catch (error) {
+        throw wrapStorageError(error, { provider: 's3', operation: 'putObject' })
+      }
     },
-    async getObject({ bucket, key }) {
-      const presigned = signPresigned({ method: 'GET', bucket, key })
-      const response = await requestSignedUrl(presigned)
-      const body = Buffer.from(await response.arrayBuffer())
-      return { body, etag: response.headers.get('etag'), contentType: response.headers.get('content-type') }
+    async getObject(input) {
+      try {
+        const object = normalizeStorageObjectDescriptor(input)
+        const presigned = signPresigned({ method: 'GET', bucket: object.bucket, key: object.key })
+        const response = await requestSignedUrl(presigned, undefined, 'getObject')
+        const body = Buffer.from(await response.arrayBuffer())
+        const metadata = readS3MetadataHeaders(response.headers)
+        return {
+          body,
+          etag: response.headers.get('etag'),
+          checksum: metadata.checksum || null,
+          contentType: response.headers.get('content-type') || object.contentType,
+          retentionClass: metadata.retentionclass || metadata.retentionClass || null,
+          metadata
+        }
+      } catch (error) {
+        throw wrapStorageError(error, { provider: 's3', operation: 'getObject' })
+      }
     },
-    async createPresignedUploadUrl(object) {
-      return signPresigned({
-        method: 'PUT',
-        bucket: object.bucket,
-        key: object.key,
-        expiresInSeconds: object.expiresInSeconds || 900,
-        extraHeaders: object.contentType ? { 'content-type': object.contentType } : {}
-      })
+    async createPresignedUploadUrl(input) {
+      try {
+        const object = normalizeStorageObjectDescriptor(input)
+        return signPresigned({
+          method: 'PUT',
+          bucket: object.bucket,
+          key: object.key,
+          expiresInSeconds: object.expiresInSeconds || 900,
+          extraHeaders: {
+            ...(object.contentType ? { 'content-type': object.contentType } : {}),
+            ...toS3MetadataHeaders(object.metadata)
+          }
+        })
+      } catch (error) {
+        throw wrapStorageError(error, { provider: 's3', operation: 'createPresignedUploadUrl' })
+      }
     },
-    async createPresignedDownloadUrl(object) {
-      return signPresigned({
-        method: 'GET',
-        bucket: object.bucket,
-        key: object.key,
-        expiresInSeconds: object.expiresInSeconds || 900
-      })
+    async createPresignedDownloadUrl(input) {
+      try {
+        const object = normalizeStorageObjectDescriptor(input)
+        return signPresigned({
+          method: 'GET',
+          bucket: object.bucket,
+          key: object.key,
+          expiresInSeconds: object.expiresInSeconds || 900
+        })
+      } catch (error) {
+        throw wrapStorageError(error, { provider: 's3', operation: 'createPresignedDownloadUrl' })
+      }
     },
-    async deleteObject({ bucket, key }) {
-      const presigned = signPresigned({ method: 'DELETE', bucket, key })
-      await requestSignedUrl(presigned)
+    async deleteObject(input) {
+      try {
+        const object = normalizeStorageObjectDescriptor(input)
+        const presigned = signPresigned({ method: 'DELETE', bucket: object.bucket, key: object.key })
+        await requestSignedUrl(presigned, undefined, 'deleteObject', { allowMissing: true })
+      } catch (error) {
+        throw wrapStorageError(error, { provider: 's3', operation: 'deleteObject' })
+      }
     },
     describeHealth() {
       return {

@@ -11,6 +11,18 @@ export class TemplateRepository {
   publishTemplate() {
     throw new Error('TemplateRepository.publishTemplate not implemented')
   }
+  compareTemplateVersions() {
+    throw new Error('TemplateRepository.compareTemplateVersions not implemented')
+  }
+  revertTemplateVersion() {
+    throw new Error('TemplateRepository.revertTemplateVersion not implemented')
+  }
+  listTemplateVersions() {
+    throw new Error('TemplateRepository.listTemplateVersions not implemented')
+  }
+  listPublishTransitions() {
+    throw new Error('TemplateRepository.listPublishTransitions not implemented')
+  }
   autoBuildTemplate() {
     throw new Error('TemplateRepository.autoBuildTemplate not implemented')
   }
