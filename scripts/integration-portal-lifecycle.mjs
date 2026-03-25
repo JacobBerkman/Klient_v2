@@ -42,6 +42,44 @@ try {
       data: { primaryGoal: 'Financial independence' }
     })
   })
+  const refreshedAfterDraft = await context.request(`/api/portal/${portalLink.token}`)
+  const savedDraft = refreshedAfterDraft.submissions.find(
+    (entry) => entry.templateId === formTemplate.id && entry.status === 'draft'
+  )
+  assert(savedDraft, 'Portal draft was not persisted.')
+
+  const sectionId = 'goals'
+  const sectionState = await context.request(`/api/portal/${portalLink.token}/drafts/${savedDraft.id}/sections/${sectionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedVersion: 0, data: { fields: { primaryGoal: 'Financial independence' } } })
+  })
+  assert(sectionState.ok === true, 'Initial draft section write failed.')
+
+  const refreshedSectionState = await context.request(
+    `/api/portal/${portalLink.token}/drafts/${savedDraft.id}/sections/${sectionId}`
+  )
+  assert(refreshedSectionState.version === 1, 'Draft section state did not survive refresh.')
+
+  const tabAWrite = await context.request(`/api/portal/${portalLink.token}/drafts/${savedDraft.id}/sections/${sectionId}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ expectedVersion: 1, data: { fields: { primaryGoal: 'Tab A update' } } })
+  })
+  assert(tabAWrite.ok === true && tabAWrite.state.version === 2, 'Tab A optimistic write failed.')
+
+  const staleTabConflict = await context.requestExpectError(
+    `/api/portal/${portalLink.token}/drafts/${savedDraft.id}/sections/${sectionId}`,
+    {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ expectedVersion: 1, data: { fields: { primaryGoal: 'Tab B stale write' } } })
+    },
+    409
+  )
+  assert(staleTabConflict.conflict === true, 'Expected stale cross-tab conflict response.')
+  assert(staleTabConflict.state?.version === 2, 'Conflict response should include latest server version.')
+
   await context.request(`/api/portal/${portalLink.token}/submissions`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -71,7 +109,8 @@ try {
       {
         suite: 'integration-portal-lifecycle',
         portalLinkId: portalLink.id,
-        submissionCount: refreshedPortal.submissions.length
+        submissionCount: refreshedPortal.submissions.length,
+        draftSectionVersion: staleTabConflict.state.version
       },
       null,
       2

@@ -781,6 +781,44 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
+      if (
+        pathname.startsWith('/api/portal/') &&
+        pathname.includes('/drafts/') &&
+        pathname.endsWith('/sections') &&
+        req.method === 'GET'
+      ) {
+        const [, , portal, token, drafts, draftId] = pathname.split('/')
+        if (portal !== 'portal' || drafts !== 'drafts') throw new Error('Not found.')
+        const result = modules.forms.listPortalDraftSectionStates(token, draftId)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (
+        pathname.startsWith('/api/portal/') &&
+        pathname.includes('/drafts/') &&
+        pathname.includes('/sections/') &&
+        req.method === 'GET'
+      ) {
+        const [, , portal, token, drafts, draftId, sections, sectionId] = pathname.split('/')
+        if (portal !== 'portal' || drafts !== 'drafts' || sections !== 'sections' || !sectionId)
+          throw new Error('Not found.')
+        const result = modules.forms.getPortalDraftSectionState(token, draftId, sectionId)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (
+        pathname.startsWith('/api/portal/') &&
+        pathname.includes('/drafts/') &&
+        pathname.includes('/sections/') &&
+        req.method === 'PUT'
+      ) {
+        const [, , portal, token, drafts, draftId, sections, sectionId] = pathname.split('/')
+        if (portal !== 'portal' || drafts !== 'drafts' || sections !== 'sections' || !sectionId)
+          throw new Error('Not found.')
+        const result = modules.forms.savePortalDraftSectionState(token, draftId, sectionId, await parseBody(req))
+        finalizeLog(result.ok ? 200 : 409)
+        return json(res, result.ok ? 200 : 409, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads') && req.method === 'POST') {
         const token = pathname.split('/')[3]
         const result = modules.forms.portalUpload(token, await parseBody(req))

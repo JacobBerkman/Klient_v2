@@ -48,7 +48,10 @@ export const routes = {
   analyticsExport: (query = {}) => withQuery(joinPath(API_PREFIX, 'analytics', 'export'), query),
   board: () => joinPath(API_PREFIX, 'board'),
   portal: (token) => joinPath(API_PREFIX, 'portal', token),
-  portalSubmissions: (token) => joinPath(API_PREFIX, 'portal', token, 'submissions')
+  portalSubmissions: (token) => joinPath(API_PREFIX, 'portal', token, 'submissions'),
+  portalDraftSections: (token, draftId) => joinPath(API_PREFIX, 'portal', token, 'drafts', draftId, 'sections'),
+  portalDraftSection: (token, draftId, sectionId) =>
+    joinPath(API_PREFIX, 'portal', token, 'drafts', draftId, 'sections', sectionId)
 }
 
 function defaultDecode(body) {

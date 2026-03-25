@@ -118,6 +118,15 @@ function deepClone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function normalizeSectionIdentifier(value, fallback = 'section') {
+  const normalized = String(value || fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return normalized || fallback
+}
+
 function createTemplateVersion(template, event, overrides = {}) {
   return {
     version: (template.versions?.length || 0) + 1,
@@ -505,6 +514,7 @@ function seedState() {
       }
     ],
     pendingUploadIntents: [],
+    draftStepStates: [],
     notes: [
       {
         id: randomUUID(),
@@ -528,6 +538,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   migrateTemplateSystems(state)
   saveState(state)
   state.pendingUploadIntents ||= []
+  state.draftStepStates ||= []
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
     return {
@@ -562,6 +573,24 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     }
     state.pendingUploadIntents.push(intent)
     return intent
+  }
+
+  function findPortalLink(token) {
+    const link = state.portalLinks.find((entry) => entry.token === token)
+    if (!link) throw new Error('Portal link not found.')
+    return link
+  }
+
+  function findDraftForScope({ draftId, firmId, clientId }) {
+    const submission = state.formSubmissions.find(
+      (entry) =>
+        entry.id === draftId &&
+        entry.firmId === firmId &&
+        entry.clientId === clientId &&
+        entry.status === 'draft'
+    )
+    if (!submission) throw new Error('Draft submission not found.')
+    return submission
   }
 
   async function applyLifecyclePolicies() {
@@ -1825,8 +1854,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { firm, profile, submissions, availableTemplates, uploads }
     },
     portalSubmit(token, input) {
-      const link = state.portalLinks.find((entry) => entry.token === token)
-      if (!link) throw new Error('Portal link not found.')
+      const link = findPortalLink(token)
       const templateId = input.templateId || 'portal'
       const template =
         templateId === 'portal'
@@ -1836,6 +1864,22 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
             )
       if (templateId !== 'portal' && !template) throw new Error('Form template not found.')
       const status = input.status === 'draft' ? 'draft' : 'submitted'
+      if (status === 'draft') {
+        const existingDraft = state.formSubmissions.find(
+          (entry) =>
+            entry.firmId === link.firmId &&
+            entry.clientId === link.profileId &&
+            entry.templateId === templateId &&
+            entry.status === 'draft' &&
+            entry.source === 'portal'
+        )
+        if (existingDraft) {
+          existingDraft.data = input.data && typeof input.data === 'object' ? input.data : {}
+          existingDraft.updatedAt = now()
+          persist()
+          return existingDraft
+        }
+      }
       const submission = {
         id: randomUUID(),
         firmId: link.firmId,
@@ -1851,6 +1895,63 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       state.formSubmissions.push(submission)
       persist()
       return submission
+    },
+    getPortalDraftSectionState(token, draftId, sectionId) {
+      const link = findPortalLink(token)
+      findDraftForScope({ draftId, firmId: link.firmId, clientId: link.profileId })
+      const normalizedSectionId = normalizeSectionIdentifier(sectionId)
+      const entry = state.draftStepStates.find(
+        (item) =>
+          item.firmId === link.firmId &&
+          item.clientId === link.profileId &&
+          item.draftId === draftId &&
+          item.sectionId === normalizedSectionId
+      )
+      if (!entry) return null
+      return deepClone(entry)
+    },
+    listPortalDraftSectionStates(token, draftId) {
+      const link = findPortalLink(token)
+      findDraftForScope({ draftId, firmId: link.firmId, clientId: link.profileId })
+      return state.draftStepStates
+        .filter((item) => item.firmId === link.firmId && item.clientId === link.profileId && item.draftId === draftId)
+        .map((item) => deepClone(item))
+    },
+    savePortalDraftSectionState(token, draftId, sectionId, input = {}) {
+      const link = findPortalLink(token)
+      findDraftForScope({ draftId, firmId: link.firmId, clientId: link.profileId })
+      const normalizedSectionId = normalizeSectionIdentifier(sectionId)
+      const expectedVersion = Number(input.expectedVersion || 0)
+      const nowIso = now()
+      const existing = state.draftStepStates.find(
+        (item) =>
+          item.firmId === link.firmId &&
+          item.clientId === link.profileId &&
+          item.draftId === draftId &&
+          item.sectionId === normalizedSectionId
+      )
+      const currentVersion = Number(existing?.version || 0)
+      if (expectedVersion !== currentVersion) {
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Section draft state is stale.',
+          state: existing ? deepClone(existing) : null
+        }
+      }
+      const next = {
+        firmId: link.firmId,
+        clientId: link.profileId,
+        draftId,
+        sectionId: normalizedSectionId,
+        version: currentVersion + 1,
+        data: input.data && typeof input.data === 'object' ? deepClone(input.data) : {},
+        updatedAt: nowIso
+      }
+      if (existing) Object.assign(existing, next)
+      else state.draftStepStates.push(next)
+      persist()
+      return { ok: true, state: deepClone(next) }
     },
     async createPortalUploadPresign(token, input) {
       const link = state.portalLinks.find((entry) => entry.token === token)
