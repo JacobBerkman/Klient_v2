@@ -49,8 +49,10 @@ export const routes = {
   documentTemplateMappingsPreview: (templateId) => joinPath(API_PREFIX, 'templates', templateId, 'mappings', 'preview'),
   documentTemplatePublish: (templateId) => joinPath(API_PREFIX, 'templates', templateId, 'publish'),
   documentTemplateVersions: (templateId) => joinPath(API_PREFIX, 'templates', templateId, 'versions'),
-  documentTemplatePublishTransitions: (templateId) => joinPath(API_PREFIX, 'templates', templateId, 'publish-transitions'),
-  documentTemplateCompare: (templateId, query = {}) => withQuery(joinPath(API_PREFIX, 'templates', templateId, 'compare'), query),
+  documentTemplatePublishTransitions: (templateId) =>
+    joinPath(API_PREFIX, 'templates', templateId, 'publish-transitions'),
+  documentTemplateCompare: (templateId, query = {}) =>
+    withQuery(joinPath(API_PREFIX, 'templates', templateId, 'compare'), query),
   documentTemplateRevert: (templateId) => joinPath(API_PREFIX, 'templates', templateId, 'revert'),
   invites: () => joinPath(API_PREFIX, 'invites'),
   portalLinks: () => joinPath(API_PREFIX, 'portal-links'),
@@ -62,6 +64,8 @@ export const routes = {
   analytics: (query = {}) => withQuery(joinPath(API_PREFIX, 'analytics'), query),
   analyticsDashboard: (query = {}) => withQuery(joinPath(API_PREFIX, 'analytics', 'dashboard'), query),
   analyticsExport: (query = {}) => withQuery(joinPath(API_PREFIX, 'analytics', 'export'), query),
+  stageConfig: () => joinPath(API_PREFIX, 'stage-config'),
+  pipelineStages: () => joinPath(API_PREFIX, 'pipeline', 'stages'),
   board: () => joinPath(API_PREFIX, 'board'),
   pipelineReorder: () => joinPath(API_PREFIX, 'pipeline', 'reorder'),
   portal: (token) => joinPath(API_PREFIX, 'portal', token),

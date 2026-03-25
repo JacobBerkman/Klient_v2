@@ -96,7 +96,9 @@
               <strong>Collaborative draft editing safeguards</strong>
               <span class="badge claim-status partial">partial</span>
               <span class="badge subtle">Feature flag: FF_DRAFT_CONFLICT_GUARD</span>
-              <a href="/docs/milestones/claims-roadmap.html#milestone-m2-draft-collaboration-hardening">Planned milestone</a>
+              <a href="/docs/milestones/claims-roadmap.html#milestone-m2-draft-collaboration-hardening"
+                >Planned milestone</a
+              >
             </li>
             <li>
               <strong>Automated document processing and queue orchestration</strong>
@@ -118,17 +120,8 @@
             <input name="lastName" placeholder="Last name" required />
             <input name="email" type="email" placeholder="Email" />
             <input name="phone" placeholder="Phone" />
-            <select name="stage">
-              <option value="discovery">Discovery</option>
-              <option value="gather_oi">Gather OI</option>
-              <option value="analysis">Analysis</option>
-              <option value="advisor_proposal_meeting">Advisor Proposal Meeting</option>
-              <option value="intake">Intake</option>
-              <option value="on_boarding">On Boarding</option>
-              <option value="investment_strategy">Investment Strategy</option>
-              <option value="completed">Completed</option>
-              <option value="drop_dead_lead">Drop / Dead Lead</option>
-              <option value="drop_nurture">Drop / Nurture</option>
+            <select id="profile-stage-select" name="stage">
+              <option value="">Loading stages…</option>
             </select>
             <input name="cityOrLocation" placeholder="Source city/location" />
             <input name="venue" placeholder="Source venue" />
@@ -178,7 +171,9 @@
         </section>
 
         <section id="view" class="card"></section>
-        <p class="muted" aria-live="polite">Use drag-and-drop in Prospects/Clients to reorder cards and move stage transitions.</p>
+        <p class="muted" aria-live="polite">
+          Use drag-and-drop in Prospects/Clients to reorder cards and move stage transitions.
+        </p>
       </main>
     </div>
     <script type="module" src="/app.js"></script>
