@@ -15,6 +15,14 @@ export function createExportsService({ store, policy }) {
     retry(user, exportId) {
       policy.requireGuard(user, 'canWriteExports')
       return store.retryExport(user, exportId)
+    },
+    getQueueHealth(user) {
+      policy.requireGuard(user, 'canReadExports')
+      return store.getExportQueueHealth(user)
+    },
+    retryFailed(user, options) {
+      policy.requireGuard(user, 'canWriteExports')
+      return store.retryFailedExports(user, options)
     }
   }
 }

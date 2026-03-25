@@ -5,6 +5,7 @@ import {
   listExportQueueJobs,
   loadState,
   processExportQueueTick,
+  readExportWorkerStatus,
   requeueExportJob,
   saveState
 } from './storage.mjs'
@@ -1609,6 +1610,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         clientId: input.clientId,
         templateId: input.templateId,
         type: input.type || 'pdf',
+        idempotencyKey: input.idempotencyKey || null,
         maxAttempts: Number(input.maxAttempts || 3),
         metadata: input.metadata || {}
       })
@@ -1631,6 +1633,35 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       state.exportJobs = state.exportJobs.map((entry) => (entry.id === exportId ? updated : entry))
       persist()
       return updated
+    },
+    getExportQueueHealth(user) {
+      requirePermission(user, 'exports:read')
+      const queue = readExportWorkerStatus()
+      return {
+        generatedAt: now(),
+        queue
+      }
+    },
+    retryFailedExports(user, options = {}) {
+      requirePermission(user, 'exports:write')
+      const limit = Math.max(1, Math.min(Number(options.limit || 25), 200))
+      const includeDeadLetter = options.includeDeadLetter === true
+      const dryRun = options.dryRun === true
+      const candidates = listExportQueueJobs()
+        .filter((entry) => entry.firmId === user.firmId)
+        .filter((entry) => entry.status === 'failed' || (includeDeadLetter && entry.status === 'dead-letter'))
+        .slice(0, limit)
+      if (dryRun) {
+        return { dryRun: true, limit, includeDeadLetter, candidateCount: candidates.length, ids: candidates.map((c) => c.id) }
+      }
+      const retried = []
+      for (const candidate of candidates) {
+        const updated = requeueExportJob(candidate.id)
+        if (updated) retried.push(updated.id)
+      }
+      state.exportJobs = listExportQueueJobs()
+      persist()
+      return { dryRun: false, limit, includeDeadLetter, retriedCount: retried.length, ids: retried }
     },
     async processQueuedExports() {
       const result = processExportQueueTick({
