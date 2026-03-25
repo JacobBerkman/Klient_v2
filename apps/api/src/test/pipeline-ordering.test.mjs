@@ -133,6 +133,45 @@ test('board reorder rejects stale optimistic concurrency tokens during concurren
   )
 })
 
+test('board reorder rejects stale board-version token with structured conflict details', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const card = store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'Board',
+    lastName: 'Version',
+    stage: 'discovery'
+  })
+  const board = store.getBoard(user)
+
+  store.reorderBoard(user, {
+    profileId: card.id,
+    toStage: 'analysis',
+    expectedVersion: card.pipelineVersion,
+    expectedUpdatedAt: card.updatedAt,
+    expectedBoardVersion: board.boardVersion
+  })
+
+  assert.throws(
+    () => {
+      store.reorderBoard(user, {
+        profileId: card.id,
+        toStage: 'completed',
+        expectedVersion: null,
+        expectedBoardVersion: board.boardVersion
+      })
+    },
+    (error) => {
+      assert.equal(error.code, 'PIPELINE_ORDER_CONFLICT')
+      assert.equal(error.statusCode, 409)
+      assert.equal(error.details.expectedBoardVersion, board.boardVersion)
+      assert.ok(Number(error.details.actualBoardVersion) > Number(board.boardVersion))
+      return true
+    }
+  )
+})
+
 test('pipeline reorder transaction rolls back index changes when persistence fails', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)
@@ -174,4 +213,60 @@ test('pipeline reorder transaction rolls back index changes when persistence fai
   assert.ok(discoveryAfter.cards.some((card) => card.id === movable.id))
   assert.ok(!analysisAfter.cards.some((card) => card.id === movable.id))
   assert.equal(boardAfter.boardVersion, boardBefore.boardVersion)
+})
+
+test('board payload includes firm stage metadata and keeps inactive/legacy stages deterministic', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+  const firm = store.state.firms.find((entry) => entry.id === user.firmId)
+  firm.pipelineStages = [
+    { id: 'discovery', label: 'Discovery', order: 1, active: true },
+    { id: 'analysis', label: 'Analysis', order: 2, active: true },
+    { id: 'completed', label: 'Completed', order: 3, active: false }
+  ]
+
+  const activeCard = store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'Active',
+    lastName: 'Lead',
+    stage: 'analysis'
+  })
+  store.state.profiles.push({
+    id: `legacy-${Math.random().toString(16).slice(2)}`,
+    firmId: user.firmId,
+    advisorUserId: user.id,
+    kind: 'prospect',
+    firstName: 'Legacy',
+    lastName: 'Lead',
+    stage: 'legacy_stage',
+    stageOrderIndex: 1,
+    orderIndex: 1,
+    pipelineVersion: 1,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  })
+
+  const board = store.getBoard(user)
+  assert.ok(Array.isArray(board.stages))
+  assert.deepEqual(
+    board.stages.map((entry) => entry.id),
+    ['discovery', 'analysis', 'completed', 'legacy_stage']
+  )
+  assert.equal(board.stages.find((entry) => entry.id === 'analysis')?.active, true)
+  assert.equal(board.stages.find((entry) => entry.id === 'completed')?.active, false)
+  assert.equal(board.stages.find((entry) => entry.id === 'legacy_stage')?.legacy, true)
+
+  const analysisColumn = board.columns.find((column) => column.stage === 'analysis')
+  const legacyColumn = board.columns.find((column) => column.stage === 'legacy_stage')
+  assert.ok(analysisColumn.cards.some((card) => card.id === activeCard.id))
+  assert.ok(legacyColumn.cards.some((card) => card.firstName === 'Legacy'))
+
+  assert.throws(
+    () =>
+      store.reorderBoard(user, {
+        profileId: activeCard.id,
+        toStage: 'completed'
+      }),
+    /Unknown or inactive toStage/
+  )
 })
