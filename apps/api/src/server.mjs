@@ -437,6 +437,10 @@ export function createHttpServer({ modules }) {
           }
         )
       }
+      if (pathname === '/api/runtime' && req.method === 'GET') {
+        finalizeLog(200);
+        return json(res, 200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId });
+      }
       if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method) && !isCsrfExempt(pathname)) {
         const csrfError = validateCsrf(req, requestId)
         if (csrfError) {

@@ -63,6 +63,18 @@ async function request(path, options = {}) {
   return data
 }
 
+
+async function hydrateRuntime() {
+  try {
+    const runtimeConfig = await request('/api/runtime');
+    state.enableDemoMode = Boolean(runtimeConfig.enableDemoMode);
+  } catch {
+    state.enableDemoMode = false;
+  }
+  document.querySelector('#demo-login').hidden = !state.enableDemoMode;
+  document.querySelector('#demo-credentials').hidden = !state.enableDemoMode;
+}
+
 function roleAllowed(buttonRoleCsv = '') {
   if (!buttonRoleCsv) return true
   if (!state.user?.role) return false
@@ -293,7 +305,9 @@ document.querySelectorAll('[data-view]').forEach((button) => {
   })
 })
 
-document.querySelector('#demo-login').addEventListener('click', async () => {
+const demoLoginButton = document.querySelector('#demo-login');
+demoLoginButton.addEventListener('click', async () => {
+  if (!state.enableDemoMode) return;
   try {
     const session = await request('/api/login', {
       method: 'POST',

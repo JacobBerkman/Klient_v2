@@ -50,6 +50,13 @@ function readAuthProvider(value) {
   return normalized
 }
 
+
+function readEnableDemoMode() {
+  const requested = readBoolean('ENABLE_DEMO_MODE', false);
+  if (nodeEnv === 'production') return false;
+  return requested;
+}
+
 function readPiiKeyProvider(value) {
   const normalized = String(value || 'env').toLowerCase()
   if (!['env', 'kms'].includes(normalized)) {
@@ -126,6 +133,9 @@ export function validateRuntimeConfig() {
   }
   if (!process.env.APP_SECRET) {
     warnings.push('APP_SECRET is using fallback development secret.')
+  }
+  if (runtime.nodeEnv === 'production' && readBoolean('ENABLE_DEMO_MODE', false)) {
+    warnings.push('ENABLE_DEMO_MODE is ignored in production and forced off.');
   }
   return {
     ok: issues.length === 0,
