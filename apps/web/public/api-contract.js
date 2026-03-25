@@ -55,6 +55,15 @@ export const routes = {
     joinPath(API_PREFIX, 'portal', token, 'drafts', draftId, 'sections', sectionId)
 }
 
+export const appRoutes = {
+  clientFormSubmission: (clientId, submissionId) => joinPath('/clients', clientId, 'form', submissionId),
+  parseClientFormSubmission(pathname = '') {
+    const match = String(pathname || '').match(/^\/clients\/([^/]+)\/form\/([^/]+)$/)
+    if (!match) return null
+    return { clientId: decodeURIComponent(match[1]), submissionId: decodeURIComponent(match[2]) }
+  }
+}
+
 function defaultDecode(body) {
   if (body && typeof body === 'object' && 'data' in body && Object.keys(body).length === 1) return body.data
   return body

@@ -17,6 +17,12 @@ export class FormsRepository {
   updateSubmission(_user, _submissionId, _patch) {
     throw new Error('Not implemented')
   }
+  updateSubmissionSectionItem(_user, _submissionId, _sectionKey, _itemKey, _patch) {
+    throw new Error('Not implemented')
+  }
+  deleteSubmissionSectionItem(_user, _submissionId, _sectionKey, _itemKey) {
+    throw new Error('Not implemented')
+  }
   deleteSubmission(_user, _submissionId) {
     throw new Error('Not implemented')
   }

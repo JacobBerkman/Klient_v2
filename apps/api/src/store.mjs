@@ -2176,6 +2176,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     updateSubmission(user, submissionId, patch) {
       requirePermission(user, 'forms:write')
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw new Error('Submission patch must be an object.')
+      }
       const submission = state.formSubmissions.find(
         (entry) => entry.id === submissionId && entry.firmId === user.firmId
       )
@@ -2187,9 +2190,15 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     deleteSubmission(user, submissionId) {
       requirePermission(user, 'forms:write')
+      const existing = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId)
+      if (!existing) throw new Error('Submission not found.')
       state.formSubmissions = state.formSubmissions.filter(
         (entry) => !(entry.id === submissionId && entry.firmId === user.firmId)
       )
+      addAudit(user.firmId, user.id, 'form_submission', submissionId, 'form_submission.deleted', {
+        templateId: existing.templateId,
+        clientId: existing.clientId
+      })
       persist()
       return { ok: true }
     },

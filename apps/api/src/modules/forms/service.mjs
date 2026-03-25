@@ -1,4 +1,31 @@
 export function createFormsService({ store, policy }) {
+  function getSubmissionOrThrow(user, submissionId) {
+    const submission = store.listFormSubmissions(user).find((entry) => entry.id === submissionId)
+    if (!submission) throw new Error('Submission not found.')
+    return submission
+  }
+
+  function resolveSectionItems(submission, sectionKey) {
+    const data = submission?.data
+    if (!data || typeof data !== 'object' || Array.isArray(data)) {
+      throw new Error('Submission data must be an object.')
+    }
+    const items = data[sectionKey]
+    if (!Array.isArray(items)) throw new Error(`Section "${sectionKey}" is not a repeater section.`)
+    return items
+  }
+
+  function resolveItemIndex(items, itemKey) {
+    const index = items.findIndex((item) => {
+      if (!item || typeof item !== 'object') return false
+      return item.id === itemKey || item.key === itemKey
+    })
+    if (index >= 0) return index
+    const asNumber = Number(itemKey)
+    if (Number.isInteger(asNumber) && asNumber >= 0 && asNumber < items.length) return asNumber
+    throw new Error(`Repeater item "${itemKey}" not found.`)
+  }
+
   return {
     listFormTemplates(user) {
       policy.requireGuard(user, 'canReadForms')
@@ -23,6 +50,53 @@ export function createFormsService({ store, policy }) {
     updateSubmission(user, submissionId, patch) {
       policy.requireGuard(user, 'canWriteForms')
       return store.updateSubmission(user, submissionId, patch)
+    },
+    updateSubmissionSectionItem(user, submissionId, sectionKey, itemKey, patch = {}) {
+      policy.requireGuard(user, 'canWriteForms')
+      if (!sectionKey) throw new Error('Section key is required.')
+      if (!itemKey) throw new Error('Item key is required.')
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw new Error('Patch must be an object.')
+      }
+      const submission = getSubmissionOrThrow(user, submissionId)
+      const items = resolveSectionItems(submission, sectionKey)
+      const itemIndex = resolveItemIndex(items, itemKey)
+      const currentItem = items[itemIndex]
+      if (!currentItem || typeof currentItem !== 'object' || Array.isArray(currentItem)) {
+        throw new Error('Repeater item must be an object.')
+      }
+      if ('id' in patch || 'key' in patch) {
+        throw new Error('Item identity fields (id/key) cannot be updated.')
+      }
+      const nextItem = { ...currentItem, ...patch }
+      const nextItems = items.map((entry, index) => (index === itemIndex ? nextItem : entry))
+      const nextData = { ...submission.data, [sectionKey]: nextItems }
+      return store.updateSubmission(user, submissionId, {
+        data: nextData,
+        auditContext: {
+          action: 'form_submission.repeater_item_updated',
+          sectionKey,
+          itemKey
+        }
+      })
+    },
+    deleteSubmissionSectionItem(user, submissionId, sectionKey, itemKey) {
+      policy.requireGuard(user, 'canWriteForms')
+      if (!sectionKey) throw new Error('Section key is required.')
+      if (!itemKey) throw new Error('Item key is required.')
+      const submission = getSubmissionOrThrow(user, submissionId)
+      const items = resolveSectionItems(submission, sectionKey)
+      const itemIndex = resolveItemIndex(items, itemKey)
+      const nextItems = items.filter((_entry, index) => index !== itemIndex)
+      const nextData = { ...submission.data, [sectionKey]: nextItems }
+      return store.updateSubmission(user, submissionId, {
+        data: nextData,
+        auditContext: {
+          action: 'form_submission.repeater_item_deleted',
+          sectionKey,
+          itemKey
+        }
+      })
     },
     deleteSubmission(user, submissionId) {
       policy.requireGuard(user, 'canWriteForms')
