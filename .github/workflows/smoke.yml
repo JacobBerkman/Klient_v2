@@ -1,14 +1,21 @@
-name: smoke-and-integration
+name: release-gate
 
 on:
   push:
   pull_request:
 
 jobs:
-  smoke:
+  validate-master:
+    name: validate-master (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
