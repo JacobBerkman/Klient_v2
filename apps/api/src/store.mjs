@@ -2185,16 +2185,41 @@ export function createStore({
         profile,
         submission
       })
-      const rows = resolved.rows.map((entry) => ({
-        pdfField: entry.pdfField,
-        sourcePath: entry.sourcePath,
-        value: entry.value
-      }))
+      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const allowedSourcePaths = profileSourcePaths()
+      collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      let issues = []
+      try {
+        validateMappingRules(template.mappings || [], {
+          contextPath: '/mappings',
+          repeaterPaths: formSchemaResult.repeaterPaths,
+          requiredPdfFields: template.extractedFields || [],
+          allowedSourcePaths,
+          enforceKnownSourcePaths: true
+        })
+      } catch (error) {
+        const rawIssues = Array.isArray(error?.details?.issues) ? error.details.issues : []
+        issues = rawIssues.map((issue) => {
+          const path = String(issue?.path || '')
+          const rowIndexMatch = path.match(/\/mappings\/(\d+)\//)
+          return {
+            path,
+            message: String(issue?.message || 'Validation issue'),
+            severity: 'error',
+            blocking: true,
+            rowIndex: rowIndexMatch ? Number(rowIndexMatch[1]) : null
+          }
+        })
+      }
       return {
         templateId: template.id,
         clientId,
         submissionId,
-        rows
+        rows: resolved.rows,
+        mappingVersionHash: resolved.mappingVersionHash,
+        warningsCount: resolved.warningsCount,
+        blockingWarningsCount: resolved.blockingWarningsCount,
+        ...(issues.length ? { issues } : {})
       }
     },
     publishTemplate(user, templateId, input = {}) {
