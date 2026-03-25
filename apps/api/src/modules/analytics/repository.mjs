@@ -1,14 +1,24 @@
 export class AnalyticsRepository {
-  getStageCounts(_firmId) {
-    throw new Error('Not implemented')
+  constructor({ store, reads }) {
+    this.store = store
+    this.reads = reads
   }
-  getSummary(_user) {
-    throw new Error('Not implemented')
+  getStageCounts(firmId) {
+    return this.reads.getAnalytics(firmId)
   }
-  listAuditEvents(_user) {
-    throw new Error('Not implemented')
+  getSummary(user, filters = {}) {
+    return this.store.getAnalytics(user, filters)
   }
-  listExports(_user) {
-    throw new Error('Not implemented')
+  getDashboard(user, filters = {}) {
+    return this.store.getAnalyticsDashboard(user, filters)
+  }
+  exportCsv(user, filters = {}) {
+    return this.store.exportAnalyticsCsv(user, filters)
+  }
+  listAuditEvents(user) {
+    return this.store.listAudit(user)
+  }
+  listExports(user) {
+    return this.store.listExports(user)
   }
 }

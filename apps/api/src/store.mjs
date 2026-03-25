@@ -83,6 +83,19 @@ function average(values) {
   return values.reduce((sum, value) => sum + value, 0) / values.length
 }
 
+function toIsoDate(value) {
+  if (!value) return null
+  const stamp = new Date(value).getTime()
+  if (!Number.isFinite(stamp)) return null
+  return new Date(stamp).toISOString().slice(0, 10)
+}
+
+function csvCell(value) {
+  const text = String(value ?? '')
+  if (/[,"\n]/.test(text)) return `"${text.replaceAll('"', '""')}"`
+  return text
+}
+
 function hash(password) {
   return createHash('sha256').update(password).digest('hex')
 }
@@ -1608,6 +1621,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         firmId: user.firmId,
         clientId: input.clientId,
         templateId: input.templateId,
+        createdByUserId: user.id,
         type: input.type || 'pdf',
         maxAttempts: Number(input.maxAttempts || 3),
         metadata: input.metadata || {}
@@ -1764,7 +1778,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         (entry) => entry.id === submissionId && entry.firmId === user.firmId
       )
       if (!submission) throw new Error('Submission not found.')
-      Object.assign(submission, patch, { updatedAt: now() })
+      const nextUpdatedAt = patch?.updatedAt || now()
+      Object.assign(submission, patch, { updatedAt: nextUpdatedAt })
       persist()
       return submission
     },
@@ -1906,10 +1921,24 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       if (!upload) throw new Error('Upload not found.')
       return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 })
     },
-    getAnalytics(user) {
+    buildAnalyticsSnapshot(user, filters = {}) {
       requirePermission(user, 'analytics:read')
+      const startDate = toIsoDate(filters.startDate)
+      const endDate = toIsoDate(filters.endDate)
+      const cohortBy = filters.cohortBy || 'all'
+      const cohortValue = filters.cohortValue ? String(filters.cohortValue) : null
+      const nowMs = parseIso(process.env.TEST_NOW || '') || Date.now()
+
       const firmProfiles = state.profiles.filter((entry) => entry.firmId === user.firmId)
-      const prospects = firmProfiles.filter((entry) => entry.kind === 'prospect')
+      const prospects = firmProfiles.filter((entry) => {
+        if (entry.kind !== 'prospect') return false
+        const created = toIsoDate(entry.createdAt)
+        if (startDate && created && created < startDate) return false
+        if (endDate && created && created > endDate) return false
+        if (cohortBy === 'stage' && cohortValue && (entry.stage || 'unassigned') !== cohortValue) return false
+        if (cohortBy === 'advisor' && cohortValue && entry.advisorUserId !== cohortValue) return false
+        return true
+      })
       const stageCounts = prospects.reduce((acc, profile) => {
         const stage = profile.stage || 'unassigned'
         acc[stage] = (acc[stage] || 0) + 1
@@ -1943,12 +1972,11 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         if (!stageEntryTimes.has(key)) stageEntryTimes.set(key, parseIso(event.changedAt))
       })
       const stageAging = Object.fromEntries(stageOrder.map((stage) => [stage, { count: 0, avgDays: 0 }]))
-      const nowTime = Date.now()
       prospects.forEach((profile) => {
         const stage = profile.stage || 'unassigned'
         if (!stageAging[stage]) stageAging[stage] = { count: 0, avgDays: 0 }
         const enteredAt = stageEntryTimes.get(`${profile.id}:${stage}`) || parseIso(profile.createdAt)
-        const ageDays = Math.max(0, (nowTime - enteredAt) / 86_400_000)
+        const ageDays = Math.max(0, (nowMs - enteredAt) / 86_400_000)
         stageAging[stage].count += 1
         stageAging[stage].avgDays += ageDays
       })
@@ -1965,9 +1993,15 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       templateIds.forEach((templateId) => {
         formsByTemplate[templateId] = { templateId, drafts: 0, submitted: 0, completionRate: 0 }
       })
-      state.formSubmissions
+      const relevantSubmissions = state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
-        .forEach((submission) => {
+        .filter((entry) => {
+          const created = toIsoDate(entry.createdAt)
+          if (startDate && created && created < startDate) return false
+          if (endDate && created && created > endDate) return false
+          return true
+        })
+      relevantSubmissions.forEach((submission) => {
           formsByTemplate[submission.templateId] ||= {
             templateId: submission.templateId,
             drafts: 0,
@@ -1981,6 +2015,29 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         const total = entry.drafts + entry.submitted
         entry.completionRate = total ? Number((entry.submitted / total).toFixed(4)) : 0
       })
+      const formCompletionLatency = relevantSubmissions
+        .filter((entry) => entry.status === 'submitted')
+        .map((entry) => {
+          const latencyHours = Number(((parseIso(entry.updatedAt) - parseIso(entry.createdAt)) / 3_600_000).toFixed(2))
+          return {
+            submissionId: entry.id,
+            templateId: entry.templateId || 'unknown',
+            latencyHours: Math.max(0, latencyHours)
+          }
+        })
+
+      const latencyByTemplate = Object.values(
+        formCompletionLatency.reduce((acc, entry) => {
+          acc[entry.templateId] ||= { templateId: entry.templateId, submissions: 0, totalHours: 0 }
+          acc[entry.templateId].submissions += 1
+          acc[entry.templateId].totalHours += entry.latencyHours
+          return acc
+        }, {})
+      ).map((entry) => ({
+        templateId: entry.templateId,
+        submissions: entry.submissions,
+        avgHours: Number((entry.totalHours / entry.submissions).toFixed(2))
+      }))
 
       const advisors = state.users.filter(
         (entry) => entry.firmId === user.firmId && ['advisor', 'admin'].includes(entry.role)
@@ -2007,13 +2064,47 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         }
       })
 
+      const exportJobs = state.exportJobs.filter((entry) => {
+        if (entry.firmId !== user.firmId) return false
+        const created = toIsoDate(entry.createdAt)
+        if (startDate && created && created < startDate) return false
+        if (endDate && created && created > endDate) return false
+        return true
+      })
+      const advisorById = new Map(advisors.map((entry) => [entry.id, `${entry.firstName} ${entry.lastName}`]))
+      const exportUsageByAdvisor = Object.values(
+        exportJobs.reduce((acc, job) => {
+          const advisorUserId = job.createdByUserId || job.metadata?.requestedByUserId || 'unknown'
+          acc[advisorUserId] ||= { advisorUserId, advisorName: advisorById.get(advisorUserId) || 'Unknown', total: 0 }
+          acc[advisorUserId].total += 1
+          return acc
+        }, {})
+      )
+      const exportUsageByFirm = {
+        firmId: user.firmId,
+        total: exportJobs.length,
+        byStatus: exportJobs.reduce((acc, job) => {
+          acc[job.status || 'unknown'] = (acc[job.status || 'unknown'] || 0) + 1
+          return acc
+        }, {})
+      }
+
+      const bottlenecks = Object.entries(stageAging)
+        .map(([stage, value]) => ({ stage, ...value }))
+        .filter((entry) => entry.count > 0)
+        .sort((a, b) => b.avgDays - a.avgDays)
+
       return {
+        filters: { startDate, endDate, cohortBy, cohortValue },
         stageCounts,
         funnel,
         overallConversionRate: firstStage ? Number((lastStage / firstStage).toFixed(4)) : 0,
         stageAging,
+        bottlenecks,
         formCompletionRates: Object.values(formsByTemplate),
+        formCompletionLatency: latencyByTemplate,
         advisorProductivity,
+        exportUsage: { byAdvisor: exportUsageByAdvisor, byFirm: exportUsageByFirm },
         profileCount: firmProfiles.length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
         exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
@@ -2023,6 +2114,36 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2)
         )
       }
+    },
+    getAnalytics(user, filters = {}) {
+      return this.buildAnalyticsSnapshot(user, filters)
+    },
+    getAnalyticsDashboard(user, filters = {}) {
+      const snapshot = this.buildAnalyticsSnapshot(user, filters)
+      return {
+        filters: snapshot.filters,
+        funnel: snapshot.funnel,
+        stageAging: snapshot.stageAging,
+        bottlenecks: snapshot.bottlenecks,
+        formCompletionLatency: snapshot.formCompletionLatency,
+        exportUsage: snapshot.exportUsage
+      }
+    },
+    exportAnalyticsCsv(user, filters = {}) {
+      const snapshot = this.buildAnalyticsSnapshot(user, filters)
+      const rows = [['report', 'dimension', 'metric', 'value']]
+      snapshot.funnel.forEach((entry) => rows.push(['funnel', entry.stage, 'count', entry.count]))
+      snapshot.bottlenecks.forEach((entry) => rows.push(['stage_aging', entry.stage, 'avg_days', entry.avgDays]))
+      snapshot.formCompletionLatency.forEach((entry) =>
+        rows.push(['form_latency', entry.templateId, 'avg_hours', entry.avgHours])
+      )
+      snapshot.exportUsage.byAdvisor.forEach((entry) =>
+        rows.push(['export_usage_advisor', entry.advisorName, 'total', entry.total])
+      )
+      Object.entries(snapshot.exportUsage.byFirm.byStatus).forEach(([status, count]) =>
+        rows.push(['export_usage_firm', status, 'total', count])
+      )
+      return rows.map((row) => row.map(csvCell).join(',')).join('\n')
     },
 
     async createExportDownloadUrl(user, exportId) {

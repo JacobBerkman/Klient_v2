@@ -186,6 +186,15 @@ function serveJson(res, statusCode, payload, requestId, extraHeaders = {}) {
   return jsonWithHeaders(res, statusCode, payload, requestId, extraHeaders)
 }
 
+function analyticsFiltersFrom(url) {
+  return {
+    startDate: url.searchParams.get('startDate') || null,
+    endDate: url.searchParams.get('endDate') || null,
+    cohortBy: url.searchParams.get('cohortBy') || 'all',
+    cohortValue: url.searchParams.get('cohortValue') || null
+  }
+}
+
 function csrfHeadersForRequest(req, pathname, method, requestId) {
   return { error: null, headers: {} }
 }
@@ -749,9 +758,29 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/analytics' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadAnalytics')
-        const result = modules.analytics.get(user)
+        const result = modules.analytics.get(user, analyticsFiltersFrom(url))
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/analytics/dashboard' && req.method === 'GET') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadAnalytics')
+        const result = modules.analytics.getDashboard(user, analyticsFiltersFrom(url))
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/analytics/export' && req.method === 'GET') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadAnalytics')
+        const csv = modules.analytics.exportCsv(user, analyticsFiltersFrom(url))
+        withCommonHeaders(res, requestId, {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename=\"analytics-report-${new Date().toISOString().slice(0, 10)}.csv\"`
+        })
+        res.statusCode = 200
+        res.end(csv)
+        finalizeLog(200)
+        return
       }
       if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/sensitive') && req.method === 'GET') {
         const id = pathname.split('/')[3]
