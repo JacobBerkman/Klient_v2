@@ -24,6 +24,7 @@ const mfaEnrollDetailsEl = document.querySelector('#mfa-enroll-details')
 const mfaSecretEl = document.querySelector('#mfa-secret')
 const mfaOtpAuthEl = document.querySelector('#mfa-otpauth')
 const mfaEnrollConfirmFormEl = document.querySelector('#mfa-enroll-confirm-form')
+const profileStageEl = document.querySelector('#profile-stage-select')
 const householdPrimaryEl = document.querySelector('select[name="primaryClientId"]')
 const portalProfileEl = document.querySelector('select[name="profileId"]')
 const profileCreateFormEl = document.querySelector('#profile-form')
@@ -34,30 +35,9 @@ const portalFormEl = document.querySelector('#portal-form')
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 let csrfToken = ''
-const BOARD_STAGES = [
-  'discovery',
-  'gather_oi',
-  'analysis',
-  'advisor_proposal_meeting',
-  'intake',
-  'on_boarding',
-  'investment_strategy',
-  'completed',
-  'drop_dead_lead',
-  'drop_nurture'
-]
-
-const STAGE_LABELS = {
-  discovery: 'Discovery',
-  gather_oi: 'Gather OI',
-  analysis: 'Analysis',
-  advisor_proposal_meeting: 'Advisor Proposal Meeting',
-  intake: 'Intake',
-  on_boarding: 'On Boarding',
-  investment_strategy: 'Investment Strategy',
-  completed: 'Completed',
-  drop_dead_lead: 'Drop / Dead Lead',
-  drop_nurture: 'Drop / Nurture'
+const stageConfigState = {
+  fetched: false,
+  stages: []
 }
 
 function escapeHtml(value) {
@@ -143,14 +123,125 @@ function reportActionSuccess(action, message) {
 function reportActionError(action, error) {
   const reason = error?.message || 'Request failed'
   const details = error?.details?.issues
-  const detailText = Array.isArray(details) && details.length
-    ? ` (${details.map((issue) => `${issue.path}: ${issue.message}`).join(' | ')})`
-    : ''
+  const detailText =
+    Array.isArray(details) && details.length
+      ? ` (${details.map((issue) => `${issue.path}: ${issue.message}`).join(' | ')})`
+      : ''
   setFlash('error', `${action}: ${reason}${detailText}`)
 }
 
-function stageLabel(stage) {
-  return STAGE_LABELS[stage] || stage || 'Unassigned'
+function prettifyStageId(stageId) {
+  return String(stageId || '')
+    .split('_')
+    .filter(Boolean)
+    .map((segment) => segment.charAt(0).toUpperCase() + segment.slice(1))
+    .join(' ')
+}
+
+function normalizeStageDefinition(stage, index = 0) {
+  if (!stage || typeof stage !== 'object') return null
+  const id = stage.id || stage.stage || stage.key || stage.slug || null
+  if (!id) return null
+  const order = Number(stage.order ?? stage.position ?? stage.sortOrder ?? index + 1)
+  return {
+    id,
+    label: stage.label || stage.name || prettifyStageId(id),
+    order: Number.isFinite(order) ? order : index + 1,
+    active: stage.active !== false && stage.enabled !== false
+  }
+}
+
+function normalizeStageDefinitions(stages = []) {
+  return stages
+    .map((stage, index) => normalizeStageDefinition(stage, index))
+    .filter(Boolean)
+    .sort((a, b) => a.order - b.order)
+}
+
+function stageDefinitionsFromBoard(board) {
+  const metadataStages = board?.stageDefinitions || board?.metadata?.stageDefinitions || []
+  const normalizedMetadata = normalizeStageDefinitions(metadataStages)
+  if (normalizedMetadata.length) return normalizedMetadata
+  return (board?.columns || [])
+    .map((column, index) => normalizeStageDefinition({ id: column.stage, order: index + 1 }))
+    .filter(Boolean)
+}
+
+function getStageDefinitions({ includeInactive = true } = {}) {
+  const stages = stageConfigState.stages || []
+  return includeInactive ? stages : stages.filter((stage) => stage.active)
+}
+
+function ensureStageDefinition(stageId) {
+  const definitions = getStageDefinitions({ includeInactive: true })
+  return (
+    definitions.find((stage) => stage.id === stageId) || { id: stageId, label: prettifyStageId(stageId), active: true }
+  )
+}
+
+function stageLabel(stageId) {
+  if (!stageId) return 'Unassigned'
+  return ensureStageDefinition(stageId).label
+}
+
+function hydrateStageConfig(stages = [], { overwrite = false } = {}) {
+  const normalized = normalizeStageDefinitions(stages)
+  if (!normalized.length) return false
+  if (!overwrite && stageConfigState.stages.length) return false
+  stageConfigState.stages = normalized
+  stageConfigState.fetched = true
+  return true
+}
+
+function stageSelectOptionsMarkup(selectedStage = '', { includeInactiveSelected = true } = {}) {
+  const activeStages = getStageDefinitions({ includeInactive: false })
+  const selected = selectedStage || 'discovery'
+  const options = [...activeStages]
+  if (includeInactiveSelected && selected && !options.some((stage) => stage.id === selected)) {
+    const derived = ensureStageDefinition(selected)
+    options.push({ ...derived, active: false })
+  }
+  return options
+    .sort((a, b) => a.order - b.order)
+    .map((stage) => {
+      const inactiveSuffix = stage.active ? '' : ' (Inactive)'
+      return `<option value="${stage.id}" ${stage.id === selected ? 'selected' : ''}>${escapeHtml(stage.label + inactiveSuffix)}</option>`
+    })
+    .join('')
+}
+
+function renderProfileStageSelect(defaultStage = '') {
+  if (!profileStageEl) return
+  const options = stageSelectOptionsMarkup(defaultStage || 'discovery', { includeInactiveSelected: false })
+  profileStageEl.innerHTML = options || '<option value="">No active stages available</option>'
+  if (!profileStageEl.value && profileStageEl.options.length) profileStageEl.value = profileStageEl.options[0].value
+}
+
+async function fetchStageDefinitions() {
+  const candidates = [routes.stageConfig(), routes.pipelineStages()]
+  for (const path of candidates) {
+    try {
+      const payload = await request(path)
+      const definitions = normalizeStageDefinitions(
+        payload?.stages || payload?.stageDefinitions || payload?.data?.stages || payload?.data?.stageDefinitions || []
+      )
+      if (definitions.length) return definitions
+    } catch {
+      // try next endpoint
+    }
+  }
+  return []
+}
+
+async function ensureStageConfig(force = false) {
+  if (!force && stageConfigState.fetched && stageConfigState.stages.length) return stageConfigState.stages
+  const endpointDefinitions = await fetchStageDefinitions()
+  if (hydrateStageConfig(endpointDefinitions, { overwrite: true })) {
+    renderProfileStageSelect()
+    return stageConfigState.stages
+  }
+  stageConfigState.fetched = true
+  return stageConfigState.stages
 }
 
 function findBoardColumn(board, stage) {
@@ -158,12 +249,16 @@ function findBoardColumn(board, stage) {
 }
 
 function buildBoardFromProfiles(profiles = []) {
+  const stageDefinitions = getStageDefinitions({ includeInactive: false })
+  const stageIds = stageDefinitions.map((stage) => stage.id)
+  const fallbackStage = stageIds[0] || 'discovery'
   return {
     boardVersion: null,
-    columns: BOARD_STAGES.map((stage) => ({
+    stageDefinitions,
+    columns: stageIds.map((stage) => ({
       stage,
       cards: profiles
-        .filter((profile) => (profile.stage || 'discovery') === stage)
+        .filter((profile) => (profile.stage || fallbackStage) === stage)
         .sort((a, b) => (a.stageOrderIndex || a.orderIndex || 999) - (b.stageOrderIndex || b.orderIndex || 999))
     }))
   }
@@ -284,18 +379,16 @@ async function requestText(path, options = {}) {
   return text
 }
 
-
 async function hydrateRuntime() {
   try {
-    const runtimeConfig = await request(routes.runtime());
-    state.enableDemoMode = Boolean(runtimeConfig.enableDemoMode);
+    const runtimeConfig = await request(routes.runtime())
+    state.enableDemoMode = Boolean(runtimeConfig.enableDemoMode)
   } catch {
-    state.enableDemoMode = false;
+    state.enableDemoMode = false
   }
-  document.querySelector('#demo-login').hidden = !state.enableDemoMode;
-  document.querySelector('#demo-credentials').hidden = !state.enableDemoMode;
+  document.querySelector('#demo-login').hidden = !state.enableDemoMode
+  document.querySelector('#demo-credentials').hidden = !state.enableDemoMode
 }
-
 
 function updateMfaUi() {
   const hasLoginChallenge = Boolean(state.mfa.login)
@@ -367,6 +460,7 @@ function updateRoleVisibility() {
 
 async function refreshSelects() {
   if (!state.user || state.user.role === 'client') return
+  await ensureStageConfig()
   const clients = await request(routes.profiles({ kind: 'client' }))
   const profiles = await request(routes.profiles())
   householdPrimaryEl.innerHTML = clients
@@ -381,6 +475,7 @@ async function refreshSelects() {
         `<option value="${profile.id}">${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</option>`
     )
     .join('')
+  renderProfileStageSelect()
 }
 
 function metricCard(label, value) {
@@ -442,7 +537,10 @@ async function renderAnalytics() {
     .map((entry) => `<tr><td>${escapeHtml(entry.stageLabel || stageLabelById.get(entry.stageId || entry.stage) || entry.stageId || entry.stage)}</td><td>${escapeHtml(entry.stageId || entry.stage)}</td><td>${entry.count}</td><td>${entry.avgDays}</td></tr>`)
     .join('')
   const latencyRows = (dashboard.formCompletionLatency || [])
-    .map((entry) => `<tr><td>${escapeHtml(entry.templateId)}</td><td>${entry.submissions}</td><td>${entry.avgHours}</td></tr>`)
+    .map(
+      (entry) =>
+        `<tr><td>${escapeHtml(entry.templateId)}</td><td>${entry.submissions}</td><td>${entry.avgHours}</td></tr>`
+    )
     .join('')
   const exportRows = (dashboard.exportUsage?.byAdvisor || [])
     .map((entry) => `<tr><td>${escapeHtml(entry.advisorName)}</td><td>${entry.total}</td></tr>`)
@@ -605,7 +703,8 @@ function mappingLocalIssues(mapping, knownPaths) {
   const targetType = String(mapping.targetType || '').trim()
   if (sourcePath && !knownPaths.has(sourcePath)) issues.push('Unknown source path')
   const sourceType = sourcePath ? knownPaths.get(sourcePath) : ''
-  if (sourceType && targetType && sourceType !== targetType) issues.push(`Type mismatch (${sourceType} → ${targetType})`)
+  if (sourceType && targetType && sourceType !== targetType)
+    issues.push(`Type mismatch (${sourceType} → ${targetType})`)
   return issues
 }
 
@@ -629,19 +728,24 @@ async function renderTemplates() {
   const template = templates.find((entry) => entry.id === state.selectedTemplateId) || templates[0] || null
   const [versions, transitions] = template
     ? await Promise.all([
-      request(routes.documentTemplateVersions(template.id)),
-      request(routes.documentTemplatePublishTransitions(template.id))
-    ])
+        request(routes.documentTemplateVersions(template.id)),
+        request(routes.documentTemplatePublishTransitions(template.id))
+      ])
     : [[], []]
-  const versionOptions = (versions || []).map((entry) => `<option value="${entry.version}">${entry.version} · ${escapeHtml(entry.changeType || 'update')}</option>`).join('')
+  const versionOptions = (versions || [])
+    .map(
+      (entry) =>
+        `<option value="${entry.version}">${entry.version} · ${escapeHtml(entry.changeType || 'update')}</option>`
+    )
+    .join('')
   const latestVersion = versions?.[0]?.version || ''
   const knownPaths = knownProfileSourcePaths()
-  ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
-  if (template && !Array.isArray(state.templateMappingDrafts[template.id])) {
-    state.templateMappingDrafts[template.id] = (template.mappings || []).map((mapping) => mappingDraftFromServer(mapping))
-  }
-  const draftMappings = template ? (state.templateMappingDrafts[template.id] || []) : []
-  const mappingIssuesByIndex = new Map(draftMappings.map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
+  ;(template?.formSchema?.sections || []).forEach((section) =>
+    collectTemplateSchemaPaths(section.fields || [], '', knownPaths)
+  )
+  const mappingIssuesByIndex = new Map(
+    (template?.mappings || []).map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)])
+  )
   const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
   const previewWarningRows = new Set(
@@ -665,7 +769,9 @@ async function renderTemplates() {
     <label>Template
       <select id="template-select">${templates.map((entry) => `<option value="${entry.id}" ${entry.id === template?.id ? 'selected' : ''}>${escapeHtml(entry.name)}</option>`).join('')}</select>
     </label>
-    ${template ? `
+    ${
+      template
+        ? `
       <section class="item">
         <h3>Extracted Fields</h3>
         <ul>${(template.extractedFields || []).map((field, index) => `<li>${escapeHtml(field)} <button data-remove-extracted="${index}" class="secondary tiny">Remove</button></li>`).join('') || '<li class="muted">No extracted fields yet.</li>'}</ul>
@@ -684,20 +790,18 @@ async function renderTemplates() {
           ${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}
         </datalist>
         <table><thead><tr><th>PDF Field</th><th>Source Path</th><th>Type</th><th>Validation</th><th>Actions</th></tr></thead><tbody>
-          ${draftMappings.map((mapping, index) => {
-            const issues = mappingIssuesByIndex.get(index) || []
-            const previewFlags = []
-            if (previewIssueRows.has(index)) previewFlags.push('Preview issue')
-            if (previewWarningRows.has(index)) previewFlags.push('Preview warning')
-            const previewIndicator = previewFlags.length ? `<div class="muted">${escapeHtml(previewFlags.join(' · '))}</div>` : ''
-            return `<tr id="mapping-row-${index}">
-              <td><span>${escapeHtml(mapping.pdfField || '')}</span>${previewIndicator}</td>
+          ${(template.mappings || [])
+            .map((mapping, index) => {
+              const issues = mappingIssuesByIndex.get(index) || []
+              return `<tr>
+              <td>${escapeHtml(mapping.pdfField || '')}</td>
               <td>${escapeHtml(mapping.sourcePath || '')}</td>
               <td>${escapeHtml(mapping.targetType || '')}</td>
               <td>${issues.length ? `<span class="badge">${escapeHtml(issues.join('; '))}</span>` : '<span class="muted">OK</span>'}</td>
               <td><button data-save-mapping-row="${index}" class="tiny">Save row</button> <button data-reset-mapping-row="${index}" class="tiny secondary">Reset row</button> <button data-remove-mapping-row="${index}" class="tiny secondary">Remove row</button></td>
             </tr>`
-          }).join('')}
+            })
+            .join('')}
         </tbody></table>
         <button id="add-mapping-row" class="tiny">Add Mapping</button>
         <button id="save-mappings" class="tiny">Save Mappings</button>
@@ -757,7 +861,9 @@ async function renderTemplates() {
         <table><thead><tr><th>From</th><th>To</th><th>When</th><th>By</th></tr></thead><tbody>
           ${(transitions || []).map((entry) => `<tr><td>${entry.fromVersion ?? 'N/A'}</td><td>${entry.toVersion ?? 'N/A'}</td><td>${escapeHtml(new Date(entry.createdAt || Date.now()).toLocaleString())}</td><td>${escapeHtml(entry.createdByUserId || 'system')}</td></tr>`).join('') || '<tr><td colspan="4">No publish transitions yet.</td></tr>'}
         </tbody></table>
-      </section>` : '<p class="muted">No document templates found.</p>'}
+      </section>`
+        : '<p class="muted">No document templates found.</p>'
+    }
   `
 
   document.querySelector('#template-select')?.addEventListener('change', async (event) => {
@@ -924,19 +1030,19 @@ async function renderTemplates() {
 
 function boardCardMarkup(card, kind) {
   const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
-  const canEdit = canMutateProfiles()
+  const cardStage = card.stage || getStageDefinitions({ includeInactive: false })[0]?.id || 'discovery'
   return `
-    <article class="board-card" draggable="${canEdit ? 'true' : 'false'}" data-card-id="${card.id}" data-stage="${card.stage || 'discovery'}">
+    <article class="board-card" draggable="true" data-card-id="${card.id}" data-stage="${cardStage}">
       <header class="row between wrap">
         <strong>${escapeHtml(displayName)}</strong>
         <button type="button" class="secondary tiny" data-edit-profile="${card.id}" aria-expanded="false" ${canEdit ? '' : 'disabled'}>Edit</button>
       </header>
       <div class="muted compact-meta">${escapeHtml(card.email || 'No email')} · ${escapeHtml(card.phone || 'No phone')}</div>
-      <div class="muted compact-meta">Stage: ${escapeHtml(stageLabel(card.stage || 'discovery'))}</div>
+      <div class="muted compact-meta">Stage: ${escapeHtml(stageLabel(cardStage))}</div>
       <div class="row gap-sm wrap top-gap">
         <label class="sr-only" for="stage-${card.id}">Move ${escapeHtml(displayName)} to stage</label>
-        <select id="stage-${card.id}" data-stage-select="${card.id}" ${canEdit ? '' : 'disabled'}>
-          ${BOARD_STAGES.map((stage) => `<option value="${stage}" ${stage === (card.stage || 'discovery') ? 'selected' : ''}>${escapeHtml(stageLabel(stage))}</option>`).join('')}
+        <select id="stage-${card.id}" data-stage-select="${card.id}">
+          ${stageSelectOptionsMarkup(cardStage)}
         </select>
       </div>
       <form class="inline-edit hidden top-gap" data-edit-form="${card.id}" data-updated-at="${escapeHtml(card.updatedAt || '')}">
@@ -957,6 +1063,8 @@ function boardCardMarkup(card, kind) {
 }
 
 function boardMarkup(kind, board) {
+  const activeStages = new Set(getStageDefinitions({ includeInactive: false }).map((stage) => stage.id))
+  const columns = (board?.columns || []).filter((column) => activeStages.has(column.stage))
   return `
     ${flashMarkup()}
     ${alertMarkup()}
@@ -967,7 +1075,7 @@ function boardMarkup(kind, board) {
       </div>
     </div>
     <div class="kanban-board" data-board-kind="${kind}">
-      ${board.columns
+      ${columns
         .map(
           (column) => `
         <section class="kanban-column" data-stage="${column.stage}" aria-label="${escapeHtml(stageLabel(column.stage))}">
@@ -993,7 +1101,9 @@ async function reorderCard(kind, move) {
   const newIndex = optimisticColumn ? optimisticColumn.cards.indexOf(optimisticCard) + 1 : 1
   try {
     const latest = await request(`/api/profiles/${move.profileId}`)
-    const previousCard = previousBoard?.columns?.flatMap((column) => column.cards).find((entry) => entry.id === move.profileId)
+    const previousCard = previousBoard?.columns
+      ?.flatMap((column) => column.cards)
+      .find((entry) => entry.id === move.profileId)
     if (previousCard?.updatedAt && latest?.profile?.updatedAt && previousCard.updatedAt !== latest.profile.updatedAt) {
       throw new Error('Conflict detected: this client changed on the server. Review latest board and retry.')
     }
@@ -1139,12 +1249,16 @@ function wireBoardInteractions(kind) {
 
 async function renderBoard(kind) {
   if (kind === 'prospect') {
-    state.board = await request('/api/board')
+    state.board = await request(routes.board())
+    const boardStageDefinitions = stageDefinitionsFromBoard(state.board)
+    hydrateStageConfig(boardStageDefinitions, { overwrite: true })
+    renderProfileStageSelect()
     viewEl.innerHTML = boardMarkup(kind, state.board)
     wireBoardInteractions(kind)
     return
   }
-  const clients = await request('/api/profiles?kind=client')
+  await ensureStageConfig()
+  const clients = await request(routes.profiles({ kind: 'client' }))
   state.clientBoard = buildBoardFromProfiles(clients)
   viewEl.innerHTML = boardMarkup(kind, state.clientBoard)
   wireBoardInteractions(kind)
@@ -1198,20 +1312,19 @@ async function renderExports() {
     <section class="item">
       <h3>Per-job Artifact Status</h3>
       <table><thead><tr><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact</th><th>Actions</th></tr></thead><tbody>
-        ${jobs.map((job) => `<tr>
+        ${
+          jobs
+            .map(
+              (job) => `<tr>
           <td>${escapeHtml(job.id)}</td>
           <td>${escapeHtml(job.status)}</td>
           <td>${job.attempts || 0}/${job.maxAttempts || 0}</td>
-          <td>${
-            job.artifactAvailable
-              ? `<div><code>${escapeHtml(job.artifact?.fileName || job.output?.fileName || 'artifact')}</code><div class="muted">${escapeHtml(job.artifact?.contentType || 'application/octet-stream')} · ${(job.artifact?.sizeBytes || 0).toLocaleString()} bytes</div></div>`
-              : '<span class="muted">Not ready</span>'
-          }</td>
-          <td>
-            <button data-download-export="${job.id}" class="tiny" ${job.artifactAvailable ? '' : 'disabled'}>Download</button>
-            ${canMutate ? `<button data-retry-export="${job.id}" class="tiny secondary" ${job.status === 'running' ? 'disabled' : ''}>Retry</button>` : ''}
-          </td>
-        </tr>`).join('') || '<tr><td colspan="5">No export jobs.</td></tr>'}
+          <td>${job.output?.object?.key ? `<code>${escapeHtml(job.output.object.key)}</code>` : '<span class="muted">Not ready</span>'}</td>
+          <td>${canMutate ? `<button data-retry-export="${job.id}" class="tiny secondary" ${job.status === 'completed' ? 'disabled' : ''}>Retry</button>` : '<span class="muted">N/A</span>'}</td>
+        </tr>`
+            )
+            .join('') || '<tr><td colspan="5">No export jobs.</td></tr>'
+        }
       </tbody></table>
     </section>
     <section class="item">
@@ -1222,7 +1335,10 @@ async function renderExports() {
   `
   document.querySelector('#retry-failed-jobs')?.addEventListener('click', async () => {
     try {
-      const result = await request(routes.exportsRetryFailed(), { method: 'POST', body: JSON.stringify({ includeDeadLetter: true, limit: 50 }) })
+      const result = await request(routes.exportsRetryFailed(), {
+        method: 'POST',
+        body: JSON.stringify({ includeDeadLetter: true, limit: 50 })
+      })
       reportActionSuccess('Exports', `Retried ${result.retriedCount || 0} failed jobs.`)
     } catch (error) {
       reportActionError('Exports', error)
@@ -1336,9 +1452,9 @@ document.querySelectorAll('[data-view]').forEach((button) => {
   })
 })
 
-const demoLoginButton = document.querySelector('#demo-login');
+const demoLoginButton = document.querySelector('#demo-login')
 demoLoginButton.addEventListener('click', async () => {
-  if (!state.enableDemoMode) return;
+  if (!state.enableDemoMode) return
   try {
     const session = await request(routes.login(), {
       method: 'POST',
@@ -1576,7 +1692,6 @@ portalFormEl.addEventListener('submit', async (event) => {
     }
   }
 })
-
 
 mfaLoginFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
