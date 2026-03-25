@@ -223,7 +223,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         id: randomUUID(),
         firmId: firm.id,
         email: normalizedEmail,
-        passwordHash: hash(password),
+        passwordHash: hashPassword(password),
         firstName,
         lastName,
         role: 'admin',
