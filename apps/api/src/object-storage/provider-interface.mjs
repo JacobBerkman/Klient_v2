@@ -25,11 +25,11 @@
  */
 
 export function assertStorageProvider(provider) {
-  const methods = ['putObject', 'getObject', 'createPresignedUploadUrl', 'createPresignedDownloadUrl', 'deleteObject'];
+  const methods = ['putObject', 'getObject', 'createPresignedUploadUrl', 'createPresignedDownloadUrl', 'deleteObject']
   for (const method of methods) {
     if (typeof provider?.[method] !== 'function') {
-      throw new Error(`Invalid storage provider: missing ${method}().`);
+      throw new Error(`Invalid storage provider: missing ${method}().`)
     }
   }
-  return provider;
+  return provider
 }
