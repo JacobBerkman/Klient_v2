@@ -2,6 +2,7 @@ import { createHmac, createHash, randomBytes, randomUUID } from 'node:crypto'
 
 const LOGIN_WINDOW_MS = 1000 * 60 * 15
 const MAX_LOGIN_ATTEMPTS = 5
+const MAX_LOGIN_ATTEMPTS_PER_IP = 25
 const RESET_TTL_MS = 1000 * 60 * 30
 const RESET_RATE_WINDOW_MS = 1000 * 60 * 60
 const MAX_RESETS_PER_USER = 5
@@ -98,22 +99,87 @@ function pruneByAge(records, maxAgeMs, dateField = 'createdAt') {
 }
 
 export function createLocalAuthProvider({ state, persist, createSession, addAudit }) {
-  function recordLoginAttempt(email, ok) {
+
+  function clearLoginAttempts(email) {
     const normalizedEmail = normalizeEmail(email)
-    const entry = { id: randomUUID(), email: normalizedEmail, ok, createdAt: nowIso() }
+    state.authAttempts = (state.authAttempts || []).filter((attempt) => attempt.email !== normalizedEmail)
+  }
+
+  function clearUserLockout(user) {
+    if (!user?.security?.lockoutUntil) return false
+    user.security.lockoutUntil = null
+    user.security.lockedAt = null
+    return true
+  }
+
+  function ensureLoginAllowed(email, ipAddress) {
+    const normalizedEmail = normalizeEmail(email)
+    const normalizedIp = sanitizeIp(ipAddress)
     state.authAttempts = pruneByAge(state.authAttempts || [], LOGIN_WINDOW_MS)
-    state.authAttempts.push(entry)
+
+    const byEmailFailures = state.authAttempts.filter((attempt) => attempt.email === normalizedEmail && !attempt.ok)
+    if (byEmailFailures.length >= MAX_LOGIN_ATTEMPTS) {
+      throw new Error('Too many failed login attempts. Please wait 15 minutes and try again.')
+    }
+
+    const byIpFailures = state.authAttempts.filter((attempt) => attempt.ipAddress === normalizedIp && !attempt.ok)
+    if (byIpFailures.length >= MAX_LOGIN_ATTEMPTS_PER_IP) {
+      throw new Error('Too many failed login attempts from this IP. Please wait 15 minutes and try again.')
+    }
+
+    const user = state.users.find((entry) => entry.email === normalizedEmail)
+    const lockoutUntil = new Date(user?.security?.lockoutUntil || 0).getTime()
+    if (lockoutUntil > Date.now()) {
+      throw new Error('Account is temporarily locked due to failed login attempts.')
+    }
+    if (user && user?.security?.lockoutUntil) {
+      clearUserLockout(user)
+      persist()
+    }
+  }
+
+  function registerFailedLogin(email, ipAddress) {
+    const normalizedEmail = normalizeEmail(email)
+    const normalizedIp = sanitizeIp(ipAddress)
+    state.authAttempts = pruneByAge(state.authAttempts || [], LOGIN_WINDOW_MS)
+    state.authAttempts.push({
+      id: randomUUID(),
+      email: normalizedEmail,
+      ipAddress: normalizedIp,
+      ok: false,
+      createdAt: nowIso()
+    })
+
+    const user = state.users.find((entry) => entry.email === normalizedEmail)
+    if (user) {
+      user.security ||= {}
+      user.security.failedLoginCount = Number(user.security.failedLoginCount || 0) + 1
+      user.security.lastFailedLoginAt = nowIso()
+      if (user.security.failedLoginCount >= MAX_LOGIN_ATTEMPTS) {
+        user.security.lockedAt = nowIso()
+        user.security.lockoutUntil = new Date(Date.now() + LOGIN_WINDOW_MS).toISOString()
+      }
+    }
     persist()
   }
 
-  function ensureLoginAllowed(email) {
-    const normalizedEmail = normalizeEmail(email)
-    const attempts = pruneByAge(state.authAttempts || [], LOGIN_WINDOW_MS).filter(
-      (attempt) => attempt.email === normalizedEmail && !attempt.ok
-    )
-    if (attempts.length >= MAX_LOGIN_ATTEMPTS) {
-      throw new Error('Too many failed login attempts. Please wait 15 minutes and try again.')
-    }
+  function registerSuccessfulLogin(user, ipAddress) {
+    const normalizedEmail = normalizeEmail(user.email)
+    const normalizedIp = sanitizeIp(ipAddress)
+    state.authAttempts = pruneByAge(state.authAttempts || [], LOGIN_WINDOW_MS)
+    state.authAttempts.push({
+      id: randomUUID(),
+      email: normalizedEmail,
+      ipAddress: normalizedIp,
+      ok: true,
+      createdAt: nowIso()
+    })
+    clearLoginAttempts(normalizedEmail)
+    user.security ||= {}
+    user.security.failedLoginCount = 0
+    user.security.lastSuccessfulLoginAt = nowIso()
+    clearUserLockout(user)
+    persist()
   }
 
   function ensureResetRateLimit(email, ipAddress) {
@@ -176,22 +242,42 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
     persist()
     return challenge
   }
+  function revokeUserSessions(userId) {
+    const existing = state.sessions || []
+    const remaining = existing.filter((entry) => entry.userId !== userId)
+    const revokedCount = existing.length - remaining.length
+    if (revokedCount > 0) state.sessions = remaining
+    return revokedCount
+  }
+
 
   return {
-    authenticate({ email, password, mfaChallengeToken, totpCode, backupCode }) {
+    providerId: 'local',
+    authenticate({ email, password, mfaChallengeToken, totpCode, backupCode, ipAddress }) {
       const normalizedEmail = normalizeEmail(email)
-      ensureLoginAllowed(normalizedEmail)
+      ensureLoginAllowed(normalizedEmail, ipAddress)
       const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password))
       if (!user) {
         recordLoginAttempt(normalizedEmail, false)
+        addAudit(null, null, 'auth', normalizedEmail, 'auth.login.failed', {
+          after: { email: normalizedEmail, reason: 'invalid_credentials' }
+        })
         throw new Error('Invalid email or password.')
       }
-      recordLoginAttempt(normalizedEmail, true)
+      registerSuccessfulLogin(user, ipAddress)
       const mfa = ensureMfaData(user)
-      if (!mfa.enabled) return createSession(user)
+      if (!mfa.enabled) {
+        addAudit(user.firmId, user.id, 'user', user.id, 'auth.login.succeeded', {
+          after: { email: normalizedEmail, mfaEnabled: false }
+        })
+        return createSession(user)
+      }
 
       if (!mfaChallengeToken) {
         const challenge = createAndPersistMfaChallenge(user.id)
+        addAudit(user.firmId, user.id, 'user', user.id, 'auth.mfa.challenge_issued', {
+          after: { challengeToken: challenge.token, method: challenge.method }
+        })
         return { mfaRequired: true, challengeToken: challenge.token, methods: ['totp', 'backup_code'] }
       }
 
@@ -206,10 +292,14 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       const backupValid = backupCode ? consumeBackupCode(user, backupCode) : false
       if (!totpValid && !backupValid) {
         persist()
+        addAudit(user.firmId, user.id, 'user', user.id, 'auth.mfa.challenge_failed', { after: { challengeId: challenge.id } })
         throw new Error('Invalid MFA verification code.')
       }
 
       state.mfaChallenges = state.mfaChallenges.filter((entry) => entry.id !== challenge.id)
+      addAudit(user.firmId, user.id, 'user', user.id, 'auth.login.succeeded', {
+        after: { email: normalizedEmail, mfaEnabled: true, challengeId: challenge.id }
+      })
       persist()
       return createSession(user)
     },
@@ -227,12 +317,43 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         firstName,
         lastName,
         role: 'admin',
+        authProvider: 'local',
         mfa: { enabled: false, totpSecret: null, backupCodes: [] },
         createdAt: nowIso()
       }
       state.firms.push(firm)
       state.users.push(user)
       addAudit(firm.id, user.id, 'firm', firm.id, 'firm.created', { name: firm.name })
+      return createSession(user)
+    },
+    acceptInvite({ token, firstName, lastName, password }) {
+      assertStrongPassword(password)
+      const invite = (state.invites || []).find((entry) => entry.token === token)
+      if (!invite) throw new Error('Invite not found.')
+      if (invite.expiresAt && new Date(invite.expiresAt).getTime() <= Date.now()) {
+        throw new Error('Invite expired.')
+      }
+      const existingUser = state.users.find((entry) => entry.email === invite.email && entry.firmId === invite.firmId)
+      if (existingUser) throw new Error('Invite email is already associated with an account.')
+
+      const user = {
+        id: randomUUID(),
+        firmId: invite.firmId,
+        email: invite.email,
+        passwordHash: hash(password),
+        firstName,
+        lastName,
+        role: invite.role,
+        authProvider: 'local',
+        mfa: { enabled: false, totpSecret: null, backupCodes: [] },
+        security: { failedLoginCount: 0, lockoutUntil: null, lockedAt: null },
+        createdAt: nowIso()
+      }
+
+      state.users.push(user)
+      state.invites = (state.invites || []).filter((entry) => entry.id !== invite.id)
+      addAudit(invite.firmId, user.id, 'invite', invite.id, 'invite.accepted', { email: invite.email, role: invite.role })
+      persist()
       return createSession(user)
     },
     requestReset({ email, ipAddress }) {
@@ -270,10 +391,16 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       const user = state.users.find((entry) => entry.id === reset.userId)
       if (!user) throw new Error('User not found.')
       user.passwordHash = hash(password)
+      user.security ||= {}
+      user.security.failedLoginCount = 0
+      user.security.lockoutUntil = null
+      user.security.lockedAt = null
       state.passwordResets = state.passwordResets.filter((entry) => entry.userId !== user.id)
-      addAudit(user.firmId, user.id, 'user', user.id, 'auth.password_reset.completed', {})
+      state.mfaChallenges = (state.mfaChallenges || []).filter((entry) => entry.userId !== user.id)
+      const revokedSessions = revokeUserSessions(user.id)
+      addAudit(user.firmId, user.id, 'user', user.id, 'auth.password_reset.completed', { revokedSessions })
       persist()
-      return { ok: true }
+      return { ok: true, revokedSessions }
     },
     startTotpEnrollment(user) {
       const actor = state.users.find((entry) => entry.id === user.id)
@@ -341,6 +468,9 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         throw new Error('Invalid MFA verification code.')
       }
       state.mfaChallenges = state.mfaChallenges.filter((entry) => entry.id !== challenge.id)
+      addAudit(actor.firmId, actor.id, 'user', actor.id, 'auth.mfa.challenge_verified', {
+        after: { challengeId: challenge.id }
+      })
       persist()
       return { ok: true }
     },

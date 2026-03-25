@@ -1,5 +1,16 @@
+export const EXPORT_JOB_LIFECYCLE_STATES = Object.freeze({
+  QUEUED: 'queued',
+  RUNNING: 'running',
+  RETRYING: 'retrying',
+  COMPLETED: 'completed',
+  FAILED: 'failed',
+  DEAD_LETTER: 'dead-letter'
+})
+
 export class ExportsRepository {
-  list(_firmContext) {
+  static lifecycleStates = EXPORT_JOB_LIFECYCLE_STATES
+
+  list(_user) {
     throw new Error('Not implemented')
   }
   create(_firmContext, _input) {

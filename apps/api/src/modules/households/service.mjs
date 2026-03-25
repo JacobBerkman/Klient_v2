@@ -1,4 +1,4 @@
-import { createFirmContext } from '../shared/tenancy.mjs'
+import { runAuditedMutation } from '../audit/service.mjs'
 
 export function createHouseholdsService({ store, policy }) {
   return {
@@ -8,23 +8,23 @@ export function createHouseholdsService({ store, policy }) {
     },
     createHousehold(user, input) {
       policy.requireGuard(user, 'canWriteHouseholds')
-      return store.createHousehold(createFirmContext(user), input)
+      return runAuditedMutation(store, () => store.createHousehold(user, input))
     },
     addHouseholdMember(user, householdId, input) {
       policy.requireGuard(user, 'canWriteHouseholds')
-      return store.addHouseholdMember(createFirmContext(user), householdId, input)
+      return runAuditedMutation(store, () => store.addHouseholdMember(user, householdId, input))
     },
     removeHouseholdMember(user, householdId, clientId) {
       policy.requireGuard(user, 'canWriteHouseholds')
-      return store.removeHouseholdMember(createFirmContext(user), householdId, clientId)
+      return runAuditedMutation(store, () => store.removeHouseholdMember(user, householdId, clientId))
     },
     linkSpouse(user, primaryClientId, spouseClientId) {
       policy.requireGuard(user, 'canWriteHouseholds')
-      return store.linkSpouse(createFirmContext(user), primaryClientId, spouseClientId)
+      return runAuditedMutation(store, () => store.linkSpouse(user, primaryClientId, spouseClientId))
     },
     createSpouse(user, primaryClientId, spouse) {
       policy.requireGuard(user, 'canWriteHouseholds')
-      return store.createSpouse(createFirmContext(user), primaryClientId, spouse)
+      return runAuditedMutation(store, () => store.createSpouse(user, primaryClientId, spouse))
     }
   }
 }

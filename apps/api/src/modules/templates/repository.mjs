@@ -11,7 +11,19 @@ export class TemplateRepository {
   publishTemplate(_firmContext, _templateId) {
     throw new Error('TemplateRepository.publishTemplate not implemented')
   }
-  autoBuildTemplate(_firmContext, _input) {
+  compareTemplateVersions() {
+    throw new Error('TemplateRepository.compareTemplateVersions not implemented')
+  }
+  revertTemplateVersion() {
+    throw new Error('TemplateRepository.revertTemplateVersion not implemented')
+  }
+  listTemplateVersions() {
+    throw new Error('TemplateRepository.listTemplateVersions not implemented')
+  }
+  listPublishTransitions() {
+    throw new Error('TemplateRepository.listPublishTransitions not implemented')
+  }
+  autoBuildTemplate() {
     throw new Error('TemplateRepository.autoBuildTemplate not implemented')
   }
 }

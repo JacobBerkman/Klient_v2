@@ -14,9 +14,14 @@ const runOnce = process.env.EXPORT_WORKER_ONCE === '1'
 const crashAfterLease = process.env.EXPORT_WORKER_CRASH_AFTER_LEASE === '1'
 
 function processJob(job) {
+  if (job.output) {
+    return job.output
+  }
   const failCount = Number(job?.metadata?.simulateFailuresRemaining || 0)
   if (failCount > 0) {
-    throw new Error(`Simulated export failure for ${job.id}`)
+    const error = new Error(`Simulated export failure for ${job.id}`)
+    error.failureClass = 'transient'
+    throw error
   }
   return {
     fileName: `${job.type}-${Date.now()}.json`,
@@ -72,7 +77,17 @@ const stop = (signal) => {
 process.on('SIGINT', () => stop('SIGINT'))
 process.on('SIGTERM', () => stop('SIGTERM'))
 
-console.log(JSON.stringify({ message: 'export-worker.started', workerId, pollMs, leaseMs, batchSize, crashAfterLease }))
+console.log(
+  JSON.stringify({
+    message: 'export-worker.started',
+    workerId,
+    mode: 'long-running',
+    pollMs,
+    leaseMs,
+    batchSize,
+    crashAfterLease
+  })
+)
 
 while (!stopping) {
   const result = runTick()
@@ -83,9 +98,10 @@ while (!stopping) {
     metrics: result,
     queueHealth: {
       queued: queue.queued,
-      processing: queue.processing,
+      running: queue.running,
       completed: queue.completed,
       deadLetter: queue.deadLetter,
+      failed: queue.failed,
       readyNow: queue.readyNow,
       stalled: queue.stalled,
       activeLeases: queue.activeLeases
@@ -94,5 +110,6 @@ while (!stopping) {
   if (result.leased > 0 || result.failed > 0 || queue.stalled > 0) {
     console.log(JSON.stringify(diagnostics))
   }
-  await new Promise((resolve) => setTimeout(resolve, pollMs))
+  const nextWaitMs = result.leased > 0 ? Math.max(25, Math.floor(pollMs / 2)) : pollMs
+  await new Promise((resolve) => setTimeout(resolve, nextWaitMs))
 }

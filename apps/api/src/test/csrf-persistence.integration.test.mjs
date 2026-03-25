@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import {
   upsertCsrfToken,
   readCsrfToken,
+  consumeCsrfToken,
   deleteCsrfToken,
   deleteCsrfTokensBySession,
   deleteExpiredCsrfTokens
@@ -52,5 +53,15 @@ test('csrf persistence: supports multi-instance read/write compatibility', () =>
   const sharedRead = readCsrfToken(record.sessionToken, record.id)
   assert.equal(sharedRead?.id, record.id)
   assert.equal(sharedRead?.userId, record.userId)
+  deleteCsrfToken(record.id)
+})
+
+test('csrf persistence: consume call is single-use and replay-safe', () => {
+  const record = createRecord()
+  upsertCsrfToken(record)
+  assert.equal(consumeCsrfToken(record.sessionToken, record.id), true)
+  assert.equal(consumeCsrfToken(record.sessionToken, record.id), false)
+  const stored = readCsrfToken(record.sessionToken, record.id)
+  assert.ok(stored?.consumedAt)
   deleteCsrfToken(record.id)
 })

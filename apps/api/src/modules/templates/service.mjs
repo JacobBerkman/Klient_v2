@@ -1,6 +1,8 @@
-import { createFirmContext } from '../shared/tenancy.mjs'
+import { runAuditedMutation } from '../audit/service.mjs'
 
-export function createTemplatesService({ templateRepository, policy }) {
+export function createTemplatesService({ templateRepository, policy, store = null }) {
+  const runMutation = (fn) => (store ? runAuditedMutation(store, fn) : fn())
+
   return {
     list(user) {
       policy.requireGuard(user, 'canReadTemplate')
@@ -8,19 +10,35 @@ export function createTemplatesService({ templateRepository, policy }) {
     },
     create(user, input) {
       policy.requireGuard(user, 'canEditTemplate')
-      return templateRepository.createDocumentTemplate(createFirmContext(user), input)
+      return runMutation(() => templateRepository.createDocumentTemplate(user, input))
     },
     autoBuild(user, input) {
       policy.requireGuard(user, 'canEditTemplate')
-      return templateRepository.autoBuildTemplate(createFirmContext(user), input)
+      return runMutation(() => templateRepository.autoBuildTemplate(user, input))
     },
-    publish(user, templateId) {
+    publish(user, templateId, input) {
       policy.requireGuard(user, 'canPublishTemplate')
-      return templateRepository.publishTemplate(createFirmContext(user), templateId)
+      return templateRepository.publishTemplate(user, templateId, input)
     },
-    updateMappings(user, templateId, mappings) {
+    updateMappings(user, templateId, mappings, input = {}) {
       policy.requireGuard(user, 'canEditTemplate')
-      return templateRepository.updateTemplateMappings(createFirmContext(user), templateId, mappings)
+      return templateRepository.updateTemplateMappings(user, templateId, mappings, input)
+    },
+    listVersions(user, templateId) {
+      policy.requireGuard(user, 'canReadTemplate')
+      return templateRepository.listTemplateVersions(user, templateId)
+    },
+    listPublishTransitions(user, templateId) {
+      policy.requireGuard(user, 'canReadTemplate')
+      return templateRepository.listPublishTransitions(user, templateId)
+    },
+    compareVersions(user, templateId, baseVersion, targetVersion) {
+      policy.requireGuard(user, 'canReadTemplate')
+      return templateRepository.compareTemplateVersions(user, templateId, baseVersion, targetVersion)
+    },
+    revertVersion(user, templateId, targetVersion, input) {
+      policy.requireGuard(user, 'canEditTemplate')
+      return templateRepository.revertTemplateVersion(user, templateId, targetVersion, input)
     }
   }
 }

@@ -1,4 +1,4 @@
-import { createFirmContext } from '../shared/tenancy.mjs'
+import { runAuditedMutation } from '../audit/service.mjs'
 
 export function createExportsService({ store, policy }) {
   return {
@@ -8,7 +8,7 @@ export function createExportsService({ store, policy }) {
     },
     create(user, input) {
       policy.requireGuard(user, 'canWriteExports')
-      return store.createExport(createFirmContext(user), input)
+      return runAuditedMutation(store, () => store.createExport(user, input))
     },
     processQueuedExports(user) {
       policy.requireGuard(user, 'canProcessExports')
@@ -16,7 +16,7 @@ export function createExportsService({ store, policy }) {
     },
     retry(user, exportId) {
       policy.requireGuard(user, 'canWriteExports')
-      return store.retryExport(createFirmContext(user), exportId)
+      return runAuditedMutation(store, () => store.retryExport(user, exportId))
     }
   }
 }

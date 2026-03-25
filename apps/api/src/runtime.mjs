@@ -51,6 +51,67 @@ function readAuthProvider(value) {
   return normalized
 }
 
+
+function readNonEmptyString(name, fallback = '') {
+  const raw = process.env[name]
+  if (raw === undefined || raw === null) return fallback
+  const normalized = String(raw).trim()
+  return normalized || fallback
+}
+
+function readList(name) {
+  const raw = process.env[name]
+  if (!raw) return []
+  return String(raw)
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+function providerRuntimeDiagnostics(authProvider) {
+  const issues = []
+  const warnings = []
+
+  if (authProvider === 'local') {
+    warnings.push('AUTH_PROVIDER=local enables built-in password authentication flows.')
+    return { issues, warnings }
+  }
+
+  if (authProvider === 'oidc') {
+    const issuerUrl = readNonEmptyString('OIDC_ISSUER_URL')
+    const clientId = readNonEmptyString('OIDC_CLIENT_ID')
+    const clientSecret = readNonEmptyString('OIDC_CLIENT_SECRET')
+    const redirectUri = readNonEmptyString('OIDC_REDIRECT_URI')
+
+    if (!issuerUrl) issues.push('OIDC provider requires OIDC_ISSUER_URL.')
+    if (!clientId) issues.push('OIDC provider requires OIDC_CLIENT_ID.')
+    if (!clientSecret) issues.push('OIDC provider requires OIDC_CLIENT_SECRET.')
+    if (!redirectUri) issues.push('OIDC provider requires OIDC_REDIRECT_URI.')
+
+    const allowedAlgs = readList('OIDC_ALLOWED_ALGS')
+    if (allowedAlgs.length === 0) warnings.push('OIDC_ALLOWED_ALGS is unset; provider defaults will be used.')
+    return { issues, warnings }
+  }
+
+  if (authProvider === 'saml') {
+    const entryPoint = readNonEmptyString('SAML_ENTRY_POINT')
+    const issuer = readNonEmptyString('SAML_ISSUER')
+    const cert = readNonEmptyString('SAML_CERT')
+
+    if (!entryPoint) issues.push('SAML provider requires SAML_ENTRY_POINT.')
+    if (!issuer) issues.push('SAML provider requires SAML_ISSUER.')
+    if (!cert) issues.push('SAML provider requires SAML_CERT.')
+
+    const clockSkewSeconds = Number(process.env.SAML_CLOCK_SKEW_SECONDS || 0)
+    if (!Number.isFinite(clockSkewSeconds) || clockSkewSeconds < 0) {
+      issues.push('SAML_CLOCK_SKEW_SECONDS must be a non-negative number when provided.')
+    }
+    return { issues, warnings }
+  }
+
+  issues.push(`Unsupported AUTH_PROVIDER runtime diagnostics for provider "${authProvider}".`)
+  return { issues, warnings }
+}
 function readPiiKeyProvider(value) {
   const normalized = String(value || 'env').toLowerCase()
   if (!['env', 'kms'].includes(normalized)) {
@@ -74,7 +135,12 @@ function estimateAppSecretEntropyBits(secret) {
 const nodeEnv = normalizeNodeEnv(process.env.NODE_ENV || 'development')
 const allowDevFallbackSecret = readBoolean('ALLOW_DEV_FALLBACK_APP_SECRET', false)
 const allowUnsafeAppSecret = readBoolean('UNSAFE_ALLOW_WEAK_APP_SECRET', false)
+const enableTestCsrfBypass = readBoolean('ENABLE_TEST_CSRF_BYPASS', false)
 const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
+
+if (nodeEnv === 'production' && enableTestCsrfBypass) {
+  throw new Error('ENABLE_TEST_CSRF_BYPASS cannot be enabled in production.')
+}
 
 const appSecretHealth = {
   usingFallback: appSecret === DEFAULT_APP_SECRET,
@@ -114,7 +180,9 @@ export const runtime = {
   appSecretHealth,
   allowDevFallbackSecret,
   allowUnsafeAppSecret,
+  enableTestCsrfBypass: nodeEnv === 'test' && enableTestCsrfBypass,
   authProvider: readAuthProvider(process.env.AUTH_PROVIDER),
+  authStartupDiagnostics: providerRuntimeDiagnostics(readAuthProvider(process.env.AUTH_PROVIDER)),
   piiKeyProvider: readPiiKeyProvider(process.env.PII_KEY_PROVIDER),
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',
@@ -156,6 +224,13 @@ export function validateRuntimeConfig() {
     )
   }
 
+  if (runtime.authStartupDiagnostics.issues.length) {
+    issues.push(...runtime.authStartupDiagnostics.issues)
+  }
+  if (runtime.authStartupDiagnostics.warnings.length) {
+    warnings.push(...runtime.authStartupDiagnostics.warnings)
+  }
+
   if (runtime.piiKeyProvider === 'kms') {
     if (!process.env.PII_KMS_KEYRING) {
       issues.push('KMS PII key provider requires PII_KMS_KEYRING.')
@@ -190,6 +265,9 @@ export function validateRuntimeConfig() {
   if (runtime.nodeEnv === 'production' && readBoolean('ENABLE_DEMO_MODE', false)) {
     warnings.push('ENABLE_DEMO_MODE is ignored in production and forced off.')
   }
+  if (readBoolean('ENABLE_TEST_CSRF_BYPASS', false) && runtime.nodeEnv !== 'test') {
+    warnings.push('ENABLE_TEST_CSRF_BYPASS is only honored when NODE_ENV=test.')
+  }
 
   return {
     ok: issues.length === 0,
@@ -201,6 +279,7 @@ export function validateRuntimeConfig() {
       port: runtime.port,
       logLevel: runtime.logLevel,
       authProvider: runtime.authProvider,
+      authDiagnostics: runtime.authStartupDiagnostics,
       piiKeyProvider: runtime.piiKeyProvider,
       serviceName: runtime.serviceName,
       instanceId: runtime.instanceId,

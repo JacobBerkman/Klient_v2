@@ -10,6 +10,9 @@ export function createAuthService({ provider }) {
     login(input) {
       return authProvider.authenticate(input)
     },
+    acceptInvite(input) {
+      return authProvider.acceptInvite(input)
+    },
     requestReset(input) {
       return authProvider.requestReset(input)
     },

@@ -69,13 +69,23 @@ export class StoreTemplateRepository extends TemplateRepository {
     const context = requireFirmContext(firmContext, { method: 'templates.createDocumentTemplate' })
     return this.store.createDocumentTemplate(context, input)
   }
-  updateTemplateMappings(firmContext, templateId, mappings) {
-    const context = requireFirmContext(firmContext, { method: 'templates.updateTemplateMappings' })
-    return this.store.updateTemplateMappings(context, templateId, mappings)
+  updateTemplateMappings(user, templateId, mappings, input) {
+    return this.store.updateTemplateMappings(user, templateId, mappings, input)
   }
-  publishTemplate(firmContext, templateId) {
-    const context = requireFirmContext(firmContext, { method: 'templates.publishTemplate' })
-    return this.store.publishTemplate(context, templateId)
+  publishTemplate(user, templateId, input) {
+    return this.store.publishTemplate(user, templateId, input)
+  }
+  compareTemplateVersions(user, templateId, baseVersion, targetVersion) {
+    return this.store.compareTemplateVersions(user, templateId, baseVersion, targetVersion)
+  }
+  revertTemplateVersion(user, templateId, targetVersion, input) {
+    return this.store.revertTemplateVersion(user, templateId, targetVersion, input)
+  }
+  listTemplateVersions(user, templateId) {
+    return this.store.listTemplateVersions(user, templateId)
+  }
+  listPublishTransitions(user, templateId) {
+    return this.store.listPublishTransitions(user, templateId)
   }
   autoBuildTemplate(firmContext, input) {
     const context = requireFirmContext(firmContext, { method: 'templates.autoBuildTemplate' })
@@ -159,11 +169,23 @@ export class StoreFormsRepository extends FormsRepository {
   submitClientUpload(user, input) {
     return this.store.submitClientUpload(user, input)
   }
-  createPortalLink(user, profileId) {
-    return this.store.createPortalLink(user, profileId)
+  createClientUploadPresign(user, input) {
+    return this.store.createClientUploadPresign(user, input)
+  }
+  createPortalLink(user, profileId, options) {
+    return this.store.createPortalLink(user, profileId, options)
+  }
+  revokePortalLink(user, linkId) {
+    return this.store.revokePortalLink(user, linkId)
+  }
+  getPortalSession(token) {
+    return this.store.getPortalSession(token)
   }
   getPortalData(token) {
     return this.store.getPortalData(token)
+  }
+  createPortalUploadPresign(token, input) {
+    return this.store.createPortalUploadPresign(token, input)
   }
   portalSubmit(token, input) {
     return this.store.portalSubmit(token, input)

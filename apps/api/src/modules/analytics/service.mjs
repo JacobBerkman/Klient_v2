@@ -2,10 +2,17 @@ import { createFirmContext } from '../shared/tenancy.mjs'
 
 export function createAnalyticsService({ store, reads, policy }) {
   return {
-    get(user) {
+    get(user, filters = {}) {
       policy.requireGuard(user, 'canReadAnalytics')
-      const firmContext = createFirmContext(user)
-      return { stageCounts: reads.getAnalytics(firmContext.firmId), summary: store.getAnalytics(firmContext) }
+      return { stageCounts: reads.getAnalytics(user.firmId), summary: store.getAnalytics(user, filters) }
+    },
+    getDashboard(user, filters = {}) {
+      policy.requireGuard(user, 'canReadAnalytics')
+      return store.getAnalyticsDashboard(user, filters)
+    },
+    exportCsv(user, filters = {}) {
+      policy.requireGuard(user, 'canReadAnalytics')
+      return store.exportAnalyticsCsv(user, filters)
     },
     getDiagnosticsContext(user) {
       policy.requireGuard(user, 'canReadDiagnostics')
