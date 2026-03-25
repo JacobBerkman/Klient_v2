@@ -78,6 +78,82 @@ const BOARD_COLUMNS = [
   'drop_dead_lead',
   'drop_nurture'
 ]
+const LEGACY_STAGE_BUCKET = 'legacy_unassigned'
+const DEFAULT_ANALYTICS_STAGE_DEFINITIONS = BOARD_COLUMNS.map((id) => ({
+  id,
+  role: id === 'discovery' ? 'start' : id === 'completed' ? 'end' : id.startsWith('drop_') ? 'dropped' : 'active'
+}))
+
+function normalizeStageRole(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+  if (normalized === 'start') return 'start'
+  if (normalized === 'end' || normalized === 'complete' || normalized === 'completed') return 'end'
+  if (normalized === 'dropped' || normalized === 'drop' || normalized === 'loss') return 'dropped'
+  if (normalized === 'legacy' || normalized === 'unassigned') return 'legacy'
+  return 'active'
+}
+
+function normalizeConfiguredStageDefinitions(stages = []) {
+  return stages
+    .map((entry, index) => {
+      if (typeof entry === 'string') {
+        const id = entry.trim()
+        if (!id) return null
+        return { id, order: index, role: 'active' }
+      }
+      if (!entry || typeof entry !== 'object') return null
+      const id = String(entry.id || entry.key || entry.stage || entry.slug || entry.value || '')
+        .trim()
+      if (!id) return null
+      const rawOrder = Number(entry.order ?? entry.position ?? entry.index ?? index)
+      const order = Number.isFinite(rawOrder) ? rawOrder : index
+      let role = normalizeStageRole(entry.role || entry.stageRole)
+      if (entry.isStart === true) role = 'start'
+      if (entry.isEnd === true) role = 'end'
+      return { id, order, role }
+    })
+    .filter(Boolean)
+    .sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+}
+
+function resolveFirmAnalyticsStages(firm) {
+  const pipelineSettings =
+    firm?.stageConfig ||
+    firm?.pipeline ||
+    firm?.pipelineConfig ||
+    firm?.settings?.pipeline ||
+    firm?.settings?.stages ||
+    null
+  const stageEntries =
+    (Array.isArray(firm?.stages) && firm.stages) ||
+    (Array.isArray(pipelineSettings?.stages) && pipelineSettings.stages) ||
+    (Array.isArray(pipelineSettings) && pipelineSettings) ||
+    []
+  const configured = normalizeConfiguredStageDefinitions(stageEntries)
+  const definitions = configured.length
+    ? configured
+    : DEFAULT_ANALYTICS_STAGE_DEFINITIONS.map((entry, index) => ({ ...entry, order: index }))
+  const stageOrder = definitions.map((entry) => entry.id)
+  const stageIdSet = new Set(stageOrder)
+  const configuredStart = String(
+    pipelineSettings?.startStageId || pipelineSettings?.startStage || firm?.startStageId || firm?.startStage || ''
+  ).trim()
+  const configuredEnd = String(
+    pipelineSettings?.endStageId || pipelineSettings?.endStage || firm?.endStageId || firm?.endStage || ''
+  ).trim()
+  const startStage =
+    (configuredStart && stageIdSet.has(configuredStart) && configuredStart) ||
+    definitions.find((entry) => entry.role === 'start')?.id ||
+    stageOrder[0]
+  const endStage =
+    (configuredEnd && stageIdSet.has(configuredEnd) && configuredEnd) ||
+    definitions.find((entry) => entry.role === 'end')?.id ||
+    stageOrder.at(-1) ||
+    startStage
+  return { stageOrder, stageIdSet, startStage, endStage }
+}
 
 function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission)
@@ -2861,6 +2937,13 @@ export function createStore({
       const cohortValue = filters.cohortValue ? String(filters.cohortValue) : null
       const nowMs = parseIso(process.env.TEST_NOW || '') || Date.now()
 
+      const firm = state.firms.find((entry) => entry.id === user.firmId) || null
+      const stageConfig = resolveFirmAnalyticsStages(firm)
+      const toAnalyticsStage = (stage) => {
+        const value = String(stage || '').trim()
+        return value && stageConfig.stageIdSet.has(value) ? value : LEGACY_STAGE_BUCKET
+      }
+
       const firmProfiles = state.profiles.filter((entry) => entry.firmId === user.firmId)
       const prospects = firmProfiles.filter((entry) => {
         if (entry.kind !== 'prospect') return false
@@ -2872,27 +2955,19 @@ export function createStore({
         return true
       })
       const stageCounts = prospects.reduce((acc, profile) => {
-        const stage = profile.stage || 'unassigned'
+        const stage = toAnalyticsStage(profile.stage)
         acc[stage] = (acc[stage] || 0) + 1
         return acc
       }, {})
       const totalProspects = prospects.length || 1
-      const stageOrder = [
-        'discovery',
-        'gather_oi',
-        'analysis',
-        'advisor_proposal_meeting',
-        'intake',
-        'on_boarding',
-        'investment_strategy',
-        'completed'
-      ]
+      const stageOrder = [...stageConfig.stageOrder]
+      if (stageCounts[LEGACY_STAGE_BUCKET]) stageOrder.push(LEGACY_STAGE_BUCKET)
       const funnel = stageOrder.map((stage) => {
         const count = stageCounts[stage] || 0
         return { stage, count, conversionRate: Number((count / totalProspects).toFixed(4)) }
       })
-      const firstStage = stageCounts[stageOrder[0]] || 0
-      const lastStage = stageCounts.completed || 0
+      const firstStage = stageCounts[stageConfig.startStage] || 0
+      const lastStage = stageCounts[stageConfig.endStage] || 0
 
       const stageEvents = state.stageChanges
         .filter((entry) => entry.firmId === user.firmId)
@@ -2900,12 +2975,12 @@ export function createStore({
         .sort((a, b) => parseIso(a.changedAt) - parseIso(b.changedAt))
       const stageEntryTimes = new Map()
       stageEvents.forEach((event) => {
-        const key = `${event.clientId}:${event.toStage || 'unassigned'}`
+        const key = `${event.clientId}:${toAnalyticsStage(event.toStage)}`
         if (!stageEntryTimes.has(key)) stageEntryTimes.set(key, parseIso(event.changedAt))
       })
       const stageAging = Object.fromEntries(stageOrder.map((stage) => [stage, { count: 0, avgDays: 0 }]))
       prospects.forEach((profile) => {
-        const stage = profile.stage || 'unassigned'
+        const stage = toAnalyticsStage(profile.stage)
         if (!stageAging[stage]) stageAging[stage] = { count: 0, avgDays: 0 }
         const enteredAt = stageEntryTimes.get(`${profile.id}:${stage}`) || parseIso(profile.createdAt)
         const ageDays = Math.max(0, (nowMs - enteredAt) / 86_400_000)
