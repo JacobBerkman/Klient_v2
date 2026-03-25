@@ -155,6 +155,15 @@ try {
     body: JSON.stringify({ dryRun: true, includeDeadLetter: false })
   })
 
+  const unauthorizedDownload = await fetch(`http://127.0.0.1:${context.port}/api/analytics/export`)
+  assert(unauthorizedDownload.status === 401, 'Analytics export download should require authentication')
+  const authorizedDownload = await fetch(`http://127.0.0.1:${context.port}/api/analytics/export`, {
+    headers: { Authorization: `Bearer ${admin.token}` }
+  })
+  const csvDownload = await authorizedDownload.text()
+  const downloadDisposition = authorizedDownload.headers.get('content-disposition') || ''
+  const downloadType = authorizedDownload.headers.get('content-type') || ''
+
   const completed = exportsList.find((entry) => entry.id === completedJob.id)
   const duplicate = exportsList.find((entry) => entry.id === duplicateA.id)
   const xlsx = exportsList.find((entry) => entry.id === xlsxJob.id)
@@ -207,6 +216,13 @@ try {
   assert(typeof queueHealth?.queue?.running === 'number', 'Expected queue health running count')
   assert(Array.isArray(safeRetryDryRun?.ids), 'Expected safe retry dry-run candidate ids')
   assert(safeRetryDryRun?.dryRun === true, 'Expected dry-run response from safe retry endpoint')
+  assert(authorizedDownload.status === 200, 'Analytics export download should succeed for authorized user')
+  assert(downloadType === 'text/csv; charset=utf-8', 'Analytics export should return CSV content type')
+  assert(
+    /^attachment; filename=\"analytics-report-\d{4}-\d{2}-\d{2}\.csv\"$/.test(downloadDisposition),
+    'Analytics export should return attachment filename header'
+  )
+  assert(csvDownload.includes('funnel'), 'Analytics export should return CSV payload')
 
   console.log(
     JSON.stringify(

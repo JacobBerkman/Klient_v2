@@ -38,7 +38,12 @@ test('GET /api/profiles forwards query params to profiles service', async () => 
   const calls = []
   const fakeUser = { id: 'u1', firmId: 'f1', role: 'admin' }
   const modules = {
-    auth: { requireUser: () => fakeUser },
+    auth: {
+      requireUser: (token) => {
+        if (!token) throw new Error('Authentication required.')
+        return fakeUser
+      }
+    },
     policy: { requireGuard: () => calls.push('policy') },
     profiles: {
       listProfiles: (_user, query) => {
@@ -187,6 +192,31 @@ test('POST /api/login rotates prior bearer token to prevent fixation', async () 
   assert.equal(res.status, 200)
   assert.equal(body.token, 'fresh-token')
   assert.deepEqual(calls, ['logout:stale-token'])
+  await close(server)
+})
+
+test('GET /api/analytics/export requires auth and applies download headers', async () => {
+  const calls = []
+  const fakeUser = { id: 'u1', firmId: 'f1', role: 'admin' }
+  const modules = {
+    auth: { requireUser: () => fakeUser },
+    policy: { requireGuard: (user, guard) => calls.push(`policy:${user.id}:${guard}`) },
+    analytics: { exportCsv: () => 'metric,value\nprofiles,3\n' }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+
+  const authorized = await fetch(`${base}/api/analytics/export`, {
+    headers: { authorization: 'Bearer token' }
+  })
+  const csv = await authorized.text()
+
+  assert.equal(authorized.status, 200)
+  assert.equal(authorized.headers.get('content-type'), 'text/csv; charset=utf-8')
+  assert.match(authorized.headers.get('content-disposition') || '', /^attachment; filename=\"analytics-report-\d{4}-\d{2}-\d{2}\.csv\"$/)
+  assert.equal(csv.includes('profiles,3'), true)
+  assert.deepEqual(calls, ['policy:u1:canReadAnalytics'])
   await close(server)
 })
 
