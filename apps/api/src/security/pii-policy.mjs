@@ -37,8 +37,12 @@ export function validateUnmaskRequest(request = {}) {
   if (!APPROVED_UNMASK_REASON_CODES.has(request.reasonCode)) {
     throw new Error('Unmask requests must use an approved code.')
   }
-  if (!String(request.justification || '').trim()) {
+  const justification = String(request.justification || '').trim()
+  if (!justification) {
     throw new Error('Unmask requests require non-empty justification.')
+  }
+  if (justification.length < 12) {
+    throw new Error('Unmask requests require at least 12 characters of justification.')
   }
   if (request.privilegedPolicy !== DEFAULT_UNMASK_POLICY) {
     throw new Error('Unmask requests require explicit privileged policy acknowledgement.')

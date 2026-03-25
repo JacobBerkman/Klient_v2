@@ -106,8 +106,15 @@ test('unauthorized unmask reads are denied and audited', async () => {
     const denyEvent = store.state.auditEvents.find((entry) => entry.action === 'sensitive.read_denied')
     assert.ok(denyEvent)
     assert.equal(denyEvent.metadata.requestedUnmask, true)
+    assert.equal(denyEvent.metadata.grantedUnmask, false)
+    assert.equal(denyEvent.metadata.outcome, 'denied')
+    assert.deepEqual(denyEvent.metadata.fieldScope, ['ssn', 'taxId'])
+    assert.equal(denyEvent.metadata.purpose, 'compliance_review')
     assert.equal(denyEvent.metadata.reason.code, 'regulatory_review')
+    assert.equal(denyEvent.metadata.reason.privilegedPolicy, 'privileged_sensitive_read_v1')
+    assert.match(denyEvent.metadata.denialReason, /least-privilege|denied/i)
     assert.equal(denyEvent.metadata.actor.userId, user.id)
+    assert.equal(denyEvent.metadata.actor.role, 'readonly')
   })
 })
 
@@ -138,8 +145,18 @@ test('authorized unmask reads return clear values and emit audit events', async 
     )
     assert.ok(auditEvent)
     assert.equal(auditEvent.metadata.grantedUnmask, true)
+    assert.equal(auditEvent.metadata.requestedUnmask, true)
+    assert.equal(auditEvent.metadata.outcome, 'granted')
     assert.deepEqual(auditEvent.metadata.fieldScope, ['ssn', 'taxId'])
+    assert.equal(auditEvent.metadata.purpose, 'compliance_review')
     assert.equal(auditEvent.metadata.reason.code, 'compliance_review')
+    assert.equal(
+      auditEvent.metadata.reason.justification,
+      'Periodic compliance verification for KYC controls.'
+    )
+    assert.equal(auditEvent.metadata.reason.privilegedPolicy, 'privileged_sensitive_read_v1')
+    assert.equal(auditEvent.metadata.actor.userId, user.id)
+    assert.equal(auditEvent.metadata.actor.role, 'admin')
   })
 })
 
@@ -166,6 +183,18 @@ test('unmask reads require approved reason code, justification, and explicit pri
           purpose: 'compliance_review',
           unmask: true,
           reasonCode: 'compliance_review',
+          justification: 'Too short',
+          privilegedPolicy: 'privileged_sensitive_read_v1'
+        }),
+      /at least 12 characters/
+    )
+
+    assert.throws(
+      () =>
+        store.getMaskedSensitiveData(user, profile.id, {
+          purpose: 'compliance_review',
+          unmask: true,
+          reasonCode: 'compliance_review',
           privilegedPolicy: 'privileged_sensitive_read_v1'
         }),
       /require non-empty justification/
@@ -181,5 +210,16 @@ test('unmask reads require approved reason code, justification, and explicit pri
         }),
       /explicit privileged policy acknowledgement/
     )
+
+    const deniedEvents = store.state.auditEvents.filter(
+      (entry) => entry.action === 'sensitive.read_denied' && entry.entityId === profile.id
+    )
+    assert.ok(deniedEvents.length >= 4)
+    deniedEvents.forEach((entry) => {
+      assert.equal(entry.metadata.requestedUnmask, true)
+      assert.equal(entry.metadata.grantedUnmask, false)
+      assert.equal(entry.metadata.outcome, 'denied')
+      assert.equal(typeof entry.metadata.denialReason, 'string')
+    })
   })
 })
