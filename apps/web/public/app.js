@@ -25,6 +25,11 @@ const mfaOtpAuthEl = document.querySelector('#mfa-otpauth')
 const mfaEnrollConfirmFormEl = document.querySelector('#mfa-enroll-confirm-form')
 const householdPrimaryEl = document.querySelector('select[name="primaryClientId"]')
 const portalProfileEl = document.querySelector('select[name="profileId"]')
+const profileCreateFormEl = document.querySelector('#profile-form')
+const formTemplateFormEl = document.querySelector('#form-template-form')
+const docTemplateFormEl = document.querySelector('#doc-template-form')
+const inviteFormEl = document.querySelector('#invite-form')
+const portalFormEl = document.querySelector('#portal-form')
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 let csrfToken = ''
@@ -75,6 +80,21 @@ function clearAlert() {
   state.alert = null
 }
 
+function normalizeConflictMessage(error, fallbackMessage = 'Conflict detected. Reload and try again.') {
+  if (error?.details?.mergePrompt?.suggestion) return error.details.mergePrompt.suggestion
+  const rawMessage = String(error?.message || '').toLowerCase()
+  if (rawMessage.includes('conflict') || rawMessage.includes('stale') || rawMessage.includes('version')) {
+    return 'Conflict detected: another change was saved first. Review latest data and retry.'
+  }
+  return fallbackMessage
+}
+
+function isConflictError(error) {
+  if (error?.details?.mergePrompt?.suggestion) return true
+  const rawMessage = String(error?.message || '').toLowerCase()
+  return rawMessage.includes('conflict') || rawMessage.includes('stale') || rawMessage.includes('version')
+}
+
 function setActionPending(actionKey, status) {
   state.pendingActions[actionKey] = status
 }
@@ -85,6 +105,33 @@ function clearActionPending(actionKey) {
 
 function pendingLabel(actionKey, defaultLabel, pendingLabel = 'Saving…') {
   return state.pendingActions[actionKey] ? pendingLabel : defaultLabel
+}
+
+function setFormFeedback(form, message = '', type = 'error') {
+  const feedbackEl = form?.querySelector('[data-form-feedback]')
+  if (!feedbackEl) return
+  feedbackEl.textContent = message
+  feedbackEl.classList.remove('error-banner', 'success-banner')
+  if (message) feedbackEl.classList.add(type === 'success' ? 'success-banner' : 'error-banner')
+}
+
+function clearFormFeedback(form) {
+  setFormFeedback(form, '')
+}
+
+function withTrimmedFormData(form) {
+  return Object.fromEntries(
+    Array.from(new FormData(form).entries()).map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value])
+  )
+}
+
+function validateRequiredFields(form, requiredKeys = []) {
+  const payload = withTrimmedFormData(form)
+  const missingLabel = requiredKeys.find((key) => !payload[key])
+  if (missingLabel) {
+    throw new Error(`${missingLabel} is required.`)
+  }
+  return payload
 }
 
 function reportActionSuccess(action, message) {
@@ -295,13 +342,25 @@ function roleAllowed(buttonRoleCsv = '') {
   return buttonRoleCsv.split(',').includes(state.user.role)
 }
 
+function canMutateProfiles() {
+  return roleAllowed('admin,advisor')
+}
+
+function canMutateSection(sectionEl) {
+  return roleAllowed(sectionEl?.dataset.requiresRole || '')
+}
+
 function updateRoleVisibility() {
   document.querySelectorAll('[data-view]').forEach((button) => {
     button.hidden = !roleAllowed(button.dataset.roles || '')
   })
   document.querySelectorAll('[data-requires-role]').forEach((section) => {
     const roles = section.dataset.requiresRole || ''
-    section.hidden = !roleAllowed(roles)
+    const allowed = roleAllowed(roles)
+    section.hidden = !allowed
+    section.querySelectorAll('button, input, select, textarea').forEach((field) => {
+      field.disabled = !allowed
+    })
   })
 }
 
@@ -795,17 +854,18 @@ async function renderTemplates() {
 
 function boardCardMarkup(card, kind) {
   const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
+  const canEdit = canMutateProfiles()
   return `
-    <article class="board-card" draggable="true" data-card-id="${card.id}" data-stage="${card.stage || 'discovery'}">
+    <article class="board-card" draggable="${canEdit ? 'true' : 'false'}" data-card-id="${card.id}" data-stage="${card.stage || 'discovery'}">
       <header class="row between wrap">
         <strong>${escapeHtml(displayName)}</strong>
-        <button type="button" class="secondary tiny" data-edit-profile="${card.id}" aria-expanded="false">Edit</button>
+        <button type="button" class="secondary tiny" data-edit-profile="${card.id}" aria-expanded="false" ${canEdit ? '' : 'disabled'}>Edit</button>
       </header>
       <div class="muted compact-meta">${escapeHtml(card.email || 'No email')} · ${escapeHtml(card.phone || 'No phone')}</div>
       <div class="muted compact-meta">Stage: ${escapeHtml(stageLabel(card.stage || 'discovery'))}</div>
       <div class="row gap-sm wrap top-gap">
         <label class="sr-only" for="stage-${card.id}">Move ${escapeHtml(displayName)} to stage</label>
-        <select id="stage-${card.id}" data-stage-select="${card.id}">
+        <select id="stage-${card.id}" data-stage-select="${card.id}" ${canEdit ? '' : 'disabled'}>
           ${BOARD_STAGES.map((stage) => `<option value="${stage}" ${stage === (card.stage || 'discovery') ? 'selected' : ''}>${escapeHtml(stageLabel(stage))}</option>`).join('')}
         </select>
       </div>
@@ -817,8 +877,8 @@ function boardCardMarkup(card, kind) {
         <input name="email" type="email" value="${escapeHtml(card.email || '')}" placeholder="Email" />
         <input name="phone" value="${escapeHtml(card.phone || '')}" placeholder="Phone" />
         <div class="actions-row">
-          <button type="submit" class="tiny">${pendingLabel(`profile-save-${card.id}`, 'Save', 'Saving…')}</button>
-          <button type="button" class="secondary tiny" data-cancel-edit="${card.id}">Cancel</button>
+          <button type="submit" class="tiny" ${canEdit ? '' : 'disabled'}>${pendingLabel(`profile-save-${card.id}`, 'Save', 'Saving…')}</button>
+          <button type="button" class="secondary tiny" data-cancel-edit="${card.id}" ${canEdit ? '' : 'disabled'}>Cancel</button>
         </div>
       </form>
       <div class="muted compact-meta">Type: ${escapeHtml(kind)}</div>
@@ -865,7 +925,7 @@ async function reorderCard(kind, move) {
     const latest = await request(`/api/profiles/${move.profileId}`)
     const previousCard = previousBoard?.columns?.flatMap((column) => column.cards).find((entry) => entry.id === move.profileId)
     if (previousCard?.updatedAt && latest?.profile?.updatedAt && previousCard.updatedAt !== latest.profile.updatedAt) {
-      throw new Error('This client changed on the server. Reloaded latest board.')
+      throw new Error('Conflict detected: this client changed on the server. Review latest board and retry.')
     }
     await request(`/api/profiles/${move.profileId}`, {
       method: 'PATCH',
@@ -884,7 +944,7 @@ async function saveInlineProfile(kind, profileId, patch, expectedUpdatedAt = '')
   try {
     const latest = await request(routes.profileDetail(profileId))
     if (expectedUpdatedAt && latest?.profile?.updatedAt && latest.profile.updatedAt !== expectedUpdatedAt) {
-      throw new Error('Conflict detected: this profile was edited elsewhere. Please reload and try again.')
+      throw new Error('Conflict detected: this profile was edited elsewhere. Review latest data and try again.')
     }
     await request(`/api/profiles/${profileId}`, {
       method: 'PATCH',
@@ -898,8 +958,13 @@ async function saveInlineProfile(kind, profileId, patch, expectedUpdatedAt = '')
 
 function wireBoardInteractions(kind) {
   let activeCardId = null
+  const canMutate = canMutateProfiles()
   document.querySelectorAll('[data-card-id]').forEach((cardEl) => {
     cardEl.addEventListener('dragstart', (event) => {
+      if (!canMutate) {
+        event.preventDefault()
+        return
+      }
       activeCardId = cardEl.dataset.cardId
       event.dataTransfer.effectAllowed = 'move'
       event.dataTransfer.setData('text/plain', activeCardId)
@@ -912,6 +977,7 @@ function wireBoardInteractions(kind) {
     cardEl.addEventListener('dragover', (event) => event.preventDefault())
     cardEl.addEventListener('drop', async (event) => {
       event.preventDefault()
+      if (!canMutate) return
       const profileId = event.dataTransfer.getData('text/plain') || activeCardId
       const toStage = cardEl.dataset.stage
       const beforeProfileId = cardEl.dataset.cardId
@@ -930,6 +996,7 @@ function wireBoardInteractions(kind) {
     zone.addEventListener('dragover', (event) => event.preventDefault())
     zone.addEventListener('drop', async (event) => {
       event.preventDefault()
+      if (!canMutate) return
       const profileId = event.dataTransfer.getData('text/plain') || activeCardId
       const toStage = zone.dataset.dropStage
       if (!profileId || !toStage) return
@@ -945,6 +1012,7 @@ function wireBoardInteractions(kind) {
 
   document.querySelectorAll('[data-edit-profile]').forEach((button) => {
     button.addEventListener('click', () => {
+      if (!canMutate) return
       const profileId = button.dataset.editProfile
       const form = document.querySelector(`[data-edit-form="${profileId}"]`)
       form?.classList.toggle('hidden')
@@ -972,7 +1040,8 @@ function wireBoardInteractions(kind) {
         clearAlert()
         reportActionSuccess('Profiles', 'Profile updated.')
       } catch (error) {
-        setAlert('error', error.message)
+        const message = isConflictError(error) ? normalizeConflictMessage(error) : error.message
+        setAlert('error', message)
         reportActionError('Profiles', error)
       } finally {
         if (submitButton) {
@@ -1248,32 +1317,49 @@ document.querySelector('#login-form').addEventListener('submit', async (event) =
   }
 })
 
-document.querySelector('#profile-form').addEventListener('submit', async (event) => {
+profileCreateFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-profile'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Profile', 'Creating…')
+  }
   try {
-    const form = new FormData(event.target)
-    const source = form.get('cityOrLocation')
-      ? { cityOrLocation: form.get('cityOrLocation'), venue: form.get('venue'), occurredOn: form.get('occurredOn') }
+    const payload = validateRequiredFields(formEl, ['firstName', 'lastName'])
+    const source = payload.cityOrLocation
+      ? { cityOrLocation: payload.cityOrLocation, venue: payload.venue, occurredOn: payload.occurredOn }
       : null
     await request(routes.profiles(), {
       method: 'POST',
       body: JSON.stringify({
-        kind: form.get('kind'),
-        firstName: form.get('firstName'),
-        lastName: form.get('lastName'),
-        email: form.get('email'),
-        phone: form.get('phone'),
-        stage: form.get('stage'),
+        kind: payload.kind,
+        firstName: payload.firstName,
+        lastName: payload.lastName,
+        email: payload.email,
+        phone: payload.phone,
+        stage: payload.stage,
         source
       })
     })
-    event.target.reset()
+    formEl.reset()
     reportActionSuccess('Profiles', 'Profile created.')
     await refreshSelects()
     await renderCurrentView()
   } catch (error) {
+    setFormFeedback(formEl, isConflictError(error) ? normalizeConflictMessage(error) : error.message)
     reportActionError('Profiles', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Profile'
+    }
   }
 })
 
@@ -1291,63 +1377,133 @@ document.querySelector('#household-form').addEventListener('submit', async (even
   }
 })
 
-document.querySelector('#form-template-form').addEventListener('submit', async (event) => {
+formTemplateFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-form-template'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Form Template', 'Creating…')
+  }
   try {
-    const payload = { ...Object.fromEntries(new FormData(event.target).entries()), sections: [] }
+    const payload = { ...validateRequiredFields(formEl, ['name']), sections: [] }
     await request(routes.formTemplates(), { method: 'POST', body: JSON.stringify(payload) })
-    event.target.reset()
+    formEl.reset()
     state.view = 'forms'
     reportActionSuccess('Forms', 'Form template created.')
     await renderCurrentView()
   } catch (error) {
+    setFormFeedback(formEl, error.message)
     reportActionError('Forms', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Form Template'
+    }
   }
 })
 
-document.querySelector('#doc-template-form').addEventListener('submit', async (event) => {
+docTemplateFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-doc-template'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Template', 'Creating…')
+  }
   try {
     const payload = {
-      ...Object.fromEntries(new FormData(event.target).entries()),
+      ...validateRequiredFields(formEl, ['name']),
       blueprint: { sections: [] },
       mappings: []
     }
     await request(routes.documentTemplates(), { method: 'POST', body: JSON.stringify(payload) })
-    event.target.reset()
+    formEl.reset()
     reportActionSuccess('Templates', 'Document template created.')
     await renderCurrentView()
   } catch (error) {
+    setFormFeedback(formEl, error.message)
     reportActionError('Templates', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Template'
+    }
   }
 })
 
-document.querySelector('#invite-form').addEventListener('submit', async (event) => {
+inviteFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-invite'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Invite', 'Creating…')
+  }
   try {
-    const payload = Object.fromEntries(new FormData(event.target).entries())
+    const payload = validateRequiredFields(formEl, ['email', 'role'])
     const invite = await request(routes.invites(), { method: 'POST', body: JSON.stringify(payload) })
-    event.target.reset()
+    formEl.reset()
+    clearFormFeedback(formEl)
     reportActionSuccess('Invites', `Invite created (${invite.token}).`)
     await renderCurrentView()
   } catch (error) {
+    setFormFeedback(formEl, error.message)
     reportActionError('Invites', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Invite'
+    }
   }
 })
 
-document.querySelector('#portal-form').addEventListener('submit', async (event) => {
+portalFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-portal-link'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Link', 'Creating…')
+  }
   try {
-    const payload = Object.fromEntries(new FormData(event.target).entries())
+    const payload = validateRequiredFields(formEl, ['profileId'])
     const link = await request(routes.portalLinks(), { method: 'POST', body: JSON.stringify(payload) })
+    clearFormFeedback(formEl)
     reportActionSuccess('Portal', `Portal link created: /portal?token=${link.token}`)
     await renderCurrentView()
   } catch (error) {
+    setFormFeedback(formEl, error.message)
     reportActionError('Portal', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Link'
+    }
   }
 })
 
