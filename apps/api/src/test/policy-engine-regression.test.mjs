@@ -9,7 +9,7 @@ import { createHouseholdsService } from '../modules/households/service.mjs'
 import { createFormsService } from '../modules/forms/service.mjs'
 import { createTemplatesService } from '../modules/templates/service.mjs'
 import { createExportsService } from '../modules/exports/service.mjs'
-import { createAuditService } from '../modules/audit/service.mjs'
+import { CANONICAL_AUDIT_FIELDS, createAuditService } from '../modules/audit/service.mjs'
 import { createAnalyticsService } from '../modules/analytics/service.mjs'
 
 const usersByRole = Object.fromEntries(
@@ -17,23 +17,45 @@ const usersByRole = Object.fromEntries(
 )
 
 function createDeps() {
-  const store = new Proxy({}, { get: () => () => ({ ok: true }) })
+  const store = {
+    state: { auditEvents: [] },
+    listAudit() {
+      return this.state.auditEvents
+    }
+  }
+  const mutatingStore = new Proxy(store, {
+    get(target, key) {
+      if (key in target) return target[key]
+      return () => {
+        target.state.auditEvents.push({ id: `e-${target.state.auditEvents.length + 1}` })
+        return { ok: true }
+      }
+    }
+  })
   const reads = { getAnalytics: () => ({ ok: true }) }
   const policy = createPolicy()
   const profileRepository = new Proxy({}, { get: () => () => ({ ok: true }) })
-  const templateRepository = new Proxy({}, { get: () => () => ({ ok: true }) })
+  const templateRepository = new Proxy(
+    {},
+    {
+      get: () => () => {
+        store.state.auditEvents.push({ id: `t-${store.state.auditEvents.length + 1}` })
+        return { ok: true }
+      }
+    }
+  )
 
   return {
     policy,
-    firmsUsers: createFirmsUsersService({ store, policy }),
+    firmsUsers: createFirmsUsersService({ store: mutatingStore, policy }),
     profiles: createProfilesService({ profileRepository, policy }),
-    pipeline: createPipelineService({ store, policy }),
-    households: createHouseholdsService({ store, policy }),
-    forms: createFormsService({ store, policy }),
-    templates: createTemplatesService({ templateRepository, policy }),
-    exports: createExportsService({ store, policy }),
-    audit: createAuditService({ store, policy }),
-    analytics: createAnalyticsService({ store, reads, policy })
+    pipeline: createPipelineService({ store: mutatingStore, policy }),
+    households: createHouseholdsService({ store: mutatingStore, policy }),
+    forms: createFormsService({ store: mutatingStore, policy }),
+    templates: createTemplatesService({ templateRepository, policy, store }),
+    exports: createExportsService({ store: mutatingStore, policy }),
+    audit: createAuditService({ store: mutatingStore, policy }),
+    analytics: createAnalyticsService({ store: mutatingStore, reads, policy })
   }
 }
 
@@ -88,12 +110,12 @@ const operations = [
   {
     key: 'forms.getClientWorkspace',
     invoke: (s, u) => s.forms.getClientWorkspace(u),
-    allowed: new Set(['admin', 'client'])
+    allowed: new Set(['client'])
   },
   {
     key: 'forms.submitClientForm',
     invoke: (s, u) => s.forms.submitClientForm(u, {}),
-    allowed: new Set(['admin', 'client'])
+    allowed: new Set(['client'])
   },
   { key: 'templates.list', invoke: (s, u) => s.templates.list(u), allowed: new Set(['admin', 'advisor']) },
   { key: 'templates.create', invoke: (s, u) => s.templates.create(u, {}), allowed: new Set(['admin', 'advisor']) },
@@ -137,4 +159,19 @@ test('role regression covers read/write service boundaries', () => {
       }
     }
   }
+})
+
+test('canonical audit schema remains stable', () => {
+  assert.deepEqual(CANONICAL_AUDIT_FIELDS, [
+    'actor',
+    'firmId',
+    'entityType',
+    'entityId',
+    'action',
+    'before',
+    'after',
+    'requestId',
+    'ip',
+    'timestamp'
+  ])
 })

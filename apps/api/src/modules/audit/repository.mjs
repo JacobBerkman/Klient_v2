@@ -1,5 +1,5 @@
 export class AuditRepository {
-  list(_user) {
+  list(_firmContext) {
     throw new Error('Not implemented')
   }
 }
