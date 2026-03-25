@@ -10,6 +10,7 @@ import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
 import { createSamlAuthProvider } from './auth/saml-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
 import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
+import { buildExportArtifact } from './export-artifact.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
 import { convertLegacyFormDefinition } from './modules/forms/schema/form-definition-validator.mjs'
 import { createCanonicalAuditEvent } from './modules/audit/schema.mjs'
@@ -2063,6 +2064,33 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       return exportsRepository.retryFailed(user, options)
     },
     async processQueuedExports() {
+      const result = processExportQueueTick({
+        workerId: 'api-process-endpoint',
+        limit: 10,
+        leaseMs: 15_000,
+        processor(job) {
+          const failCount = Number(job?.metadata?.simulateFailuresRemaining || 0)
+          if (failCount > 0) {
+            job.metadata.simulateFailuresRemaining = failCount - 1
+            throw new Error(`Simulated export failure for ${job.id}`)
+          }
+          const artifact = buildExportArtifact(job)
+          const key = `${job.firmId}/exports/${artifact.fileName}`
+          return {
+            ...artifact,
+            idempotencyKey: job.execution?.idempotencyKey || job.idempotencyKey || job.id,
+            execution: job.execution || null,
+            object: {
+              bucket: objectStorage.bucketExports,
+              key,
+              checksum: artifact.object.checksum,
+              contentType: artifact.object.contentType,
+              retentionClass: artifact.object.retentionClass
+            }
+          }
+        }
+      })
+      return { processed: result.processed, leased: result.leased, failed: result.failed }
       return exportsRepository.processQueued()
     },
     listAudit(user) {
