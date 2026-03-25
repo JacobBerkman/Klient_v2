@@ -53,4 +53,13 @@ export class FormsRepository {
   portalUpload(_token, _input) {
     throw new Error('Not implemented')
   }
+  getPortalDraftSectionState(_token, _draftId, _sectionId) {
+    throw new Error('Not implemented')
+  }
+  listPortalDraftSectionStates(_token, _draftId) {
+    throw new Error('Not implemented')
+  }
+  savePortalDraftSectionState(_token, _draftId, _sectionId, _input) {
+    throw new Error('Not implemented')
+  }
 }

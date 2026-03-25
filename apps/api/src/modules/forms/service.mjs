@@ -66,6 +66,15 @@ export function createFormsService({ store, policy }) {
     },
     portalUpload(token, input) {
       return store.portalUpload(token, input)
+    },
+    getPortalDraftSectionState(token, draftId, sectionId) {
+      return store.getPortalDraftSectionState(token, draftId, sectionId)
+    },
+    listPortalDraftSectionStates(token, draftId) {
+      return store.listPortalDraftSectionStates(token, draftId)
+    },
+    savePortalDraftSectionState(token, draftId, sectionId, input) {
+      return store.savePortalDraftSectionState(token, draftId, sectionId, input)
     }
   }
 }
