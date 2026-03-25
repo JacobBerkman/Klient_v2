@@ -24,8 +24,11 @@ function withQuery(path, query = {}) {
 }
 
 export const routes = {
+  csrf: () => joinPath(API_PREFIX, 'csrf'),
+  runtime: () => joinPath(API_PREFIX, 'runtime'),
   register: () => joinPath(API_PREFIX, 'register'),
   login: () => joinPath(API_PREFIX, 'login'),
+  session: () => joinPath(API_PREFIX, 'session'),
   dashboard: () => joinPath(API_PREFIX, 'dashboard'),
   profiles: (query = {}) => withQuery(joinPath(API_PREFIX, 'profiles'), query),
   profileDetail: (profileId) => joinPath(API_PREFIX, 'profiles', profileId),
@@ -39,12 +42,15 @@ export const routes = {
   submissionSectionItem: (submissionId, sectionKey, itemKey) =>
     joinPath(API_PREFIX, 'forms', 'submissions', submissionId, 'sections', sectionKey, 'items', itemKey),
   formDrafts: () => joinPath(API_PREFIX, 'forms', 'drafts'),
+  formDraft: (draftId) => joinPath(API_PREFIX, 'forms', 'drafts', draftId),
+  formDraftLock: (draftId) => joinPath(API_PREFIX, 'forms', 'drafts', draftId, 'lock'),
   documentTemplates: () => joinPath(API_PREFIX, 'templates'),
   invites: () => joinPath(API_PREFIX, 'invites'),
   portalLinks: () => joinPath(API_PREFIX, 'portal-links'),
   exports: () => joinPath(API_PREFIX, 'exports'),
   audit: () => joinPath(API_PREFIX, 'audit'),
   analytics: (query = {}) => withQuery(joinPath(API_PREFIX, 'analytics'), query),
+  analyticsDashboard: (query = {}) => withQuery(joinPath(API_PREFIX, 'analytics', 'dashboard'), query),
   analyticsExport: (query = {}) => withQuery(joinPath(API_PREFIX, 'analytics', 'export'), query),
   board: () => joinPath(API_PREFIX, 'board'),
   pipelineReorder: () => joinPath(API_PREFIX, 'pipeline', 'reorder'),

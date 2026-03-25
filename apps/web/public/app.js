@@ -1,4 +1,4 @@
-import { appRoutes } from './api-contract.js'
+import { appRoutes, routes } from './api-contract.js'
 
 const state = {
   token: localStorage.getItem('klient-token') || '',
@@ -81,7 +81,7 @@ async function reorderPipelineOptimistically(move) {
       ...move,
       expectedBoardVersion: previousBoard?.boardVersion ?? null
     }
-    const result = await request('/api/pipeline/reorder', {
+    const result = await request(routes.pipelineReorder(), {
       method: 'PATCH',
       body: JSON.stringify(payload)
     })
@@ -103,7 +103,7 @@ function flashMarkup() {
 async function request(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase()
   if (MUTATING_METHODS.has(method) && path.startsWith('/api/') && !csrfToken) {
-    const boot = await fetch('/api/csrf')
+    const boot = await fetch(routes.csrf())
     const data = await boot.json()
     if (!boot.ok) throw new Error(data.message || 'CSRF bootstrap failed')
     csrfToken = data.csrfToken
@@ -143,7 +143,7 @@ async function requestText(path, options = {}) {
 
 async function hydrateRuntime() {
   try {
-    const runtimeConfig = await request('/api/runtime');
+    const runtimeConfig = await request(routes.runtime());
     state.enableDemoMode = Boolean(runtimeConfig.enableDemoMode);
   } catch {
     state.enableDemoMode = false;
@@ -211,8 +211,8 @@ function updateRoleVisibility() {
 
 async function refreshSelects() {
   if (!state.token || !state.user || state.user.role === 'client') return
-  const clients = await request('/api/profiles?kind=client')
-  const profiles = await request('/api/profiles')
+  const clients = await request(routes.profiles({ kind: 'client' }))
+  const profiles = await request(routes.profiles())
   householdPrimaryEl.innerHTML = clients
     .map(
       (profile) =>
@@ -232,7 +232,7 @@ function metricCard(label, value) {
 }
 
 async function renderDashboard() {
-  const data = await request('/api/dashboard')
+  const data = await request(routes.dashboard())
   viewEl.innerHTML = `
     ${flashMarkup()}
     <div class="section-header"><h2>Dashboard</h2></div>
@@ -251,8 +251,9 @@ function analyticsPanel(title, body) {
 
 async function renderAnalytics() {
   const filters = new URLSearchParams({ startDate: '2026-01-01', endDate: '2026-12-31', cohortBy: 'all' })
-  const analytics = await request(`/api/analytics?${filters.toString()}`)
-  const dashboard = await request(`/api/analytics/dashboard?${filters.toString()}`)
+  const analyticsQuery = Object.fromEntries(filters.entries())
+  const analytics = await request(routes.analytics(analyticsQuery))
+  const dashboard = await request(routes.analyticsDashboard(analyticsQuery))
   const summary = analytics.summary || {}
   const funnelRows = (summary.funnel || [])
     .map(
@@ -309,8 +310,8 @@ async function renderAnalytics() {
   `
   document.querySelector('#download-analytics-csv')?.addEventListener('click', async () => {
     try {
-      const csv = await requestText(`/api/analytics/export?${filters.toString()}`)
-      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const csvText = await requestText(routes.analyticsExport(analyticsQuery))
+      const blob = new Blob([csvText], { type: 'text/csv;charset=utf-8' })
       const url = URL.createObjectURL(blob)
       const anchor = document.createElement('a')
       anchor.href = url
@@ -325,7 +326,7 @@ async function renderAnalytics() {
 }
 
 async function renderForms() {
-  const [templates, drafts] = await Promise.all([request('/api/forms/templates'), request('/api/forms/drafts')])
+  const [templates, drafts] = await Promise.all([request(routes.formTemplates()), request(routes.formDrafts())])
   const rows = drafts
     .map(
       (draft) => `
@@ -358,7 +359,7 @@ async function renderForms() {
   document.querySelectorAll('[data-lock]').forEach((button) => {
     button.addEventListener('click', async () => {
       try {
-        const result = await request(`/api/forms/drafts/${button.dataset.lock}/lock`, {
+        const result = await request(routes.formDraftLock(button.dataset.lock), {
           method: 'POST',
           body: JSON.stringify({ leaseMs: 30000 })
         })
@@ -375,7 +376,7 @@ async function renderForms() {
       const draftId = button.dataset.save
       const draft = drafts.find((item) => item.id === draftId)
       try {
-        const response = await request(`/api/forms/drafts/${draftId}`, {
+        const response = await request(routes.formDraft(draftId), {
           method: 'PATCH',
           body: JSON.stringify({
             leaseId: draft?.lock?.leaseId,
@@ -429,7 +430,7 @@ async function hydrateSession() {
     return
   }
   try {
-    const session = await request('/api/session')
+    const session = await request(routes.session())
     state.user = session.user
     authStatusEl.textContent = JSON.stringify(session.user, null, 2)
     updateRoleVisibility()
@@ -470,7 +471,7 @@ const demoLoginButton = document.querySelector('#demo-login');
 demoLoginButton.addEventListener('click', async () => {
   if (!state.enableDemoMode) return;
   try {
-    const session = await request('/api/login', {
+    const session = await request(routes.login(), {
       method: 'POST',
       body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' })
     })
@@ -490,7 +491,7 @@ document.querySelector('#register-form').addEventListener('submit', async (event
   event.preventDefault()
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
-    const session = await request('/api/register', { method: 'POST', body: JSON.stringify(payload) })
+    const session = await request(routes.register(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     await finishAuth(session, 'Firm admin account created.')
   } catch (error) {
@@ -503,6 +504,7 @@ document.querySelector('#login-form').addEventListener('submit', async (event) =
   event.preventDefault()
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
+    const session = await request(routes.login(), { method: 'POST', body: JSON.stringify(payload) })
     const session = await request('/api/login', { method: 'POST', body: JSON.stringify(payload) })
     if (session.mfaRequired) {
       setPendingMfaLogin(session, payload)
@@ -524,7 +526,7 @@ document.querySelector('#profile-form').addEventListener('submit', async (event)
     const source = form.get('cityOrLocation')
       ? { cityOrLocation: form.get('cityOrLocation'), venue: form.get('venue'), occurredOn: form.get('occurredOn') }
       : null
-    await request('/api/profiles', {
+    await request(routes.profiles(), {
       method: 'POST',
       body: JSON.stringify({
         kind: form.get('kind'),
@@ -550,7 +552,7 @@ document.querySelector('#household-form').addEventListener('submit', async (even
   event.preventDefault()
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
-    await request('/api/households', { method: 'POST', body: JSON.stringify(payload) })
+    await request(routes.households(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     setFlash('success', 'Household created.')
     await renderCurrentView()
@@ -564,7 +566,7 @@ document.querySelector('#form-template-form').addEventListener('submit', async (
   event.preventDefault()
   try {
     const payload = { ...Object.fromEntries(new FormData(event.target).entries()), sections: [] }
-    await request('/api/forms/templates', { method: 'POST', body: JSON.stringify(payload) })
+    await request(routes.formTemplates(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     state.view = 'forms'
     setFlash('success', 'Form template created.')
@@ -583,7 +585,7 @@ document.querySelector('#doc-template-form').addEventListener('submit', async (e
       blueprint: { sections: [] },
       mappings: []
     }
-    await request('/api/templates', { method: 'POST', body: JSON.stringify(payload) })
+    await request(routes.documentTemplates(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     setFlash('success', 'Document template created.')
     await renderCurrentView()
@@ -597,7 +599,7 @@ document.querySelector('#invite-form').addEventListener('submit', async (event) 
   event.preventDefault()
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
-    const invite = await request('/api/invites', { method: 'POST', body: JSON.stringify(payload) })
+    const invite = await request(routes.invites(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     setFlash('success', `Invite created (${invite.token}).`)
     await renderCurrentView()
@@ -611,7 +613,7 @@ document.querySelector('#portal-form').addEventListener('submit', async (event) 
   event.preventDefault()
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
-    const link = await request('/api/portal-links', { method: 'POST', body: JSON.stringify(payload) })
+    const link = await request(routes.portalLinks(), { method: 'POST', body: JSON.stringify(payload) })
     setFlash('success', `Portal link created: /portal?token=${link.token}`)
     await renderCurrentView()
   } catch (error) {
