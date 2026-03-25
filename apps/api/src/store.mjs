@@ -10,6 +10,8 @@ import {
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
+import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
+import { createSamlAuthProvider } from './auth/saml-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest()
@@ -777,9 +779,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   }
 
   function createAuthProvider() {
-    if (runtime.authProvider === 'local') {
-      return createLocalAuthProvider({ state, persist, createSession, addAudit })
-    }
+    const common = { state, persist, createSession, addAudit }
+    if (runtime.authProvider === 'local') return createLocalAuthProvider(common)
+    if (runtime.authProvider === 'oidc') return createOidcAuthProvider(common)
+    if (runtime.authProvider === 'saml') return createSamlAuthProvider(common)
     throw new Error(`Unsupported auth provider: ${runtime.authProvider}.`)
   }
 
@@ -1693,23 +1696,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return invite
     },
     acceptInvite(input) {
-      assertStrongPassword(input.password)
-      const invite = state.invites.find((entry) => entry.token === input.token)
-      if (!invite) throw new Error('Invite not found.')
-      const user = {
-        id: randomUUID(),
-        firmId: invite.firmId,
-        email: invite.email,
-        passwordHash: hash(input.password),
-        firstName: input.firstName,
-        lastName: input.lastName,
-        role: invite.role,
-        createdAt: now()
-      }
-      state.users.push(user)
-      state.invites = state.invites.filter((entry) => entry.id !== invite.id)
-      persist()
-      return createSession(user)
+      return auth.acceptInvite(input)
     },
     requestPasswordReset(email) {
       return auth.requestReset({ email })
