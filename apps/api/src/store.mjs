@@ -24,6 +24,7 @@ import {
 } from './modules/forms/schema/form-definition-validator.mjs'
 import { validateMappingRules } from './modules/templates/schema/mapping-rules-validator.mjs'
 import { extractTemplateFieldsFromPdfBytes } from './modules/templates/template-ingestion.mjs'
+import { createDefaultFirmStageConfig, getStageKey, normalizeFirmStageConfig } from './stage-config.mjs'
 
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 8
 const SESSION_IDLE_TIMEOUT_MS = 1000 * 60 * 30
@@ -66,20 +67,6 @@ const PERMISSIONS = {
   client: ['portal:read', 'client:write'],
   anonymous: []
 }
-const DEFAULT_STAGE_DEFINITIONS = [
-  { id: 'discovery', label: 'Discovery' },
-  { id: 'gather_oi', label: 'Gather OI' },
-  { id: 'analysis', label: 'Analysis' },
-  { id: 'advisor_proposal_meeting', label: 'Advisor Proposal Meeting' },
-  { id: 'intake', label: 'Intake' },
-  { id: 'on_boarding', label: 'On Boarding' },
-  { id: 'investment_strategy', label: 'Investment Strategy' },
-  { id: 'completed', label: 'Completed', isTerminal: true },
-  { id: 'drop_dead_lead', label: 'Drop / Dead Lead', isTerminal: true, isDrop: true },
-  { id: 'drop_nurture', label: 'Drop / Nurture', isTerminal: true, isDrop: true }
-]
-const BOARD_COLUMNS = DEFAULT_STAGE_DEFINITIONS.map((stage) => stage.id)
-
 function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission)
 }
@@ -477,6 +464,13 @@ function migrateProspectOrdering(state) {
   }
 }
 
+function migrateFirmStageConfig(state) {
+  state.firms = (state.firms || []).map((firm) => ({
+    ...firm,
+    stageConfig: normalizeFirmStageConfig(firm?.stageConfig)
+  }))
+}
+
 function pipelineConflict(message, details = {}) {
   const error = new Error(message)
   error.statusCode = 409
@@ -501,7 +495,15 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
   const documentUploadId = randomUUID()
 
   return {
-    firms: [{ id: firmId, name: 'Demo Advisory Group', slug: 'demo-advisory-group', createdAt }],
+    firms: [
+      {
+        id: firmId,
+        name: 'Demo Advisory Group',
+        slug: 'demo-advisory-group',
+        stageConfig: createDefaultFirmStageConfig(),
+        createdAt
+      }
+    ],
     users: [
       {
         id: adminId,
@@ -787,6 +789,7 @@ export function createStore({
 } = {}) {
   const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
+  migrateFirmStageConfig(state)
   state.profiles = (state.profiles || []).map(normalizeProfileRecord)
   saveState(state)
   state.pipelineStagesByFirm ||= {}
@@ -972,6 +975,34 @@ export function createStore({
     return state.boardVersions[firmId]
   }
 
+  function getFirmRecord(firmId) {
+    return state.firms.find((firm) => firm.id === firmId) || null
+  }
+
+  function getFirmStageConfig(firmId) {
+    const firm = getFirmRecord(firmId)
+    if (!firm) return createDefaultFirmStageConfig()
+    if (!firm.stageConfig) {
+      firm.stageConfig = createDefaultFirmStageConfig()
+    } else {
+      firm.stageConfig = normalizeFirmStageConfig(firm.stageConfig)
+    }
+    return firm.stageConfig
+  }
+
+  function getActiveFirmStages(firmId) {
+    const config = getFirmStageConfig(firmId)
+    const activeKeys = config.stages
+      .filter((stage) => stage.active !== false)
+      .map((stage) => getStageKey(stage))
+      .filter(Boolean)
+    return activeKeys.length ? activeKeys : [getStageKey(config.stages[0] || { key: 'discovery' })]
+  }
+
+  function getDefaultFirmStage(firmId) {
+    return getActiveFirmStages(firmId)[0] || 'discovery'
+  }
+
   function bumpBoardVersion(firmId) {
     const current = getBoardVersion(firmId)
     state.boardVersions[firmId] = current + 1
@@ -1024,7 +1055,7 @@ export function createStore({
   }
 
   function normalizePipelineIndices(firmId, stage = null) {
-    const stages = stage ? [stage] : getOrderedStageIds(firmId)
+    const stages = stage ? [stage] : getActiveFirmStages(firmId)
     const normalizedStages = []
     for (const currentStage of stages) {
       if (compactStageIndices(firmId, currentStage)) {
@@ -1035,11 +1066,8 @@ export function createStore({
   }
 
   function buildBoardPayload(user, conflict = null) {
-    const columns = getFirmStageMetadata(user.firmId).map((stageMeta) => ({
-      stage: stageMeta.id,
-      stageLabel: stageMeta.label,
-      isTerminal: stageMeta.isTerminal,
-      isDrop: stageMeta.isDrop,
+    const columns = getActiveFirmStages(user.firmId).map((stage) => ({
+      stage,
       orderingVersion: getBoardVersion(user.firmId),
       cards: listProspectsByStage(user.firmId, stageMeta.id)
     }))
@@ -1293,8 +1321,11 @@ export function createStore({
     createProfile(user, input) {
       requirePermission(user, 'profiles:write')
       const createdAt = now()
-      const defaultStage = getOrderedStageIds(user.firmId)[0] || 'discovery'
+      const defaultStage = getDefaultFirmStage(user.firmId)
       const requestedStage = input.stage || defaultStage
+      if (input.kind === 'prospect' && !getActiveFirmStages(user.firmId).includes(requestedStage)) {
+        throw new Error(`Unknown stage: ${requestedStage}.`)
+      }
       const inStage = state.profiles.filter(
         (profile) =>
           profile.firmId === user.firmId &&
@@ -1360,7 +1391,7 @@ export function createStore({
         patch.orderIndex = null
       }
       if (patch.kind === 'prospect' && !patch.stage) {
-        patch.stage = getOrderedStageIds(user.firmId)[0] || 'discovery'
+        patch.stage = getDefaultFirmStage(user.firmId)
       }
       const profile = validateTenantEntityOwnership(
         firmContext,
@@ -1425,7 +1456,7 @@ export function createStore({
       if (!profileId || !toStage) {
         throw new Error('Reorder payload must include profileId and toStage.')
       }
-      if (!getOrderedStageIds(user.firmId).includes(toStage)) {
+      if (!getActiveFirmStages(user.firmId).includes(toStage)) {
         throw new Error(`Unknown stage: ${toStage}.`)
       }
 
@@ -2950,19 +2981,12 @@ export function createStore({
         return acc
       }, {})
       const totalProspects = prospects.length || 1
-      const stageMetadata = getFirmStageMetadata(user.firmId)
-      const conversionStages = stageMetadata.filter((stage) => !stage.isDrop)
-      const funnel = conversionStages.map((stage) => {
-        const count = stageCounts[stage.id] || 0
-        return {
-          stage: stage.id,
-          stageId: stage.id,
-          stageLabel: stage.label,
-          isTerminal: stage.isTerminal,
-          isDrop: stage.isDrop,
-          count,
-          conversionRate: Number((count / totalProspects).toFixed(4))
-        }
+      const stageOrder = getActiveFirmStages(user.firmId).filter(
+        (stage) => !stage.startsWith('drop_')
+      )
+      const funnel = stageOrder.map((stage) => {
+        const count = stageCounts[stage] || 0
+        return { stage, count, conversionRate: Number((count / totalProspects).toFixed(4)) }
       })
       const firstStage = stageCounts[conversionStages[0]?.id] || 0
       const lastConversionStage =
