@@ -11,7 +11,8 @@ const state = {
   mfa: {
     login: null,
     enrollment: null
-  }
+  },
+  templatePreviewByTemplateId: {}
 }
 
 const viewEl = document.querySelector('#view')
@@ -547,6 +548,16 @@ function mappingLocalIssues(mapping, knownPaths) {
   return issues
 }
 
+function previewWarningMarkup(warnings = []) {
+  if (!Array.isArray(warnings) || !warnings.length) return '<span class="muted">None</span>'
+  return warnings
+    .map((warning) => {
+      const title = escapeHtml(warning.message || warning.code || 'Warning')
+      return `<span class="badge" title="${title}">${escapeHtml(warning.code || 'warning')}</span>`
+    })
+    .join(' ')
+}
+
 async function renderTemplates() {
   const [templates, clients, submissions] = await Promise.all([
     request(routes.documentTemplates()),
@@ -567,6 +578,20 @@ async function renderTemplates() {
   ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
   const mappingIssuesByIndex = new Map((template?.mappings || []).map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
   const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
+  const preview = template ? state.templatePreviewByTemplateId[template.id] : null
+  const previewWarningRows = new Set(
+    (preview?.rows || [])
+      .filter((row) => Array.isArray(row.warnings) && row.warnings.length)
+      .map((row) => Number(row.rowIndex))
+      .filter((value) => Number.isFinite(value))
+  )
+  const previewIssueRows = new Set(
+    (preview?.issues || [])
+      .map((issue) => Number(issue.rowIndex))
+      .filter((value) => Number.isFinite(value))
+  )
+  const hasBlockingPreviewWarnings = Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
+  const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings
 
   viewEl.innerHTML = `
     ${flashMarkup()}
@@ -593,8 +618,12 @@ async function renderTemplates() {
         <table><thead><tr><th>PDF Field</th><th>Source Path</th><th>Type</th><th>Validation</th><th>Actions</th></tr></thead><tbody>
           ${(template.mappings || []).map((mapping, index) => {
             const issues = mappingIssuesByIndex.get(index) || []
-            return `<tr>
-              <td>${escapeHtml(mapping.pdfField || '')}</td>
+            const previewFlags = []
+            if (previewIssueRows.has(index)) previewFlags.push('Preview issue')
+            if (previewWarningRows.has(index)) previewFlags.push('Preview warning')
+            const previewIndicator = previewFlags.length ? `<div class="muted">${escapeHtml(previewFlags.join(' · '))}</div>` : ''
+            return `<tr id="mapping-row-${index}">
+              <td><span>${escapeHtml(mapping.pdfField || '')}</span>${previewIndicator}</td>
               <td>${escapeHtml(mapping.sourcePath || '')}</td>
               <td>${escapeHtml(mapping.targetType || '')}</td>
               <td>${issues.length ? `<span class="badge">${escapeHtml(issues.join('; '))}</span>` : '<span class="muted">OK</span>'}</td>
@@ -612,12 +641,26 @@ async function renderTemplates() {
           <select id="preview-submission">${submissions.map((entry) => `<option value="${entry.id}">${escapeHtml(entry.id)} · ${escapeHtml(entry.templateId)}</option>`).join('')}</select>
           <button id="run-preview" class="tiny">Run Preview</button>
         </div>
-        <div id="preview-results" class="muted"></div>
+        <div id="preview-results" class="muted">${preview ? `
+          <div class="muted">mappingVersionHash: <code>${escapeHtml(preview.mappingVersionHash || '')}</code></div>
+          <div class="muted">warnings: ${escapeHtml(String(preview.warningsCount || 0))}</div>
+          ${preview.issues?.length ? `<div class="muted">issues: ${escapeHtml(String(preview.issues.length))}</div>` : ''}
+          <table><thead><tr><th>PDF field</th><th>Source path</th><th>Resolved value</th><th>Warnings</th></tr></thead><tbody>
+            ${(preview.rows || []).map((row) => `<tr>
+              <td>${escapeHtml(row.pdfField || '')}</td>
+              <td>${escapeHtml(row.sourcePath || '')}</td>
+              <td>${escapeHtml(row.value == null ? '' : String(row.value))}</td>
+              <td><button class="tiny secondary" data-jump-rowindex="${Number(row.rowIndex)}">Row ${Number(row.rowIndex) + 1}</button> ${previewWarningMarkup(row.warnings || [])}</td>
+            </tr>`).join('')}
+          </tbody></table>
+        ` : ''}</div>
       </section>
       <section class="item">
         <h3>Publish</h3>
-        <button id="publish-template" class="tiny" ${hasLocalMappingErrors ? 'disabled' : ''}>Publish</button>
+        <button id="publish-template" class="tiny" ${publishDisabled ? 'disabled' : ''}>Publish</button>
         ${hasLocalMappingErrors ? '<p class="muted">Publish is blocked until local mapping errors are resolved.</p>' : ''}
+        ${hasBlockingPreviewWarnings ? '<p class="muted">Publish is blocked by preview validation issues. Resolve highlighted mapping rows first.</p>' : ''}
+        ${preview && !hasBlockingPreviewWarnings && Number(preview.warningsCount || 0) > 0 ? `<p class="muted">Preview warning summary: ${escapeHtml(String(preview.warningsCount))} warning(s).</p>` : ''}
       </section>
       <section class="item">
         <h3>Version History</h3>
@@ -738,15 +781,32 @@ async function renderTemplates() {
         method: 'POST',
         body: JSON.stringify({ clientId, submissionId })
       })
-      const resultEl = document.querySelector('#preview-results')
-      resultEl.innerHTML = `<pre>${escapeHtml(JSON.stringify(preview.rows, null, 2))}</pre>`
+      state.templatePreviewByTemplateId[template.id] = preview
+      await renderTemplates()
     } catch (error) {
       setFlash('error', error.message)
       await renderTemplates()
     }
   })
+  document.querySelectorAll('[data-jump-rowindex]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const rowIndex = Number(button.dataset.jumpRowindex)
+      const target = document.querySelector(`#mapping-row-${rowIndex}`)
+      if (!target) return
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      target.style.outline = '2px solid #f59e0b'
+      setTimeout(() => {
+        target.style.outline = ''
+      }, 1500)
+    })
+  })
   document.querySelector('#publish-template')?.addEventListener('click', async () => {
     try {
+      const latestPreview = state.templatePreviewByTemplateId[template.id] || null
+      const hasBlockingWarnings = Number(latestPreview?.blockingWarningsCount || 0) > 0 || (latestPreview?.issues || []).some((issue) => issue.blocking)
+      if (hasBlockingWarnings) {
+        throw new Error('Publish blocked: preview contains blocking warnings/issues.')
+      }
       await request(routes.documentTemplatePublish(template.id), {
         method: 'POST',
         body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Publish template mapping updates.' })
