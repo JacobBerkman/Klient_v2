@@ -74,7 +74,7 @@ try {
   const portalLink = await context.request('/api/portal-links', {
     method: 'POST',
     headers: adminHeaders,
-    body: JSON.stringify({ profileId: profile.id })
+    body: JSON.stringify({ profileId: profile.id, maxUses: 10 })
   })
 
   const actors = {
@@ -108,7 +108,12 @@ try {
     { path: `/api/forms/submissions/${submission.id}`, method: 'PATCH', body: { status: 'submitted' }, guard: 'canWriteForms' },
     { path: '/api/templates', method: 'GET', guard: 'canReadTemplate' },
     { path: '/api/templates', method: 'POST', body: { name: 'T' }, guard: 'canEditTemplate' },
-    { path: `/api/templates/${docTemplate.id}/publish`, method: 'POST', body: {}, guard: 'canPublishTemplate' },
+    {
+      path: `/api/templates/${docTemplate.id}/publish`,
+      method: 'POST',
+      body: { versionBump: '1.0.0', changelog: 'RBAC matrix publish check' },
+      guard: 'canPublishTemplate'
+    },
     { path: '/api/exports', method: 'GET', guard: 'canReadExports' },
     { path: '/api/exports', method: 'POST', body: { clientId: profile.id, templateId: docTemplate.id, type: 'pdf' }, guard: 'canWriteExports' },
     { path: '/api/exports/process', method: 'POST', body: {}, guard: 'canProcessExports' },
@@ -119,9 +124,21 @@ try {
     { path: '/api/client/forms/submissions', method: 'POST', body: { templateId: formTemplate.id, status: 'draft', data: {} }, guard: 'canWriteClientWorkspace' },
     { path: '/api/client/uploads', method: 'POST', body: { name: 'x' }, guard: 'canWriteClientWorkspace' },
     { path: '/api/portal-links', method: 'POST', body: { profileId: profile.id }, guard: 'canCreatePortalLink' },
-    { path: `/api/portal/${portalLink.token}`, method: 'GET', guard: 'canReadPortal' },
-    { path: `/api/portal/${portalLink.token}/submissions`, method: 'POST', body: { templateId: formTemplate.id, status: 'draft', data: {} }, guard: 'canSubmitPortal' },
-    { path: `/api/portal/${portalLink.token}/uploads`, method: 'POST', body: { name: 'client-doc' }, guard: 'canUploadPortal' }
+    { path: `/api/portal/${portalLink.token}`, method: 'GET', guard: 'canReadPortal', scopeRoles: ['client'] },
+    {
+      path: `/api/portal/${portalLink.token}/submissions`,
+      method: 'POST',
+      body: { templateId: formTemplate.id, status: 'draft', data: {} },
+      guard: 'canSubmitPortal',
+      scopeRoles: ['client']
+    },
+    {
+      path: `/api/portal/${portalLink.token}/uploads`,
+      method: 'POST',
+      body: { name: 'client-doc' },
+      guard: 'canUploadPortal',
+      scopeRoles: ['client']
+    }
   ]
 
   ensureGuardCoverage(checks)
@@ -131,6 +148,9 @@ try {
     const allow = allowedRoles(check.guard)
     assert(allow.size > 0, `Guard ${check.guard} has no allowed authenticated roles in policy matrix`)
     for (const role of roles) {
+      if (Array.isArray(check.scopeRoles) && !check.scopeRoles.includes(role)) {
+        continue
+      }
       const token = actors[role]
       const method = check.method || 'GET'
       const headers = method === 'GET' ? { Authorization: `Bearer ${token}` } : context.authHeaders(token)

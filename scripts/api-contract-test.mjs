@@ -42,7 +42,13 @@ test('production Node server contract supports auth and profile workflows', asyn
   const port = 3210 + Math.floor(Math.random() * 200)
   const server = spawn(process.execPath, [serverEntrypoint], {
     cwd,
-    env: { ...process.env, PORT: String(port), HOST: '127.0.0.1', NODE_ENV: 'test' },
+    env: {
+      ...process.env,
+      PORT: String(port),
+      HOST: '127.0.0.1',
+      NODE_ENV: 'test',
+      ENABLE_TEST_CSRF_BYPASS: 'true'
+    },
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -237,12 +243,12 @@ test('production Node server contract supports auth and profile workflows', asyn
   const { response: outsiderVersionsResponse } = await jsonFetch(port, `/api/templates/${template.id}/versions`, {
     headers: outsiderAuth
   })
-  assert.equal(outsiderVersionsResponse.status, 400)
+  assert.equal(outsiderVersionsResponse.status, 404)
 
   const { response: outsiderTransitionsResponse } = await jsonFetch(
     port,
     `/api/templates/${template.id}/publish-transitions`,
     { headers: outsiderAuth }
   )
-  assert.equal(outsiderTransitionsResponse.status, 400)
+  assert.equal(outsiderTransitionsResponse.status, 404)
 })

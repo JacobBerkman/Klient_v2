@@ -1,5 +1,6 @@
 import { ProfileRepository } from '../modules/profiles/repository.mjs'
 import { TemplateRepository } from '../modules/templates/repository.mjs'
+import { TemplatesV2Repository } from '../modules/templates-v2/repository.mjs'
 import { PipelineRepository } from '../modules/pipeline/repository.mjs'
 import { HouseholdsRepository } from '../modules/households/repository.mjs'
 import { FormsRepository } from '../modules/forms/repository.mjs'
@@ -17,7 +18,7 @@ export class StoreProfileRepository extends ProfileRepository {
 
   listProfiles(firmContext, query) {
     const context = requireFirmContext(firmContext, { method: 'profiles.listProfiles' })
-    return this.reads.listProfiles(context.firmId, query)
+    return this.store.listProfiles(context, query?.kind, query?.search)
   }
   getProfileDetail(firmContext, profileId) {
     const context = requireFirmContext(firmContext, { method: 'profiles.getProfileDetail' })

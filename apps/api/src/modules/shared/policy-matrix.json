@@ -11,7 +11,7 @@
   "canWriteHouseholds": ["admin", "advisor"],
   "canReadForms": ["admin", "advisor", "readonly"],
   "canWriteForms": ["admin", "advisor"],
-  "canReadTemplate": ["admin", "advisor"],
+  "canReadTemplate": ["admin", "advisor", "readonly"],
   "canEditTemplate": ["admin", "advisor"],
   "canPublishTemplate": ["admin", "advisor"],
   "canReadExports": ["admin", "advisor"],

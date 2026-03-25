@@ -16,11 +16,12 @@ import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
 import { buildExportArtifact } from './export-artifact.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
-import { convertLegacyFormDefinition } from './modules/forms/schema/form-definition-validator.mjs'
-import { createCanonicalAuditEvent } from './modules/audit/schema.mjs'
-import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
-import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs'
-import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
+import { requireFirmContext } from './modules/shared/tenancy.mjs'
+import {
+  convertLegacyFormDefinition,
+  validateFormDefinitionSchema
+} from './modules/forms/schema/form-definition-validator.mjs'
+import { validateMappingRules } from './modules/templates/schema/mapping-rules-validator.mjs'
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
 const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7
@@ -61,6 +62,13 @@ function requirePermission(user, permission) {
   if (!can(user.role, permission)) {
     throw new Error(`Missing permission: ${permission}`)
   }
+}
+
+function validateEntityOwnership(entity, user, notFoundMessage = 'Resource not found.') {
+  if (!entity || entity.firmId !== user.firmId) {
+    throw new Error(notFoundMessage)
+  }
+  return entity
 }
 
 
@@ -1017,12 +1025,14 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
 
   function requireClientProfile(user) {
     requirePermission(user, 'portal:read')
+    const userEmail = String(user?.email || '').toLowerCase()
+    if (!userEmail) throw new Error('Client profile not found.')
     const profile = state.profiles.find(
       (entry) =>
         entry.firmId === user.firmId &&
         entry.kind === 'client' &&
         entry.email &&
-        entry.email.toLowerCase() === user.email.toLowerCase()
+        entry.email.toLowerCase() === userEmail
     )
     if (!profile) throw new Error('Client profile not found.')
     return profile
@@ -1473,6 +1483,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       })
     },
     createTemplateAggregate(user, input) {
+      const kind = input.kind === 'document' ? 'document' : 'form'
       const createdAt = now()
       const formSchema = validateFormDefinitionSchema({ sections: input.sections || [] }, { contextPath: '/sections' }).schema
       const template = normalizeTemplateAggregate(
@@ -1914,6 +1925,7 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
         error.details = { expectedVersionHash, currentVersionHash: currentHash }
         throw error
       }
+      const previousMappings = deepClone(template.mappings || [])
       template.mappings = mappings || []
       template.mappingRules = template.mappings
       template.versions.push(
@@ -1934,11 +1946,12 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     publishTemplate(user, templateId, input = {}) {
       requirePermission(user, 'templates:write')
       const template = validateEntityOwnership(
-        firmContext,
-        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
-        { entityName: 'Template' }
+        state.templateAggregates.find(
+          (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+        ),
+        user,
+        'Template not found.'
       )
-      if (!template) throw new Error('Template not found.')
       const previousState = normalizeTemplateState(template.publishState || 'draft')
       if (!input.versionBump || !String(input.versionBump).trim()) {
         throw new Error('Publish requires versionBump.')
@@ -2160,6 +2173,43 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
         createdAt: now()
       }
       state.users.push(user)
+      if (
+        user.role === 'client' &&
+        !state.profiles.some(
+          (entry) =>
+            entry.firmId === user.firmId &&
+            entry.kind === 'client' &&
+            String(entry.email || '').toLowerCase() === String(user.email || '').toLowerCase()
+        )
+      ) {
+        const createdAt = now()
+        state.profiles.push(
+          normalizeProfileRecord({
+            id: randomUUID(),
+            firmId: user.firmId,
+            advisorUserId: null,
+            kind: 'client',
+            firstName: user.firstName || '',
+            lastName: user.lastName || '',
+            email: user.email || '',
+            phone: '',
+            status: 'active',
+            stage: null,
+            householdId: null,
+            spouseClientId: null,
+            orderIndex: null,
+            stageOrderIndex: null,
+            pipelineVersion: null,
+            source: null,
+            sourceDisplay: null,
+            sourceMigratedAt: null,
+            sourceNormalizedAt: createdAt,
+            sourceDisplayUpdatedAt: null,
+            createdAt,
+            updatedAt: createdAt
+          })
+        )
+      }
       state.invites = state.invites.filter((entry) => entry.id !== invite.id)
       addAudit(user.firmId, user.id, 'user', user.id, 'user.role_assigned', {
         before: { role: null },

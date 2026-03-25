@@ -1,4 +1,5 @@
 import { runAuditedMutation } from '../audit/service.mjs'
+import { createFirmContext } from '../shared/tenancy.mjs'
 
 export function createHouseholdsService({ store, policy }) {
   return {

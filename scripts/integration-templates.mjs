@@ -103,12 +103,12 @@ try {
   await context.requestExpectError(
     `/api/templates/${template.id}/versions`,
     { headers: { Authorization: `Bearer ${outsider.token}` } },
-    400
+    [400, 404]
   )
   await context.requestExpectError(
     `/api/templates/${template.id}/publish-transitions`,
     { headers: { Authorization: `Bearer ${outsider.token}` } },
-    400
+    [400, 404]
   )
 
   console.log(

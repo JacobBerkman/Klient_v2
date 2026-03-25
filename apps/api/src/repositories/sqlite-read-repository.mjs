@@ -17,6 +17,7 @@ function requireFirmId(firmId, method) {
 
 export class SqliteReadRepository {
   listProfiles(firmId, { kind, search, status } = {}) {
+    const requiredFirmId = requireFirmId(firmId, 'SqliteReadRepository.listProfiles')
     const conditions = ['firm_id = ?']
     const params = [requiredFirmId]
     if (kind) {
