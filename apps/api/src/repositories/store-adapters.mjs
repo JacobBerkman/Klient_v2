@@ -57,11 +57,23 @@ export class StoreTemplateRepository extends TemplateRepository {
   createDocumentTemplate(user, input) {
     return this.store.createDocumentTemplate(user, input)
   }
-  updateTemplateMappings(user, templateId, mappings) {
-    return this.store.updateTemplateMappings(user, templateId, mappings)
+  updateTemplateMappings(user, templateId, mappings, input) {
+    return this.store.updateTemplateMappings(user, templateId, mappings, input)
   }
-  publishTemplate(user, templateId) {
-    return this.store.publishTemplate(user, templateId)
+  publishTemplate(user, templateId, input) {
+    return this.store.publishTemplate(user, templateId, input)
+  }
+  compareTemplateVersions(user, templateId, baseVersion, targetVersion) {
+    return this.store.compareTemplateVersions(user, templateId, baseVersion, targetVersion)
+  }
+  revertTemplateVersion(user, templateId, targetVersion, input) {
+    return this.store.revertTemplateVersion(user, templateId, targetVersion, input)
+  }
+  listTemplateVersions(user, templateId) {
+    return this.store.listTemplateVersions(user, templateId)
+  }
+  listPublishTransitions(user, templateId) {
+    return this.store.listPublishTransitions(user, templateId)
   }
   autoBuildTemplate(user, input) {
     return this.store.autoBuildTemplate(user, input)
