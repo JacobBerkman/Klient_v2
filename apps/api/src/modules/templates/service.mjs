@@ -1,4 +1,8 @@
-export function createTemplatesService({ templateRepository, policy }) {
+import { runAuditedMutation } from '../audit/service.mjs'
+
+export function createTemplatesService({ templateRepository, policy, store = null }) {
+  const runMutation = (fn) => (store ? runAuditedMutation(store, fn) : fn())
+
   return {
     list(user) {
       policy.requireGuard(user, 'canReadTemplate')
@@ -6,11 +10,11 @@ export function createTemplatesService({ templateRepository, policy }) {
     },
     create(user, input) {
       policy.requireGuard(user, 'canEditTemplate')
-      return templateRepository.createDocumentTemplate(user, input)
+      return runMutation(() => templateRepository.createDocumentTemplate(user, input))
     },
     autoBuild(user, input) {
       policy.requireGuard(user, 'canEditTemplate')
-      return templateRepository.autoBuildTemplate(user, input)
+      return runMutation(() => templateRepository.autoBuildTemplate(user, input))
     },
     publish(user, templateId, input) {
       policy.requireGuard(user, 'canPublishTemplate')

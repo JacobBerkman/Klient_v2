@@ -565,16 +565,16 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
       }
     ],
     auditEvents: [
-      {
+      createCanonicalAuditEvent({
         id: randomUUID(),
+        actor: { userId: adminId },
         firmId,
-        actorUserId: adminId,
         entityType: 'seed',
         entityId: 'initial',
         action: 'seed.created',
-        occurredAt: createdAt,
-        metadata: {}
-      }
+        after: {},
+        timestamp: createdAt
+      })
     ],
     formTemplates: [
       {
@@ -970,17 +970,21 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     return publicUser(user)
   }
 
-  function addAudit(firmId, actorUserId, entityType, entityId, action, metadata = {}, options = {}) {
-    state.auditEvents.push({
-      id: randomUUID(),
+  function addAudit(firmId, actorUserId, entityType, entityId, action, changeSet = {}, options = {}) {
+    const metadataOnly = !('before' in changeSet) && !('after' in changeSet)
+    const event = createCanonicalAuditEvent({
+      actor: { userId: actorUserId || null },
       firmId,
-      actorUserId,
       entityType,
       entityId,
       action,
-      occurredAt: now(),
-      metadata
+      before: metadataOnly ? null : (changeSet.before ?? null),
+      after: metadataOnly ? (changeSet || null) : (changeSet.after ?? null),
+      requestId: options.requestId || null,
+      ip: options.ip || null,
+      timestamp: now()
     })
+    state.auditEvents.push(event)
     if (options.persist !== false) {
       persist()
     }
@@ -1821,7 +1825,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       )
       template.updatedAt = now()
       addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.mappings_updated', {
-        count: template.mappings.length
+        before: { mappings: previousMappings, count: previousMappings.length },
+        after: { mappings: deepClone(template.mappings), count: template.mappings.length }
       })
       persist()
       return documentTemplateAdapter(template)
@@ -1861,6 +1866,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         })
       )
       template.updatedAt = now()
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.published', {
+        before: { publishState: previousState },
+        after: { publishState: 'published' }
+      })
       persist()
       return documentTemplateAdapter(template)
     },
@@ -1975,6 +1984,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       const updated = requeueExportJob(exportId)
       if (!updated) throw new Error('Export not found.')
       state.exportJobs = state.exportJobs.map((entry) => (entry.id === exportId ? updated : entry))
+      addAudit(user.firmId, user.id, 'export_job', exportId, 'export_job.retry_requested', {
+        before: { attempts: job.attempts || 0, status: job.status },
+        after: { attempts: updated.attempts || 0, status: updated.status }
+      })
       persist()
       return updated
     },
@@ -2014,7 +2027,13 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         .reverse()
     },
     logout(token) {
+      const session = state.sessions.find((entry) => entry.token === token)
       state.sessions = state.sessions.filter((entry) => entry.token !== token)
+      if (session) {
+        addAudit(session.firmId, session.userId, 'user', session.userId, 'auth.logout', {
+          after: { sessionToken: token }
+        })
+      }
       persist()
       return { ok: true }
     },
@@ -2054,6 +2073,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       }
       state.users.push(user)
       state.invites = state.invites.filter((entry) => entry.id !== invite.id)
+      addAudit(user.firmId, user.id, 'user', user.id, 'user.role_assigned', {
+        before: { role: null },
+        after: { role: user.role, invitedByUserId: invite.invitedByUserId }
+      })
       persist()
       return createSession(user)
     },
@@ -2066,11 +2089,22 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     objectStorage,
     removeHouseholdMember(user, householdId, clientId) {
       requirePermission(user, 'households:write')
+      const beforeCount = state.householdMembers.filter(
+        (entry) => entry.householdId === householdId && entry.firmId === user.firmId
+      ).length
       state.householdMembers = state.householdMembers.filter(
         (entry) => !(entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId)
       )
       const profile = state.profiles.find((entry) => entry.id === clientId && entry.firmId === user.firmId)
       if (profile) profile.householdId = null
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.split', {
+        before: { memberCount: beforeCount, clientId },
+        after: {
+          memberCount: state.householdMembers.filter(
+            (entry) => entry.householdId === householdId && entry.firmId === user.firmId
+          ).length
+        }
+      })
       persist()
       return { ok: true }
     },
@@ -2095,6 +2129,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         role: 'spouse',
         firmId: user.firmId,
         createdAt: now()
+      })
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.merge', {
+        after: { primaryClientId: primary.id, spouseClientId: spouse.id }
       })
       persist()
       return { primary, spouse }
@@ -2561,6 +2598,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       if (!profile) throw new Error('Profile not found.')
       const ssn = decryptValue(profile.pii?.ssnCiphertext)
       const taxId = decryptValue(profile.pii?.taxIdCiphertext)
+      addAudit(user.firmId, user.id, 'profile', profileId, 'profile.sensitive_read', {
+        after: { fields: ['ssnMasked', 'taxIdMasked'] }
+      })
       return {
         ssnMasked: ssn ? `***-**-${ssn.slice(-4)}` : null,
         taxIdMasked: taxId ? `**-${taxId.slice(-4)}` : null
