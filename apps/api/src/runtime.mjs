@@ -1,5 +1,9 @@
 import { hostname } from 'node:os';
 
+const DEFAULT_APP_SECRET = 'kinetic-klient-dev-secret';
+const MIN_APP_SECRET_LENGTH = 24;
+const MIN_APP_SECRET_ENTROPY_BITS = 80;
+
 function normalizeNodeEnv(value) {
   return ['development', 'test', 'production'].includes(value) ? value : 'development';
 }
@@ -17,7 +21,6 @@ function readLogLevel(value, fallback) {
   return ['debug', 'info', 'warn', 'error'].includes(normalized) ? normalized : fallback;
 }
 
-
 function readBoolean(name, fallback = false) {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
@@ -34,6 +37,7 @@ function readStorageProvider(value) {
   }
   return normalized;
 }
+
 function readAuthProvider(value) {
   const normalized = String(value || 'local').toLowerCase();
   if (!['local', 'oidc', 'saml'].includes(normalized)) {
@@ -50,11 +54,65 @@ function readPiiKeyProvider(value) {
   return normalized;
 }
 
-const nodeEnv = normalizeNodeEnv(process.env.NODE_ENV || 'development');
-const appSecret = process.env.APP_SECRET || 'kinetic-klient-dev-secret';
+function estimateShannonEntropyBits(secret) {
+  if (!secret) return 0;
+  const counts = new Map();
+  for (const char of secret) {
+    counts.set(char, (counts.get(char) || 0) + 1);
+  }
+  let entropyPerChar = 0;
+  for (const count of counts.values()) {
+    const p = count / secret.length;
+    entropyPerChar -= p * Math.log2(p);
+  }
+  return entropyPerChar * secret.length;
+}
 
-if (nodeEnv === 'production' && appSecret === 'kinetic-klient-dev-secret') {
-  throw new Error('APP_SECRET must be set in production.');
+function evaluateAppSecret(secret, { source, nodeEnv }) {
+  const reasons = [];
+  const entropyBits = estimateShannonEntropyBits(secret);
+  const length = secret.length;
+  const usingFallback = source === 'fallback';
+
+  if (!secret) reasons.push('missing');
+  if (usingFallback && nodeEnv !== 'test') reasons.push('fallback-not-allowed');
+  if (length < MIN_APP_SECRET_LENGTH) reasons.push(`too-short(<${MIN_APP_SECRET_LENGTH})`);
+  if (entropyBits < MIN_APP_SECRET_ENTROPY_BITS) reasons.push(`low-entropy(<${MIN_APP_SECRET_ENTROPY_BITS.toFixed(0)} bits)`);
+
+  return {
+    source,
+    usingFallback,
+    length,
+    entropyBits,
+    isStrong: length >= MIN_APP_SECRET_LENGTH && entropyBits >= MIN_APP_SECRET_ENTROPY_BITS,
+    reasons
+  };
+}
+
+const nodeEnv = normalizeNodeEnv(process.env.NODE_ENV || 'development');
+const allowDevFallbackSecret = readBoolean('ALLOW_DEV_FALLBACK_APP_SECRET', false);
+const allowUnsafeAppSecret = readBoolean('UNSAFE_ALLOW_WEAK_APP_SECRET', false);
+const hasAppSecret = Boolean(process.env.APP_SECRET);
+const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET;
+const appSecretSource = hasAppSecret ? 'env' : 'fallback';
+const appSecretHealth = evaluateAppSecret(appSecret, { source: appSecretSource, nodeEnv });
+
+const isDevFallbackAllowed = nodeEnv === 'development' && allowDevFallbackSecret;
+const isFallbackAllowed = nodeEnv === 'test' || isDevFallbackAllowed;
+
+if (appSecretHealth.usingFallback && !isFallbackAllowed) {
+  appSecretHealth.reasons.push('fallback-blocked');
+}
+
+const shouldRejectAppSecret =
+  (nodeEnv === 'production' || nodeEnv === 'development') &&
+  (appSecretHealth.usingFallback ? !isFallbackAllowed : !appSecretHealth.isStrong);
+
+if (shouldRejectAppSecret && !allowUnsafeAppSecret) {
+  const guidance = appSecretHealth.usingFallback
+    ? 'Set APP_SECRET to a strong value. For local development only, set ALLOW_DEV_FALLBACK_APP_SECRET=true to permit the built-in fallback secret.'
+    : 'Set APP_SECRET to a stronger value (longer and less predictable), or set UNSAFE_ALLOW_WEAK_APP_SECRET=true only for temporary local debugging.';
+  throw new Error(`Invalid APP_SECRET for NODE_ENV=${nodeEnv} (${appSecretHealth.reasons.join(', ')}). ${guidance}`);
 }
 
 export const runtime = {
@@ -63,6 +121,9 @@ export const runtime = {
   host: process.env.HOST || '0.0.0.0',
   port: readNumber('PORT', 3000),
   appSecret,
+  appSecretHealth,
+  allowDevFallbackSecret,
+  allowUnsafeAppSecret,
   authProvider: readAuthProvider(process.env.AUTH_PROVIDER),
   piiKeyProvider: readPiiKeyProvider(process.env.PII_KEY_PROVIDER),
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
@@ -97,8 +158,24 @@ export function validateRuntimeConfig() {
   if (runtime.nodeEnv === 'production' && runtime.logLevel === 'debug') {
     warnings.push('LOG_LEVEL=debug in production may emit sensitive operational details.');
   }
-  if (!process.env.APP_SECRET) {
-    warnings.push('APP_SECRET is using fallback development secret.');
+  if (runtime.appSecretHealth.usingFallback) {
+    if (runtime.nodeEnv === 'test') {
+      warnings.push('APP_SECRET fallback is active because NODE_ENV=test.');
+    } else if (runtime.nodeEnv === 'development' && runtime.allowDevFallbackSecret) {
+      warnings.push('APP_SECRET fallback enabled by ALLOW_DEV_FALLBACK_APP_SECRET=true (development only).');
+    } else {
+      issues.push('APP_SECRET fallback is not allowed outside NODE_ENV=test unless ALLOW_DEV_FALLBACK_APP_SECRET=true in development.');
+    }
+  } else if (!runtime.appSecretHealth.isStrong) {
+    const details = `length=${runtime.appSecretHealth.length}, entropy≈${runtime.appSecretHealth.entropyBits.toFixed(1)} bits`;
+    if (runtime.allowUnsafeAppSecret) {
+      warnings.push(`APP_SECRET failed strength checks (${details}) but UNSAFE_ALLOW_WEAK_APP_SECRET=true is set.`);
+    } else {
+      issues.push(`APP_SECRET failed strength checks (${details}).`);
+    }
+  }
+  if (runtime.allowUnsafeAppSecret) {
+    warnings.push('UNSAFE_ALLOW_WEAK_APP_SECRET=true bypasses APP_SECRET enforcement and should not be enabled in production.');
   }
   return {
     ok: issues.length === 0,
