@@ -5,7 +5,8 @@ const state = {
   user: null,
   view: 'dashboard',
   flash: null,
-  board: null
+  board: null,
+  clientBoard: null
 }
 
 const viewEl = document.querySelector('#view')
@@ -15,6 +16,31 @@ const portalProfileEl = document.querySelector('select[name="profileId"]')
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 let csrfToken = ''
+const BOARD_STAGES = [
+  'discovery',
+  'gather_oi',
+  'analysis',
+  'advisor_proposal_meeting',
+  'intake',
+  'on_boarding',
+  'investment_strategy',
+  'completed',
+  'drop_dead_lead',
+  'drop_nurture'
+]
+
+const STAGE_LABELS = {
+  discovery: 'Discovery',
+  gather_oi: 'Gather OI',
+  analysis: 'Analysis',
+  advisor_proposal_meeting: 'Advisor Proposal Meeting',
+  intake: 'Intake',
+  on_boarding: 'On Boarding',
+  investment_strategy: 'Investment Strategy',
+  completed: 'Completed',
+  drop_dead_lead: 'Drop / Dead Lead',
+  drop_nurture: 'Drop / Nurture'
+}
 
 function escapeHtml(value) {
   return String(value ?? '')
@@ -29,8 +55,37 @@ function setFlash(type, message) {
   state.flash = { type, message }
 }
 
+function stageLabel(stage) {
+  return STAGE_LABELS[stage] || stage || 'Unassigned'
+}
+
 function findBoardColumn(board, stage) {
   return board?.columns?.find((column) => column.stage === stage) || null
+}
+
+function buildBoardFromProfiles(profiles = []) {
+  return {
+    boardVersion: null,
+    columns: BOARD_STAGES.map((stage) => ({
+      stage,
+      cards: profiles
+        .filter((profile) => (profile.stage || 'discovery') === stage)
+        .sort((a, b) => (a.stageOrderIndex || a.orderIndex || 999) - (b.stageOrderIndex || b.orderIndex || 999))
+    }))
+  }
+}
+
+function updateCardInBoard(board, profileId, patch) {
+  if (!board?.columns) return board
+  const nextBoard = structuredClone(board)
+  for (const column of nextBoard.columns) {
+    const card = column.cards.find((entry) => entry.id === profileId)
+    if (card) {
+      Object.assign(card, patch)
+      break
+    }
+  }
+  return nextBoard
 }
 
 function applyOptimisticReorder(board, move) {
@@ -344,6 +399,206 @@ async function renderForms() {
   })
 }
 
+function boardCardMarkup(card, kind) {
+  const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
+  return `
+    <article class="board-card" draggable="true" data-card-id="${card.id}" data-stage="${card.stage || 'discovery'}">
+      <header class="row between wrap">
+        <strong>${escapeHtml(displayName)}</strong>
+        <button type="button" class="secondary tiny" data-edit-profile="${card.id}" aria-expanded="false">Edit</button>
+      </header>
+      <div class="muted compact-meta">${escapeHtml(card.email || 'No email')} · ${escapeHtml(card.phone || 'No phone')}</div>
+      <div class="muted compact-meta">Stage: ${escapeHtml(stageLabel(card.stage || 'discovery'))}</div>
+      <div class="row gap-sm wrap top-gap">
+        <label class="sr-only" for="stage-${card.id}">Move ${escapeHtml(displayName)} to stage</label>
+        <select id="stage-${card.id}" data-stage-select="${card.id}">
+          ${BOARD_STAGES.map((stage) => `<option value="${stage}" ${stage === (card.stage || 'discovery') ? 'selected' : ''}>${escapeHtml(stageLabel(stage))}</option>`).join('')}
+        </select>
+      </div>
+      <form class="inline-edit hidden top-gap" data-edit-form="${card.id}">
+        <div class="grid two">
+          <input name="firstName" value="${escapeHtml(card.firstName || '')}" placeholder="First name" required />
+          <input name="lastName" value="${escapeHtml(card.lastName || '')}" placeholder="Last name" required />
+        </div>
+        <input name="email" type="email" value="${escapeHtml(card.email || '')}" placeholder="Email" />
+        <input name="phone" value="${escapeHtml(card.phone || '')}" placeholder="Phone" />
+        <div class="actions-row">
+          <button type="submit" class="tiny">Save</button>
+          <button type="button" class="secondary tiny" data-cancel-edit="${card.id}">Cancel</button>
+        </div>
+      </form>
+      <div class="muted compact-meta">Type: ${escapeHtml(kind)}</div>
+    </article>
+  `
+}
+
+function boardMarkup(kind, board) {
+  return `
+    ${flashMarkup()}
+    <div class="section-header">
+      <div>
+        <h2>${escapeHtml(kind === 'prospect' ? 'Prospects' : 'Clients')} Board</h2>
+        <p class="muted">Drag cards to reorder or move across stages. Inline edits save optimistically.</p>
+      </div>
+    </div>
+    <div class="kanban-board" data-board-kind="${kind}">
+      ${board.columns
+        .map(
+          (column) => `
+        <section class="kanban-column" data-stage="${column.stage}" aria-label="${escapeHtml(stageLabel(column.stage))}">
+          <header class="row between"><h3>${escapeHtml(stageLabel(column.stage))}</h3><span class="badge subtle">${column.cards.length}</span></header>
+          <div class="kanban-dropzone" data-drop-stage="${column.stage}">
+            ${column.cards.map((card) => boardCardMarkup(card, kind)).join('') || '<p class="muted">Drop profiles here.</p>'}
+          </div>
+        </section>`
+        )
+        .join('')}
+    </div>
+  `
+}
+
+async function reorderCard(kind, move) {
+  if (kind === 'prospect') {
+    return reorderPipelineOptimistically(move)
+  }
+  const previousBoard = state.clientBoard ? structuredClone(state.clientBoard) : null
+  if (previousBoard) state.clientBoard = applyOptimisticReorder(previousBoard, move)
+  const optimisticColumn = findBoardColumn(state.clientBoard, move.toStage)
+  const optimisticCard = optimisticColumn?.cards.find((entry) => entry.id === move.profileId)
+  const newIndex = optimisticColumn ? optimisticColumn.cards.indexOf(optimisticCard) + 1 : 1
+  try {
+    const latest = await request(`/api/profiles/${move.profileId}`)
+    const previousCard = previousBoard?.columns?.flatMap((column) => column.cards).find((entry) => entry.id === move.profileId)
+    if (previousCard?.updatedAt && latest?.profile?.updatedAt && previousCard.updatedAt !== latest.profile.updatedAt) {
+      throw new Error('This client changed on the server. Reloaded latest board.')
+    }
+    await request(`/api/profiles/${move.profileId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ stage: move.toStage, stageOrderIndex: newIndex, orderIndex: newIndex })
+    })
+  } catch (error) {
+    state.clientBoard = previousBoard
+    throw error
+  }
+}
+
+async function saveInlineProfile(kind, profileId, patch) {
+  const boardKey = kind === 'prospect' ? 'board' : 'clientBoard'
+  const previousBoard = state[boardKey] ? structuredClone(state[boardKey]) : null
+  if (previousBoard) state[boardKey] = updateCardInBoard(previousBoard, profileId, patch)
+  try {
+    await request(`/api/profiles/${profileId}`, {
+      method: 'PATCH',
+      body: JSON.stringify(patch)
+    })
+  } catch (error) {
+    state[boardKey] = previousBoard
+    throw error
+  }
+}
+
+function wireBoardInteractions(kind) {
+  let activeCardId = null
+  document.querySelectorAll('[data-card-id]').forEach((cardEl) => {
+    cardEl.addEventListener('dragstart', (event) => {
+      activeCardId = cardEl.dataset.cardId
+      event.dataTransfer.effectAllowed = 'move'
+      event.dataTransfer.setData('text/plain', activeCardId)
+      cardEl.classList.add('dragging')
+    })
+    cardEl.addEventListener('dragend', () => {
+      cardEl.classList.remove('dragging')
+      activeCardId = null
+    })
+    cardEl.addEventListener('dragover', (event) => event.preventDefault())
+    cardEl.addEventListener('drop', async (event) => {
+      event.preventDefault()
+      const profileId = event.dataTransfer.getData('text/plain') || activeCardId
+      const toStage = cardEl.dataset.stage
+      const beforeProfileId = cardEl.dataset.cardId
+      if (!profileId || profileId === beforeProfileId) return
+      try {
+        await reorderCard(kind, { profileId, toStage, beforeProfileId })
+        setFlash('success', 'Board updated.')
+      } catch (error) {
+        setFlash('error', error.message)
+      }
+      await renderCurrentView()
+    })
+  })
+
+  document.querySelectorAll('[data-drop-stage]').forEach((zone) => {
+    zone.addEventListener('dragover', (event) => event.preventDefault())
+    zone.addEventListener('drop', async (event) => {
+      event.preventDefault()
+      const profileId = event.dataTransfer.getData('text/plain') || activeCardId
+      const toStage = zone.dataset.dropStage
+      if (!profileId || !toStage) return
+      try {
+        await reorderCard(kind, { profileId, toStage, beforeProfileId: null })
+        setFlash('success', 'Board updated.')
+      } catch (error) {
+        setFlash('error', error.message)
+      }
+      await renderCurrentView()
+    })
+  })
+
+  document.querySelectorAll('[data-edit-profile]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const profileId = button.dataset.editProfile
+      const form = document.querySelector(`[data-edit-form="${profileId}"]`)
+      form?.classList.toggle('hidden')
+      button.setAttribute('aria-expanded', String(!form?.classList.contains('hidden')))
+    })
+  })
+  document.querySelectorAll('[data-cancel-edit]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      await renderCurrentView()
+    })
+  })
+  document.querySelectorAll('[data-edit-form]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const profileId = form.dataset.editForm
+      const payload = Object.fromEntries(new FormData(form).entries())
+      try {
+        await saveInlineProfile(kind, profileId, payload)
+        setFlash('success', 'Profile updated.')
+      } catch (error) {
+        setFlash('error', `Failed to save profile: ${error.message}`)
+      }
+      await renderCurrentView()
+    })
+  })
+  document.querySelectorAll('[data-stage-select]').forEach((select) => {
+    select.addEventListener('change', async () => {
+      const profileId = select.dataset.stageSelect
+      const toStage = select.value
+      try {
+        await reorderCard(kind, { profileId, toStage, beforeProfileId: null })
+        setFlash('success', `Moved to ${stageLabel(toStage)}.`)
+      } catch (error) {
+        setFlash('error', error.message)
+      }
+      await renderCurrentView()
+    })
+  })
+}
+
+async function renderBoard(kind) {
+  if (kind === 'prospect') {
+    state.board = await request('/api/board')
+    viewEl.innerHTML = boardMarkup(kind, state.board)
+    wireBoardInteractions(kind)
+    return
+  }
+  const clients = await request('/api/profiles?kind=client')
+  state.clientBoard = buildBoardFromProfiles(clients)
+  viewEl.innerHTML = boardMarkup(kind, state.clientBoard)
+  wireBoardInteractions(kind)
+}
+
 function applyHashRoute() {
   const hashPath = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : ''
   const route = appRoutes.parseClientFormSubmission(hashPath)
@@ -366,6 +621,8 @@ async function renderCurrentView() {
   if (state.view === 'dashboard') return renderDashboard()
   if (state.view === 'analytics') return renderAnalytics()
   if (state.view === 'forms') return renderForms()
+  if (state.view === 'prospects') return renderBoard('prospect')
+  if (state.view === 'clients') return renderBoard('client')
   return renderFallback(state.view)
 }
 
