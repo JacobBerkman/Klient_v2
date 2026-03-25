@@ -1,12 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { runtime } from './runtime.mjs'
 import {
-  enqueueExportJob,
-  listExportQueueJobs,
   loadState,
-  processExportQueueTick,
-  readExportWorkerStatus,
-  requeueExportJob,
   saveState
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
@@ -15,6 +10,7 @@ import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
 import { createSamlAuthProvider } from './auth/saml-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
 import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
+import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
 const PERMISSIONS = {
@@ -830,6 +826,23 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     }
     saveState(state)
   }
+
+  const exportsRepository = createStoreExportsRepository({
+    state,
+    persist,
+    addAuditEvent: (user, payload) => {
+      addAudit(
+        user.firmId,
+        user.id,
+        payload.entityType || 'generic',
+        payload.entityId || 'n/a',
+        payload.action || 'event',
+        payload.metadata || {}
+      )
+    },
+    objectStorage,
+    now
+  })
 
   function getBoardVersion(firmId) {
     if (!state.boardVersions || typeof state.boardVersions !== 'object') {
@@ -2025,108 +2038,26 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     listExports(user) {
       requirePermission(user, 'exports:write')
-      state.exportJobs = listExportQueueJobs()
-      return state.exportJobs.filter((entry) => entry.firmId === user.firmId)
+      return exportsRepository.list(user)
     },
     createExport(user, input) {
       requirePermission(user, 'exports:write')
-      const template = state.templateAggregates.find(
-        (entry) => entry.id === input.templateId && entry.firmId === user.firmId && entry.kind !== 'form'
-      )
-      if (!template) throw new Error('Template not found.')
-      const queued = enqueueExportJob({
-        id: randomUUID(),
-        firmId: user.firmId,
-        clientId: input.clientId,
-        templateId: input.templateId,
-        createdByUserId: user.id,
-        type: input.type || 'pdf',
-        idempotencyKey: input.idempotencyKey || null,
-        maxAttempts: Number(input.maxAttempts || 3),
-        metadata: input.metadata || {}
-      })
-      addAudit(user.firmId, user.id, 'export_job', queued.id, 'export_job.created', {
-        clientId: input.clientId,
-        templateId: input.templateId,
-        type: queued.type
-      })
-      state.exportJobs = state.exportJobs.filter((entry) => entry.id !== queued.id)
-      state.exportJobs.push(queued)
-      persist()
-      return queued
+      return exportsRepository.create(user, input)
     },
     retryExport(user, exportId) {
-      const firmContext = requireFirmContext(user, { method: 'store.retryExport' })
       requirePermission(user, 'exports:write')
-      validateEntityOwnership(firmContext, state.exportJobs.find((entry) => entry.id === exportId), {
-        entityName: 'Export'
-      })
-      const updated = requeueExportJob(exportId)
-      if (!updated) throw new Error('Export not found.')
-      state.exportJobs = state.exportJobs.map((entry) => (entry.id === exportId ? updated : entry))
-      addAudit(user.firmId, user.id, 'export_job', exportId, 'export_job.retry_requested', {
-        before: { attempts: job.attempts || 0, status: job.status },
-        after: { attempts: updated.attempts || 0, status: updated.status }
-      })
-      persist()
-      return updated
+      return exportsRepository.retry(user, exportId)
     },
     getExportQueueHealth(user) {
       requirePermission(user, 'exports:read')
-      const queue = readExportWorkerStatus()
-      return {
-        generatedAt: now(),
-        queue
-      }
+      return exportsRepository.getQueueHealth()
     },
     retryFailedExports(user, options = {}) {
       requirePermission(user, 'exports:write')
-      const limit = Math.max(1, Math.min(Number(options.limit || 25), 200))
-      const includeDeadLetter = options.includeDeadLetter === true
-      const dryRun = options.dryRun === true
-      const candidates = listExportQueueJobs()
-        .filter((entry) => entry.firmId === user.firmId)
-        .filter((entry) => entry.status === 'failed' || (includeDeadLetter && entry.status === 'dead-letter'))
-        .slice(0, limit)
-      if (dryRun) {
-        return { dryRun: true, limit, includeDeadLetter, candidateCount: candidates.length, ids: candidates.map((c) => c.id) }
-      }
-      const retried = []
-      for (const candidate of candidates) {
-        const updated = requeueExportJob(candidate.id)
-        if (updated) retried.push(updated.id)
-      }
-      state.exportJobs = listExportQueueJobs()
-      persist()
-      return { dryRun: false, limit, includeDeadLetter, retriedCount: retried.length, ids: retried }
+      return exportsRepository.retryFailed(user, options)
     },
     async processQueuedExports() {
-      const result = processExportQueueTick({
-        workerId: 'api-process-endpoint',
-        limit: 10,
-        leaseMs: 15_000,
-        processor(job) {
-          const failCount = Number(job?.metadata?.simulateFailuresRemaining || 0)
-          if (failCount > 0) {
-            job.metadata.simulateFailuresRemaining = failCount - 1
-            throw new Error(`Simulated export failure for ${job.id}`)
-          }
-          const fileName = `${job.type}-${Date.now()}.json`
-          const key = `${job.firmId}/exports/${fileName}`
-          return {
-            fileName,
-            preview: { clientId: job.clientId, templateId: job.templateId },
-            object: {
-              bucket: objectStorage.bucketExports,
-              key,
-              checksum: null,
-              contentType: 'application/json',
-              retentionClass: 'export_artifact'
-            }
-          }
-        }
-      })
-      return { processed: result.processed, leased: result.leased, failed: result.failed }
+      return exportsRepository.processQueued()
     },
     listAudit(user) {
       requirePermission(user, 'profiles:read')
