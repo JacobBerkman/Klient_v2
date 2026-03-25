@@ -1,5 +1,5 @@
 import { createServer } from 'node:http'
-import { randomUUID } from 'node:crypto'
+import { createHash, createHmac, randomBytes, randomUUID, timingSafeEqual } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { extname, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,10 +13,17 @@ import {
   readExportWorkerStatus,
   readStorageHealth,
   readAuditEventSummary,
-  readAnalyticsMaterializedSummary
+  readAnalyticsMaterializedSummary,
+  consumeCsrfToken,
+  deleteCsrfTokensBySession,
+  deleteExpiredCsrfTokens,
+  readCsrfToken,
+  upsertCsrfToken
 } from './storage.mjs'
 import { createStore } from './store.mjs'
 import { createModules } from './modules/index.mjs'
+import { createKeyProvider } from './pii-crypto.mjs'
+import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const publicDir = resolve(__dirname, '../../web/public')
@@ -26,6 +33,7 @@ const CSRF_SESSION_COOKIE = '__Host-klient-csrf'
 const CSRF_HEADER = 'x-csrf-token'
 const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const CSRF_BOOTSTRAP_PATH = '/api/csrf'
+const CSRF_TTL_SECONDS = 60 * 15
 const CSRF_EXEMPT_PATHS = new Set([
   '/api/login',
   '/api/register',
@@ -69,7 +77,7 @@ function cookieConfig(req) {
     sameSite: secure ? 'Strict' : 'Lax',
     httpOnly: true,
     path: '/api',
-    maxAge: 60 * 15
+    maxAge: CSRF_TTL_SECONDS
   }
 }
 
@@ -84,7 +92,7 @@ function serializeCookie(name, value, options = {}) {
 }
 
 function requiresCsrfProtection(method = 'GET') {
-  if (runtime.nodeEnv === 'test') return false
+  if (runtime.nodeEnv === 'test' && runtime.enableTestCsrfBypass) return false
   return !CSRF_SAFE_METHODS.has(method.toUpperCase())
 }
 
@@ -138,9 +146,10 @@ function validateOriginAndReferer(req, requestId) {
   if (secFetchSite && !['same-origin', 'same-site', 'none'].includes(secFetchSite)) {
     return getCsrfErrorResponse('Cross-site browser context rejected.', requestId)
   }
+  if (runtime.isProduction && !suppliedOrigin && !suppliedReferer) {
+    return getCsrfErrorResponse('Missing Origin and Referer in production.', requestId)
+  }
   if (!suppliedOrigin && !suppliedReferer) {
-    // Allow non-browser clients (contract tests, CLI tools, service-to-service) that do not send
-    // browser context headers. Browser requests still provide Origin/Referer and are validated.
     if (!secFetchSite) return null
     return getCsrfErrorResponse('Missing Origin or Referer.', requestId)
   }
@@ -153,14 +162,87 @@ function validateOriginAndReferer(req, requestId) {
   return null
 }
 
-function validateCsrf(req, requestId) {
+function signCsrfPayload(sessionToken, tokenId, nonce) {
+  return createHmac('sha256', runtime.appSecret).update(`${sessionToken}:${tokenId}:${nonce}`).digest('base64url')
+}
+
+function hashCsrfToken(token) {
+  return createHash('sha256').update(token).digest('base64url')
+}
+
+function verifyHashEquals(actual, expected) {
+  const actualBuffer = Buffer.from(String(actual))
+  const expectedBuffer = Buffer.from(String(expected))
+  if (actualBuffer.length !== expectedBuffer.length) return false
+  return timingSafeEqual(actualBuffer, expectedBuffer)
+}
+
+function createSignedCsrfToken(sessionToken) {
+  const tokenId = randomUUID()
+  const nonce = randomBytes(24).toString('base64url')
+  const signature = signCsrfPayload(sessionToken, tokenId, nonce)
+  return {
+    tokenId,
+    rawToken: `${tokenId}.${nonce}.${signature}`,
+    tokenHash: hashCsrfToken(`${tokenId}.${nonce}.${signature}`)
+  }
+}
+
+function issueCsrfForSession(req, sessionToken, userId) {
+  deleteExpiredCsrfTokens(new Date().toISOString())
+  const issuedAt = new Date().toISOString()
+  const expiresAt = new Date(Date.now() + CSRF_TTL_SECONDS * 1000).toISOString()
+  const token = createSignedCsrfToken(sessionToken)
+  upsertCsrfToken({
+    id: token.tokenId,
+    sessionToken,
+    userId,
+    token: token.tokenHash,
+    issuedAt,
+    lastRotatedAt: issuedAt,
+    expiresAt,
+    consumedAt: null
+  })
+  return {
+    csrfToken: token.rawToken,
+    expiresAt,
+    headers: {
+      [CSRF_HEADER]: token.rawToken,
+      'Set-Cookie': serializeCookie(CSRF_SESSION_COOKIE, token.tokenId, cookieConfig(req))
+    }
+  }
+}
+
+function validateCsrf(req, requestId, sessionToken, user) {
   const originError = validateOriginAndReferer(req, requestId)
   if (originError) return originError
   const cookies = parseCookies(req)
-  const cookieTokenId = cookies[CSRF_SESSION_COOKIE]
-  const headerToken = String(req.headers[CSRF_HEADER] || '')
-  if (!cookieTokenId || !headerToken) {
-    return getCsrfErrorResponse('Missing CSRF token.', requestId)
+  const cookieTokenId = String(cookies[CSRF_SESSION_COOKIE] || '').trim()
+  const headerToken = String(req.headers[CSRF_HEADER] || '').trim()
+  if (!cookieTokenId || !headerToken) return getCsrfErrorResponse('Missing CSRF token.', requestId)
+  const [headerTokenId, nonce, signature] = headerToken.split('.')
+  if (!headerTokenId || !nonce || !signature || headerTokenId !== cookieTokenId) {
+    return getCsrfErrorResponse('Malformed CSRF token.', requestId)
+  }
+  const expectedSignature = signCsrfPayload(sessionToken, headerTokenId, nonce)
+  if (!verifyHashEquals(signature, expectedSignature)) {
+    return getCsrfErrorResponse('Invalid CSRF signature.', requestId)
+  }
+  const persisted = readCsrfToken(sessionToken, headerTokenId)
+  if (!persisted || persisted.userId !== user.id) {
+    return getCsrfErrorResponse('Unknown CSRF token.', requestId)
+  }
+  if (persisted.consumedAt) {
+    return getCsrfErrorResponse('Replayed CSRF token.', requestId)
+  }
+  if (new Date(persisted.expiresAt).getTime() <= Date.now()) {
+    return getCsrfErrorResponse('Expired CSRF token.', requestId)
+  }
+  if (!verifyHashEquals(hashCsrfToken(headerToken), persisted.token)) {
+    return getCsrfErrorResponse('CSRF token mismatch.', requestId)
+  }
+  if (!consumeCsrfToken(sessionToken, headerTokenId, new Date().toISOString())) {
+    return getCsrfErrorResponse('Replayed CSRF token.', requestId)
   }
   return null
 }
@@ -184,6 +266,15 @@ function jsonWithHeaders(res, status, body, requestId, headers = {}) {
 
 function serveJson(res, statusCode, payload, requestId, extraHeaders = {}) {
   return jsonWithHeaders(res, statusCode, payload, requestId, extraHeaders)
+}
+
+function analyticsFiltersFrom(url) {
+  return {
+    startDate: url.searchParams.get('startDate') || null,
+    endDate: url.searchParams.get('endDate') || null,
+    cohortBy: url.searchParams.get('cohortBy') || 'all',
+    cohortValue: url.searchParams.get('cohortValue') || null
+  }
 }
 
 function csrfHeadersForRequest(req, pathname, method, requestId) {
@@ -314,6 +405,12 @@ function requestLogger(req, requestId) {
   }
 }
 
+
+export function bootstrapPiiKeyProvider() {
+  const kmsAdapter = runtime.piiKeyProvider === 'kms' ? createRuntimeKmsAdapter(runtime) : null
+  return createKeyProvider(runtime, { kmsAdapter })
+}
+
 export function createHttpServer({ modules }) {
   return createServer(async (req, res) => {
     const requestId = req.headers['x-request-id'] || randomUUID()
@@ -321,17 +418,18 @@ export function createHttpServer({ modules }) {
     const { pathname } = url
     const finalizeLog = requestLogger(req, requestId)
     const requireUser = () => modules.auth.requireUser(getToken(req))
-    const authorize = (guardName, { allowAnonymous = false } = {}) => {
-      const user = allowAnonymous ? (getToken(req) ? requireUser() : null) : requireUser()
-      modules.policy.requireGuard(user, guardName)
-      return user
+    const requirePortalSession = () => {
+      if (!pathname.startsWith('/api/portal/')) throw new Error('Portal path required.')
+      const token = pathname.split('/')[3]
+      if (!token) throw new Error('Portal token required.')
+      modules.forms.getPortalSession(token)
+      return { token }
     }
 
     try {
       if (pathname === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
         finalizeLog(200)
-        return json(
-          res,
+        return replyJson(
           200,
           { status: 'ok', service: runtime.serviceName, uptimeSeconds: Math.round(process.uptime()) },
           { 'X-Request-Id': requestId }
@@ -342,8 +440,7 @@ export function createHttpServer({ modules }) {
         const storageHealth = readStorageHealth()
         const queue = readExportWorkerStatus()
         finalizeLog(200)
-        return json(
-          res,
+        return replyJson(
           200,
           {
             status: 'ready',
@@ -366,8 +463,7 @@ export function createHttpServer({ modules }) {
           return acc
         }, {})
         finalizeLog(200)
-        return json(
-          res,
+        return replyJson(
           200,
           {
             generatedAt: new Date().toISOString(),
@@ -396,109 +492,149 @@ export function createHttpServer({ modules }) {
           { 'X-Request-Id': requestId }
         )
       }
-      if (pathname === '/api/csrf' && req.method === 'GET') {
-        authorize('canBootstrapCsrf', { allowAnonymous: true })
+      if (pathname === '/api/ops/exports/queue' && req.method === 'GET') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadExports')
+        const result = modules.exports.getQueueHealth(user)
         finalizeLog(200)
-        return json(
-          res,
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/ops/exports/retry-failed' && req.method === 'POST') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteExports')
+        const body = await parseBody(req)
+        const result = modules.exports.retryFailed(user, body || {})
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/csrf' && req.method === 'GET') {
+        sessionToken = getToken(req)
+        if (!sessionToken) {
+          finalizeLog(401)
+          return replyJson(401, { message: 'Authentication required.' }, { 'X-Request-Id': requestId })
+        }
+        authenticatedUser = modules.auth.requireUser(sessionToken)
+        deleteCsrfTokensBySession(sessionToken)
+        const csrf = issueCsrfForSession(req, sessionToken, authenticatedUser.id)
+        finalizeLog(200)
+        return replyJson(
           200,
-          { csrfToken: 'smoke-token' },
+          { csrfToken: csrf.csrfToken, expiresAt: csrf.expiresAt },
           {
             'X-Request-Id': requestId,
-            'Set-Cookie': `${CSRF_SESSION_COOKIE}=smoke-session; HttpOnly; Path=/; SameSite=Strict`
+            ...csrf.headers
           }
         )
       }
       if (pathname === '/api/runtime' && req.method === 'GET') {
         authorize('canAccessRuntime', { allowAnonymous: true })
         finalizeLog(200);
-        return json(res, 200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId });
+        return replyJson(200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId });
       }
       if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method) && !isCsrfExempt(pathname)) {
-        const csrfError = validateCsrf(req, requestId)
+        sessionToken = getToken(req)
+        authenticatedUser = modules.auth.requireUser(sessionToken)
+        const csrfError = validateCsrf(req, requestId, sessionToken, authenticatedUser)
         if (csrfError) {
           finalizeLog(csrfError.statusCode, { reason: csrfError.body.error.details.reason })
-          return json(res, csrfError.statusCode, csrfError.body, csrfError.headers)
+          return replyJson(csrfError.statusCode, csrfError.body, csrfError.headers)
         }
+        rotateCsrfAfterResponse = true
       }
       if (pathname === '/api/register' && req.method === 'POST') {
         authorize('canRegister', { allowAnonymous: true })
         const result = modules.auth.register(await parseBody(req))
+        const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, { ...result, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt }, {
+          'X-Request-Id': requestId,
+          ...csrf.headers
+        })
       }
       if (pathname === '/api/login' && req.method === 'POST') {
         authorize('canLogin', { allowAnonymous: true })
         const result = modules.auth.login(await parseBody(req))
+        const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, { ...result, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt }, {
+          'X-Request-Id': requestId,
+          ...csrf.headers
+        })
       }
       if (pathname === '/api/invites' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canManageUsers')
         const result = modules.firmsUsers.inviteUser(user, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/invites/accept' && req.method === 'POST') {
         authorize('canAcceptInvite', { allowAnonymous: true })
         const result = modules.firmsUsers.acceptInvite(await parseBody(req))
+        const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, { ...result, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt }, {
+          'X-Request-Id': requestId,
+          ...csrf.headers
+        })
       }
       if (pathname === '/api/password-resets' && req.method === 'POST') {
         authorize('canRequestPasswordReset', { allowAnonymous: true })
         const result = modules.auth.requestReset(await parseBody(req))
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/password-resets/confirm' && req.method === 'POST') {
         authorize('canConfirmPasswordReset', { allowAnonymous: true })
         const result = modules.auth.resetPassword(await parseBody(req))
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/users' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadUsers')
         const result = modules.firmsUsers.listUsers(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/session' && req.method === 'GET') {
         const result = { user: authorize('canReadSession') }
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/logout' && req.method === 'POST') {
-        authorize('canLogout')
-        const result = modules.auth.logout(getToken(req))
+        const token = getToken(req)
+        const result = modules.auth.logout(token)
+        deleteCsrfTokensBySession(token)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/dashboard' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canViewDashboard')
         const result = modules.profiles.getDashboard(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/profiles' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadProfiles')
-        const result = modules.profiles.listProfiles(user, {
+        const query = {
           kind: url.searchParams.get('kind'),
           search: url.searchParams.get('search') || ''
-        })
+        }
+        const status = url.searchParams.get('status')
+        if (status) query.status = status
+        const result = modules.profiles.listProfiles(user, query)
         finalizeLog(200, { firmId: user.firmId })
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/profiles' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteProfiles')
         const result = modules.profiles.createProfile(user, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage-history') && req.method === 'GET') {
         const id = pathname.split('/')[3]
@@ -506,7 +642,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canReadProfiles')
         const result = modules.profiles.listStageHistory(user, id)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'GET') {
         const id = pathname.split('/')[3]
@@ -514,7 +650,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canReadProfiles')
         const result = modules.profiles.listNotes(user, id)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/notes') && req.method === 'POST') {
         const id = pathname.split('/')[3]
@@ -523,7 +659,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canWriteProfiles')
         const result = modules.profiles.addNote(user, id, body.body || '')
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/profiles/') && pathname.split('/').length === 4 && req.method === 'GET') {
         const id = pathname.split('/')[3]
@@ -531,7 +667,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canReadProfiles')
         const result = modules.profiles.getProfileDetail(user, id)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage') && req.method === 'PATCH') {
         const id = pathname.split('/')[3]
@@ -539,6 +675,14 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canMovePipeline')
         const result = modules.pipeline.moveProfileStage(user, id, body.stage, body.beforeProfileId || null)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/pipeline/reorder' && req.method === 'PATCH') {
+        const body = await parseBody(req)
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canMovePipeline')
+        const result = modules.pipeline.reorderBoard(user, body)
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }
@@ -548,28 +692,28 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canWriteProfiles')
         const result = modules.profiles.updateProfile(user, id, await parseBody(req))
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/board' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadProfiles')
         const result = modules.pipeline.getBoard(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/households' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadHouseholds')
         const result = modules.households.listHouseholds(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/households' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteHouseholds')
         const result = modules.households.createHousehold(user, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/households/') && pathname.endsWith('/members') && req.method === 'POST') {
         const id = pathname.split('/')[3]
@@ -577,7 +721,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canWriteHouseholds')
         const result = modules.households.addHouseholdMember(user, id, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/households/') && pathname.endsWith('/members') && req.method === 'DELETE') {
         const id = pathname.split('/')[3]
@@ -586,7 +730,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canWriteHouseholds')
         const result = modules.households.removeHouseholdMember(user, id, body.clientId)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/households/link-spouse' && req.method === 'POST') {
         const body = await parseBody(req)
@@ -594,7 +738,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canWriteHouseholds')
         const result = modules.households.linkSpouse(user, body.primaryClientId, body.spouseClientId)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/households/create-spouse' && req.method === 'POST') {
         const body = await parseBody(req)
@@ -602,61 +746,68 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canWriteHouseholds')
         const result = modules.households.createSpouse(user, body.primaryClientId, body.spouse)
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/forms/templates' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadForms')
         const result = modules.forms.listFormTemplates(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/forms/templates' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
         const result = modules.forms.createFormTemplate(user, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/forms/submissions' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadForms')
         const result = modules.forms.listFormSubmissions(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/forms/drafts' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadForms')
         const result = modules.forms.listFormDrafts(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/forms/submissions' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
         const result = modules.forms.createFormSubmission(user, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/client/workspace' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadClientWorkspace')
         const result = modules.forms.getClientWorkspace(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/client/forms/submissions' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteClientWorkspace')
         const result = modules.forms.submitClientForm(user, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/client/uploads' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteClientWorkspace')
         const result = modules.forms.submitClientUpload(user, await parseBody(req))
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/client/uploads/presign' && req.method === 'POST') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteClientWorkspace')
+        const result = await modules.forms.createClientUploadPresign(user, await parseBody(req))
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
@@ -666,7 +817,7 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canWriteForms')
         const result = modules.forms.updateSubmission(user, id, await parseBody(req))
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/forms/submissions/') && req.method === 'DELETE') {
         const id = pathname.split('/')[4]
@@ -674,67 +825,108 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canWriteForms')
         const result = modules.forms.deleteSubmission(user, id)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/templates' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadTemplate')
         const result = modules.templates.list(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/templates' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canEditTemplate')
         const result = modules.templates.create(user, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/templates/auto-build' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canEditTemplate')
         const result = modules.templates.autoBuild(user, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/templates/') && pathname.endsWith('/publish') && req.method === 'POST') {
         const id = pathname.split('/')[3]
         const user = requireUser()
         modules.policy.requireGuard(user, 'canPublishTemplate')
-        const result = modules.templates.publish(user, id)
+        const result = modules.templates.publish(user, id, await parseBody(req))
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/templates/') && pathname.endsWith('/mappings') && req.method === 'POST') {
         const id = pathname.split('/')[3]
         const body = await parseBody(req)
         const user = requireUser()
         modules.policy.requireGuard(user, 'canEditTemplate')
-        const result = modules.templates.updateMappings(user, id, body.mappings || [])
+        const result = modules.templates.updateMappings(user, id, body.mappings || [], {
+          expectedVersionHash: body.expectedVersionHash || null
+        })
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/versions') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadTemplate')
+        const result = modules.templates.listVersions(user, id)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/publish-transitions') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadTemplate')
+        const result = modules.templates.listPublishTransitions(user, id)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/compare') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadTemplate')
+        const baseVersion = Number(url.searchParams.get('baseVersion'))
+        const targetVersion = Number(url.searchParams.get('targetVersion'))
+        const result = modules.templates.compareVersions(user, id, baseVersion, targetVersion)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/revert') && req.method === 'POST') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canEditTemplate')
+        const body = await parseBody(req)
+        const result = modules.templates.revertVersion(user, id, Number(body.targetVersion), body)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/exports' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadExports')
         const result = modules.exports.list(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/exports' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteExports')
-        const result = modules.exports.create(user, await parseBody(req))
+        const body = await parseBody(req)
+        const idempotencyKey = req.headers['idempotency-key']
+        const result = modules.exports.create(user, {
+          ...body,
+          idempotencyKey: body.idempotencyKey || (typeof idempotencyKey === 'string' ? idempotencyKey : null)
+        })
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/exports/process' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canProcessExports')
         const result = modules.exports.processQueuedExports(user)
         finalizeLog(200)
-        return json(
-          res,
+        return replyJson(
           200,
           {
             ...result,
@@ -750,21 +942,41 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canWriteExports')
         const result = modules.exports.retry(user, id)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/audit' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadAudit')
         const result = modules.audit.list(user)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/analytics' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadAnalytics')
-        const result = modules.analytics.get(user)
+        const result = modules.analytics.get(user, analyticsFiltersFrom(url))
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/analytics/dashboard' && req.method === 'GET') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadAnalytics')
+        const result = modules.analytics.getDashboard(user, analyticsFiltersFrom(url))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/analytics/export' && req.method === 'GET') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadAnalytics')
+        const csv = modules.analytics.exportCsv(user, analyticsFiltersFrom(url))
+        withCommonHeaders(res, requestId, {
+          'Content-Type': 'text/csv; charset=utf-8',
+          'Content-Disposition': `attachment; filename=\"analytics-report-${new Date().toISOString().slice(0, 10)}.csv\"`
+        })
+        res.statusCode = 200
+        res.end(csv)
+        finalizeLog(200)
+        return
       }
       if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/sensitive') && req.method === 'GET') {
         const id = pathname.split('/')[3]
@@ -772,36 +984,47 @@ export function createHttpServer({ modules }) {
         modules.policy.requireGuard(user, 'canReadSensitiveProfileData')
         const result = modules.profiles.getMaskedSensitiveData(user, id)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/portal-links' && req.method === 'POST') {
         const body = await parseBody(req)
         const user = requireUser()
         modules.policy.requireGuard(user, 'canCreatePortalLink')
-        const result = modules.forms.createPortalLink(user, body.profileId)
+        const result = modules.forms.createPortalLink(user, body.profileId, body)
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
+      if (pathname.startsWith('/api/portal-links/') && pathname.endsWith('/revoke') && req.method === 'POST') {
+        const linkId = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canCreatePortalLink')
+        const result = modules.forms.revokePortalLink(user, linkId)
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/portal/') && pathname.split('/').length === 4 && req.method === 'GET') {
-        authorize('canReadPortal')
-        const token = pathname.split('/')[3]
+        const { token } = requirePortalSession()
         const result = modules.forms.getPortalData(token)
         finalizeLog(200)
-        return json(res, 200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/portal/') && pathname.endsWith('/submissions') && req.method === 'POST') {
-        authorize('canSubmitPortal')
-        const token = pathname.split('/')[3]
+        const { token } = requirePortalSession()
         const result = modules.forms.portalSubmit(token, await parseBody(req))
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads/presign') && req.method === 'POST') {
+        const { token } = requirePortalSession()
+        const result = await modules.forms.createPortalUploadPresign(token, await parseBody(req))
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads') && req.method === 'POST') {
-        authorize('canUploadPortal')
-        const token = pathname.split('/')[3]
+        const { token } = requirePortalSession()
         const result = modules.forms.portalUpload(token, await parseBody(req))
         finalizeLog(201)
-        return json(res, 201, result, { 'X-Request-Id': requestId })
+        return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/portal' && req.method === 'GET') {
         finalizeLog(200)
@@ -824,7 +1047,8 @@ export function createHttpServer({ modules }) {
 }
 
 function startServer() {
-  const store = createStore()
+  const piiKeyProvider = bootstrapPiiKeyProvider()
+  const store = createStore({ piiKeyProvider })
   const reads = new SqliteReadRepository()
   const modules = createModules({ store, reads })
   const server = createHttpServer({ modules })

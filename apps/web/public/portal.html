@@ -98,7 +98,6 @@
     </main>
 
     <script type="module">
-      import { createJsonApiClient, routes } from '/api-contract.js'
 
       const token = new URLSearchParams(window.location.search).get('token')
       const title = document.querySelector('#portal-title')
@@ -115,14 +114,17 @@
       const uploadForm = document.querySelector('#portal-upload-form')
       const draftButton = document.querySelector('[data-save-draft]')
 
-      const api = createJsonApiClient()
-
       const portalState = {
         token,
         data: null,
         selectedTemplateId: '',
         sectionRepeats: new Map(),
-        csrfToken: ''
+        csrfToken: '',
+        activeDraftId: '',
+        draftSectionCache: new Map(),
+        draftClientId:
+          globalThis.crypto?.randomUUID?.() || `portal-${Math.random().toString(36).slice(2)}-${Date.now()}`,
+        syncChannel: typeof BroadcastChannel === 'function' ? new BroadcastChannel('klient-portal-draft-sync') : null
       }
 
       const fieldTypeToInput = {
@@ -252,6 +254,13 @@
         return portalState.sectionRepeats.get(sectionIndex) || 1
       }
 
+      function sectionIdentifier(section, sectionIndex) {
+        return String(section.id || section.key || section.title || `section-${sectionIndex + 1}`)
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9_-]+/g, '_')
+      }
+
       function renderTemplateFields() {
         const template = selectedTemplate()
         if (!template) {
@@ -307,6 +316,95 @@
         })
       }
 
+      function buildSectionSnapshot(template, sectionIndex) {
+        const section = template.sections?.[sectionIndex]
+        if (!section) return {}
+        if (section.repeatable) {
+          const rows = []
+          for (let rowIndex = 0; rowIndex < repeatCountFor(sectionIndex); rowIndex += 1) {
+            const row = {}
+            for (const field of section.fields || []) {
+              const element = form.elements.namedItem(fieldName(sectionIndex, field.key, rowIndex))
+              row[field.key] = element ? String(element.value || '').trim() : ''
+            }
+            rows.push(row)
+          }
+          return { rows }
+        }
+        const fields = {}
+        for (const field of section.fields || []) {
+          const element = form.elements.namedItem(fieldName(sectionIndex, field.key))
+          fields[field.key] = element ? String(element.value || '').trim() : ''
+        }
+        return { fields }
+      }
+
+      function applySectionSnapshot(template, sectionIndex, snapshot = {}) {
+        const section = template.sections?.[sectionIndex]
+        if (!section) return
+        if (section.repeatable) {
+          const rows = Array.isArray(snapshot.rows) && snapshot.rows.length ? snapshot.rows : [{}]
+          portalState.sectionRepeats.set(sectionIndex, rows.length)
+          renderTemplateFields()
+          rows.forEach((row, rowIndex) => {
+            ;(section.fields || []).forEach((field) => {
+              const element = form.elements.namedItem(fieldName(sectionIndex, field.key, rowIndex))
+              if (element && typeof row?.[field.key] !== 'undefined') element.value = row[field.key]
+            })
+          })
+          return
+        }
+        ;(section.fields || []).forEach((field) => {
+          const element = form.elements.namedItem(fieldName(sectionIndex, field.key))
+          if (element && typeof snapshot.fields?.[field.key] !== 'undefined') element.value = snapshot.fields[field.key]
+        })
+      }
+
+      async function loadDraftSectionStates() {
+        if (!portalState.activeDraftId) return
+        const states = await apiRequest(`/api/portal/${token}/drafts/${portalState.activeDraftId}/sections`)
+        portalState.draftSectionCache = new Map(
+          (states || []).map((entry) => [entry.sectionId, { version: entry.version, data: entry.data || {} }])
+        )
+      }
+
+      async function persistSectionState(sectionIndex) {
+        const template = selectedTemplate()
+        if (!template || !portalState.activeDraftId) return
+        const section = template.sections?.[sectionIndex]
+        if (!section) return
+        const sectionId = sectionIdentifier(section, sectionIndex)
+        const cached = portalState.draftSectionCache.get(sectionId) || { version: 0, data: {} }
+        const result = await apiRequest(`/api/portal/${token}/drafts/${portalState.activeDraftId}/sections/${sectionId}`, {
+          method: 'PUT',
+          body: JSON.stringify({
+            expectedVersion: cached.version,
+            data: buildSectionSnapshot(template, sectionIndex),
+            clientId: portalState.draftClientId
+          })
+        })
+        if (!result.ok && result.conflict) {
+          portalState.draftSectionCache.set(sectionId, {
+            version: result.state?.version || 0,
+            data: result.state?.data || {}
+          })
+          applySectionSnapshot(template, sectionIndex, result.state?.data || {})
+          statusBadge.textContent = 'Draft updated in another tab; latest values were loaded.'
+          statusBadge.className = 'badge subtle'
+          return
+        }
+        portalState.draftSectionCache.set(sectionId, {
+          version: result.state.version,
+          data: result.state.data || {}
+        })
+        portalState.syncChannel?.postMessage({
+          draftId: portalState.activeDraftId,
+          sectionId,
+          version: result.state.version,
+          data: result.state.data || {}
+        })
+      }
+
       function buildPayloadFromForm() {
         const template = selectedTemplate()
         if (!template) throw new Error('Please select a template.')
@@ -359,6 +457,7 @@
         }
         const response = await fetch(path, { ...options, headers })
         const data = await response.json()
+        if (!response.ok && data?.conflict) return data
         if (!response.ok) throw new Error(data?.error?.message || data?.message || 'Request failed.')
         return data
       }
@@ -378,12 +477,15 @@
           return
         }
 
-        const data = await api(routes.portal(token))
         const data = await apiRequest(`/api/portal/${token}`)
 
         portalState.data = data
         portalState.selectedTemplateId = data.availableTemplates?.[0]?.id || ''
         portalState.sectionRepeats = new Map()
+        portalState.activeDraftId =
+          (data.submissions || []).find(
+            (entry) => entry.templateId === portalState.selectedTemplateId && entry.status === 'draft'
+          )?.id || ''
 
         templatePicker.innerHTML = data.availableTemplates?.length
           ? data.availableTemplates
@@ -396,22 +498,75 @@
         renderCompletion(data)
         renderUploads(data.uploads || [])
         renderTemplateFields()
+        await loadDraftSectionStates()
+        const template = selectedTemplate()
+        template?.sections?.forEach((section, sectionIndex) => {
+          const cache = portalState.draftSectionCache.get(sectionIdentifier(section, sectionIndex))
+          if (cache) applySectionSnapshot(template, sectionIndex, cache.data)
+        })
       }
 
-      templatePicker.addEventListener('change', () => {
+      templatePicker.addEventListener('change', async () => {
         portalState.selectedTemplateId = templatePicker.value
         portalState.sectionRepeats = new Map()
         renderTemplateFields()
+        portalState.activeDraftId =
+          (portalState.data?.submissions || []).find(
+            (entry) => entry.templateId === portalState.selectedTemplateId && entry.status === 'draft'
+          )?.id || ''
+        await loadDraftSectionStates()
+        const template = selectedTemplate()
+        template?.sections?.forEach((section, sectionIndex) => {
+          const cache = portalState.draftSectionCache.get(sectionIdentifier(section, sectionIndex))
+          if (cache) applySectionSnapshot(template, sectionIndex, cache.data)
+        })
+      })
+
+      const sectionPersistTimers = new Map()
+      form.addEventListener('input', (event) => {
+        const target = event.target
+        if (!(target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || target instanceof HTMLSelectElement)) return
+        const [sectionToken] = String(target.name || '').split('::')
+        const sectionIndex = Number((sectionToken || '').replace('section-', ''))
+        if (!Number.isFinite(sectionIndex)) return
+        clearTimeout(sectionPersistTimers.get(sectionIndex))
+        sectionPersistTimers.set(
+          sectionIndex,
+          setTimeout(() => {
+            persistSectionState(sectionIndex).catch((error) => {
+              statusBadge.textContent = error.message
+              statusBadge.className = 'badge subtle'
+            })
+          }, 250)
+        )
+      })
+
+      portalState.syncChannel?.addEventListener('message', (event) => {
+        const payload = event.data || {}
+        if (payload.draftId !== portalState.activeDraftId) return
+        const current = portalState.draftSectionCache.get(payload.sectionId)
+        if (current && current.version >= payload.version) return
+        portalState.draftSectionCache.set(payload.sectionId, {
+          version: payload.version,
+          data: payload.data || {}
+        })
+        const template = selectedTemplate()
+        if (!template) return
+        const sectionIndex = template.sections.findIndex(
+          (section, index) => sectionIdentifier(section, index) === payload.sectionId
+        )
+        if (sectionIndex >= 0) applySectionSnapshot(template, sectionIndex, payload.data || {})
       })
 
       async function saveSubmission(status) {
         const payload = buildPayloadFromForm()
-        await apiRequest(`/api/portal/${token}/submissions`, {
+        const submission = await apiRequest(`/api/portal/${token}/submissions`, {
           method: 'POST',
           body: JSON.stringify({ templateId: portalState.selectedTemplateId, status, data: payload })
         })
+        if (status === 'draft') portalState.activeDraftId = submission.id
         await loadPortal()
-        form.reset()
+        if (status !== 'draft') form.reset()
         statusBadge.textContent = status === 'draft' ? 'Draft saved' : 'Form submitted'
         statusBadge.className = 'badge'
       }
