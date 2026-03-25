@@ -181,6 +181,11 @@ try {
   )
 
   const secondAudit = await context.request('/api/audit', { headers: secondHeaders })
+  assert(secondAudit.length > 0, 'Secondary firm audit stream should include its own tenant activity')
+  assert(
+    secondAudit.some((entry) => entry.entityId === secondProfile.id),
+    'Secondary firm audit stream is missing expected in-tenant profile activity'
+  )
   assert(
     !secondAudit.some((entry) => entry.entityId === ownProfile.id || entry.entityId === household.id),
     'Secondary firm can see audit events from primary firm'

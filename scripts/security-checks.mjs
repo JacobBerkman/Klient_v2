@@ -13,5 +13,10 @@ child.on('exit', (code, signal) => {
     process.exit(1)
     return
   }
+  if ((code ?? 1) !== 0) {
+    process.stderr.write(
+      `Security checks failed with exit code ${code ?? 1}. Suites: ${securitySuites.join(', ')}\n`
+    )
+  }
   process.exit(code ?? 1)
 })

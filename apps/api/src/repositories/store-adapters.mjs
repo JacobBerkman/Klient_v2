@@ -219,17 +219,23 @@ export class StoreExportsRepository extends ExportsRepository {
     super()
     this.store = store
   }
-  list(user) {
-    return this.store.listExports(user)
+  list(firmContext) {
+    return this.store.listExports(firmContext.user || firmContext)
   }
-  create(user, input) {
-    return this.store.createExport(user, input)
+  create(firmContext, input) {
+    return this.store.createExport(firmContext.user || firmContext, input)
   }
   processQueued() {
     return this.store.processQueuedExports()
   }
-  retry(user, exportId) {
-    return this.store.retryExport(user, exportId)
+  retry(firmContext, exportId) {
+    return this.store.retryExport(firmContext.user || firmContext, exportId)
+  }
+  getQueueHealth(firmContext) {
+    return this.store.getExportQueueHealth(firmContext.user || firmContext)
+  }
+  retryFailed(firmContext, options = {}) {
+    return this.store.retryFailedExports(firmContext.user || firmContext, options)
   }
 }
 

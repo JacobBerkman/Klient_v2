@@ -258,8 +258,9 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       ensureLoginAllowed(normalizedEmail, ipAddress)
       const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password))
       if (!user) {
-        recordLoginAttempt(normalizedEmail, false)
-        addAudit(null, null, 'auth', normalizedEmail, 'auth.login.failed', {
+        const existingUser = state.users.find((entry) => entry.email === normalizedEmail)
+        registerFailedLogin(normalizedEmail, ipAddress)
+        addAudit(existingUser?.firmId || 'system', existingUser?.id || null, 'auth', normalizedEmail, 'auth.login.failed', {
           after: { email: normalizedEmail, reason: 'invalid_credentials' }
         })
         throw new Error('Invalid email or password.')

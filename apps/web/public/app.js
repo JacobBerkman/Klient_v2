@@ -5,11 +5,22 @@ const state = {
   user: null,
   view: 'dashboard',
   flash: null,
-  board: null
+  board: null,
+  mfa: {
+    login: null,
+    enrollment: null
+  }
 }
 
 const viewEl = document.querySelector('#view')
 const authStatusEl = document.querySelector('#auth-status')
+const mfaHintEl = document.querySelector('#mfa-hint')
+const mfaLoginFormEl = document.querySelector('#mfa-login-form')
+const mfaEnrollStartEl = document.querySelector('#mfa-enroll-start')
+const mfaEnrollDetailsEl = document.querySelector('#mfa-enroll-details')
+const mfaSecretEl = document.querySelector('#mfa-secret')
+const mfaOtpAuthEl = document.querySelector('#mfa-otpauth')
+const mfaEnrollConfirmFormEl = document.querySelector('#mfa-enroll-confirm-form')
 const householdPrimaryEl = document.querySelector('select[name="primaryClientId"]')
 const portalProfileEl = document.querySelector('select[name="profileId"]')
 
@@ -139,6 +150,47 @@ async function hydrateRuntime() {
   }
   document.querySelector('#demo-login').hidden = !state.enableDemoMode;
   document.querySelector('#demo-credentials').hidden = !state.enableDemoMode;
+}
+
+
+function updateMfaUi() {
+  const hasLoginChallenge = Boolean(state.mfa.login)
+  const hasEnrollment = Boolean(state.mfa.enrollment)
+  mfaLoginFormEl.hidden = !hasLoginChallenge
+  mfaEnrollStartEl.hidden = !state.user || hasLoginChallenge || hasEnrollment
+  mfaEnrollDetailsEl.hidden = !hasEnrollment
+
+  if (hasLoginChallenge) {
+    mfaHintEl.textContent = 'Enter an authenticator code or backup code to complete sign-in.'
+  } else if (hasEnrollment) {
+    mfaHintEl.textContent = 'Confirm enrollment with a fresh authenticator code.'
+    mfaSecretEl.textContent = state.mfa.enrollment.secret
+    mfaOtpAuthEl.textContent = state.mfa.enrollment.otpauthUrl
+  } else if (state.user) {
+    mfaHintEl.textContent = 'You are signed in. You can enroll MFA for this account.'
+    mfaSecretEl.textContent = ''
+    mfaOtpAuthEl.textContent = ''
+  } else {
+    mfaHintEl.textContent = 'Sign in to enroll MFA, or complete an MFA challenge during login.'
+    mfaSecretEl.textContent = ''
+    mfaOtpAuthEl.textContent = ''
+  }
+}
+
+function setPendingMfaLogin(result, credentials) {
+  state.mfa.login = {
+    email: credentials.email,
+    password: credentials.password,
+    challengeToken: result.challengeToken
+  }
+  setFlash('success', 'MFA required. Complete the challenge below to finish signing in.')
+  updateMfaUi()
+}
+
+function clearMfaState() {
+  state.mfa.login = null
+  state.mfa.enrollment = null
+  updateMfaUi()
 }
 
 function roleAllowed(buttonRoleCsv = '') {
@@ -383,12 +435,14 @@ async function hydrateSession() {
     authStatusEl.textContent = JSON.stringify(session.user, null, 2)
     updateRoleVisibility()
     await refreshSelects()
+    updateMfaUi()
   } catch {
     state.token = ''
     localStorage.removeItem('klient-token')
     state.user = null
     authStatusEl.textContent = 'Not signed in'
     updateRoleVisibility()
+    updateMfaUi()
   }
 }
 
@@ -400,6 +454,7 @@ async function finishAuth(session, message) {
   state.view = session.user.role === 'client' ? 'forms' : 'dashboard'
   updateRoleVisibility()
   await refreshSelects()
+  clearMfaState()
   setFlash('success', message)
   await renderCurrentView()
 }
@@ -420,6 +475,11 @@ demoLoginButton.addEventListener('click', async () => {
       method: 'POST',
       body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' })
     })
+    if (session.mfaRequired) {
+      setPendingMfaLogin(session, { email: 'admin@demo.test', password: 'ChangeMe123!' })
+      await renderCurrentView()
+      return
+    }
     await finishAuth(session, 'Signed in with demo account.')
   } catch (error) {
     setFlash('error', error.message)
@@ -445,6 +505,12 @@ document.querySelector('#login-form').addEventListener('submit', async (event) =
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
     const session = await request(routes.login(), { method: 'POST', body: JSON.stringify(payload) })
+    const session = await request('/api/login', { method: 'POST', body: JSON.stringify(payload) })
+    if (session.mfaRequired) {
+      setPendingMfaLogin(session, payload)
+      await renderCurrentView()
+      return
+    }
     event.target.reset()
     await finishAuth(session, 'Signed in successfully.')
   } catch (error) {
@@ -555,6 +621,68 @@ document.querySelector('#portal-form').addEventListener('submit', async (event) 
     await renderCurrentView()
   }
 })
+
+
+mfaLoginFormEl.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  if (!state.mfa.login) return
+  const form = new FormData(event.target)
+  const totpCode = String(form.get('totpCode') || '').trim()
+  const backupCode = String(form.get('backupCode') || '').trim()
+  try {
+    const session = await request('/api/login', {
+      method: 'POST',
+      body: JSON.stringify({
+        email: state.mfa.login.email,
+        password: state.mfa.login.password,
+        mfaChallengeToken: state.mfa.login.challengeToken,
+        ...(totpCode ? { totpCode } : {}),
+        ...(backupCode ? { backupCode } : {})
+      })
+    })
+    event.target.reset()
+    await finishAuth(session, 'Signed in successfully with MFA.')
+  } catch (error) {
+    setFlash('error', error.message)
+    await renderCurrentView()
+  }
+})
+
+mfaEnrollStartEl.addEventListener('click', async () => {
+  try {
+    const result = await request('/api/auth/mfa/enroll', { method: 'POST', body: JSON.stringify({}) })
+    state.mfa.enrollment = result.mfa
+    setFlash('success', 'MFA enrollment started. Confirm with your authenticator app code.')
+    updateMfaUi()
+    await renderCurrentView()
+  } catch (error) {
+    setFlash('error', error.message)
+    await renderCurrentView()
+  }
+})
+
+mfaEnrollConfirmFormEl.addEventListener('submit', async (event) => {
+  event.preventDefault()
+  if (!state.mfa.enrollment) return
+  const code = String(new FormData(event.target).get('code') || '').trim()
+  try {
+    const result = await request('/api/auth/mfa/enroll/confirm', {
+      method: 'POST',
+      body: JSON.stringify({ enrollmentToken: state.mfa.enrollment.enrollmentToken, code })
+    })
+    event.target.reset()
+    state.mfa.enrollment = null
+    const backupCodes = result?.mfa?.backupCodes || []
+    setFlash('success', `MFA enabled. Save backup codes: ${backupCodes.join(', ')}`)
+    updateMfaUi()
+    await renderCurrentView()
+  } catch (error) {
+    setFlash('error', error.message)
+    await renderCurrentView()
+  }
+})
+
+updateMfaUi()
 
 await hydrateSession()
 applyHashRoute()
