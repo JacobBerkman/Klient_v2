@@ -11,6 +11,8 @@ import {
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
+import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
+import { createSamlAuthProvider } from './auth/saml-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
 import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
 
@@ -1002,9 +1004,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   }
 
   function createAuthProvider() {
-    if (runtime.authProvider === 'local') {
-      return createLocalAuthProvider({ state, persist, createSession, addAudit })
-    }
+    const common = { state, persist, createSession, addAudit }
+    if (runtime.authProvider === 'local') return createLocalAuthProvider(common)
+    if (runtime.authProvider === 'oidc') return createOidcAuthProvider(common)
+    if (runtime.authProvider === 'saml') return createSamlAuthProvider(common)
     throw new Error(`Unsupported auth provider: ${runtime.authProvider}.`)
   }
 

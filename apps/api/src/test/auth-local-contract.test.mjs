@@ -20,7 +20,7 @@ function loadStoreWithIsolatedState() {
   })
 }
 
-test('local auth provider preserves register/login behavior', async () => {
+test('local provider contract supports register/login and lockout behavior', async () => {
   const store = await loadStoreWithIsolatedState()
 
   assert.throws(
@@ -47,17 +47,46 @@ test('local auth provider preserves register/login behavior', async () => {
 
   for (let attempt = 0; attempt < 5; attempt += 1) {
     assert.throws(
-      () => store.auth.login({ email: 'alex@example.com', password: 'invalid' }),
+      () => store.auth.login({ email: 'alex@example.com', password: 'invalid', ipAddress: '203.0.113.1' }),
       /Invalid email or password/
     )
   }
+
   assert.throws(
-    () => store.auth.login({ email: 'alex@example.com', password: 'invalid' }),
-    /Too many failed login attempts/
+    () => store.auth.login({ email: 'alex@example.com', password: 'invalid', ipAddress: '203.0.113.1' }),
+    /Too many failed login attempts|Account is temporarily locked/
   )
 })
 
-test('local auth provider preserves password reset behavior', async () => {
+test('local provider contract supports invite acceptance', async () => {
+  const store = await loadStoreWithIsolatedState()
+  const adminSession = store.login({ email: 'admin@demo.test', password: 'ChangeMe123!' })
+  const admin = store.requireUser(adminSession.token)
+
+  const invite = store.inviteUser(admin, { email: 'new.user@example.com', role: 'advisor' })
+  const accepted = store.auth.acceptInvite({
+    token: invite.token,
+    firstName: 'New',
+    lastName: 'User',
+    password: 'InviteSecure123!'
+  })
+
+  assert.ok(accepted.token)
+  assert.equal(store.requireUser(accepted.token).email, 'new.user@example.com')
+
+  assert.throws(
+    () =>
+      store.auth.acceptInvite({
+        token: invite.token,
+        firstName: 'New',
+        lastName: 'User',
+        password: 'InviteSecure123!'
+      }),
+    /Invite not found/
+  )
+})
+
+test('local provider contract enforces password reset and revokes active sessions', async () => {
   const store = await loadStoreWithIsolatedState()
 
   store.auth.register({
@@ -68,19 +97,26 @@ test('local auth provider preserves password reset behavior', async () => {
     password: 'AnotherSecure123!'
   })
 
-  const reset = store.auth.requestReset({ email: 'jordan@example.com' })
+  const sessionA = store.auth.login({ email: 'jordan@example.com', password: 'AnotherSecure123!' })
+  const sessionB = store.auth.login({ email: 'jordan@example.com', password: 'AnotherSecure123!' })
+  assert.ok(sessionA.token)
+  assert.ok(sessionB.token)
+
+  const reset = store.auth.requestReset({ email: 'jordan@example.com', ipAddress: '198.51.100.2' })
   assert.ok(reset.token)
 
   assert.throws(() => store.auth.resetPassword({ token: reset.token, password: 'weak' }), /Password must/)
 
   const result = store.auth.resetPassword({ token: reset.token, password: 'ResetSecure123!' })
-  assert.deepEqual(result, { ok: true })
+  assert.equal(result.ok, true)
+  assert.ok(result.revokedSessions >= 2)
 
+  assert.throws(() => store.requireUser(sessionA.token), /Authentication required/)
   const login = store.auth.login({ email: 'jordan@example.com', password: 'ResetSecure123!' })
   assert.equal(store.requireUser(login.token).email, 'jordan@example.com')
 })
 
-test('legacy store auth methods remain backward-compatible aliases', async () => {
+test('legacy store auth aliases remain backward-compatible', async () => {
   const store = await loadStoreWithIsolatedState()
 
   const registration = store.register({
@@ -95,7 +131,8 @@ test('legacy store auth methods remain backward-compatible aliases', async () =>
   const reset = store.requestPasswordReset('morgan@example.com')
   assert.ok(reset.token)
 
-  assert.deepEqual(store.resetPassword({ token: reset.token, password: 'AliasReset123!' }), { ok: true })
+  const resetResult = store.resetPassword({ token: reset.token, password: 'AliasReset123!' })
+  assert.equal(resetResult.ok, true)
   const session = store.login({ email: 'morgan@example.com', password: 'AliasReset123!' })
   assert.equal(store.requireUser(session.token).email, 'morgan@example.com')
 })

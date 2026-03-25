@@ -51,6 +51,67 @@ function readAuthProvider(value) {
   return normalized
 }
 
+
+function readNonEmptyString(name, fallback = '') {
+  const raw = process.env[name]
+  if (raw === undefined || raw === null) return fallback
+  const normalized = String(raw).trim()
+  return normalized || fallback
+}
+
+function readList(name) {
+  const raw = process.env[name]
+  if (!raw) return []
+  return String(raw)
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+}
+
+function providerRuntimeDiagnostics(authProvider) {
+  const issues = []
+  const warnings = []
+
+  if (authProvider === 'local') {
+    warnings.push('AUTH_PROVIDER=local enables built-in password authentication flows.')
+    return { issues, warnings }
+  }
+
+  if (authProvider === 'oidc') {
+    const issuerUrl = readNonEmptyString('OIDC_ISSUER_URL')
+    const clientId = readNonEmptyString('OIDC_CLIENT_ID')
+    const clientSecret = readNonEmptyString('OIDC_CLIENT_SECRET')
+    const redirectUri = readNonEmptyString('OIDC_REDIRECT_URI')
+
+    if (!issuerUrl) issues.push('OIDC provider requires OIDC_ISSUER_URL.')
+    if (!clientId) issues.push('OIDC provider requires OIDC_CLIENT_ID.')
+    if (!clientSecret) issues.push('OIDC provider requires OIDC_CLIENT_SECRET.')
+    if (!redirectUri) issues.push('OIDC provider requires OIDC_REDIRECT_URI.')
+
+    const allowedAlgs = readList('OIDC_ALLOWED_ALGS')
+    if (allowedAlgs.length === 0) warnings.push('OIDC_ALLOWED_ALGS is unset; provider defaults will be used.')
+    return { issues, warnings }
+  }
+
+  if (authProvider === 'saml') {
+    const entryPoint = readNonEmptyString('SAML_ENTRY_POINT')
+    const issuer = readNonEmptyString('SAML_ISSUER')
+    const cert = readNonEmptyString('SAML_CERT')
+
+    if (!entryPoint) issues.push('SAML provider requires SAML_ENTRY_POINT.')
+    if (!issuer) issues.push('SAML provider requires SAML_ISSUER.')
+    if (!cert) issues.push('SAML provider requires SAML_CERT.')
+
+    const clockSkewSeconds = Number(process.env.SAML_CLOCK_SKEW_SECONDS || 0)
+    if (!Number.isFinite(clockSkewSeconds) || clockSkewSeconds < 0) {
+      issues.push('SAML_CLOCK_SKEW_SECONDS must be a non-negative number when provided.')
+    }
+    return { issues, warnings }
+  }
+
+  issues.push(`Unsupported AUTH_PROVIDER runtime diagnostics for provider "${authProvider}".`)
+  return { issues, warnings }
+}
 function readPiiKeyProvider(value) {
   const normalized = String(value || 'env').toLowerCase()
   if (!['env', 'kms'].includes(normalized)) {
@@ -121,6 +182,7 @@ export const runtime = {
   allowUnsafeAppSecret,
   enableTestCsrfBypass: nodeEnv === 'test' && enableTestCsrfBypass,
   authProvider: readAuthProvider(process.env.AUTH_PROVIDER),
+  authStartupDiagnostics: providerRuntimeDiagnostics(readAuthProvider(process.env.AUTH_PROVIDER)),
   piiKeyProvider: readPiiKeyProvider(process.env.PII_KEY_PROVIDER),
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',
@@ -160,6 +222,13 @@ export function validateRuntimeConfig() {
     issues.push(
       'S3 storage provider requires STORAGE_ENDPOINT, STORAGE_REGION, STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY.'
     )
+  }
+
+  if (runtime.authStartupDiagnostics.issues.length) {
+    issues.push(...runtime.authStartupDiagnostics.issues)
+  }
+  if (runtime.authStartupDiagnostics.warnings.length) {
+    warnings.push(...runtime.authStartupDiagnostics.warnings)
   }
 
   if (runtime.piiKeyProvider === 'kms') {
@@ -210,6 +279,7 @@ export function validateRuntimeConfig() {
       port: runtime.port,
       logLevel: runtime.logLevel,
       authProvider: runtime.authProvider,
+      authDiagnostics: runtime.authStartupDiagnostics,
       piiKeyProvider: runtime.piiKeyProvider,
       serviceName: runtime.serviceName,
       instanceId: runtime.instanceId,

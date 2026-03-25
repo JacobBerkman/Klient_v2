@@ -1,22 +1,25 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
+import { assertAuthProvider } from '../auth/provider-interface.mjs'
 import { createOidcAuthProvider } from '../auth/oidc-provider.mjs'
 import { createSamlAuthProvider } from '../auth/saml-provider.mjs'
 
 function createHarness(createProvider, hooks) {
   const state = { users: [], firms: [], sessions: [], externalIdentities: [] }
-  const provider = createProvider({
-    state,
-    hooks,
-    persist: () => {},
-    addAudit: () => {},
-    createSession(user) {
-      const session = { token: `token-${state.sessions.length + 1}`, userId: user.id }
-      state.sessions.push(session)
-      return session
-    }
-  })
+  const provider = assertAuthProvider(
+    createProvider({
+      state,
+      hooks,
+      persist: () => {},
+      addAudit: () => {},
+      createSession(user) {
+        const session = { token: `token-${state.sessions.length + 1}`, userId: user.id }
+        state.sessions.push(session)
+        return session
+      }
+    })
+  )
   return { provider, state }
 }
 
@@ -48,12 +51,13 @@ const cases = [
 ]
 
 for (const entry of cases) {
-  test(`${entry.name} provider preserves register/login behavior`, () => {
+  test(`${entry.name} provider satisfies contract and preserves register/login behavior`, () => {
     const { provider, state } = createHarness(entry.createProvider, {
       register: () => ({ claims: entry.claims }),
       authenticate: () => ({ claims: entry.claims })
     })
 
+    assert.equal(provider.providerId, entry.name)
     const registration = provider.register({ firmName: 'Secure Wealth' })
     assert.ok(registration.token)
     assert.equal(state.users[0].email, 'alex@example.com')
@@ -66,8 +70,14 @@ for (const entry of cases) {
     assert.equal(state.externalIdentities.length, 1)
   })
 
-  test(`${entry.name} provider request/reset defaults to provider-managed`, () => {
+  test(`${entry.name} provider exposes provider-managed invite/reset semantics`, () => {
     const { provider } = createHarness(entry.createProvider, {})
+
+    assert.deepEqual(provider.acceptInvite({ token: 'invite-token' }), {
+      ok: true,
+      providerManaged: true,
+      provider: entry.name
+    })
     assert.deepEqual(provider.requestReset({ email: 'alex@example.com' }), {
       ok: true,
       providerManaged: true,
