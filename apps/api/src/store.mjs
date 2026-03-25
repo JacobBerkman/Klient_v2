@@ -66,17 +66,17 @@ const PERMISSIONS = {
   client: ['portal:read', 'client:write'],
   anonymous: []
 }
-const BOARD_COLUMNS = [
-  'discovery',
-  'gather_oi',
-  'analysis',
-  'advisor_proposal_meeting',
-  'intake',
-  'on_boarding',
-  'investment_strategy',
-  'completed',
-  'drop_dead_lead',
-  'drop_nurture'
+const DEFAULT_PIPELINE_STAGES = [
+  { id: 'discovery', label: 'Discovery', order: 1, active: true },
+  { id: 'gather_oi', label: 'Gather OI', order: 2, active: true },
+  { id: 'analysis', label: 'Analysis', order: 3, active: true },
+  { id: 'advisor_proposal_meeting', label: 'Advisor Proposal Meeting', order: 4, active: true },
+  { id: 'intake', label: 'Intake', order: 5, active: true },
+  { id: 'on_boarding', label: 'On Boarding', order: 6, active: true },
+  { id: 'investment_strategy', label: 'Investment Strategy', order: 7, active: true },
+  { id: 'completed', label: 'Completed', order: 8, active: true },
+  { id: 'drop_dead_lead', label: 'Drop / Dead Lead', order: 9, active: true },
+  { id: 'drop_nurture', label: 'Drop / Nurture', order: 10, active: true }
 ]
 
 function can(role, permission) {
@@ -953,6 +953,85 @@ export function createStore({
     return state.boardVersions[firmId]
   }
 
+  function sanitizeStageId(value) {
+    const id = String(value || '').trim()
+    return id || null
+  }
+
+  function toStageLabel(stageId) {
+    return stageId
+      .split('_')
+      .filter(Boolean)
+      .map((segment) => `${segment[0]?.toUpperCase() || ''}${segment.slice(1)}`)
+      .join(' ')
+  }
+
+  function getFirmPipelineStageDefinitions(firmId) {
+    const firm = state.firms.find((entry) => entry.id === firmId) || null
+    const configured =
+      (Array.isArray(firm?.pipelineStages) && firm.pipelineStages) ||
+      (Array.isArray(firm?.pipeline?.stages) && firm.pipeline.stages) ||
+      (Array.isArray(firm?.config?.pipeline?.stages) && firm.config.pipeline.stages) ||
+      null
+
+    const source = configured && configured.length > 0 ? configured : DEFAULT_PIPELINE_STAGES
+    const byId = new Map()
+    source.forEach((entry, index) => {
+      const id = sanitizeStageId(entry?.id || entry?.stage || entry?.key)
+      if (!id || byId.has(id)) return
+      byId.set(id, {
+        id,
+        label: String(entry?.label || toStageLabel(id)),
+        order: Number.isFinite(Number(entry?.order)) ? Number(entry.order) : index + 1,
+        active: entry?.active !== false,
+        legacy: false
+      })
+    })
+
+    const normalized = [...byId.values()].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
+    const knownIds = new Set(normalized.map((stage) => stage.id))
+    const legacyIds = new Set(
+      state.profiles
+        .filter((profile) => profile.firmId === firmId && profile.kind === 'prospect' && sanitizeStageId(profile.stage))
+        .map((profile) => sanitizeStageId(profile.stage))
+        .filter((stageId) => stageId && !knownIds.has(stageId))
+    )
+    const legacyStages = [...legacyIds]
+      .sort((a, b) => a.localeCompare(b))
+      .map((id, index) => ({
+        id,
+        label: `${toStageLabel(id)} (Legacy)`,
+        order: normalized.length + index + 1,
+        active: false,
+        legacy: true
+      }))
+
+    return [...normalized, ...legacyStages]
+  }
+
+  function getActiveStageIds(firmId) {
+    return getFirmPipelineStageDefinitions(firmId)
+      .filter((stage) => stage.active)
+      .map((stage) => stage.id)
+  }
+
+  function getDefaultProspectStage(firmId) {
+    const first = getFirmPipelineStageDefinitions(firmId).find((stage) => stage.active)
+    if (!first) {
+      throw new Error('No active pipeline stages are configured for this firm.')
+    }
+    return first.id
+  }
+
+  function assertActiveStageForFirm(firmId, stage, fieldName = 'stage') {
+    const stageId = sanitizeStageId(stage)
+    const activeStageIds = new Set(getActiveStageIds(firmId))
+    if (!stageId || !activeStageIds.has(stageId)) {
+      throw new Error(`Unknown or inactive ${fieldName}: ${stage}.`)
+    }
+    return stageId
+  }
+
   function listProspectsByStage(firmId, stage, excludedProfileId = null) {
     return state.profiles
       .filter(
@@ -986,7 +1065,7 @@ export function createStore({
   }
 
   function normalizePipelineIndices(firmId, stage = null) {
-    const stages = stage ? [stage] : BOARD_COLUMNS
+    const stages = stage ? [stage] : getFirmPipelineStageDefinitions(firmId).map((entry) => entry.id)
     const normalizedStages = []
     for (const currentStage of stages) {
       if (compactStageIndices(firmId, currentStage)) {
@@ -997,14 +1076,26 @@ export function createStore({
   }
 
   function buildBoardPayload(user, conflict = null) {
-    const columns = BOARD_COLUMNS.map((stage) => ({
-      stage,
+    const stageDefinitions = getFirmPipelineStageDefinitions(user.firmId)
+    const columns = stageDefinitions.map((stageDefinition) => ({
+      stage: stageDefinition.id,
+      label: stageDefinition.label,
+      active: stageDefinition.active,
+      legacy: stageDefinition.legacy,
+      order: stageDefinition.order,
       orderingVersion: getBoardVersion(user.firmId),
-      cards: listProspectsByStage(user.firmId, stage)
+      cards: listProspectsByStage(user.firmId, stageDefinition.id)
     }))
     return {
       boardVersion: getBoardVersion(user.firmId),
       generatedAt: now(),
+      stages: stageDefinitions.map((stage) => ({
+        id: stage.id,
+        label: stage.label,
+        order: stage.order,
+        active: stage.active,
+        legacy: stage.legacy
+      })),
       ordering: {
         mode: 'sequential_stage_index',
         normalized: true
@@ -1251,11 +1342,15 @@ export function createStore({
     createProfile(user, input) {
       requirePermission(user, 'profiles:write')
       const createdAt = now()
+      const nextProspectStage =
+        input.kind === 'prospect'
+          ? assertActiveStageForFirm(user.firmId, input.stage || getDefaultProspectStage(user.firmId), 'stage')
+          : null
       const inStage = state.profiles.filter(
         (profile) =>
           profile.firmId === user.firmId &&
           profile.kind === 'prospect' &&
-          profile.stage === (input.stage || 'discovery')
+          profile.stage === nextProspectStage
       ).length
       const profile = {
         pii: {
@@ -1275,7 +1370,7 @@ export function createStore({
         dateOfBirth: '',
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
         status: input.status || (input.kind === 'client' ? 'active' : 'new'),
-        stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
+        stage: nextProspectStage,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
         orderIndex: input.kind === 'prospect' ? inStage + 1 : null,
         pipelineVersion: input.kind === 'prospect' ? 1 : null,
@@ -1315,14 +1410,18 @@ export function createStore({
         patch.stageOrderIndex = null
         patch.orderIndex = null
       }
-      if (patch.kind === 'prospect' && !patch.stage) {
-        patch.stage = 'discovery'
-      }
       const profile = validateTenantEntityOwnership(
         firmContext,
         state.profiles.find((entry) => entry.id === profileId),
         { entityName: 'Profile' }
       )
+      const nextKind = patch.kind || profile.kind
+      if (nextKind === 'prospect' && !patch.stage && ('kind' in patch)) {
+        patch.stage = getDefaultProspectStage(user.firmId)
+      }
+      if (nextKind === 'prospect' && 'stage' in patch) {
+        patch.stage = assertActiveStageForFirm(user.firmId, patch.stage, 'stage')
+      }
       const nextPatch = { ...patch }
       if ('ssn' in nextPatch) {
         profile.pii = {
@@ -1381,9 +1480,7 @@ export function createStore({
       if (!profileId || !toStage) {
         throw new Error('Reorder payload must include profileId and toStage.')
       }
-      if (!BOARD_COLUMNS.includes(toStage)) {
-        throw new Error(`Unknown stage: ${toStage}.`)
-      }
+      const destinationStage = assertActiveStageForFirm(user.firmId, toStage, 'toStage')
 
       try {
         return executePipelineTransaction(() => {
@@ -1417,7 +1514,7 @@ export function createStore({
             })
           }
 
-          const destinationCards = listProspectsByStage(user.firmId, toStage, profile.id)
+          const destinationCards = listProspectsByStage(user.firmId, destinationStage, profile.id)
           let insertIndex = destinationCards.length
           if (beforeProfileId) {
             insertIndex = destinationCards.findIndex((entry) => entry.id === beforeProfileId)
@@ -1429,7 +1526,7 @@ export function createStore({
           const previousStage = profile.stage || null
           const movedAt = now()
           profile.kind = 'prospect'
-          profile.stage = toStage
+          profile.stage = destinationStage
           profile.updatedAt = movedAt
           profile.pipelineVersion = currentVersion + 1
 
@@ -1438,11 +1535,11 @@ export function createStore({
             assignProspectOrderIndex(card, index + 1)
           })
 
-          if (previousStage && previousStage !== toStage) {
+          if (previousStage && previousStage !== destinationStage) {
             compactStageIndices(user.firmId, previousStage)
           }
 
-          normalizePipelineIndices(user.firmId, toStage)
+          normalizePipelineIndices(user.firmId, destinationStage)
           const normalized = normalizePipelineIndices(user.firmId, previousStage)
           if (normalized.length > 0) {
             addAudit(
@@ -1461,7 +1558,7 @@ export function createStore({
             firmId: user.firmId,
             clientId: profile.id,
             fromStage: previousStage,
-            toStage,
+            toStage: destinationStage,
             changedByUserId: user.id,
             changedAt: movedAt
           })
@@ -1471,7 +1568,7 @@ export function createStore({
             'profile',
             profile.id,
             'pipeline.stage_changed',
-            { fromStage: previousStage, toStage, beforeProfileId },
+            { fromStage: previousStage, toStage: destinationStage, beforeProfileId },
             { persist: false }
           )
           return {
