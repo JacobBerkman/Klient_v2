@@ -34,8 +34,22 @@ db.exec(`
     kind TEXT NOT NULL,
     first_name TEXT NOT NULL,
     last_name TEXT NOT NULL,
+    email TEXT,
+    phone TEXT,
+    profile_status TEXT,
     stage TEXT,
     stage_order_index INTEGER,
+    source_city TEXT,
+    source_venue TEXT,
+    source_occurred_on TEXT,
+    household_id TEXT,
+    spouse_client_id TEXT,
+    investable_assets REAL,
+    annual_income REAL,
+    total_assets REAL,
+    total_liabilities REAL,
+    net_worth REAL,
+    extensions_payload TEXT,
     payload TEXT NOT NULL
   );
 
@@ -156,7 +170,32 @@ function ensureExportJobsColumns() {
   }
 }
 
+function ensureProfilesColumns() {
+  const definitions = [
+    ['email', 'TEXT'],
+    ['phone', 'TEXT'],
+    ['profile_status', 'TEXT'],
+    ['source_city', 'TEXT'],
+    ['source_venue', 'TEXT'],
+    ['source_occurred_on', 'TEXT'],
+    ['household_id', 'TEXT'],
+    ['spouse_client_id', 'TEXT'],
+    ['investable_assets', 'REAL'],
+    ['annual_income', 'REAL'],
+    ['total_assets', 'REAL'],
+    ['total_liabilities', 'REAL'],
+    ['net_worth', 'REAL'],
+    ['extensions_payload', 'TEXT']
+  ]
+  for (const [column, ddl] of definitions) {
+    if (!hasColumn('profiles', column)) {
+      db.exec(`ALTER TABLE profiles ADD COLUMN ${column} ${ddl}`)
+    }
+  }
+}
+
 ensureExportJobsColumns()
+ensureProfilesColumns()
 db.exec(
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_export_jobs_firm_idempotency ON export_jobs (firm_id, idempotency_key) WHERE idempotency_key IS NOT NULL'
 )
@@ -169,6 +208,11 @@ db.exec(`
     created_at = COALESCE(created_at, json_extract(payload, '$.createdAt'), datetime('now')),
     updated_at = COALESCE(updated_at, json_extract(payload, '$.updatedAt'), datetime('now')),
     next_attempt_at = COALESCE(next_attempt_at, json_extract(payload, '$.nextAttemptAt'), created_at)
+`)
+
+db.exec(`
+  UPDATE profiles
+  SET order_index = COALESCE(order_index, stage_order_index, json_extract(payload, '$.orderIndex'), json_extract(payload, '$.stageOrderIndex'))
 `)
 
 function nowIso() {
@@ -348,8 +392,22 @@ function syncQueryTables(state) {
     profile.kind,
     profile.firstName,
     profile.lastName,
+    profile.email || null,
+    profile.phone || null,
+    profile.status || null,
     profile.stage || null,
     profile.stageOrderIndex || null,
+    profile.source?.cityOrLocation || null,
+    profile.source?.venue || null,
+    profile.source?.occurredOn || null,
+    profile.householdId || null,
+    profile.spouseClientId || null,
+    Number(profile.financialSummary?.investableAssets || 0),
+    Number(profile.financialSummary?.annualIncome || 0),
+    Number(profile.financialSummary?.totalAssets || 0),
+    Number(profile.financialSummary?.totalLiabilities || 0),
+    Number(profile.financialSummary?.netWorth || 0),
+    JSON.stringify(profile.extensions || {}),
     JSON.stringify(profile)
   ])
   replaceRows('households', state.households || [], (household) => [
@@ -390,7 +448,7 @@ function syncQueryTables(state) {
     event.id,
     event.firmId,
     event.action,
-    event.occurredAt,
+    event.timestamp || event.occurredAt,
     JSON.stringify(event)
   ])
 }

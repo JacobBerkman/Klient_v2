@@ -1,3 +1,5 @@
+import { runAuditedMutation } from '../audit/service.mjs'
+
 export function createExportsService({ store, policy }) {
   return {
     list(user) {
@@ -6,7 +8,7 @@ export function createExportsService({ store, policy }) {
     },
     create(user, input) {
       policy.requireGuard(user, 'canWriteExports')
-      return store.createExport(user, input)
+      return runAuditedMutation(store, () => store.createExport(user, input))
     },
     processQueuedExports(user) {
       policy.requireGuard(user, 'canProcessExports')
@@ -14,15 +16,7 @@ export function createExportsService({ store, policy }) {
     },
     retry(user, exportId) {
       policy.requireGuard(user, 'canWriteExports')
-      return store.retryExport(user, exportId)
-    },
-    getQueueHealth(user) {
-      policy.requireGuard(user, 'canReadExports')
-      return store.getExportQueueHealth(user)
-    },
-    retryFailed(user, options) {
-      policy.requireGuard(user, 'canWriteExports')
-      return store.retryFailedExports(user, options)
+      return runAuditedMutation(store, () => store.retryExport(user, exportId))
     }
   }
 }

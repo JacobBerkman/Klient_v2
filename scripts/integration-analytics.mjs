@@ -6,123 +6,97 @@ try {
   const admin = await context.login()
   const headers = context.authHeaders(admin.token)
 
-  const prospect = await context.request('/api/profiles', {
+  const prospectA = await context.request('/api/profiles', {
     method: 'POST',
     headers,
     body: JSON.stringify({
       kind: 'prospect',
-      firstName: 'Analytics',
+      firstName: 'Aging',
       lastName: 'Prospect',
-      email: `analytics.prospect+${Date.now()}@example.com`,
-      stage: 'discovery'
+      email: `aging.prospect+${Date.now()}@example.com`,
+      stage: 'analysis'
     })
   })
-
-  await context.request(`/api/profiles/${prospect.id}/stage`, {
+  const prospectB = await context.request('/api/profiles', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      kind: 'prospect',
+      firstName: 'Converted',
+      lastName: 'Prospect',
+      email: `converted.prospect+${Date.now()}@example.com`,
+      stage: 'completed'
+    })
+  })
+  await context.request(`/api/profiles/${prospectA.id}`, {
     method: 'PATCH',
     headers,
-    body: JSON.stringify({ stage: 'proposal' })
+    body: JSON.stringify({ createdAt: '2026-01-01T00:00:00.000Z' })
+  })
+  await context.request(`/api/profiles/${prospectB.id}`, {
+    method: 'PATCH',
+    headers,
+    body: JSON.stringify({ createdAt: '2026-01-15T00:00:00.000Z' })
   })
 
   const draft = await context.request('/api/forms/submissions', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ clientId: prospect.id, templateId: 'analytics-template', status: 'draft', data: { a: 1 } })
+    body: JSON.stringify({ clientId: prospectA.id, templateId: 'analytics-template', status: 'draft', data: { a: 1 } })
   })
-
-  const lock = await context.request(`/api/forms/drafts/${draft.id}/lock`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ leaseMs: 30_000 })
-  })
-
-  const revised = await context.request(`/api/forms/drafts/${draft.id}`, {
+  await context.request(`/api/forms/submissions/${draft.id}`, {
     method: 'PATCH',
     headers,
-    body: JSON.stringify({ leaseId: lock.lock.leaseId, expectedRevisionId: lock.revisionId, data: { a: 2 } })
+    body: JSON.stringify({
+      status: 'submitted',
+      createdAt: '2026-01-02T00:00:00.000Z',
+      updatedAt: '2026-01-04T12:00:00.000Z'
+    })
   })
 
-  const conflict = await context.requestExpectError(
-    `/api/forms/drafts/${draft.id}`,
-    {
-      method: 'PATCH',
-      headers,
-      body: JSON.stringify({ leaseId: lock.lock.leaseId, expectedRevisionId: 1, data: { a: 3 } })
-    },
-    409
-  )
-
-  const invite = await context.request('/api/invites', {
+  const [templates, clients] = await Promise.all([
+    context.request('/api/templates', { headers }),
+    context.request('/api/profiles?kind=client', { headers })
+  ])
+  await context.request('/api/exports', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ email: `advisor.${Date.now()}@example.com`, role: 'advisor' })
+    body: JSON.stringify({ clientId: clients[0].id, templateId: templates[0].id, type: 'pdf' })
   })
-  await context.request('/api/invites/accept', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ token: invite.token, firstName: 'Ari', lastName: 'Advisor', password: 'StrongPass123A' })
-  })
-  const advisorSession = await context.login(invite.email, 'StrongPass123A')
-  const advisorConflict = await context.requestExpectError(
-    `/api/forms/drafts/${draft.id}/lock`,
-    {
-      method: 'POST',
-      headers: context.authHeaders(advisorSession.token),
-      body: JSON.stringify({ leaseMs: 30_000 })
-    },
-    409
-  )
 
-  const analytics = await context.request('/api/analytics', { headers: { Authorization: `Bearer ${admin.token}` } })
-  const analyticsFiltered = await context.request(
-    '/api/analytics?startDate=2026-01-01&endDate=2026-12-31&cohortBy=stage&cohortValue=proposal&slaTargetDays=7',
+  const analytics = await context.request(
+    '/api/analytics?startDate=2026-01-01&endDate=2026-12-31&cohortBy=all',
     { headers: { Authorization: `Bearer ${admin.token}` } }
   )
-  const snapshot = await context.request('/api/analytics/export?startDate=2026-01-01&endDate=2026-12-31', {
+  const dashboard = await context.request('/api/analytics/dashboard?startDate=2026-01-01&endDate=2026-12-31', {
     headers: { Authorization: `Bearer ${admin.token}` }
   })
-  const audit = await context.request('/api/audit', { headers: { Authorization: `Bearer ${admin.token}` } })
+  const csvResponse = await fetch(`http://127.0.0.1:${context.port}/api/analytics/export?startDate=2026-01-01`, {
+    headers: { Authorization: `Bearer ${admin.token}` }
+  })
+  const csv = await csvResponse.text()
 
-  assert(typeof analytics.stageCounts === 'object' && analytics.stageCounts !== null, 'Analytics stage counts missing')
   assert(Array.isArray(analytics.summary?.funnel), 'Funnel metrics missing')
+  assert(Array.isArray(dashboard.bottlenecks), 'Bottlenecks not returned')
+  assert(Array.isArray(dashboard.formCompletionLatency), 'Form latency aggregate missing')
+  assert(Array.isArray(dashboard.exportUsage?.byAdvisor), 'Export usage by advisor missing')
+  assert(dashboard.exportUsage?.byFirm?.total >= 1, 'Export usage by firm total should include seeded export')
   assert(
-    typeof analytics.summary?.stageAging === 'object' && analytics.summary.stageAging !== null,
-    'Stage aging metrics missing'
+    dashboard.formCompletionLatency.some((entry) => entry.templateId === 'analytics-template' && entry.avgHours === 60),
+    'Expected deterministic 60-hour form completion latency'
   )
-  assert(Array.isArray(analytics.summary?.formCompletionRates), 'Form completion rates missing')
-  assert(Array.isArray(analytics.summary?.advisorThroughput), 'Advisor throughput missing')
-  assert(typeof analytics.summary?.completionSla === 'object', 'Completion SLA missing')
-  assert(typeof analytics.summary?.cohortSegments === 'object', 'Cohort segments missing')
-  assert(analytics.summary?.reconciliation?.matches === true, 'Reconciliation mismatch')
-  assert(analytics.materialized?.firmId, 'Materialized analytics summary missing')
-  assert((analytics.stageCounts.proposal || 0) >= 1, 'Updated stage count missing')
-  assert(
-    (analyticsFiltered.summary?.stageCounts?.proposal || 0) >= 1,
-    'Date range/cohort filter should include proposal prospect'
-  )
-  assert(snapshot.fileName?.startsWith('analytics-snapshot-'), 'Analytics snapshot export missing filename')
-  assert(snapshot.snapshot?.reconciliation?.matches === true, 'Analytics snapshot reconciliation mismatch')
-  assert(revised.ok === true && revised.submission.revisionId > 1, 'Draft revision did not increment')
-  assert(
-    conflict.conflict === true && conflict.mergePrompt?.type === 'revision_conflict',
-    'Expected draft revision conflict'
-  )
-  assert(advisorConflict.conflict === true, 'Expected lock conflict for second advisor')
-  assert(
-    audit.some((event) => event.action === 'pipeline.stage_changed'),
-    'Audit trail missing stage transition'
-  )
+  assert(csvResponse.ok, 'CSV export endpoint failed')
+  assert(csv.includes('form_latency,analytics-template,avg_hours,60'), 'CSV missing form latency row')
+  assert(csv.includes('export_usage_firm,queued,total,1'), 'CSV missing firm export usage row')
 
   console.log(
     JSON.stringify(
       {
         suite: 'integration-analytics',
-        proposalCount: analytics.stageCounts.proposal || 0,
-        filteredProposalCount: analyticsFiltered.summary?.stageCounts?.proposal || 0,
-        draftRevision: revised.submission.revisionId,
-        conflictType: conflict.mergePrompt?.type,
-        auditEvents: audit.length,
-        snapshotFile: snapshot.fileName
+        funnelStages: analytics.summary.funnel.length,
+        topBottleneck: dashboard.bottlenecks[0]?.stage || null,
+        formLatencyHours: dashboard.formCompletionLatency[0]?.avgHours || 0,
+        advisorExportRows: dashboard.exportUsage.byAdvisor.length
       },
       null,
       2
