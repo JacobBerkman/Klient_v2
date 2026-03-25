@@ -4,7 +4,7 @@ export function createHouseholdsService({ store, policy }) {
   return {
     listHouseholds(user) {
       policy.requireGuard(user, 'canReadHouseholds')
-      return store.listHouseholds(user)
+      return store.listHouseholds(createFirmContext(user))
     },
     createHousehold(user, input) {
       policy.requireGuard(user, 'canWriteHouseholds')

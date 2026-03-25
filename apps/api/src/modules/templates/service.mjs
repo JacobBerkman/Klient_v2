@@ -6,7 +6,7 @@ export function createTemplatesService({ templateRepository, policy, store = nul
   return {
     list(user) {
       policy.requireGuard(user, 'canReadTemplate')
-      return templateRepository.listDocumentTemplates(user)
+      return templateRepository.listDocumentTemplates(createFirmContext(user))
     },
     create(user, input) {
       policy.requireGuard(user, 'canEditTemplate')

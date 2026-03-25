@@ -1,8 +1,10 @@
+import { createFirmContext } from '../shared/tenancy.mjs'
+
 export function createPipelineService({ store, policy }) {
   return {
     moveProfileStage(user, profileId, stage, beforeProfileId = null) {
       policy.requireGuard(user, 'canMovePipeline')
-      return store.moveProfileStage(user, profileId, stage, beforeProfileId)
+      return store.moveProfileStage(createFirmContext(user), profileId, stage, beforeProfileId)
     },
     reorderBoard(user, input) {
       policy.requireGuard(user, 'canMovePipeline')
@@ -10,7 +12,7 @@ export function createPipelineService({ store, policy }) {
     },
     getBoard(user) {
       policy.requireGuard(user, 'canReadPipeline')
-      return store.getBoard(user)
+      return store.getBoard(createFirmContext(user))
     }
   }
 }

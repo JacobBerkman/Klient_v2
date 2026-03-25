@@ -1,3 +1,5 @@
+import { createFirmContext } from '../shared/tenancy.mjs'
+
 export function createFormsService({ store, policy }) {
   function getSubmissionOrThrow(user, submissionId) {
     const submission = store.listFormSubmissions(user).find((entry) => entry.id === submissionId)
@@ -29,27 +31,27 @@ export function createFormsService({ store, policy }) {
   return {
     listFormTemplates(user) {
       policy.requireGuard(user, 'canReadForms')
-      return store.listFormTemplates(user)
+      return store.listFormTemplates(createFirmContext(user))
     },
     createFormTemplate(user, input) {
       policy.requireGuard(user, 'canWriteForms')
-      return store.createFormTemplate(user, input)
+      return store.createFormTemplate(createFirmContext(user), input)
     },
     listFormSubmissions(user) {
       policy.requireGuard(user, 'canReadForms')
-      return store.listFormSubmissions(user)
+      return store.listFormSubmissions(createFirmContext(user))
     },
     listFormDrafts(user) {
       policy.requireGuard(user, 'canReadForms')
-      return store.listFormDrafts(user)
+      return store.listFormDrafts(createFirmContext(user))
     },
     createFormSubmission(user, input) {
       policy.requireGuard(user, 'canWriteForms')
-      return store.createFormSubmission(user, input)
+      return store.createFormSubmission(createFirmContext(user), input)
     },
     updateSubmission(user, submissionId, patch) {
       policy.requireGuard(user, 'canWriteForms')
-      return store.updateSubmission(user, submissionId, patch)
+      return store.updateSubmission(createFirmContext(user), submissionId, patch)
     },
     updateSubmissionSectionItem(user, submissionId, sectionKey, itemKey, patch = {}) {
       policy.requireGuard(user, 'canWriteForms')
@@ -100,19 +102,19 @@ export function createFormsService({ store, policy }) {
     },
     deleteSubmission(user, submissionId) {
       policy.requireGuard(user, 'canWriteForms')
-      return store.deleteSubmission(user, submissionId)
+      return store.deleteSubmission(createFirmContext(user), submissionId)
     },
     getClientWorkspace(user) {
       policy.requireGuard(user, 'canReadClientWorkspace')
-      return store.getClientWorkspace(user)
+      return store.getClientWorkspace(createFirmContext(user))
     },
     submitClientForm(user, input) {
       policy.requireGuard(user, 'canWriteClientWorkspace')
-      return store.submitClientForm(user, input)
+      return store.submitClientForm(createFirmContext(user), input)
     },
     submitClientUpload(user, input) {
       policy.requireGuard(user, 'canWriteClientWorkspace')
-      return store.submitClientUpload(user, input)
+      return store.submitClientUpload(createFirmContext(user), input)
     },
     createClientUploadPresign(user, input) {
       policy.requireGuard(user, 'canWriteClientWorkspace')

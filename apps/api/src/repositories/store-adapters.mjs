@@ -6,6 +6,7 @@ import { FormsRepository } from '../modules/forms/repository.mjs'
 import { ExportsRepository } from '../modules/exports/repository.mjs'
 import { AuditRepository } from '../modules/audit/repository.mjs'
 import { AnalyticsRepository } from '../modules/analytics/repository.mjs'
+import { requireFirmContext } from '../modules/shared/tenancy.mjs'
 
 export class StoreProfileRepository extends ProfileRepository {
   constructor(store, reads) {
@@ -14,35 +15,44 @@ export class StoreProfileRepository extends ProfileRepository {
     this.reads = reads
   }
 
-  listProfiles(user, query) {
-    return this.reads.listProfiles(user.firmId, query)
+  listProfiles(firmContext, query) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.listProfiles' })
+    return this.reads.listProfiles(context.firmId, query)
   }
-  getProfileDetail(user, profileId) {
+  getProfileDetail(firmContext, profileId) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.getProfileDetail' })
     return {
-      ...this.store.getProfileDetail(user, profileId),
-      profileRecord: this.reads.getProfileDetail(user.firmId, profileId)
+      ...this.store.getProfileDetail(context, profileId),
+      profileRecord: this.reads.getProfileDetail(context.firmId, profileId)
     }
   }
-  createProfile(user, input) {
-    return this.store.createProfile(user, input)
+  createProfile(firmContext, input) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.createProfile' })
+    return this.store.createProfile(context, input)
   }
-  updateProfile(user, profileId, patch) {
-    return this.store.updateProfile(user, profileId, patch)
+  updateProfile(firmContext, profileId, patch) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.updateProfile' })
+    return this.store.updateProfile(context, profileId, patch)
   }
-  listStageHistory(user, profileId) {
-    return this.store.listStageHistory(user, profileId)
+  listStageHistory(firmContext, profileId) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.listStageHistory' })
+    return this.store.listStageHistory(context, profileId)
   }
-  listNotes(user, profileId) {
-    return this.store.listNotes(user, profileId)
+  listNotes(firmContext, profileId) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.listNotes' })
+    return this.store.listNotes(context, profileId)
   }
-  addNote(user, profileId, body) {
-    return this.store.addNote(user, profileId, body)
+  addNote(firmContext, profileId, body) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.addNote' })
+    return this.store.addNote(context, profileId, body)
   }
-  getDashboard(user) {
-    return this.store.getDashboard(user)
+  getDashboard(firmContext) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.getDashboard' })
+    return this.store.getDashboard(context)
   }
-  getMaskedSensitiveData(user, profileId, options = {}) {
-    return this.store.getMaskedSensitiveData(user, profileId, options)
+  getMaskedSensitiveData(firmContext, profileId, options = {}) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.getMaskedSensitiveData' })
+    return this.store.getMaskedSensitiveData(context, profileId, options)
   }
 }
 
@@ -51,11 +61,13 @@ export class StoreTemplateRepository extends TemplateRepository {
     super()
     this.store = store
   }
-  listDocumentTemplates(user) {
-    return this.store.listDocumentTemplates(user)
+  listDocumentTemplates(firmContext) {
+    const context = requireFirmContext(firmContext, { method: 'templates.listDocumentTemplates' })
+    return this.store.listDocumentTemplates(context)
   }
-  createDocumentTemplate(user, input) {
-    return this.store.createDocumentTemplate(user, input)
+  createDocumentTemplate(firmContext, input) {
+    const context = requireFirmContext(firmContext, { method: 'templates.createDocumentTemplate' })
+    return this.store.createDocumentTemplate(context, input)
   }
   updateTemplateMappings(user, templateId, mappings, input) {
     return this.store.updateTemplateMappings(user, templateId, mappings, input)
@@ -75,8 +87,9 @@ export class StoreTemplateRepository extends TemplateRepository {
   listPublishTransitions(user, templateId) {
     return this.store.listPublishTransitions(user, templateId)
   }
-  autoBuildTemplate(user, input) {
-    return this.store.autoBuildTemplate(user, input)
+  autoBuildTemplate(firmContext, input) {
+    const context = requireFirmContext(firmContext, { method: 'templates.autoBuildTemplate' })
+    return this.store.autoBuildTemplate(context, input)
   }
 }
 
@@ -220,13 +233,16 @@ export class StoreAnalyticsRepository extends AnalyticsRepository {
   getStageCounts(firmId) {
     return this.reads.getAnalytics(firmId)
   }
-  getSummary(user) {
-    return this.store.getAnalytics(user)
+  getSummary(firmContext) {
+    const context = requireFirmContext(firmContext, { method: 'analytics.getSummary' })
+    return this.store.getAnalytics(context)
   }
-  listAuditEvents(user) {
-    return this.store.listAudit(user)
+  listAuditEvents(firmContext) {
+    const context = requireFirmContext(firmContext, { method: 'analytics.listAuditEvents' })
+    return this.store.listAudit(context)
   }
-  listExports(user) {
-    return this.store.listExports(user)
+  listExports(firmContext) {
+    const context = requireFirmContext(firmContext, { method: 'analytics.listExports' })
+    return this.store.listExports(context)
   }
 }

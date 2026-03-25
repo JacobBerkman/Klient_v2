@@ -1,20 +1,20 @@
 export class FormsRepository {
-  listFormTemplates(_user) {
+  listFormTemplates(_firmContext) {
     throw new Error('Not implemented')
   }
-  createFormTemplate(_user, _input) {
+  createFormTemplate(_firmContext, _input) {
     throw new Error('Not implemented')
   }
-  listFormSubmissions(_user) {
+  listFormSubmissions(_firmContext) {
     throw new Error('Not implemented')
   }
-  listFormDrafts(_user) {
+  listFormDrafts(_firmContext) {
     throw new Error('Not implemented')
   }
-  createFormSubmission(_user, _input) {
+  createFormSubmission(_firmContext, _input) {
     throw new Error('Not implemented')
   }
-  updateSubmission(_user, _submissionId, _patch) {
+  updateSubmission(_firmContext, _submissionId, _patch) {
     throw new Error('Not implemented')
   }
   updateSubmissionSectionItem(_user, _submissionId, _sectionKey, _itemKey, _patch) {
@@ -26,13 +26,13 @@ export class FormsRepository {
   deleteSubmission(_user, _submissionId) {
     throw new Error('Not implemented')
   }
-  getClientWorkspace(_user) {
+  getClientWorkspace(_firmContext) {
     throw new Error('Not implemented')
   }
-  submitClientForm(_user, _input) {
+  submitClientForm(_firmContext, _input) {
     throw new Error('Not implemented')
   }
-  submitClientUpload(_user, _input) {
+  submitClientUpload(_firmContext, _input) {
     throw new Error('Not implemented')
   }
   createClientUploadPresign(_user, _input) {

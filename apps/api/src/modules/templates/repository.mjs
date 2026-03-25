@@ -1,14 +1,14 @@
 export class TemplateRepository {
-  listDocumentTemplates() {
+  listDocumentTemplates(_firmContext) {
     throw new Error('TemplateRepository.listDocumentTemplates not implemented')
   }
-  createDocumentTemplate() {
+  createDocumentTemplate(_firmContext, _input) {
     throw new Error('TemplateRepository.createDocumentTemplate not implemented')
   }
-  updateTemplateMappings() {
+  updateTemplateMappings(_firmContext, _templateId, _mappings) {
     throw new Error('TemplateRepository.updateTemplateMappings not implemented')
   }
-  publishTemplate() {
+  publishTemplate(_firmContext, _templateId) {
     throw new Error('TemplateRepository.publishTemplate not implemented')
   }
   compareTemplateVersions() {

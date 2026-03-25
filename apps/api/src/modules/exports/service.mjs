@@ -4,7 +4,7 @@ export function createExportsService({ store, policy }) {
   return {
     list(user) {
       policy.requireGuard(user, 'canReadExports')
-      return store.listExports(user)
+      return store.listExports(createFirmContext(user))
     },
     create(user, input) {
       policy.requireGuard(user, 'canWriteExports')
