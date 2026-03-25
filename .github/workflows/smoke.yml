@@ -1,28 +1,66 @@
-name: smoke-and-integration
+name: release-gate
 
 on:
   push:
   pull_request:
 
 jobs:
-  smoke:
+  validate-master:
+    name: validate-master (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
-      - run: node --check apps/api/src/runtime.mjs
-      - run: node --check apps/api/src/storage.mjs
-      - run: node --check apps/api/src/server.mjs
-      - run: node --check apps/api/src/store.mjs
-      - run: node --check apps/web/public/app.js
-      - run: node --check scripts/api-contract-test.mjs
-      - run: node --check scripts/backup-db.mjs
-      - run: node --check scripts/export-worker.mjs
-      - run: node --check scripts/restore-db.mjs
-      - run: node --check scripts/smoke-test.mjs
-      - run: node scripts/api-contract-test.mjs
-      - run: node scripts/smoke-test.mjs
-      - run: git diff --check
-      - run: npm run test:all
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Prepare artifact folders
+        run: mkdir -p artifacts/logs artifacts/metadata
+
+      - name: Run canonical gate (validate:master)
+        run: |
+          set -o pipefail
+          npm run validate:master 2>&1 | tee "artifacts/logs/validate-master-node${{ matrix.node-version }}.log"
+
+      - name: Capture backup metadata (release evidence)
+        if: matrix.node-version == 22
+        run: |
+          set -euo pipefail
+          backup_json="$(npm run --silent backup)"
+          printf '%s\n' "$backup_json" | tee "artifacts/logs/backup-node${{ matrix.node-version }}.log" > "artifacts/metadata/backup-result-node${{ matrix.node-version }}.json"
+
+      - name: Upload release evidence artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-evidence-node${{ matrix.node-version }}
+          if-no-files-found: warn
+          path: |
+            artifacts/logs/validate-master-node${{ matrix.node-version }}.log
+            artifacts/logs/backup-node${{ matrix.node-version }}.log
+            artifacts/main-parity.json
+            artifacts/metadata/backup-result-node${{ matrix.node-version }}.json
+
+  required-status-checks:
+    name: required-status-checks
+    runs-on: ubuntu-latest
+    needs: [validate-master]
+    if: always()
+    steps:
+      - name: Enforce required status checks before merge
+        run: |
+          if [ "${{ needs.validate-master.result }}" != "success" ]; then
+            echo "required-status-checks failed because validate-master did not pass on all supported Node versions"
+            exit 1
+          fi
+          echo "All required status checks passed."
