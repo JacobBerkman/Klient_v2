@@ -19,6 +19,7 @@ npm run validate:master
 | Migration checks | Data/DB Owner | `npm run check:migrations` | Exit code `0`; migration order and idempotency checks pass for template aggregate + PII re-encryption path. | **SEV-1** | Roll back if migration idempotency fails, aggregate counts drift, or any data correctness SLO is violated; database restore required on confirmed corruption (SLA). |
 | Smoke | Release Manager | `npm run test:smoke` | Exit code `0`; login, profile, template publish, and export flow succeed end-to-end. | **SEV-1** | Roll back if smoke journey fails twice consecutively post-deploy or any core user journey remains broken for **10 minutes**. |
 | Security checks | Security Owner | `npm run test:security` | Exit code `0`; auth policy and PII crypto tests pass. | **SEV-0/1** | Roll back immediately on auth bypass, PII exposure risk, or crypto regression (SLA/security policy breach). |
+| Claim-status review | Product + Release Manager | `docs/release-ready-checklist.md` + `README.md` + landing page claim audit panel | Every user-facing marketing/UI claim is tagged (`implemented`/`partial`/`roadmap`) and any non-implemented claim has feature-flag indicator + milestone link. | **SEV-1** | Block production deploy until claim status audit is complete and signed; roll back if a production claim is found materially incorrect post-deploy. |
 | Branch parity | Engineering Manager | `npm run check:merge-main` | Exit code `0`; branch is merge-compatible with `main`. | **SEV-2** | No runtime rollback trigger by itself; block release until parity is restored. |
 | Backup present | SRE / On-call | `npm run backup` | New timestamped backup artifact exists in `data/`. | **SEV-1** | Roll back and halt further deploys if deploy proceeds without a verified fresh backup. |
 | Runtime health after deploy | SRE / On-call | `curl http://<host>/health` + `curl http://<host>/ready` | Both endpoints return HTTP `200` and readiness `status=ready`. | **SEV-1** | Roll back if health/readiness are non-200 for **>5 minutes** or if readiness remains degraded after one remediation attempt. |
@@ -68,6 +69,7 @@ Use this template for every release and store it with deployment artifacts:
 | Migration checks | Data/DB Owner |  | SEV-1 | `npm run check:migrations` |  |  |  |
 | Smoke | Release Manager |  | SEV-1 | `npm run test:smoke` |  |  |  |
 | Security checks | Security Owner |  | SEV-0/1 | `npm run test:security` |  |  |  |
+| Claim-status review | Product + Release Manager |  | SEV-1 | release claim audit checklist + links |  |  |  |
 | Branch parity | Engineering Manager |  | SEV-2 | `npm run check:merge-main` |  |  |  |
 | Backup present | SRE / On-call |  | SEV-1 | `npm run backup` |  |  |  |
 | Runtime health after deploy | SRE / On-call |  | SEV-1 | `/health` + `/ready` checks |  |  |  |
