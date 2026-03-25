@@ -62,6 +62,16 @@ function applyTransform(value, transform) {
   }
 }
 
+function summarizeTransform(transform) {
+  if (!transform || typeof transform !== 'object') return null
+  const type = String(transform.type || '').trim()
+  if (!type) return null
+  const summary = { type }
+  if (type === 'currency' && transform.currency) summary.currency = String(transform.currency)
+  if (type === 'expression' && transform.expression) summary.expression = String(transform.expression)
+  return summary
+}
+
 function resolveSourceValue({ sourcePath, profile, submission }) {
   if (!sourcePath) return undefined
   if (sourcePath.startsWith('profile.')) {
@@ -81,6 +91,15 @@ function normalizeResolvedValue(rule, rawValue) {
   return transformed
 }
 
+function addWarning(warnings, code, message, options = {}) {
+  warnings.push({
+    code,
+    message,
+    severity: options.severity || 'warning',
+    blocking: options.blocking === true
+  })
+}
+
 export function canonicalizeMappings(inputMappings = []) {
   return convertLegacyMappingRules(inputMappings).map((rule) => ({ ...rule }))
 }
@@ -91,20 +110,54 @@ export function computeMappingVersionHash(mappings = []) {
 
 export function resolveExportData({ mappings = [], profile = null, submission = null } = {}) {
   const canonicalMappings = canonicalizeMappings(mappings)
-  const rows = canonicalMappings.map((rule) => {
+  const rows = canonicalMappings.map((rule, index) => {
     const sourcePath = String(rule.sourcePath || '').trim()
     const rawValue = resolveSourceValue({ sourcePath, profile, submission })
+    const transformed = applyTransform(rawValue, rule?.transform || null)
     const value = normalizeResolvedValue(rule, rawValue)
+    const warnings = []
+    if (sourcePath && rawValue === undefined) {
+      addWarning(warnings, 'UNRESOLVED_SOURCE_PATH', `No value found for source path "${sourcePath}".`)
+    }
+    if ((transformed === null || transformed === undefined || transformed === '') && Object.hasOwn(rule || {}, 'defaultValue')) {
+      addWarning(warnings, 'FALLBACK_DEFAULT_APPLIED', 'Default value applied after transform.')
+    }
+    if (rawValue != null && (transformed === null || transformed === undefined || transformed === '')) {
+      addWarning(warnings, 'NULL_AFTER_TRANSFORM', 'Transform produced an empty value from a non-empty source.')
+    }
+    const targetType = String(rule.targetType || '').trim()
+    if (targetType && value != null) {
+      const valueType = Array.isArray(value) ? 'array' : typeof value
+      const normalizedType = valueType === 'number' || valueType === 'boolean' || valueType === 'string' ? valueType : 'text'
+      if (normalizedType !== targetType && !(targetType === 'text' && normalizedType === 'string')) {
+        addWarning(
+          warnings,
+          'TYPE_MISMATCH_HINT',
+          `Resolved value type "${normalizedType}" may not match targetType "${targetType}".`
+        )
+      }
+    }
     return {
+      rowIndex: index,
       pdfField: String(rule.pdfField || '').trim(),
       sourcePath,
+      targetType,
+      transform: summarizeTransform(rule?.transform || null),
       value,
-      rawValue: rawValue === undefined ? null : rawValue
+      rawValue: rawValue === undefined ? null : rawValue,
+      warnings
     }
   })
+  const warningsCount = rows.reduce((count, row) => count + row.warnings.length, 0)
+  const blockingWarningsCount = rows.reduce(
+    (count, row) => count + row.warnings.filter((warning) => warning.blocking).length,
+    0
+  )
 
   return {
     rows,
-    mappingVersionHash: computeMappingVersionHash(canonicalMappings)
+    mappingVersionHash: computeMappingVersionHash(canonicalMappings),
+    warningsCount,
+    blockingWarningsCount
   }
 }
