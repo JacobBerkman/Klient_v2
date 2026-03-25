@@ -25,11 +25,12 @@ const PERMISSIONS = {
     'pipeline:write',
     'households:write',
     'forms:write',
+    'templates:read',
     'templates:write',
     'exports:write',
     'analytics:read'
   ],
-  readonly: ['profiles:read', 'analytics:read'],
+  readonly: ['profiles:read', 'templates:read', 'analytics:read'],
   client: ['portal:read', 'client:write']
 }
 const BOARD_COLUMNS = [
@@ -2008,7 +2009,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       }
     },
     listTemplateVersions(user, templateId) {
-      requirePermission(user, 'templates:write')
+      requirePermission(user, 'templates:read')
       const template = state.templateAggregates.find(
         (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
       )
@@ -2016,7 +2017,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return template.versions || []
     },
     listPublishTransitions(user, templateId) {
-      requirePermission(user, 'templates:write')
+      requirePermission(user, 'templates:read')
       const template = state.templateAggregates.find(
         (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
       )

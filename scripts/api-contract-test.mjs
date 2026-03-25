@@ -160,4 +160,89 @@ test('production Node server contract supports auth and profile workflows', asyn
   })
   assert.equal(auditResponse.status, 200)
   assert.ok(audit.some((entry) => entry.entityId === profile.id && entry.action === 'pipeline.stage_changed'))
+
+  const { response: templateCreateResponse, data: template } = await jsonFetch(port, '/api/templates', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      name: 'Contract Template',
+      fileName: 'contract-template.pdf',
+      blueprint: { sections: [{ title: 'Summary', fields: ['client.name'] }] },
+      mappings: [{ key: 'client.name', source: 'profile.fullName' }]
+    })
+  })
+  assert.equal(templateCreateResponse.status, 201, JSON.stringify(template))
+
+  const { response: templatePublishResponse } = await jsonFetch(port, `/api/templates/${template.id}/publish`, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Contract test publish' })
+  })
+  assert.equal(templatePublishResponse.status, 200)
+
+  const readonlyEmail = 'readonly.contract@demo.test'
+  const readonlyPassword = 'ReadonlyPass123!'
+  const { response: inviteResponse, data: invite } = await jsonFetch(port, '/api/invites', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({ email: readonlyEmail, role: 'readonly' })
+  })
+  assert.equal(inviteResponse.status, 201, JSON.stringify(invite))
+
+  const { response: acceptInviteResponse, data: readonlySession } = await jsonFetch(port, '/api/invites/accept', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      token: invite.token,
+      firstName: 'Read',
+      lastName: 'Only',
+      password: readonlyPassword
+    })
+  })
+  assert.equal(acceptInviteResponse.status, 200, JSON.stringify(readonlySession))
+
+  const readonlyAuth = { Authorization: `Bearer ${readonlySession.token}` }
+  const { response: readonlyVersionsResponse, data: readonlyVersions } = await jsonFetch(
+    port,
+    `/api/templates/${template.id}/versions`,
+    { headers: readonlyAuth }
+  )
+  assert.equal(readonlyVersionsResponse.status, 200, JSON.stringify(readonlyVersions))
+  assert.ok(Array.isArray(readonlyVersions) && readonlyVersions.length >= 2)
+
+  const { response: readonlyTransitionsResponse, data: readonlyTransitions } = await jsonFetch(
+    port,
+    `/api/templates/${template.id}/publish-transitions`,
+    { headers: readonlyAuth }
+  )
+  assert.equal(readonlyTransitionsResponse.status, 200, JSON.stringify(readonlyTransitions))
+  assert.ok(readonlyTransitions.some((entry) => entry.from === 'draft' && entry.to === 'published'))
+
+  const outsiderEmail = `outside.${Date.now()}@demo.test`
+  const outsiderPassword = 'OutsidePass123!'
+  const { response: outsiderRegisterResponse, data: outsider } = await jsonFetch(port, '/api/register', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      firmName: 'Outside Advisory',
+      firstName: 'Outside',
+      lastName: 'Admin',
+      email: outsiderEmail,
+      password: outsiderPassword
+    })
+  })
+  assert.equal(outsiderRegisterResponse.status, 201, JSON.stringify(outsider))
+
+  const outsiderAuth = { Authorization: `Bearer ${outsider.token}` }
+  const { response: outsiderVersionsResponse } = await jsonFetch(port, `/api/templates/${template.id}/versions`, {
+    headers: outsiderAuth
+  })
+  assert.equal(outsiderVersionsResponse.status, 400)
+
+  const { response: outsiderTransitionsResponse } = await jsonFetch(
+    port,
+    `/api/templates/${template.id}/publish-transitions`,
+    { headers: outsiderAuth }
+  )
+  assert.equal(outsiderTransitionsResponse.status, 400)
 })
