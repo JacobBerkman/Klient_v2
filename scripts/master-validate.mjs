@@ -10,39 +10,84 @@ const gateSteps = [
   { name: 'Merge/main parity check', command: 'npm', args: ['run', 'check:merge-main'] }
 ]
 
-function runStep(step) {
+function formatCommand(step) {
+  return `${step.command} ${step.args.join(' ')}`
+}
+
+function runStep(step, index, total) {
   return new Promise((resolve, reject) => {
-    process.stdout.write(`\n▶ ${step.name}\n$ ${step.command} ${step.args.join(' ')}\n\n`)
+    const start = Date.now()
+    process.stdout.write(`\n▶ [${index + 1}/${total}] ${step.name}\n$ ${formatCommand(step)}\n\n`)
+
     const child = spawn(step.command, step.args, {
       stdio: 'inherit',
       shell: process.platform === 'win32',
       env: process.env
     })
 
-    child.on('error', reject)
+    child.on('error', (error) => {
+      reject(
+        new Error(`Failed to launch step "${step.name}" (${formatCommand(step)}): ${error.message}`)
+      )
+    })
+
     child.on('exit', (code, signal) => {
+      const durationMs = Date.now() - start
       if (signal) {
-        reject(new Error(`${step.name} terminated by signal ${signal}`))
+        reject(new Error(`Step "${step.name}" terminated by signal ${signal} after ${durationMs}ms`))
         return
       }
       if (code !== 0) {
-        const error = new Error(`${step.name} failed with exit code ${code}`)
+        const error = new Error(
+          `Step "${step.name}" failed with exit code ${code} after ${durationMs}ms (${formatCommand(step)})`
+        )
         error.exitCode = code
         reject(error)
         return
       }
-      resolve()
+      resolve({ durationMs })
     })
   })
 }
 
-try {
-  for (const step of gateSteps) {
+const results = []
+let failure = null
+
+for (let index = 0; index < gateSteps.length; index += 1) {
+  const step = gateSteps[index]
+  try {
     // eslint-disable-next-line no-await-in-loop
-    await runStep(step)
+    const result = await runStep(step, index, gateSteps.length)
+    results.push({ ...step, status: 'passed', durationMs: result.durationMs })
+  } catch (error) {
+    results.push({ ...step, status: 'failed' })
+    failure = error
+    break
   }
+}
+
+const executedCount = results.length
+const skipped = gateSteps.slice(executedCount)
+
+process.stdout.write('\nGate execution summary:\n')
+for (const result of results) {
+  if (result.status === 'passed') {
+    process.stdout.write(`  ✓ ${result.name} (${formatCommand(result)}) in ${result.durationMs}ms\n`)
+  } else {
+    process.stdout.write(`  ✗ ${result.name} (${formatCommand(result)})\n`)
+  }
+}
+
+if (skipped.length > 0) {
+  process.stdout.write('\nNot executed due to earlier failure:\n')
+  for (const step of skipped) {
+    process.stdout.write(`  • ${step.name} (${formatCommand(step)})\n`)
+  }
+}
+
+if (failure) {
+  process.stderr.write(`\n❌ ${failure.message}\n`)
+  process.exitCode = Number.isInteger(failure.exitCode) ? failure.exitCode : 1
+} else {
   process.stdout.write('\n✅ Hard release gate passed.\n')
-} catch (error) {
-  process.stderr.write(`\n❌ ${error.message}\n`)
-  process.exitCode = Number.isInteger(error.exitCode) ? error.exitCode : 1
 }

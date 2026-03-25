@@ -11,8 +11,14 @@ import { createSamlAuthProvider } from './auth/saml-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
 import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
+import { convertLegacyFormDefinition } from './modules/forms/schema/form-definition-validator.mjs'
+import { createCanonicalAuditEvent } from './modules/audit/schema.mjs'
+import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
+import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs'
+import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
+const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7
 const PERMISSIONS = {
   admin: ['*'],
   advisor: [
@@ -679,7 +685,7 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
   }
 }
 
-export function createStore({ objectStorage = defaultObjectStorage } = {}) {
+export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvider = null, piiCrypto = null } = {}) {
   const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
   state.profiles = (state.profiles || []).map(normalizeProfileRecord)
@@ -2083,14 +2089,20 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     inviteUser(user, input) {
       requirePermission(user, 'profiles:write')
+      const allowedRoles = new Set(['advisor', 'readonly', 'client'])
+      const role = input.role || 'advisor'
+      if (!allowedRoles.has(role)) {
+        throw new Error('Invalid invite role.')
+      }
       const invite = {
         id: randomUUID(),
         firmId: user.firmId,
         email: input.email.toLowerCase(),
-        role: input.role || 'advisor',
+        role,
         invitedByUserId: user.id,
         token: randomUUID(),
-        createdAt: now()
+        createdAt: now(),
+        expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString()
       }
       state.invites.push(invite)
       addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role })
@@ -2101,6 +2113,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       assertStrongPassword(input.password)
       const invite = state.invites.find((entry) => entry.token === input.token)
       if (!invite) throw new Error('Invite not found.')
+      if (invite.expiresAt && new Date(invite.expiresAt).getTime() <= Date.now()) {
+        throw new Error('Invite expired.')
+      }
       const user = {
         id: randomUUID(),
         firmId: invite.firmId,
@@ -2125,6 +2140,21 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     resetPassword(input) {
       return auth.resetPassword(input)
+    },
+    startTotpEnrollment(user) {
+      return auth.startTotpEnrollment(user)
+    },
+    confirmTotpEnrollment(user, input) {
+      return auth.confirmTotpEnrollment(user, input)
+    },
+    createMfaChallenge(user) {
+      return auth.createMfaChallenge(user)
+    },
+    verifyMfaChallenge(user, input) {
+      return auth.verifyMfaChallenge(user, input)
+    },
+    rotateBackupCodes(user) {
+      return auth.rotateBackupCodes(user)
     },
     objectStorage,
     removeHouseholdMember(user, householdId, clientId) {
@@ -2721,15 +2751,40 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       requirePermission(user, 'profiles:read')
       const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId)
       if (!profile) throw new Error('Profile not found.')
-      const ssn = decryptValue(profile.pii?.ssnCiphertext)
-      const taxId = decryptValue(profile.pii?.taxIdCiphertext)
-      addAudit(user.firmId, user.id, 'profile', profileId, 'profile.sensitive_read', {
-        after: { fields: ['ssnMasked', 'taxIdMasked'] }
-      })
-      return {
-        ssnMasked: maskSsn(ssn),
-        taxIdMasked: maskTaxId(taxId)
+      const ssn = decryptSensitiveValue(profile.pii?.ssnEncrypted || profile.pii?.ssnCiphertext)
+      const taxId = decryptSensitiveValue(profile.pii?.taxIdEncrypted || profile.pii?.taxIdCiphertext)
+
+      if (request.unmask === true) {
+        validateUnmaskRequest(request)
+        if (!canUnmaskSensitiveData(user, request)) {
+          addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', {
+            requestedUnmask: true,
+            reason: {
+              code: request.reasonCode || null,
+              justification: String(request.justification || '').trim() || null
+            },
+            actor: { userId: user.id, role: user.role }
+          })
+          throw new Error('Sensitive unmask request denied.')
+        }
+
+        addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
+          grantedUnmask: true,
+          fieldScope: ['ssn', 'taxId'],
+          reason: {
+            code: request.reasonCode,
+            justification: String(request.justification || '').trim()
+          }
+        })
+        return { ssnMasked: maskSsn(ssn), taxIdMasked: maskTaxId(taxId), ssn, taxId }
       }
+
+      addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
+        grantedUnmask: false,
+        fieldScope: ['ssn', 'taxId'],
+        reason: { code: request.reasonCode || null }
+      })
+      return { ssnMasked: maskSsn(ssn), taxIdMasked: maskTaxId(taxId) }
     },
     reencryptSensitiveData({ firmId, actorUserId }) {
       let rotatedProfiles = 0

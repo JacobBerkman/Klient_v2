@@ -6,6 +6,8 @@ import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { createCipheriv, createHash, randomBytes } from 'node:crypto'
 
+const repoRoot = resolve(new URL('../../../../', import.meta.url).pathname)
+
 function encryptLegacy(value, keySeed) {
   const key = createHash('sha256').update(keySeed).digest()
   const iv = randomBytes(12)
@@ -32,8 +34,7 @@ function withStoreEnv(fn, env = {}) {
     }),
     ...env
   })
-  const moduleUrl =
-    pathToFileURL(resolve(previousCwd, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
+  const moduleUrl = pathToFileURL(resolve(repoRoot, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
   return import(moduleUrl)
     .then((mod) => fn(mod.createStore()))
     .finally(() => {
@@ -105,9 +106,9 @@ test('unauthorized unmask reads are denied and audited', async () => {
     )
     const denyEvent = store.state.auditEvents.find((entry) => entry.action === 'sensitive.read_denied')
     assert.ok(denyEvent)
-    assert.equal(denyEvent.metadata.requestedUnmask, true)
-    assert.equal(denyEvent.metadata.reason.code, 'regulatory_review')
-    assert.equal(denyEvent.metadata.actor.userId, user.id)
+    assert.equal(denyEvent.after.requestedUnmask, true)
+    assert.equal(denyEvent.after.reason.code, 'regulatory_review')
+    assert.equal(denyEvent.after.actor.userId, user.id)
   })
 })
 
@@ -137,9 +138,9 @@ test('authorized unmask reads return clear values and emit audit events', async 
       (entry) => entry.action === 'sensitive.read' && entry.entityId === created.id
     )
     assert.ok(auditEvent)
-    assert.equal(auditEvent.metadata.grantedUnmask, true)
-    assert.deepEqual(auditEvent.metadata.fieldScope, ['ssn', 'taxId'])
-    assert.equal(auditEvent.metadata.reason.code, 'compliance_review')
+    assert.equal(auditEvent.after.grantedUnmask, true)
+    assert.deepEqual(auditEvent.after.fieldScope, ['ssn', 'taxId'])
+    assert.equal(auditEvent.after.reason.code, 'compliance_review')
   })
 })
 
