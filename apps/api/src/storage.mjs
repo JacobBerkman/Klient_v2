@@ -210,6 +210,11 @@ db.exec(`
     next_attempt_at = COALESCE(next_attempt_at, json_extract(payload, '$.nextAttemptAt'), created_at)
 `)
 
+db.exec(`
+  UPDATE profiles
+  SET order_index = COALESCE(order_index, stage_order_index, json_extract(payload, '$.orderIndex'), json_extract(payload, '$.stageOrderIndex'))
+`)
+
 function nowIso() {
   return new Date().toISOString()
 }
