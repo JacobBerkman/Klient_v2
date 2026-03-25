@@ -3,6 +3,8 @@ import { spawn } from 'node:child_process'
 const gateSteps = [
   { name: 'Static syntax checks', command: 'npm', args: ['run', 'check:syntax'] },
   { name: 'API contract tests', command: 'npm', args: ['run', 'test:contract'] },
+  { name: 'Negative-path RBAC checks', command: 'node', args: ['scripts/integration-rbac.mjs'] },
+  { name: 'Negative-path tenancy checks', command: 'node', args: ['scripts/integration-tenancy.mjs'] },
   { name: 'Integration suites', command: 'npm', args: ['run', 'test:integration'] },
   { name: 'Migration order checks', command: 'npm', args: ['run', 'check:migrations'] },
   { name: 'Smoke test', command: 'npm', args: ['run', 'test:smoke'] },

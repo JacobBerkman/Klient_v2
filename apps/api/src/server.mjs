@@ -448,13 +448,16 @@ function baseHeaders() {
 
 function sendError(res, error, requestId) {
   const message = error?.message || 'Request failed'
+  const normalizedMessage = String(message).toLowerCase()
   const statusCode = Number.isInteger(error?.statusCode)
     ? error.statusCode
-      : /not found/i.test(message)
+      : /not found/i.test(normalizedMessage)
         ? 404
-        : /auth|permission|policy denied/i.test(message)
+        : /authentication required|invalid credentials|csrf/i.test(normalizedMessage)
           ? 401
-        : 400
+          : /permission|policy denied|access denied|missing permission/i.test(normalizedMessage)
+            ? 403
+          : 400
   json(
     res,
     statusCode,
