@@ -175,3 +175,29 @@ test('pipeline reorder transaction rolls back index changes when persistence fai
   assert.ok(!analysisAfter.cards.some((card) => card.id === movable.id))
   assert.equal(boardAfter.boardVersion, boardBefore.boardVersion)
 })
+
+test('board response remains backward compatible for legacy consumers', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'Legacy',
+    lastName: 'Consumer',
+    stage: 'discovery'
+  })
+
+  const board = store.getBoard(user)
+
+  assert.ok(Array.isArray(board.columns))
+  assert.equal(typeof board.boardVersion, 'number')
+  assert.equal(board.ordering?.mode, 'sequential_stage_index')
+
+  const discovery = board.columns.find((column) => column.stage === 'discovery')
+  assert.ok(discovery)
+  assert.equal(Array.isArray(discovery.cards), true)
+  if (discovery.cards.length > 0) {
+    assert.equal(typeof discovery.cards[0].stageOrderIndex, 'number')
+    assert.equal(typeof discovery.cards[0].orderIndex, 'number')
+  }
+})

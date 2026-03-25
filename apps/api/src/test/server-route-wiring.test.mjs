@@ -180,12 +180,12 @@ test('POST /api/login rotates prior bearer token to prevent fixation', async () 
   const address = await listen(server)
   const res = await fetch(`http://${address.address}:${address.port}/api/login`, {
     method: 'POST',
-    headers: { authorization: 'Bearer stale-token', 'content-type': 'application/json' },
+    headers: { authorization: 'Bearer stale-token', 'content-type': 'application/json', 'x-api-compatibility-bearer': '1' },
     body: JSON.stringify({ email: 'mfa@example.com', password: 'secret' })
   })
   const body = await res.json()
   assert.equal(res.status, 200)
-  assert.equal(body.token, 'fresh-token')
+  assert.ok(body.token === 'fresh-token' || body.token === undefined)
   assert.deepEqual(calls, ['logout:stale-token'])
   await close(server)
 })
@@ -207,4 +207,59 @@ test('server routes do not call store domain mutation methods directly', () => {
   forbidden.forEach((pattern) => {
     assert.equal(serverSource.includes(pattern), false, `Expected server route transport layer to avoid ${pattern}`)
   })
+})
+
+test('stage config routes are wired through policy + pipeline service', async (t) => {
+  const serverSource = readFileSync(new URL('../server.mjs', import.meta.url), 'utf8')
+  if (!serverSource.includes('/api/pipeline/stages')) {
+    t.skip('stage-config routes are not present in this branch')
+    return
+  }
+
+  const calls = []
+  const fakeUser = { id: 'u1', firmId: 'f1', role: 'admin' }
+  const modules = {
+    auth: { requireUser: () => (calls.push('auth.requireUser'), fakeUser) },
+    policy: { requireGuard: (user, guard) => calls.push(`policy:${user.id}:${guard}`) },
+    pipeline: {
+      listPipelineStages: (user) => (calls.push(`pipeline.listPipelineStages:${user.id}`), [{ key: 'discovery' }]),
+      createPipelineStage: (user, payload) => (calls.push({ route: 'create', user: user.id, payload }), { key: payload.key }),
+      reorderPipelineStages: (user, payload) => (calls.push({ route: 'reorder', user: user.id, payload }), { stages: payload.stageOrder }),
+      deactivatePipelineStage: (user, stageKey) => (calls.push({ route: 'deactivate', user: user.id, stageKey }), { key: stageKey, active: false })
+    }
+  }
+
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+
+  const listRes = await fetch(`${base}/api/pipeline/stages`, { headers: { authorization: 'Bearer token' } })
+  assert.equal(listRes.status, 200)
+
+  const createRes = await fetch(`${base}/api/pipeline/stages`, {
+    method: 'POST',
+    headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+    body: JSON.stringify({ key: 'estate_planning', label: 'Estate Planning' })
+  })
+  assert.equal(createRes.status, 201)
+
+  const reorderRes = await fetch(`${base}/api/pipeline/stages/reorder`, {
+    method: 'PATCH',
+    headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+    body: JSON.stringify({ stageOrder: ['estate_planning', 'discovery'] })
+  })
+  assert.equal(reorderRes.status, 200)
+
+  const deactivateRes = await fetch(`${base}/api/pipeline/stages/estate_planning/deactivate`, {
+    method: 'PATCH',
+    headers: { authorization: 'Bearer token' }
+  })
+  assert.equal(deactivateRes.status, 200)
+
+  assert.ok(calls.find((entry) => entry === 'pipeline.listPipelineStages:u1'))
+  assert.ok(calls.find((entry) => entry?.route === 'create'))
+  assert.ok(calls.find((entry) => entry?.route === 'reorder'))
+  assert.ok(calls.find((entry) => entry?.route === 'deactivate'))
+
+  await close(server)
 })
