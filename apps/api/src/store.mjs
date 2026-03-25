@@ -207,6 +207,26 @@ function normalizeProfileRecord(profile) {
   }
 }
 
+function normalizeStageConfiguration(input = []) {
+  if (!Array.isArray(input) || !input.length) {
+    return DEFAULT_STAGE_DEFINITIONS.map((stage, index) => ({ ...stage, order: index + 1 }))
+  }
+  return input
+    .map((stage, index) => {
+      const id = String(stage?.id || stage?.stageId || '').trim()
+      if (!id) return null
+      const label = String(stage?.label || stage?.displayLabel || id).trim() || id
+      return {
+        id,
+        label,
+        order: index + 1,
+        isTerminal: Boolean(stage?.isTerminal),
+        isDrop: Boolean(stage?.isDrop)
+      }
+    })
+    .filter(Boolean)
+}
+
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value))
 }
@@ -754,7 +774,10 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
     passwordResets: [],
     portalLinks: [],
     authAttempts: [],
-    boardVersions: { [firmId]: 1 }
+    boardVersions: { [firmId]: 1 },
+    pipelineStagesByFirm: {
+      [firmId]: DEFAULT_STAGE_DEFINITIONS.map((stage) => ({ ...stage }))
+    }
   }
 }
 
@@ -769,6 +792,7 @@ export function createStore({
   migrateFirmStageConfig(state)
   state.profiles = (state.profiles || []).map(normalizeProfileRecord)
   saveState(state)
+  state.pipelineStagesByFirm ||= {}
   state.pendingUploadIntents ||= []
   state.draftStepStates ||= []
   state.sessions = (state.sessions || []).map((session) => {
@@ -985,6 +1009,19 @@ export function createStore({
     return state.boardVersions[firmId]
   }
 
+  function getFirmStageMetadata(firmId) {
+    const configured = state.pipelineStagesByFirm?.[firmId]
+    const normalized = normalizeStageConfiguration(configured)
+    if (!state.pipelineStagesByFirm[firmId] || state.pipelineStagesByFirm[firmId].length !== normalized.length) {
+      state.pipelineStagesByFirm[firmId] = normalized.map(({ order, ...stage }) => ({ ...stage }))
+    }
+    return normalized
+  }
+
+  function getOrderedStageIds(firmId) {
+    return getFirmStageMetadata(firmId).map((stage) => stage.id)
+  }
+
   function listProspectsByStage(firmId, stage, excludedProfileId = null) {
     return state.profiles
       .filter(
@@ -1032,7 +1069,7 @@ export function createStore({
     const columns = getActiveFirmStages(user.firmId).map((stage) => ({
       stage,
       orderingVersion: getBoardVersion(user.firmId),
-      cards: listProspectsByStage(user.firmId, stage)
+      cards: listProspectsByStage(user.firmId, stageMeta.id)
     }))
     return {
       boardVersion: getBoardVersion(user.firmId),
@@ -1042,7 +1079,8 @@ export function createStore({
         normalized: true
       },
       conflict,
-      columns
+      columns,
+      stageMetadata: getFirmStageMetadata(user.firmId)
     }
   }
 
@@ -2178,16 +2216,41 @@ export function createStore({
         profile,
         submission
       })
-      const rows = resolved.rows.map((entry) => ({
-        pdfField: entry.pdfField,
-        sourcePath: entry.sourcePath,
-        value: entry.value
-      }))
+      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const allowedSourcePaths = profileSourcePaths()
+      collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      let issues = []
+      try {
+        validateMappingRules(template.mappings || [], {
+          contextPath: '/mappings',
+          repeaterPaths: formSchemaResult.repeaterPaths,
+          requiredPdfFields: template.extractedFields || [],
+          allowedSourcePaths,
+          enforceKnownSourcePaths: true
+        })
+      } catch (error) {
+        const rawIssues = Array.isArray(error?.details?.issues) ? error.details.issues : []
+        issues = rawIssues.map((issue) => {
+          const path = String(issue?.path || '')
+          const rowIndexMatch = path.match(/\/mappings\/(\d+)\//)
+          return {
+            path,
+            message: String(issue?.message || 'Validation issue'),
+            severity: 'error',
+            blocking: true,
+            rowIndex: rowIndexMatch ? Number(rowIndexMatch[1]) : null
+          }
+        })
+      }
       return {
         templateId: template.id,
         clientId,
         submissionId,
-        rows
+        rows: resolved.rows,
+        mappingVersionHash: resolved.mappingVersionHash,
+        warningsCount: resolved.warningsCount,
+        blockingWarningsCount: resolved.blockingWarningsCount,
+        ...(issues.length ? { issues } : {})
       }
     },
     publishTemplate(user, templateId, input = {}) {
@@ -2346,6 +2409,10 @@ export function createStore({
     retryFailedExports(user, options = {}) {
       requirePermission(user, 'exports:write')
       return exportsRepository.retryFailed(user, options)
+    },
+    getExportDownload(user, exportId) {
+      requirePermission(user, 'exports:read')
+      return exportsRepository.getDownload(user, exportId)
     },
     async processQueuedExports() {
       const result = processExportQueueTick({
@@ -2921,8 +2988,13 @@ export function createStore({
         const count = stageCounts[stage] || 0
         return { stage, count, conversionRate: Number((count / totalProspects).toFixed(4)) }
       })
-      const firstStage = stageCounts[stageOrder[0]] || 0
-      const lastStage = stageCounts.completed || 0
+      const firstStage = stageCounts[conversionStages[0]?.id] || 0
+      const lastConversionStage =
+        conversionStages
+          .slice()
+          .reverse()
+          .find((stage) => stage.isTerminal && !stage.isDrop) || conversionStages[conversionStages.length - 1]
+      const lastStage = stageCounts[lastConversionStage?.id] || 0
 
       const stageEvents = state.stageChanges
         .filter((entry) => entry.firmId === user.firmId)
@@ -2933,18 +3005,31 @@ export function createStore({
         const key = `${event.clientId}:${event.toStage || 'unassigned'}`
         if (!stageEntryTimes.has(key)) stageEntryTimes.set(key, parseIso(event.changedAt))
       })
-      const stageAging = Object.fromEntries(stageOrder.map((stage) => [stage, { count: 0, avgDays: 0 }]))
+      const stageAgingMap = Object.fromEntries(
+        stageMetadata.map((stage) => [stage.id, { count: 0, avgDays: 0, totalDays: 0 }])
+      )
       prospects.forEach((profile) => {
         const stage = profile.stage || 'unassigned'
-        if (!stageAging[stage]) stageAging[stage] = { count: 0, avgDays: 0 }
+        if (!stageAgingMap[stage]) stageAgingMap[stage] = { count: 0, avgDays: 0, totalDays: 0 }
         const enteredAt = stageEntryTimes.get(`${profile.id}:${stage}`) || parseIso(profile.createdAt)
         const ageDays = Math.max(0, (nowMs - enteredAt) / 86_400_000)
-        stageAging[stage].count += 1
-        stageAging[stage].avgDays += ageDays
+        stageAgingMap[stage].count += 1
+        stageAgingMap[stage].totalDays += ageDays
       })
-      Object.values(stageAging).forEach((entry) => {
-        if (entry.count) entry.avgDays = Number((entry.avgDays / entry.count).toFixed(2))
+      Object.values(stageAgingMap).forEach((entry) => {
+        if (entry.count) entry.avgDays = Number((entry.totalDays / entry.count).toFixed(2))
+        delete entry.totalDays
       })
+      const stageAging = stageMetadata.map((stage) => ({
+        stage: stage.id,
+        stageId: stage.id,
+        stageLabel: stage.label,
+        isTerminal: stage.isTerminal,
+        isDrop: stage.isDrop,
+        count: stageAgingMap[stage.id]?.count || 0,
+        avgDays: stageAgingMap[stage.id]?.avgDays || 0
+      }))
+      const stageAgingById = Object.fromEntries(stageAging.map((entry) => [entry.stageId, { count: entry.count, avgDays: entry.avgDays }]))
 
       const templateIds = new Set(
         state.templateAggregates
@@ -3051,17 +3136,27 @@ export function createStore({
         }, {})
       }
 
-      const bottlenecks = Object.entries(stageAging)
-        .map(([stage, value]) => ({ stage, ...value }))
+      const bottlenecks = stageAging
+        .filter((entry) => !entry.isTerminal && !entry.isDrop)
         .filter((entry) => entry.count > 0)
         .sort((a, b) => b.avgDays - a.avgDays)
 
       return {
         filters: { startDate, endDate, cohortBy, cohortValue },
+        stageMetadata,
         stageCounts,
+        stageCountsOrdered: stageMetadata.map((stage) => ({
+          stage: stage.id,
+          stageId: stage.id,
+          stageLabel: stage.label,
+          isTerminal: stage.isTerminal,
+          isDrop: stage.isDrop,
+          count: stageCounts[stage.id] || 0
+        })),
         funnel,
         overallConversionRate: firstStage ? Number((lastStage / firstStage).toFixed(4)) : 0,
-        stageAging,
+        stageAging: stageAgingById,
+        stageAgingOrdered: stageAging,
         bottlenecks,
         formCompletionRates: Object.values(formsByTemplate),
         formCompletionLatency: latencyByTemplate,
@@ -3073,7 +3168,11 @@ export function createStore({
         templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form')
           .length,
         avgProspectStageAgeDays: Number(
-          average(Object.values(stageAging).map((entry) => entry.avgDays || 0)).toFixed(2)
+          average(
+            stageAging
+              .filter((entry) => !entry.isTerminal && !entry.isDrop)
+              .map((entry) => entry.avgDays || 0)
+          ).toFixed(2)
         )
       }
     },
@@ -3084,8 +3183,10 @@ export function createStore({
       const snapshot = this.buildAnalyticsSnapshot(user, filters)
       return {
         filters: snapshot.filters,
+        stageMetadata: snapshot.stageMetadata,
         funnel: snapshot.funnel,
         stageAging: snapshot.stageAging,
+        stageAgingOrdered: snapshot.stageAgingOrdered,
         bottlenecks: snapshot.bottlenecks,
         formCompletionLatency: snapshot.formCompletionLatency,
         exportUsage: snapshot.exportUsage
@@ -3251,6 +3352,10 @@ export function createStore({
       return true
     },
     _internal: { piiCrypto: piiService, keyProvider },
+    __setPipelineStagesForTest(firmId, stages = []) {
+      state.pipelineStagesByFirm ||= {}
+      state.pipelineStagesByFirm[firmId] = normalizeStageConfiguration(stages).map(({ order, ...stage }) => ({ ...stage }))
+    },
     __setTestHooks(hooks = {}) {
       testHooks = { ...hooks }
     },
