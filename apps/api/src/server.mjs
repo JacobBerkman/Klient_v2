@@ -714,7 +714,7 @@ export function createHttpServer({ modules }) {
         const id = pathname.split('/')[3]
         const user = requireUser()
         modules.policy.requireGuard(user, 'canPublishTemplate')
-        const result = modules.templates.publish(user, id)
+        const result = modules.templates.publish(user, id, await parseBody(req))
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }
@@ -723,7 +723,44 @@ export function createHttpServer({ modules }) {
         const body = await parseBody(req)
         const user = requireUser()
         modules.policy.requireGuard(user, 'canEditTemplate')
-        const result = modules.templates.updateMappings(user, id, body.mappings || [])
+        const result = modules.templates.updateMappings(user, id, body.mappings || [], {
+          expectedVersionHash: body.expectedVersionHash || null
+        })
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/versions') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadTemplate')
+        const result = modules.templates.listVersions(user, id)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/publish-transitions') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadTemplate')
+        const result = modules.templates.listPublishTransitions(user, id)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/compare') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadTemplate')
+        const baseVersion = Number(url.searchParams.get('baseVersion'))
+        const targetVersion = Number(url.searchParams.get('targetVersion'))
+        const result = modules.templates.compareVersions(user, id, baseVersion, targetVersion)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/revert') && req.method === 'POST') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canEditTemplate')
+        const body = await parseBody(req)
+        const result = modules.templates.revertVersion(user, id, Number(body.targetVersion), body)
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }

@@ -190,14 +190,52 @@ function deepClone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+const TEMPLATE_STATES = new Set(['draft', 'review', 'published', 'deprecated'])
+
+function normalizeTemplateState(value, fallback = 'draft') {
+  return TEMPLATE_STATES.has(value) ? value : fallback
+}
+
+function stableSerialize(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableSerialize(entry)).join(',')}]`
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value)
+      .sort()
+      .map((key) => `${JSON.stringify(key)}:${stableSerialize(value[key])}`)
+      .join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
+function templateVersionHash(template) {
+  return createHash('sha256')
+    .update(
+      stableSerialize({
+        blueprint: template.blueprint || { sections: [] },
+        mappings: template.mappings || [],
+        publishState: normalizeTemplateState(template.publishState || template.status || 'draft')
+      })
+    )
+    .digest('hex')
+}
+
 function createTemplateVersion(template, event, overrides = {}) {
+  const publishState = normalizeTemplateState(overrides.publishState || template.publishState || 'draft')
+  const blueprint = deepClone(overrides.blueprint || template.blueprint || { sections: [] })
+  const mappings = deepClone(overrides.mappings || template.mappings || [])
+  const formSchema = deepClone(overrides.formSchema || template.formSchema || { sections: [] })
   return {
     version: (template.versions?.length || 0) + 1,
     event,
-    blueprint: deepClone(overrides.blueprint || template.blueprint || { sections: [] }),
-    mappings: deepClone(overrides.mappings || template.mappings || []),
-    formSchema: deepClone(overrides.formSchema || template.formSchema || { sections: [] }),
-    publishState: overrides.publishState || template.publishState || 'draft',
+    blueprint,
+    mappings,
+    formSchema,
+    publishState,
+    immutable: overrides.immutable === true,
+    changelog: overrides.changelog || null,
+    versionHash: overrides.versionHash || templateVersionHash({ blueprint, mappings, publishState }),
     diff: overrides.diff || null,
     actorUserId: overrides.actorUserId || null,
     createdAt: now()
@@ -209,7 +247,7 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
   const formSchema = template.formSchema || { sections: template.sections || [] }
   const blueprint = template.blueprint || { sections: [] }
   const mappings = template.mappings || template.mappingRules || []
-  const publishState = template.publishState || template.status || 'draft'
+  const publishState = normalizeTemplateState(template.publishState || template.status || 'draft')
   const normalized = {
     id: template.id,
     firmId: template.firmId,
@@ -231,6 +269,15 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
       mappings: deepClone(entry.mappings || mappings),
       formSchema: deepClone(entry.formSchema || formSchema),
       publishState: entry.publishState || publishState,
+      immutable: entry.immutable === true,
+      changelog: entry.changelog || null,
+      versionHash:
+        entry.versionHash ||
+        templateVersionHash({
+          blueprint: entry.blueprint || blueprint,
+          mappings: entry.mappings || mappings,
+          publishState: entry.publishState || publishState
+        }),
       diff: entry.diff || null,
       actorUserId: entry.actorUserId || null,
       createdAt: entry.createdAt || template.updatedAt || template.createdAt || now()
@@ -269,6 +316,7 @@ function documentTemplateAdapter(entry) {
     versions: deepClone(entry.versions || []),
     status: entry.publishState || 'draft',
     publishState: entry.publishState || 'draft',
+    versionHash: templateVersionHash(entry),
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt
   }
@@ -1696,12 +1744,21 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       persist()
       return documentTemplateAdapter(template)
     },
-    updateTemplateMappings(user, templateId, mappings) {
+    updateTemplateMappings(user, templateId, mappings, input = {}) {
       requirePermission(user, 'templates:write')
+      const expectedVersionHash = input.expectedVersionHash || null
       const template = state.templateAggregates.find(
         (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
       )
       if (!template) throw new Error('Template not found.')
+      const currentHash = templateVersionHash(template)
+      if (expectedVersionHash && expectedVersionHash !== currentHash) {
+        const error = new Error('Template has changed since last load.')
+        error.statusCode = 409
+        error.code = 'TEMPLATE_VERSION_CONFLICT'
+        error.details = { expectedVersionHash, currentVersionHash: currentHash }
+        throw error
+      }
       template.mappings = mappings || []
       template.mappingRules = template.mappings
       template.versions.push(
@@ -1718,27 +1775,100 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       persist()
       return documentTemplateAdapter(template)
     },
-    publishTemplate(user, templateId) {
+    publishTemplate(user, templateId, input = {}) {
       requirePermission(user, 'templates:write')
       const template = state.templateAggregates.find(
         (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
       )
       if (!template) throw new Error('Template not found.')
-      const previousState = template.publishState || 'draft'
+      const previousState = normalizeTemplateState(template.publishState || 'draft')
+      if (!input.versionBump || !String(input.versionBump).trim()) {
+        throw new Error('Publish requires versionBump.')
+      }
+      if (!input.changelog || !String(input.changelog).trim()) {
+        throw new Error('Publish requires changelog.')
+      }
       template.publishState = 'published'
       template.status = 'published'
       template.publishTransitions ||= []
       template.publishTransitions.push({ from: previousState, to: 'published', at: now(), actorUserId: user.id })
+      const versionHash = templateVersionHash(template)
       template.versions.push(
         createTemplateVersion(template, 'published', {
           publishState: 'published',
-          diff: { publishTransition: { from: previousState, to: 'published' } },
+          immutable: true,
+          changelog: {
+            versionBump: String(input.versionBump),
+            body: String(input.changelog).trim()
+          },
+          versionHash,
+          diff: {
+            publishTransition: { from: previousState, to: 'published' },
+            versionBump: String(input.versionBump)
+          },
           actorUserId: user.id
         })
       )
       template.updatedAt = now()
       persist()
       return documentTemplateAdapter(template)
+    },
+    compareTemplateVersions(user, templateId, baseVersion, targetVersion) {
+      requirePermission(user, 'templates:write')
+      const template = state.templateAggregates.find(
+        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      )
+      if (!template) throw new Error('Template not found.')
+      const versions = template.versions || []
+      const base = versions.find((entry) => Number(entry.version) === Number(baseVersion))
+      const target = versions.find((entry) => Number(entry.version) === Number(targetVersion))
+      if (!base || !target) throw new Error('Template version not found.')
+      return {
+        templateId,
+        baseVersion: Number(base.version),
+        targetVersion: Number(target.version),
+        changed: stableSerialize(base.blueprint) !== stableSerialize(target.blueprint) ||
+          stableSerialize(base.mappings) !== stableSerialize(target.mappings) ||
+          base.publishState !== target.publishState,
+        diff: {
+          blueprintChanged: stableSerialize(base.blueprint) !== stableSerialize(target.blueprint),
+          mappingsChanged: stableSerialize(base.mappings) !== stableSerialize(target.mappings),
+          publishStateChanged: base.publishState !== target.publishState
+        },
+        base,
+        target
+      }
+    },
+    revertTemplateVersion(user, templateId, targetVersion, input = {}) {
+      requirePermission(user, 'templates:write')
+      const template = state.templateAggregates.find(
+        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      )
+      if (!template) throw new Error('Template not found.')
+      const target = (template.versions || []).find((entry) => Number(entry.version) === Number(targetVersion))
+      if (!target) throw new Error('Template version not found.')
+      if (!input.changelog || !String(input.changelog).trim()) {
+        throw new Error('Revert requires changelog.')
+      }
+      template.blueprint = deepClone(target.blueprint || { sections: [] })
+      template.mappings = deepClone(target.mappings || [])
+      template.mappingRules = template.mappings
+      template.publishState = normalizeTemplateState(target.publishState || 'draft')
+      template.status = template.publishState
+      template.versions.push(
+        createTemplateVersion(template, 'reverted', {
+          changelog: { body: String(input.changelog).trim(), fromVersion: Number(target.version) },
+          diff: { revertedToVersion: Number(target.version) },
+          actorUserId: user.id
+        })
+      )
+      template.updatedAt = now()
+      persist()
+      return {
+        template: documentTemplateAdapter(template),
+        revertedToVersion: Number(target.version),
+        currentVersion: template.versions.length
+      }
     },
     listTemplateVersions(user, templateId) {
       requirePermission(user, 'templates:write')
