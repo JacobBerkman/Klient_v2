@@ -31,13 +31,25 @@ try {
     'X-CSRF-Token': csrfData.csrfToken
   }
 
-  const validMutationResponse = await fetch(`${baseUrl}/api/logout`, {
+  const validMutationResponse = await fetch(`${baseUrl}/api/exports/process`, {
     method: 'POST',
     headers: mutatingHeaders
   })
   const validMutationData = await validMutationResponse.json()
+  const rotatedToken = validMutationResponse.headers.get('x-csrf-token') || ''
+  const rotatedCookie = (validMutationResponse.headers.get('set-cookie') || '').split(';')[0]
   assert(validMutationResponse.status === 200, 'Valid CSRF token should permit mutating request')
-  assert(validMutationData.ok === true, 'Logout should succeed with valid CSRF token')
+  assert(validMutationResponse.ok, 'Export processing should succeed with valid CSRF token')
+  assert(Boolean(rotatedToken), 'Valid mutation should rotate CSRF token in response header')
+  assert(rotatedCookie.startsWith('__Host-klient-csrf='), 'Valid mutation should rotate CSRF cookie')
+
+  const replayResponse = await fetch(`${baseUrl}/api/exports/process`, {
+    method: 'POST',
+    headers: mutatingHeaders
+  })
+  const replayData = await replayResponse.json()
+  assert(replayResponse.status === 403, 'Replayed CSRF token must be rejected')
+  assert(replayData.error?.code === 'CSRF_VALIDATION_FAILED', 'Replay rejection should include CSRF error code')
 
   const secondLogin = await context.login()
   const staleCandidateResponse = await fetch(`${baseUrl}/api/csrf`, {
@@ -110,6 +122,7 @@ try {
         suite: 'integration-csrf',
         bootstrap: csrfBootstrap.status,
         validMutation: validMutationResponse.status,
+        replay: replayResponse.status,
         missingToken: missingTokenResponse.status,
         staleToken: staleTokenResponse.status,
         crossOrigin: invalidOriginResponse.status

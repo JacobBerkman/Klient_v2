@@ -135,7 +135,8 @@ db.exec(`
     token TEXT NOT NULL,
     issued_at TEXT NOT NULL,
     expires_at TEXT NOT NULL,
-    last_rotated_at TEXT NOT NULL
+    last_rotated_at TEXT NOT NULL,
+    consumed_at TEXT
   );
 
 `)
@@ -237,15 +238,16 @@ function readStatePayload() {
 export function upsertCsrfToken(record) {
   db.prepare(
     `
-    INSERT INTO csrf_tokens (id, session_token, user_id, token, issued_at, expires_at, last_rotated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO csrf_tokens (id, session_token, user_id, token, issued_at, expires_at, last_rotated_at, consumed_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
       session_token = excluded.session_token,
       user_id = excluded.user_id,
       token = excluded.token,
       issued_at = excluded.issued_at,
       expires_at = excluded.expires_at,
-      last_rotated_at = excluded.last_rotated_at
+      last_rotated_at = excluded.last_rotated_at,
+      consumed_at = excluded.consumed_at
   `
   ).run(
     record.id,
@@ -254,7 +256,8 @@ export function upsertCsrfToken(record) {
     record.token,
     record.issuedAt,
     record.expiresAt,
-    record.lastRotatedAt || record.issuedAt
+    record.lastRotatedAt || record.issuedAt,
+    record.consumedAt || null
   )
 }
 
@@ -263,13 +266,26 @@ export function readCsrfToken(sessionToken, tokenId) {
     .prepare(
       `
     SELECT id, session_token AS sessionToken, user_id AS userId, token, issued_at AS issuedAt,
-      expires_at AS expiresAt, last_rotated_at AS lastRotatedAt
+      expires_at AS expiresAt, last_rotated_at AS lastRotatedAt, consumed_at AS consumedAt
     FROM csrf_tokens
     WHERE session_token = ? AND id = ?
   `
     )
     .get(sessionToken, tokenId)
   return row || null
+}
+
+export function consumeCsrfToken(sessionToken, tokenId, consumedAt = nowIso()) {
+  const result = db
+    .prepare(
+      `
+      UPDATE csrf_tokens
+      SET consumed_at = ?
+      WHERE session_token = ? AND id = ? AND consumed_at IS NULL AND expires_at > ?
+    `
+    )
+    .run(consumedAt, sessionToken, tokenId, consumedAt)
+  return result.changes > 0
 }
 
 export function deleteCsrfToken(tokenId) {
