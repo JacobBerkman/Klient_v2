@@ -1,8 +1,11 @@
+import { appRoutes } from './api-contract.js'
+
 const state = {
   token: localStorage.getItem('klient-token') || '',
   user: null,
   view: 'dashboard',
-  flash: null
+  flash: null,
+  board: null
 }
 
 const viewEl = document.querySelector('#view')
@@ -22,16 +25,62 @@ function escapeHtml(value) {
     .replaceAll("'", '&#39;')
 }
 
-function parseJson(value, fallback = {}) {
-  try {
-    return JSON.parse(value)
-  } catch {
-    return fallback
-  }
-}
-
 function setFlash(type, message) {
   state.flash = { type, message }
+}
+
+function findBoardColumn(board, stage) {
+  return board?.columns?.find((column) => column.stage === stage) || null
+}
+
+function applyOptimisticReorder(board, move) {
+  if (!board?.columns?.length) return board
+  const nextBoard = structuredClone(board)
+  const fromColumn = nextBoard.columns.find((column) => column.cards.some((card) => card.id === move.profileId))
+  const toColumn = findBoardColumn(nextBoard, move.toStage)
+  if (!fromColumn || !toColumn) return board
+  const sourceIndex = fromColumn.cards.findIndex((card) => card.id === move.profileId)
+  if (sourceIndex < 0) return board
+
+  const [card] = fromColumn.cards.splice(sourceIndex, 1)
+  card.stage = move.toStage
+  let targetIndex = toColumn.cards.length
+  if (move.beforeProfileId) {
+    const beforeIndex = toColumn.cards.findIndex((entry) => entry.id === move.beforeProfileId)
+    targetIndex = beforeIndex >= 0 ? beforeIndex : toColumn.cards.length
+  }
+  toColumn.cards.splice(targetIndex, 0, card)
+
+  for (const column of nextBoard.columns) {
+    column.cards.forEach((entry, index) => {
+      entry.orderIndex = index + 1
+      entry.stageOrderIndex = index + 1
+    })
+  }
+  return nextBoard
+}
+
+async function reorderPipelineOptimistically(move) {
+  const previousBoard = state.board ? structuredClone(state.board) : null
+  if (previousBoard) {
+    state.board = applyOptimisticReorder(previousBoard, move)
+  }
+  try {
+    const payload = {
+      ...move,
+      expectedBoardVersion: previousBoard?.boardVersion ?? null
+    }
+    const result = await request('/api/pipeline/reorder', {
+      method: 'PATCH',
+      body: JSON.stringify(payload)
+    })
+    state.board = result.board
+    return result
+  } catch (error) {
+    const conflictBoard = error?.details?.serverBoard || null
+    state.board = conflictBoard || previousBoard
+    throw error
+  }
 }
 
 function flashMarkup() {
@@ -59,8 +108,25 @@ async function request(path, options = {}) {
     }
   })
   const data = await response.json()
-  if (!response.ok) throw new Error(data?.error?.message || data?.message || 'Request failed')
+  if (!response.ok) {
+    const error = new Error(data?.error?.message || data?.message || 'Request failed')
+    error.details = data?.error?.details || null
+    throw error
+  }
   return data
+}
+
+async function requestText(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
+      ...(options.headers || {})
+    }
+  })
+  const text = await response.text()
+  if (!response.ok) throw new Error(text || 'Request failed')
+  return text
 }
 
 
@@ -132,7 +198,9 @@ function analyticsPanel(title, body) {
 }
 
 async function renderAnalytics() {
-  const analytics = await request('/api/analytics')
+  const filters = new URLSearchParams({ startDate: '2026-01-01', endDate: '2026-12-31', cohortBy: 'all' })
+  const analytics = await request(`/api/analytics?${filters.toString()}`)
+  const dashboard = await request(`/api/analytics/dashboard?${filters.toString()}`)
   const summary = analytics.summary || {}
   const funnelRows = (summary.funnel || [])
     .map(
@@ -159,6 +227,15 @@ async function renderAnalytics() {
     )
     .join('')
   const mat = analytics.materialized
+  const bottleneckRows = (dashboard.bottlenecks || [])
+    .map((entry) => `<tr><td>${escapeHtml(entry.stage)}</td><td>${entry.count}</td><td>${entry.avgDays}</td></tr>`)
+    .join('')
+  const latencyRows = (dashboard.formCompletionLatency || [])
+    .map((entry) => `<tr><td>${escapeHtml(entry.templateId)}</td><td>${entry.submissions}</td><td>${entry.avgHours}</td></tr>`)
+    .join('')
+  const exportRows = (dashboard.exportUsage?.byAdvisor || [])
+    .map((entry) => `<tr><td>${escapeHtml(entry.advisorName)}</td><td>${entry.total}</td></tr>`)
+    .join('')
 
   viewEl.innerHTML = `
     ${flashMarkup()}
@@ -172,9 +249,27 @@ async function renderAnalytics() {
     ${analyticsPanel('Funnel Conversion', `<table><thead><tr><th>Stage</th><th>Count</th><th>Conversion</th></tr></thead><tbody>${funnelRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Stage Aging', `<table><thead><tr><th>Stage</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${agingRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Form Completion Rates', `<table><thead><tr><th>Template</th><th>Drafts</th><th>Submitted</th><th>Completion</th></tr></thead><tbody>${completionRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Form Completion Latency', `<table><thead><tr><th>Template</th><th>Submissions</th><th>Avg hours</th></tr></thead><tbody>${latencyRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Advisor Productivity', `<table><thead><tr><th>Advisor</th><th>Managed</th><th>Notes</th><th>Stage moves</th><th>Score</th></tr></thead><tbody>${productivityRows || '<tr><td colspan="5">No advisor events yet</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Stage Bottlenecks', `<table><thead><tr><th>Stage</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${bottleneckRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Export Usage', `<table><thead><tr><th>Advisor</th><th>Exports</th></tr></thead><tbody>${exportRows || '<tr><td colspan="2">No exports yet</td></tr>'}</tbody></table><button id="download-analytics-csv">Download CSV</button>`)}
     ${analyticsPanel('Materialized Summary Health', `<div class="muted">${mat ? `Refreshed ${new Date(mat.updatedAt).toLocaleString()} for firm ${escapeHtml(mat.firmId)}` : 'Materialized summary unavailable.'}</div>`)}
   `
+  document.querySelector('#download-analytics-csv')?.addEventListener('click', async () => {
+    try {
+      const csv = await requestText(`/api/analytics/export?${filters.toString()}`)
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = 'analytics-report.csv'
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      setFlash('error', `Failed to export analytics CSV: ${error.message}`)
+      await renderAnalytics()
+    }
+  })
 }
 
 async function renderForms() {
@@ -188,6 +283,7 @@ async function renderForms() {
       <td>${draft.revisionId || 1}</td>
       <td>${draft.lock ? `Locked (${escapeHtml(draft.lock.holderUserId)})` : 'Unlocked'}</td>
       <td>
+        <a href="#${appRoutes.clientFormSubmission(draft.clientId, draft.id)}">Edit from profile</a>
         <button data-lock="${draft.id}">Acquire lock</button>
         <button data-save="${draft.id}">Save revision</button>
       </td>
@@ -246,6 +342,16 @@ async function renderForms() {
       await renderForms()
     })
   })
+}
+
+function applyHashRoute() {
+  const hashPath = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : ''
+  const route = appRoutes.parseClientFormSubmission(hashPath)
+  if (!route) return
+  state.view = 'forms'
+  state.selectedClientId = route.clientId
+  state.selectedSubmissionId = route.submissionId
+  setFlash('success', `Editing submission ${route.submissionId} for client ${route.clientId}.`)
 }
 
 async function renderFallback(title) {
@@ -450,4 +556,9 @@ document.querySelector('#portal-form').addEventListener('submit', async (event) 
 })
 
 await hydrateSession()
+applyHashRoute()
+window.addEventListener('hashchange', async () => {
+  applyHashRoute()
+  await renderCurrentView()
+})
 await renderCurrentView()

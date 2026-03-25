@@ -147,6 +147,7 @@ function createFederatedProvider({
   }
 
   return {
+    providerId: 'oidc',
     authenticate(input = {}) {
       if (typeof hooks.authenticate !== 'function') return maybeFallback('authenticate', input)
       const result = hooks.authenticate(input)
@@ -159,6 +160,10 @@ function createFederatedProvider({
       const result = hooks.register(input)
       const user = mapIdentity(result?.claims || result?.user || result, input)
       return createSession(user)
+    },
+    acceptInvite(input = {}) {
+      if (typeof hooks.acceptInvite === 'function') return hooks.acceptInvite(input)
+      return { ok: true, providerManaged: true, provider }
     },
     requestReset(input = {}) {
       if (typeof hooks.requestReset !== 'function') return { ok: true, providerManaged: true, provider }
