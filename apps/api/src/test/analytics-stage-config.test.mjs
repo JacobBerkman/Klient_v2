@@ -22,66 +22,63 @@ async function loadStore() {
 
 function createAdvisor(store) {
   const session = store.register({
-    firmName: 'Analytics Stage Config Firm',
-    firstName: 'Alex',
+    firmName: 'Analytics Stage Firm',
+    firstName: 'Ari',
     lastName: 'Advisor',
-    email: `alex-${Math.random().toString(16).slice(2)}@example.com`,
+    email: `analytics-${Math.random().toString(16).slice(2)}@example.com`,
     password: 'AnalyticsSecure123!'
   })
   return store.requireUser(session.token)
 }
 
-test('analytics snapshot respects configured stage labels and ordering', async () => {
+test('analytics funnel ordering and conversion follow tenant stage configuration', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)
+  const dashboard = store.getDashboard(user)
+  dashboard.firm.stageConfig = {
+    stages: [
+      { id: 'lead', role: 'start', order: 1 },
+      { id: 'proposal', order: 2 },
+      { id: 'won', role: 'end', order: 3 }
+    ],
+    startStageId: 'lead',
+    endStageId: 'won'
+  }
 
-  store.__setPipelineStagesForTest(user.firmId, [
-    { id: 'initial_contact', label: 'Initial Contact' },
-    { id: 'deep_review', label: 'Deep Review' },
-    { id: 'won', label: 'Won', isTerminal: true },
-    { id: 'lost', label: 'Lost', isTerminal: true, isDrop: true }
-  ])
+  store.createProfile(user, { kind: 'prospect', firstName: 'Lee', lastName: 'One', stage: 'lead' })
+  store.createProfile(user, { kind: 'prospect', firstName: 'Lee', lastName: 'Two', stage: 'lead' })
+  store.createProfile(user, { kind: 'prospect', firstName: 'Pia', lastName: 'Proposal', stage: 'proposal' })
+  store.createProfile(user, { kind: 'prospect', firstName: 'Wes', lastName: 'Won', stage: 'won' })
 
-  store.createProfile(user, { kind: 'prospect', firstName: 'One', lastName: 'Lead', stage: 'initial_contact' })
-  store.createProfile(user, { kind: 'prospect', firstName: 'Two', lastName: 'Lead', stage: 'deep_review' })
-
-  const summary = store.getAnalytics(user)
+  const snapshot = store.getAnalytics(user)
 
   assert.deepEqual(
-    summary.stageMetadata.map((entry) => ({ id: entry.id, label: entry.label })),
-    [
-      { id: 'initial_contact', label: 'Initial Contact' },
-      { id: 'deep_review', label: 'Deep Review' },
-      { id: 'won', label: 'Won' },
-      { id: 'lost', label: 'Lost' }
-    ]
+    snapshot.funnel.slice(0, 3).map((entry) => entry.stage),
+    ['lead', 'proposal', 'won']
   )
-  assert.deepEqual(summary.funnel.map((entry) => entry.stageId), ['initial_contact', 'deep_review', 'won'])
-  assert.ok(summary.funnel.every((entry) => entry.stageLabel))
-  assert.deepEqual(summary.stageAgingOrdered.map((entry) => entry.stageId), ['initial_contact', 'deep_review', 'won', 'lost'])
-  assert.ok(summary.stageAgingOrdered.every((entry) => entry.stageLabel))
+  assert.equal(snapshot.overallConversionRate, 0.5)
 })
 
-test('conversion and aging metrics treat drop stages as terminal but excluded from funnel and bottlenecks', async () => {
+test('analytics maps unknown or missing stages into a predictable legacy bucket', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)
+  const dashboard = store.getDashboard(user)
+  dashboard.firm.stageConfig = {
+    stages: [
+      { id: 'lead', role: 'start', order: 1 },
+      { id: 'won', role: 'end', order: 2 }
+    ]
+  }
 
-  store.__setPipelineStagesForTest(user.firmId, [
-    { id: 'discovery', label: 'Discovery' },
-    { id: 'proposal', label: 'Proposal' },
-    { id: 'completed', label: 'Completed', isTerminal: true },
-    { id: 'dropped', label: 'Dropped', isTerminal: true, isDrop: true }
-  ])
+  store.createProfile(user, { kind: 'prospect', firstName: 'Legacy', lastName: 'Known', stage: 'old_analysis' })
+  store.createProfile(user, { kind: 'prospect', firstName: 'Legacy', lastName: 'Missing' })
 
-  store.createProfile(user, { kind: 'prospect', firstName: 'A', lastName: 'One', stage: 'discovery' })
-  store.createProfile(user, { kind: 'prospect', firstName: 'B', lastName: 'Two', stage: 'completed' })
-  store.createProfile(user, { kind: 'prospect', firstName: 'C', lastName: 'Three', stage: 'dropped' })
+  const snapshot = store.getAnalytics(user)
+  const legacyFunnel = snapshot.funnel.find((entry) => entry.stage === 'legacy_unassigned')
 
-  const summary = store.getAnalytics(user)
+  assert.equal(legacyFunnel?.count, 2)
+  assert.equal(snapshot.stageAging.legacy_unassigned?.count, 2)
 
-  assert.deepEqual(summary.funnel.map((entry) => entry.stageId), ['discovery', 'proposal', 'completed'])
-  assert.equal(summary.stageAgingOrdered.find((entry) => entry.stageId === 'dropped')?.count, 1)
-  assert.equal(summary.bottlenecks.some((entry) => entry.stageId === 'dropped'), false)
-  assert.equal(summary.bottlenecks.some((entry) => entry.stageId === 'completed'), false)
-  assert.equal(summary.overallConversionRate, 1)
+  const csv = store.exportAnalyticsCsv(user)
+  assert.match(csv, /funnel,legacy_unassigned,count,2/)
 })
