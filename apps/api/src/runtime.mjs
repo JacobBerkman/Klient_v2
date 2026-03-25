@@ -106,6 +106,14 @@ export function validateRuntimeConfig() {
       'S3 storage provider requires STORAGE_ENDPOINT, STORAGE_REGION, STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY.'
     )
   }
+  if (runtime.piiKeyProvider === 'kms') {
+    if (!process.env.PII_KMS_KEYRING) {
+      issues.push('KMS PII key provider requires PII_KMS_KEYRING.');
+    }
+    if (!(process.env.PII_KMS_ACTIVE_KEY_ID || process.env.PII_ACTIVE_KEY_ID)) {
+      issues.push('KMS PII key provider requires PII_KMS_ACTIVE_KEY_ID (or PII_ACTIVE_KEY_ID).');
+    }
+  }
   if (runtime.nodeEnv === 'production' && runtime.logLevel === 'debug') {
     warnings.push('LOG_LEVEL=debug in production may emit sensitive operational details.')
   }
