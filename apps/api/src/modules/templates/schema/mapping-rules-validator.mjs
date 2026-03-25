@@ -8,8 +8,25 @@ function validationError(message, issues) {
   return error
 }
 
-function pushIssue(issues, path, message) {
-  issues.push({ path, message })
+function pushIssue(issues, { code, path, rowIndex = null, field, message, meta }) {
+  const issue = { code, path, rowIndex, field, message }
+  if (meta && isObject(meta) && Object.keys(meta).length > 0) {
+    issue.meta = meta
+  }
+  issues.push(issue)
+}
+
+function sortIssues(issues) {
+  return issues.sort((left, right) => {
+    const leftRow = Number.isInteger(left.rowIndex) ? left.rowIndex : Number.POSITIVE_INFINITY
+    const rightRow = Number.isInteger(right.rowIndex) ? right.rowIndex : Number.POSITIVE_INFINITY
+    if (leftRow !== rightRow) return leftRow - rightRow
+    const fieldCompare = String(left.field || '').localeCompare(String(right.field || ''))
+    if (fieldCompare !== 0) return fieldCompare
+    const codeCompare = String(left.code || '').localeCompare(String(right.code || ''))
+    if (codeCompare !== 0) return codeCompare
+    return String(left.path || '').localeCompare(String(right.path || ''))
+  })
 }
 
 function isObject(value) {
@@ -55,23 +72,47 @@ export function convertLegacyMappingRules(input) {
   })
 }
 
-function validateTransform(rule, issues, path) {
+function validateTransform(rule, issues, path, rowIndex) {
   if (!('transform' in rule) || rule.transform === null) return
   const transform = toTransformObject(rule.transform)
   if (!isObject(transform)) {
-    pushIssue(issues, `${path}/transform`, 'transform must be an object or registered transform string.')
+    pushIssue(issues, {
+      code: 'invalid_transform_shape',
+      path: `${path}/transform`,
+      rowIndex,
+      field: 'transform',
+      message: 'transform must be an object or registered transform string.'
+    })
     return
   }
-  if (!TRANSFORM_TYPES.has(transform.type)) {
-    pushIssue(
-      issues,
-      `${path}/transform/type`,
-      `Unsupported transform type "${transform.type}". Allowed: date, phone, currency, checkbox, expression.`
-    )
-    return
+
+  const transformType = String(transform.type || '').trim()
+  if (!transformType) {
+    pushIssue(issues, {
+      code: 'missing_transform_type',
+      path: `${path}/transform/type`,
+      rowIndex,
+      field: 'transform.type',
+      message: 'transform.type is required when transform is provided.'
+    })
+  } else if (!TRANSFORM_TYPES.has(transformType)) {
+    pushIssue(issues, {
+      code: 'unsupported_transform_type',
+      path: `${path}/transform/type`,
+      rowIndex,
+      field: 'transform.type',
+      message: `Unsupported transform type "${transform.type}". Allowed: date, phone, currency, checkbox, expression.`
+    })
   }
-  if (transform.type === 'expression' && !String(transform.expression || '').trim()) {
-    pushIssue(issues, `${path}/transform/expression`, 'expression transform requires a non-empty expression.')
+
+  if (transformType === 'expression' && !String(transform.expression || '').trim()) {
+    pushIssue(issues, {
+      code: 'missing_transform_expression',
+      path: `${path}/transform/expression`,
+      rowIndex,
+      field: 'transform.expression',
+      message: 'expression transform requires a non-empty expression.'
+    })
   }
 }
 
@@ -110,79 +151,131 @@ export function validateMappingRules(input, options = {}) {
   const usedTargets = new Map()
 
   if (!Array.isArray(mappings)) {
-    pushIssue(issues, contextPath, 'Mapping rules must be an array.')
+    pushIssue(issues, {
+      code: 'invalid_mapping_rules_type',
+      path: contextPath,
+      rowIndex: null,
+      field: 'mappings',
+      message: 'Mapping rules must be an array.'
+    })
   } else {
     mappings.forEach((rule, index) => {
       const rulePath = `${contextPath}/${index}`
       if (!isObject(rule)) {
-        pushIssue(issues, rulePath, 'Mapping rule must be an object.')
+        pushIssue(issues, {
+          code: 'invalid_mapping_rule',
+          path: rulePath,
+          rowIndex: index,
+          field: 'mapping',
+          message: 'Mapping rule must be an object.'
+        })
         return
       }
       if (!String(rule.pdfField || '').trim()) {
-        pushIssue(issues, `${rulePath}/pdfField`, 'pdfField is required.')
+        pushIssue(issues, {
+          code: 'required_pdf_field',
+          path: `${rulePath}/pdfField`,
+          rowIndex: index,
+          field: 'pdfField',
+          message: 'pdfField is required.'
+        })
       }
       if (!String(rule.sourcePath || '').trim()) {
-        pushIssue(issues, `${rulePath}/sourcePath`, 'sourcePath is required.')
+        pushIssue(issues, {
+          code: 'required_source_path',
+          path: `${rulePath}/sourcePath`,
+          rowIndex: index,
+          field: 'sourcePath',
+          message: 'sourcePath is required.'
+        })
       }
       const pdfField = String(rule.pdfField || '').trim()
       if (pdfField) {
         if (usedTargets.has(pdfField)) {
-          pushIssue(issues, `${rulePath}/pdfField`, `Duplicate pdfField "${pdfField}" is not allowed.`)
+          pushIssue(issues, {
+            code: 'duplicate_pdf_field',
+            path: `${rulePath}/pdfField`,
+            rowIndex: index,
+            field: 'pdfField',
+            message: `Duplicate pdfField "${pdfField}" is not allowed.`
+          })
         } else {
           usedTargets.set(pdfField, index)
         }
       }
-      validateTransform(rule, issues, rulePath)
+      validateTransform(rule, issues, rulePath, index)
 
       const repeaterPath = String(rule.repeaterPath || '').trim()
       const sourcePath = normalizePath(rule.sourcePath)
       if (enforceKnownSourcePaths && allowedSourcePaths && sourcePath && !allowedSourcePaths.has(sourcePath)) {
-        pushIssue(issues, `${rulePath}/sourcePath`, `sourcePath "${String(rule.sourcePath)}" is not a known profile/form schema path.`)
+        pushIssue(issues, {
+          code: 'unknown_source_path',
+          path: `${rulePath}/sourcePath`,
+          rowIndex: index,
+          field: 'sourcePath',
+          message: `sourcePath "${String(rule.sourcePath)}" is not a known profile/form schema path.`
+        })
       }
       const expectedTargetType = String(rule.targetType || '').trim()
       const sourceMeta = sourcePath && allowedSourcePaths ? allowedSourcePaths.get(sourcePath) : null
       const sourceType = String(sourceMeta?.type || '').trim()
       if (expectedTargetType && sourceType && expectedTargetType !== sourceType) {
-        pushIssue(
-          issues,
-          `${rulePath}/targetType`,
-          `targetType "${expectedTargetType}" does not match source type "${sourceType}" for "${sourcePath}".`
-        )
+        pushIssue(issues, {
+          code: 'target_type_mismatch',
+          path: `${rulePath}/targetType`,
+          rowIndex: index,
+          field: 'targetType',
+          message: `targetType "${expectedTargetType}" does not match source type "${sourceType}" for "${sourcePath}".`
+        })
       }
       if (repeaterPath) {
         const normalizedRepeater = normalizePath(repeaterPath)
         if (!repeaterPaths.has(normalizedRepeater)) {
-          pushIssue(
-            issues,
-            `${rulePath}/repeaterPath`,
-            `repeaterPath "${repeaterPath}" does not match any repeater in the form definition.`
-          )
+          pushIssue(issues, {
+            code: 'unknown_repeater_path',
+            path: `${rulePath}/repeaterPath`,
+            rowIndex: index,
+            field: 'repeaterPath',
+            message: `repeaterPath "${repeaterPath}" does not match any repeater in the form definition.`
+          })
         }
         if (sourcePath && sourcePath !== normalizedRepeater && !sourcePath.startsWith(`${normalizedRepeater}.`)) {
-          pushIssue(
-            issues,
-            `${rulePath}/sourcePath`,
-            'sourcePath must be within repeaterPath when repeaterPath is provided.'
-          )
+          pushIssue(issues, {
+            code: 'source_path_outside_repeater',
+            path: `${rulePath}/sourcePath`,
+            rowIndex: index,
+            field: 'sourcePath',
+            message: 'sourcePath must be within repeaterPath when repeaterPath is provided.'
+          })
         }
       }
       if (!repeaterPath && /\[(\*|\d+)\]/.test(String(rule.sourcePath || ''))) {
-        pushIssue(
-          issues,
-          `${rulePath}/repeaterPath`,
-          'repeaterPath is required when sourcePath uses array/repeater selectors.'
-        )
+        pushIssue(issues, {
+          code: 'required_repeater_path',
+          path: `${rulePath}/repeaterPath`,
+          rowIndex: index,
+          field: 'repeaterPath',
+          message: 'repeaterPath is required when sourcePath uses array/repeater selectors.'
+        })
       }
     })
   }
 
   requiredPdfFields.forEach((requiredField) => {
     if (!usedTargets.has(requiredField)) {
-      pushIssue(issues, contextPath, `Required mapping for pdfField "${requiredField}" is missing.`)
+      pushIssue(issues, {
+        code: 'required_pdf_field_missing',
+        path: contextPath,
+        rowIndex: null,
+        field: 'pdfField',
+        message: `Required mapping for pdfField "${requiredField}" is missing.`,
+        meta: { requiredPdfField: requiredField }
+      })
     }
   })
 
   if (issues.length) {
+    sortIssues(issues)
     throw validationError('Template mapping schema validation failed.', issues)
   }
 

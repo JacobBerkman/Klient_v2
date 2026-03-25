@@ -89,6 +89,19 @@ test('production Node server contract supports auth and profile workflows', asyn
   const adminCookie = extractSessionCookie(loginResponse)
   assert.ok(adminCookie.startsWith('__Host-klient-session='))
 
+  const { response: csrfResponse, data: csrf } = await jsonFetch(port, '/api/csrf', {
+    headers: { Cookie: adminCookie }
+  })
+  assert.equal(csrfResponse.status, 200)
+  assert.ok(typeof csrf.csrfToken === 'string' && csrf.csrfToken.length > 10)
+  assert.ok(typeof csrf.expiresAt === 'string' && csrf.expiresAt.length > 10)
+
+  const { response: continuityResponse, data: continuitySession } = await jsonFetch(port, '/api/session', {
+    headers: { Cookie: adminCookie }
+  })
+  assert.equal(continuityResponse.status, 200)
+  assert.equal(continuitySession.user.email, 'admin@demo.test')
+
   const authHeaders = {
     'Content-Type': 'application/json'
   }
@@ -154,6 +167,7 @@ test('production Node server contract supports auth and profile workflows', asyn
   })
   assert.equal(staleResponse.status, 409)
   assert.equal(staleError.error?.code, 'PIPELINE_ORDER_CONFLICT')
+  assert.equal(staleError.error?.details?.expectedVersion, moved.moved.pipelineVersion)
 
   const { response: historyResponse, data: history } = await jsonFetch(
     port,
