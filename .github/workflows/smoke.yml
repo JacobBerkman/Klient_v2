@@ -12,6 +12,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm ci
       - run: node --check apps/api/src/runtime.mjs
       - run: node --check apps/api/src/storage.mjs
       - run: node --check apps/api/src/server.mjs
@@ -25,4 +26,6 @@ jobs:
       - run: node scripts/api-contract-test.mjs
       - run: node scripts/smoke-test.mjs
       - run: git diff --check
+      - run: npm run lint
+      - run: npm run format:check
       - run: npm run test:all

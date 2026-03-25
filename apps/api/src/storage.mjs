@@ -1,11 +1,11 @@
-import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
-import { DatabaseSync } from 'node:sqlite';
+import { copyFileSync, existsSync, mkdirSync, statSync } from 'node:fs'
+import { dirname, resolve } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 
-export const DB_PATH = resolve(process.cwd(), 'data', 'app.db');
-mkdirSync(dirname(DB_PATH), { recursive: true });
+export const DB_PATH = resolve(process.cwd(), 'data', 'app.db')
+mkdirSync(dirname(DB_PATH), { recursive: true })
 
-const db = new DatabaseSync(DB_PATH);
+const db = new DatabaseSync(DB_PATH)
 db.exec(`
   CREATE TABLE IF NOT EXISTS app_state (
     id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -124,10 +124,13 @@ db.exec(`
     last_rotated_at TEXT NOT NULL
   );
 
-`);
+`)
 
 function hasColumn(table, column) {
-  return db.prepare(`PRAGMA table_info(${table})`).all().some((row) => row.name === column);
+  return db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all()
+    .some((row) => row.name === column)
 }
 
 function ensureExportJobsColumns() {
@@ -145,16 +148,18 @@ function ensureExportJobsColumns() {
     ['dead_lettered_at', 'TEXT'],
     ['last_attempt_at', 'TEXT'],
     ['idempotency_key', 'TEXT']
-  ];
+  ]
   for (const [column, ddl] of definitions) {
     if (!hasColumn('export_jobs', column)) {
-      db.exec(`ALTER TABLE export_jobs ADD COLUMN ${column} ${ddl}`);
+      db.exec(`ALTER TABLE export_jobs ADD COLUMN ${column} ${ddl}`)
     }
   }
 }
 
-ensureExportJobsColumns();
-db.exec('CREATE UNIQUE INDEX IF NOT EXISTS idx_export_jobs_firm_idempotency ON export_jobs (firm_id, idempotency_key) WHERE idempotency_key IS NOT NULL');
+ensureExportJobsColumns()
+db.exec(
+  'CREATE UNIQUE INDEX IF NOT EXISTS idx_export_jobs_firm_idempotency ON export_jobs (firm_id, idempotency_key) WHERE idempotency_key IS NOT NULL'
+)
 
 db.exec(`
   UPDATE export_jobs
@@ -164,31 +169,30 @@ db.exec(`
     created_at = COALESCE(created_at, json_extract(payload, '$.createdAt'), datetime('now')),
     updated_at = COALESCE(updated_at, json_extract(payload, '$.updatedAt'), datetime('now')),
     next_attempt_at = COALESCE(next_attempt_at, json_extract(payload, '$.nextAttemptAt'), created_at)
-`);
+`)
 
 function nowIso() {
-  return new Date().toISOString();
+  return new Date().toISOString()
 }
 
 function replaceRows(tableName, rows, mapper) {
-  db.exec(`DELETE FROM ${tableName}`);
+  db.exec(`DELETE FROM ${tableName}`)
   for (const row of rows) {
-    const mapped = mapper(row);
-    const placeholders = mapped.map(() => '?').join(', ');
-    db.prepare(`INSERT INTO ${tableName} VALUES (${placeholders})`).run(...mapped);
+    const mapped = mapper(row)
+    const placeholders = mapped.map(() => '?').join(', ')
+    db.prepare(`INSERT INTO ${tableName} VALUES (${placeholders})`).run(...mapped)
   }
 }
 
 function readStatePayload() {
-  const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get();
-  if (!row?.payload) return null;
-  return JSON.parse(row.payload);
+  const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get()
+  if (!row?.payload) return null
+  return JSON.parse(row.payload)
 }
 
-
-
 export function upsertCsrfToken(record) {
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO csrf_tokens (id, session_token, user_id, token, issued_at, expires_at, last_rotated_at)
     VALUES (?, ?, ?, ?, ?, ?, ?)
     ON CONFLICT(id) DO UPDATE SET
@@ -198,7 +202,8 @@ export function upsertCsrfToken(record) {
       issued_at = excluded.issued_at,
       expires_at = excluded.expires_at,
       last_rotated_at = excluded.last_rotated_at
-  `).run(
+  `
+  ).run(
     record.id,
     record.sessionToken,
     record.userId,
@@ -206,37 +211,43 @@ export function upsertCsrfToken(record) {
     record.issuedAt,
     record.expiresAt,
     record.lastRotatedAt || record.issuedAt
-  );
+  )
 }
 
 export function readCsrfToken(sessionToken, tokenId) {
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT id, session_token AS sessionToken, user_id AS userId, token, issued_at AS issuedAt,
       expires_at AS expiresAt, last_rotated_at AS lastRotatedAt
     FROM csrf_tokens
     WHERE session_token = ? AND id = ?
-  `).get(sessionToken, tokenId);
-  return row || null;
+  `
+    )
+    .get(sessionToken, tokenId)
+  return row || null
 }
 
 export function deleteCsrfToken(tokenId) {
-  db.prepare('DELETE FROM csrf_tokens WHERE id = ?').run(tokenId);
+  db.prepare('DELETE FROM csrf_tokens WHERE id = ?').run(tokenId)
 }
 
 export function deleteCsrfTokensBySession(sessionToken) {
-  db.prepare('DELETE FROM csrf_tokens WHERE session_token = ?').run(sessionToken);
+  db.prepare('DELETE FROM csrf_tokens WHERE session_token = ?').run(sessionToken)
 }
 
 export function deleteCsrfTokensByUser(userId) {
-  db.prepare('DELETE FROM csrf_tokens WHERE user_id = ?').run(userId);
+  db.prepare('DELETE FROM csrf_tokens WHERE user_id = ?').run(userId)
 }
 
 export function deleteExpiredCsrfTokens(cutoffIso = new Date().toISOString()) {
-  db.prepare('DELETE FROM csrf_tokens WHERE expires_at <= ?').run(cutoffIso);
+  db.prepare('DELETE FROM csrf_tokens WHERE expires_at <= ?').run(cutoffIso)
 }
 
 export function listExportQueueJobs() {
-  const rows = db.prepare(`
+  const rows = db
+    .prepare(
+      `
     SELECT id, firm_id AS firmId, client_id AS clientId, type, status, attempts,
       max_attempts AS maxAttempts, payload, output_payload AS outputPayload,
       error_message AS errorMessage, next_attempt_at AS nextAttemptAt,
@@ -246,10 +257,12 @@ export function listExportQueueJobs() {
       last_attempt_at AS lastAttemptAt, idempotency_key AS idempotencyKey
     FROM export_jobs
     ORDER BY created_at DESC
-  `).all();
+  `
+    )
+    .all()
   return rows.map((row) => {
-    const payload = row.payload ? JSON.parse(row.payload) : {};
-    const output = row.outputPayload ? JSON.parse(row.outputPayload) : null;
+    const payload = row.payload ? JSON.parse(row.payload) : {}
+    const output = row.outputPayload ? JSON.parse(row.outputPayload) : null
     return {
       ...payload,
       id: row.id,
@@ -270,36 +283,38 @@ export function listExportQueueJobs() {
       deadLetteredAt: row.deadLetteredAt || null,
       lastAttemptAt: row.lastAttemptAt || null,
       idempotencyKey: row.idempotencyKey || null
-    };
-  });
+    }
+  })
 }
 
 function syncStateExportsFromQueue() {
-  const state = readStatePayload();
-  if (!state) return;
-  state.exportJobs = listExportQueueJobs();
-  db.prepare(`
+  const state = readStatePayload()
+  if (!state) return
+  state.exportJobs = listExportQueueJobs()
+  db.prepare(
+    `
     INSERT INTO app_state (id, payload, updated_at)
     VALUES (1, ?, datetime('now'))
     ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
-  `).run(JSON.stringify(state));
+  `
+  ).run(JSON.stringify(state))
 }
 
 function ensureQueueSeededFromState(state) {
-  const countRow = db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get();
-  if ((countRow?.count || 0) > 0) return;
+  const countRow = db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get()
+  if ((countRow?.count || 0) > 0) return
   const insert = db.prepare(`
     INSERT INTO export_jobs (
       id, firm_id, client_id, type, status, attempts, max_attempts, payload, output_payload,
       error_message, next_attempt_at, leased_by, lease_expires_at, created_at, updated_at,
       completed_at, dead_lettered_at, last_attempt_at, idempotency_key
     ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-  `);
+  `)
   for (const job of state.exportJobs || []) {
-    const createdAt = job.createdAt || nowIso();
-    const updatedAt = job.updatedAt || createdAt;
-    const completedAt = job.status === 'completed' ? updatedAt : null;
-    const nextAttemptAt = job.nextAttemptAt || createdAt;
+    const createdAt = job.createdAt || nowIso()
+    const updatedAt = job.updatedAt || createdAt
+    const completedAt = job.status === 'completed' ? updatedAt : null
+    const nextAttemptAt = job.nextAttemptAt || createdAt
     insert.run(
       job.id,
       job.firmId,
@@ -320,152 +335,213 @@ function ensureQueueSeededFromState(state) {
       job.deadLetteredAt || null,
       job.lastAttemptAt || null,
       job.idempotencyKey || null
-    );
+    )
   }
 }
 
 function syncQueryTables(state) {
-  replaceRows('firms', state.firms || [], (firm) => [firm.id, firm.name, firm.slug, JSON.stringify(firm)]);
-  replaceRows('users', state.users || [], (user) => [user.id, user.firmId, user.email, user.role, JSON.stringify(user)]);
-  replaceRows('profiles', state.profiles || [], (profile) => [profile.id, profile.firmId, profile.kind, profile.firstName, profile.lastName, profile.stage || null, profile.stageOrderIndex || null, JSON.stringify(profile)]);
-  replaceRows('households', state.households || [], (household) => [household.id, household.firmId, household.name, JSON.stringify(household)]);
-  replaceRows('form_templates', state.formTemplates || [], (template) => [template.id, template.firmId, template.name, JSON.stringify(template)]);
-  replaceRows('document_templates', state.documentTemplates || [], (template) => [template.id, template.firmId, template.name, template.status || 'draft', JSON.stringify(template)]);
-  replaceRows('template_aggregates', state.templateAggregates || [], (template) => [template.id, template.firmId, template.name, template.kind || 'document', template.publishState || 'draft', JSON.stringify(template)]);
-  replaceRows('notes', state.notes || [], (note) => [note.id, note.firmId, note.profileId, note.createdAt, JSON.stringify(note)]);
-  replaceRows('audit_events', state.auditEvents || [], (event) => [event.id, event.firmId, event.action, event.occurredAt, JSON.stringify(event)]);
+  replaceRows('firms', state.firms || [], (firm) => [firm.id, firm.name, firm.slug, JSON.stringify(firm)])
+  replaceRows('users', state.users || [], (user) => [user.id, user.firmId, user.email, user.role, JSON.stringify(user)])
+  replaceRows('profiles', state.profiles || [], (profile) => [
+    profile.id,
+    profile.firmId,
+    profile.kind,
+    profile.firstName,
+    profile.lastName,
+    profile.stage || null,
+    profile.stageOrderIndex || null,
+    JSON.stringify(profile)
+  ])
+  replaceRows('households', state.households || [], (household) => [
+    household.id,
+    household.firmId,
+    household.name,
+    JSON.stringify(household)
+  ])
+  replaceRows('form_templates', state.formTemplates || [], (template) => [
+    template.id,
+    template.firmId,
+    template.name,
+    JSON.stringify(template)
+  ])
+  replaceRows('document_templates', state.documentTemplates || [], (template) => [
+    template.id,
+    template.firmId,
+    template.name,
+    template.status || 'draft',
+    JSON.stringify(template)
+  ])
+  replaceRows('template_aggregates', state.templateAggregates || [], (template) => [
+    template.id,
+    template.firmId,
+    template.name,
+    template.kind || 'document',
+    template.publishState || 'draft',
+    JSON.stringify(template)
+  ])
+  replaceRows('notes', state.notes || [], (note) => [
+    note.id,
+    note.firmId,
+    note.profileId,
+    note.createdAt,
+    JSON.stringify(note)
+  ])
+  replaceRows('audit_events', state.auditEvents || [], (event) => [
+    event.id,
+    event.firmId,
+    event.action,
+    event.occurredAt,
+    JSON.stringify(event)
+  ])
 }
 
 function syncAnalyticsMaterialized(state) {
-  db.exec('DELETE FROM analytics_materialized');
-  const firms = state.firms || [];
-  const byFirm = new Map();
-  firms.forEach((firm) => byFirm.set(firm.id, {
-    firmId: firm.id,
-    generatedAt: nowIso(),
-    funnel: {},
-    stageAgingDays: {},
-    formCompletionRates: {},
-    advisorProductivity: {}
-  }));
+  db.exec('DELETE FROM analytics_materialized')
+  const firms = state.firms || []
+  const byFirm = new Map()
+  firms.forEach((firm) =>
+    byFirm.set(firm.id, {
+      firmId: firm.id,
+      generatedAt: nowIso(),
+      funnel: {},
+      stageAgingDays: {},
+      formCompletionRates: {},
+      advisorProductivity: {}
+    })
+  )
+  ;(state.profiles || []).forEach((profile) => {
+    const summary = byFirm.get(profile.firmId)
+    if (!summary || profile.kind !== 'prospect') return
+    const stage = profile.stage || 'unassigned'
+    summary.funnel[stage] = (summary.funnel[stage] || 0) + 1
+    const ageDays = Math.max(
+      0,
+      (Date.now() - new Date(profile.updatedAt || profile.createdAt || nowIso()).getTime()) / 86_400_000
+    )
+    const age = summary.stageAgingDays[stage] || { count: 0, sumDays: 0 }
+    age.count += 1
+    age.sumDays += ageDays
+    summary.stageAgingDays[stage] = age
+  })
+  ;(state.formSubmissions || []).forEach((submission) => {
+    const summary = byFirm.get(submission.firmId)
+    if (!summary) return
+    const key = submission.templateId || 'unknown'
+    const bucket = summary.formCompletionRates[key] || { templateId: key, drafts: 0, submitted: 0 }
+    if (submission.status === 'submitted') bucket.submitted += 1
+    else bucket.drafts += 1
+    summary.formCompletionRates[key] = bucket
+  })
 
-  (state.profiles || []).forEach((profile) => {
-    const summary = byFirm.get(profile.firmId);
-    if (!summary || profile.kind !== 'prospect') return;
-    const stage = profile.stage || 'unassigned';
-    summary.funnel[stage] = (summary.funnel[stage] || 0) + 1;
-    const ageDays = Math.max(0, (Date.now() - new Date(profile.updatedAt || profile.createdAt || nowIso()).getTime()) / 86_400_000);
-    const age = summary.stageAgingDays[stage] || { count: 0, sumDays: 0 };
-    age.count += 1;
-    age.sumDays += ageDays;
-    summary.stageAgingDays[stage] = age;
-  });
-
-  (state.formSubmissions || []).forEach((submission) => {
-    const summary = byFirm.get(submission.firmId);
-    if (!summary) return;
-    const key = submission.templateId || 'unknown';
-    const bucket = summary.formCompletionRates[key] || { templateId: key, drafts: 0, submitted: 0 };
-    if (submission.status === 'submitted') bucket.submitted += 1;
-    else bucket.drafts += 1;
-    summary.formCompletionRates[key] = bucket;
-  });
-
-  const usersById = new Map((state.users || []).map((user) => [user.id, user]));
-  (state.notes || []).forEach((note) => {
-    const actor = usersById.get(note.createdByUserId);
-    if (!actor) return;
-    const summary = byFirm.get(note.firmId);
-    if (!summary) return;
-    const key = actor.id;
-    const bucket = summary.advisorProductivity[key] || { advisorUserId: key, advisorName: `${actor.firstName} ${actor.lastName}`, notesAuthored: 0, stageMoves: 0 };
-    bucket.notesAuthored += 1;
-    summary.advisorProductivity[key] = bucket;
-  });
-  (state.stageChanges || []).forEach((change) => {
-    const actor = usersById.get(change.changedByUserId);
-    if (!actor) return;
-    const summary = byFirm.get(change.firmId);
-    if (!summary) return;
-    const key = actor.id;
-    const bucket = summary.advisorProductivity[key] || { advisorUserId: key, advisorName: `${actor.firstName} ${actor.lastName}`, notesAuthored: 0, stageMoves: 0 };
-    bucket.stageMoves += 1;
-    summary.advisorProductivity[key] = bucket;
-  });
+  const usersById = new Map((state.users || []).map((user) => [user.id, user]))
+  ;(state.notes || []).forEach((note) => {
+    const actor = usersById.get(note.createdByUserId)
+    if (!actor) return
+    const summary = byFirm.get(note.firmId)
+    if (!summary) return
+    const key = actor.id
+    const bucket = summary.advisorProductivity[key] || {
+      advisorUserId: key,
+      advisorName: `${actor.firstName} ${actor.lastName}`,
+      notesAuthored: 0,
+      stageMoves: 0
+    }
+    bucket.notesAuthored += 1
+    summary.advisorProductivity[key] = bucket
+  })
+  ;(state.stageChanges || []).forEach((change) => {
+    const actor = usersById.get(change.changedByUserId)
+    if (!actor) return
+    const summary = byFirm.get(change.firmId)
+    if (!summary) return
+    const key = actor.id
+    const bucket = summary.advisorProductivity[key] || {
+      advisorUserId: key,
+      advisorName: `${actor.firstName} ${actor.lastName}`,
+      notesAuthored: 0,
+      stageMoves: 0
+    }
+    bucket.stageMoves += 1
+    summary.advisorProductivity[key] = bucket
+  })
 
   const insert = db.prepare(`
     INSERT INTO analytics_materialized (firm_id, payload, updated_at)
     VALUES (?, ?, ?)
-  `);
+  `)
   byFirm.forEach((summary, firmId) => {
     Object.values(summary.stageAgingDays).forEach((entry) => {
-      entry.avgDays = entry.count ? Number((entry.sumDays / entry.count).toFixed(2)) : 0;
-      delete entry.sumDays;
-    });
+      entry.avgDays = entry.count ? Number((entry.sumDays / entry.count).toFixed(2)) : 0
+      delete entry.sumDays
+    })
     Object.values(summary.formCompletionRates).forEach((entry) => {
-      const total = entry.drafts + entry.submitted;
-      entry.completionRate = total ? Number((entry.submitted / total).toFixed(4)) : 0;
-    });
+      const total = entry.drafts + entry.submitted
+      entry.completionRate = total ? Number((entry.submitted / total).toFixed(4)) : 0
+    })
     Object.values(summary.advisorProductivity).forEach((entry) => {
-      entry.productivityScore = entry.notesAuthored + entry.stageMoves;
-    });
-    insert.run(firmId, JSON.stringify(summary), nowIso());
-  });
+      entry.productivityScore = entry.notesAuthored + entry.stageMoves
+    })
+    insert.run(firmId, JSON.stringify(summary), nowIso())
+  })
 }
 
 export function ensureDatabaseReady() {
-  db.prepare('SELECT 1').get();
+  db.prepare('SELECT 1').get()
   return {
     ok: true,
     dbPath: DB_PATH,
     exists: existsSync(DB_PATH)
-  };
+  }
 }
 
 export function closeDatabase() {
-  db.close();
+  db.close()
 }
 
 export function loadState(seedFactory) {
-  const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get();
+  const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get()
   if (row?.payload) {
-    const state = JSON.parse(row.payload);
-    ensureQueueSeededFromState(state);
-    syncStateExportsFromQueue();
-    return readStatePayload();
+    const state = JSON.parse(row.payload)
+    ensureQueueSeededFromState(state)
+    syncStateExportsFromQueue()
+    return readStatePayload()
   }
 
-  const state = seedFactory();
-  saveState(state);
-  ensureQueueSeededFromState(state);
-  syncStateExportsFromQueue();
-  return readStatePayload();
+  const state = seedFactory()
+  saveState(state)
+  ensureQueueSeededFromState(state)
+  syncStateExportsFromQueue()
+  return readStatePayload()
 }
 
 export function saveState(state) {
-  db.prepare(`
+  db.prepare(
+    `
     INSERT INTO app_state (id, payload, updated_at)
     VALUES (1, ?, datetime('now'))
     ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
-  `).run(JSON.stringify(state));
-  syncQueryTables(state);
-  syncAnalyticsMaterialized(state);
+  `
+  ).run(JSON.stringify(state))
+  syncQueryTables(state)
+  syncAnalyticsMaterialized(state)
 }
 
 export function backupState(targetPath = resolve(process.cwd(), 'data', `backup-${Date.now()}.db`)) {
-  copyFileSync(DB_PATH, targetPath);
-  return { ok: true, targetPath };
+  copyFileSync(DB_PATH, targetPath)
+  return { ok: true, targetPath }
 }
 
 export function enqueueExportJob(job) {
-  const idempotencyKey = (job.idempotencyKey || '').trim() || null;
+  const idempotencyKey = (job.idempotencyKey || '').trim() || null
   if (idempotencyKey) {
-    const existing = db.prepare('SELECT id FROM export_jobs WHERE firm_id = ? AND idempotency_key = ?').get(job.firmId, idempotencyKey);
+    const existing = db
+      .prepare('SELECT id FROM export_jobs WHERE firm_id = ? AND idempotency_key = ?')
+      .get(job.firmId, idempotencyKey)
     if (existing?.id) {
-      return getExportJob(existing.id);
+      return getExportJob(existing.id)
     }
   }
-  const createdAt = job.createdAt || nowIso();
+  const createdAt = job.createdAt || nowIso()
   const payload = {
     id: job.id,
     firmId: job.firmId,
@@ -480,14 +556,16 @@ export function enqueueExportJob(job) {
     createdAt,
     updatedAt: createdAt,
     metadata: job.metadata || {}
-  };
-  db.prepare(`
+  }
+  db.prepare(
+    `
     INSERT INTO export_jobs (
       id, firm_id, client_id, type, status, attempts, max_attempts, payload, output_payload,
       error_message, next_attempt_at, leased_by, lease_expires_at, created_at, updated_at,
       completed_at, dead_lettered_at, last_attempt_at, idempotency_key
     ) VALUES (?, ?, ?, ?, 'queued', 0, ?, ?, NULL, NULL, ?, NULL, NULL, ?, ?, NULL, NULL, NULL, ?)
-  `).run(
+  `
+  ).run(
     payload.id,
     payload.firmId,
     payload.clientId,
@@ -498,15 +576,15 @@ export function enqueueExportJob(job) {
     createdAt,
     createdAt,
     idempotencyKey
-  );
-  syncStateExportsFromQueue();
-  return payload;
+  )
+  syncStateExportsFromQueue()
+  return payload
 }
 
 export function requeueExportJob(jobId) {
-  const existing = db.prepare('SELECT payload FROM export_jobs WHERE id = ?').get(jobId);
-  if (!existing) return null;
-  const timestamp = nowIso();
+  const existing = db.prepare('SELECT payload FROM export_jobs WHERE id = ?').get(jobId)
+  if (!existing) return null
+  const timestamp = nowIso()
   const payload = {
     ...(existing.payload ? JSON.parse(existing.payload) : {}),
     status: 'queued',
@@ -515,8 +593,9 @@ export function requeueExportJob(jobId) {
     deadLetteredAt: null,
     completedAt: null,
     updatedAt: timestamp
-  };
-  db.prepare(`
+  }
+  db.prepare(
+    `
     UPDATE export_jobs
     SET status = 'queued',
       attempts = 0,
@@ -529,23 +608,26 @@ export function requeueExportJob(jobId) {
       updated_at = ?,
       payload = ?
     WHERE id = ?
-  `).run(timestamp, timestamp, JSON.stringify(payload), jobId);
-  syncStateExportsFromQueue();
-  return getExportJob(jobId);
+  `
+  ).run(timestamp, timestamp, JSON.stringify(payload), jobId)
+  syncStateExportsFromQueue()
+  return getExportJob(jobId)
 }
 
 export function getExportJob(jobId) {
-  return listExportQueueJobs().find((job) => job.id === jobId) || null;
+  return listExportQueueJobs().find((job) => job.id === jobId) || null
 }
 
 export function leaseExportJobs({ workerId = 'worker', limit = 5, leaseMs = 30_000 } = {}) {
-  const nowMs = Date.now();
-  const nowText = new Date(nowMs).toISOString();
-  const leaseUntil = new Date(nowMs + leaseMs).toISOString();
+  const nowMs = Date.now()
+  const nowText = new Date(nowMs).toISOString()
+  const leaseUntil = new Date(nowMs + leaseMs).toISOString()
 
-  db.exec('BEGIN IMMEDIATE');
+  db.exec('BEGIN IMMEDIATE')
   try {
-    const candidates = db.prepare(`
+    const candidates = db
+      .prepare(
+        `
       SELECT id
       FROM export_jobs
       WHERE status IN ('queued', 'retrying', 'processing')
@@ -557,34 +639,38 @@ export function leaseExportJobs({ workerId = 'worker', limit = 5, leaseMs = 30_0
         )
       ORDER BY created_at ASC
       LIMIT ?
-    `).all(nowText, nowText, limit);
+    `
+      )
+      .all(nowText, nowText, limit)
 
-    const ids = candidates.map((row) => row.id);
+    const ids = candidates.map((row) => row.id)
     if (!ids.length) {
-      db.exec('COMMIT');
-      return [];
+      db.exec('COMMIT')
+      return []
     }
 
-    const placeholders = ids.map(() => '?').join(',');
-    db.prepare(`
+    const placeholders = ids.map(() => '?').join(',')
+    db.prepare(
+      `
       UPDATE export_jobs
       SET status = 'processing', leased_by = ?, lease_expires_at = ?, updated_at = ?
       WHERE id IN (${placeholders})
-    `).run(workerId, leaseUntil, nowText, ...ids);
+    `
+    ).run(workerId, leaseUntil, nowText, ...ids)
 
-    db.exec('COMMIT');
-    syncStateExportsFromQueue();
-    return ids.map((id) => getExportJob(id)).filter(Boolean);
+    db.exec('COMMIT')
+    syncStateExportsFromQueue()
+    return ids.map((id) => getExportJob(id)).filter(Boolean)
   } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
+    db.exec('ROLLBACK')
+    throw error
   }
 }
 
 export function markExportJobCompleted(jobId, output) {
-  const existing = db.prepare('SELECT payload FROM export_jobs WHERE id = ?').get(jobId);
-  if (!existing) return null;
-  const timestamp = nowIso();
+  const existing = db.prepare('SELECT payload FROM export_jobs WHERE id = ?').get(jobId)
+  if (!existing) return null
+  const timestamp = nowIso()
   const payload = {
     ...(existing.payload ? JSON.parse(existing.payload) : {}),
     status: 'completed',
@@ -592,8 +678,9 @@ export function markExportJobCompleted(jobId, output) {
     errorMessage: null,
     completedAt: timestamp,
     updatedAt: timestamp
-  };
-  db.prepare(`
+  }
+  db.prepare(
+    `
     UPDATE export_jobs
     SET status = 'completed',
       output_payload = ?,
@@ -604,32 +691,36 @@ export function markExportJobCompleted(jobId, output) {
       updated_at = ?,
       payload = ?
     WHERE id = ?
-  `).run(JSON.stringify(output || null), timestamp, timestamp, JSON.stringify(payload), jobId);
-  syncStateExportsFromQueue();
-  return getExportJob(jobId);
+  `
+  ).run(JSON.stringify(output || null), timestamp, timestamp, JSON.stringify(payload), jobId)
+  syncStateExportsFromQueue()
+  return getExportJob(jobId)
 }
 
 export function markExportJobFailed(jobId, errorMessage, options = {}) {
-  const maxAttempts = Number(options.maxAttempts || 3);
-  const baseBackoffMs = Number(options.baseBackoffMs || 500);
-  const maxBackoffMs = Number(options.maxBackoffMs || 30_000);
-  const jitterRatio = Math.max(0, Math.min(Number(options.jitterRatio ?? 0.25), 0.75));
-  const poisonErrorThreshold = Math.max(2, Number(options.poisonErrorThreshold || 3));
-  const workerId = options.workerId || null;
-  const current = db.prepare('SELECT attempts, max_attempts AS maxAttempts, payload FROM export_jobs WHERE id = ?').get(jobId);
-  if (!current) return null;
-  const existingPayload = current.payload ? JSON.parse(current.payload) : {};
-  const attempts = Number(current.attempts || 0) + 1;
-  const effectiveMaxAttempts = Number(current.maxAttempts || maxAttempts);
-  const timestamp = nowIso();
-  const normalizedError = String(errorMessage || 'Unknown worker failure');
-  const previousError = String(existingPayload?.failure?.lastError || '');
-  const repeatedErrorCount = normalizedError === previousError ? Number(existingPayload?.failure?.repeatedErrorCount || 0) + 1 : 1;
-  const poisonDetected = repeatedErrorCount >= poisonErrorThreshold;
-  const deadLetterNow = attempts >= effectiveMaxAttempts || poisonDetected;
+  const maxAttempts = Number(options.maxAttempts || 3)
+  const baseBackoffMs = Number(options.baseBackoffMs || 500)
+  const maxBackoffMs = Number(options.maxBackoffMs || 30_000)
+  const jitterRatio = Math.max(0, Math.min(Number(options.jitterRatio ?? 0.25), 0.75))
+  const poisonErrorThreshold = Math.max(2, Number(options.poisonErrorThreshold || 3))
+  const workerId = options.workerId || null
+  const current = db
+    .prepare('SELECT attempts, max_attempts AS maxAttempts, payload FROM export_jobs WHERE id = ?')
+    .get(jobId)
+  if (!current) return null
+  const existingPayload = current.payload ? JSON.parse(current.payload) : {}
+  const attempts = Number(current.attempts || 0) + 1
+  const effectiveMaxAttempts = Number(current.maxAttempts || maxAttempts)
+  const timestamp = nowIso()
+  const normalizedError = String(errorMessage || 'Unknown worker failure')
+  const previousError = String(existingPayload?.failure?.lastError || '')
+  const repeatedErrorCount =
+    normalizedError === previousError ? Number(existingPayload?.failure?.repeatedErrorCount || 0) + 1 : 1
+  const poisonDetected = repeatedErrorCount >= poisonErrorThreshold
+  const deadLetterNow = attempts >= effectiveMaxAttempts || poisonDetected
 
   if (deadLetterNow) {
-    const deadLetterReason = poisonDetected ? 'poison_job' : 'max_attempts_exhausted';
+    const deadLetterReason = poisonDetected ? 'poison_job' : 'max_attempts_exhausted'
     const payload = {
       ...existingPayload,
       status: 'dead_letter',
@@ -649,19 +740,21 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
         repeatedErrorCount,
         poisonDetected
       }
-    };
-    db.prepare(`
+    }
+    db.prepare(
+      `
       UPDATE export_jobs
       SET status = 'dead_letter', attempts = ?, error_message = ?, leased_by = NULL,
         lease_expires_at = NULL, dead_lettered_at = ?, last_attempt_at = ?, updated_at = ?, payload = ?
       WHERE id = ?
-    `).run(attempts, normalizedError, timestamp, timestamp, timestamp, JSON.stringify(payload), jobId);
+    `
+    ).run(attempts, normalizedError, timestamp, timestamp, timestamp, JSON.stringify(payload), jobId)
   } else {
-    const delayBaseMs = Math.min(baseBackoffMs * (2 ** (attempts - 1)), maxBackoffMs);
-    const jitterMs = Math.round((Math.random() * 2 - 1) * delayBaseMs * jitterRatio);
-    const delayMs = Math.max(250, delayBaseMs + jitterMs);
-    const nextAttemptAt = new Date(Date.now() + delayMs).toISOString();
-    const nextFailures = Number(existingPayload?.metadata?.simulateFailuresRemaining || 0);
+    const delayBaseMs = Math.min(baseBackoffMs * 2 ** (attempts - 1), maxBackoffMs)
+    const jitterMs = Math.round((Math.random() * 2 - 1) * delayBaseMs * jitterRatio)
+    const delayMs = Math.max(250, delayBaseMs + jitterMs)
+    const nextAttemptAt = new Date(Date.now() + delayMs).toISOString()
+    const nextFailures = Number(existingPayload?.metadata?.simulateFailuresRemaining || 0)
     const payload = {
       ...existingPayload,
       status: 'retrying',
@@ -686,32 +779,34 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
         ...(existingPayload.metadata || {}),
         simulateFailuresRemaining: Math.max(0, nextFailures - 1)
       }
-    };
-    db.prepare(`
+    }
+    db.prepare(
+      `
       UPDATE export_jobs
       SET status = 'retrying', attempts = ?, error_message = ?, next_attempt_at = ?, leased_by = NULL,
         lease_expires_at = NULL, last_attempt_at = ?, updated_at = ?, payload = ?
       WHERE id = ?
-    `).run(attempts, normalizedError, nextAttemptAt, timestamp, timestamp, JSON.stringify(payload), jobId);
+    `
+    ).run(attempts, normalizedError, nextAttemptAt, timestamp, timestamp, JSON.stringify(payload), jobId)
   }
 
-  syncStateExportsFromQueue();
-  return getExportJob(jobId);
+  syncStateExportsFromQueue()
+  return getExportJob(jobId)
 }
 
 export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs = 30_000, processor, onLeased } = {}) {
-  const startedAt = Date.now();
-  const leased = leaseExportJobs({ workerId, limit, leaseMs });
-  onLeased?.(leased);
-  let processed = 0;
-  let failed = 0;
-  let skipped = 0;
+  const startedAt = Date.now()
+  const leased = leaseExportJobs({ workerId, limit, leaseMs })
+  onLeased?.(leased)
+  let processed = 0
+  let failed = 0
+  let skipped = 0
 
   for (const job of leased) {
-    const current = getExportJob(job.id);
+    const current = getExportJob(job.id)
     if (current?.status === 'completed' || current?.status === 'dead_letter') {
-      skipped += 1;
-      continue;
+      skipped += 1
+      continue
     }
     try {
       const output = processor?.({
@@ -722,12 +817,12 @@ export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs
           leasedAt: new Date(startedAt).toISOString(),
           leaseMs
         }
-      });
-      markExportJobCompleted(job.id, output);
-      processed += 1;
+      })
+      markExportJobCompleted(job.id, output)
+      processed += 1
     } catch (error) {
-      markExportJobFailed(job.id, error?.message || String(error), { maxAttempts: job.maxAttempts || 3, workerId });
-      failed += 1;
+      markExportJobFailed(job.id, error?.message || String(error), { maxAttempts: job.maxAttempts || 3, workerId })
+      failed += 1
     }
   }
 
@@ -738,7 +833,7 @@ export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs
     skipped,
     durationMs: Date.now() - startedAt,
     timestamp: nowIso()
-  };
+  }
 }
 
 export function readQuerySummary() {
@@ -749,45 +844,69 @@ export function readQuerySummary() {
     households: db.prepare('SELECT COUNT(*) AS count FROM households').get().count,
     templates: db.prepare('SELECT COUNT(*) AS count FROM document_templates').get().count,
     exports: db.prepare('SELECT COUNT(*) AS count FROM export_jobs').get().count
-  };
+  }
 }
 
 export function readExportWorkerStatus() {
-  const statuses = db.prepare(`
+  const statuses = db
+    .prepare(
+      `
     SELECT status, COUNT(*) AS count
     FROM export_jobs
     GROUP BY status
-  `).all();
-  const byStatus = Object.fromEntries(statuses.map((row) => [row.status, row.count]));
-  const latest = db.prepare(`
+  `
+    )
+    .all()
+  const byStatus = Object.fromEntries(statuses.map((row) => [row.status, row.count]))
+  const latest = db
+    .prepare(
+      `
     SELECT payload
     FROM export_jobs
     ORDER BY updated_at DESC
     LIMIT 1
-  `).get();
-  const activeLeases = db.prepare(`
+  `
+    )
+    .get()
+  const activeLeases = db
+    .prepare(
+      `
     SELECT COUNT(*) AS count
     FROM export_jobs
     WHERE status = 'processing' AND lease_expires_at > ?
-  `).get(nowIso()).count;
-  const retryCounts = db.prepare(`
+  `
+    )
+    .get(nowIso()).count
+  const retryCounts = db
+    .prepare(
+      `
     SELECT attempts, COUNT(*) AS count
     FROM export_jobs
     WHERE status = 'retrying'
     GROUP BY attempts
     ORDER BY attempts ASC
-  `).all();
-  const deadLetter = db.prepare("SELECT COUNT(*) AS count FROM export_jobs WHERE status = 'dead_letter'").get().count;
-  const readyNow = db.prepare(`
+  `
+    )
+    .all()
+  const deadLetter = db.prepare("SELECT COUNT(*) AS count FROM export_jobs WHERE status = 'dead_letter'").get().count
+  const readyNow = db
+    .prepare(
+      `
     SELECT COUNT(*) AS count
     FROM export_jobs
     WHERE status IN ('queued', 'retrying') AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
-  `).get(nowIso()).count;
-  const stalled = db.prepare(`
+  `
+    )
+    .get(nowIso()).count
+  const stalled = db
+    .prepare(
+      `
     SELECT COUNT(*) AS count
     FROM export_jobs
     WHERE status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
-  `).get(nowIso()).count;
+  `
+    )
+    .get(nowIso()).count
 
   return {
     queued: (byStatus.queued || 0) + (byStatus.retrying || 0),
@@ -802,11 +921,11 @@ export function readExportWorkerStatus() {
     retryCounts,
     byStatus,
     latestJob: latest?.payload ? JSON.parse(latest.payload) : null
-  };
+  }
 }
 
 export function readStorageHealth() {
-  const now = Date.now();
+  const now = Date.now()
   const info = {
     dbPath: DB_PATH,
     exists: existsSync(DB_PATH),
@@ -814,38 +933,46 @@ export function readStorageHealth() {
     quickCheck: 'unknown',
     connected: false,
     latencyMs: 0
-  };
-  if (info.exists) {
-    info.sizeBytes = statSync(DB_PATH).size;
   }
-  db.prepare('SELECT 1').get();
-  info.connected = true;
-  const quickCheck = db.prepare('PRAGMA quick_check').get();
-  info.quickCheck = quickCheck?.quick_check || 'unknown';
-  info.latencyMs = Date.now() - now;
-  return info;
+  if (info.exists) {
+    info.sizeBytes = statSync(DB_PATH).size
+  }
+  db.prepare('SELECT 1').get()
+  info.connected = true
+  const quickCheck = db.prepare('PRAGMA quick_check').get()
+  info.quickCheck = quickCheck?.quick_check || 'unknown'
+  info.latencyMs = Date.now() - now
+  return info
 }
 
 export function readAuditEventSummary() {
-  const row = db.prepare('SELECT COUNT(*) AS total FROM audit_events').get();
-  const last = db.prepare(`
+  const row = db.prepare('SELECT COUNT(*) AS total FROM audit_events').get()
+  const last = db
+    .prepare(
+      `
     SELECT occurred_at AS occurredAt, action
     FROM audit_events
     ORDER BY occurred_at DESC
     LIMIT 1
-  `).get();
+  `
+    )
+    .get()
   return {
     total: row?.total || 0,
     latest: last || null
-  };
+  }
 }
 
 export function readAnalyticsMaterializedSummary(firmId) {
-  const row = db.prepare(`
+  const row = db
+    .prepare(
+      `
     SELECT payload, updated_at AS updatedAt
     FROM analytics_materialized
     WHERE firm_id = ?
-  `).get(firmId);
-  if (!row) return null;
-  return { ...JSON.parse(row.payload), updatedAt: row.updatedAt };
+  `
+    )
+    .get(firmId)
+  if (!row) return null
+  return { ...JSON.parse(row.payload), updatedAt: row.updatedAt }
 }

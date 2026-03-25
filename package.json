@@ -25,6 +25,16 @@
     "backup": "node scripts/backup-db.mjs",
     "restore": "node scripts/restore-db.mjs",
     "worker": "node scripts/export-worker.mjs",
-    "reset:test-data": "node scripts/reset-test-data.mjs"
+    "reset:test-data": "node scripts/reset-test-data.mjs",
+    "lint": "eslint \"apps/api/**/*.mjs\" \"apps/web/public/**/*.js\" \"scripts/**/*.mjs\"",
+    "format:check": "prettier --check \"apps/api/**/*.mjs\" \"apps/web/public/**/*.{js,css,html}\" \"scripts/**/*.mjs\""
+  },
+  "devDependencies": {
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.1.0",
+    "eslint-plugin-security": "^4.0.0",
+    "eslint-plugin-sonarjs": "^4.0.2",
+    "globals": "^17.4.0",
+    "prettier": "^3.8.1"
   }
 }

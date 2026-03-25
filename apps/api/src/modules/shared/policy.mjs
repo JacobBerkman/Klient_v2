@@ -55,7 +55,7 @@ const POLICY_MATRIX = {
     portal: { read: true, create: false },
     clientWorkspace: { read: true, write: true }
   }
-};
+}
 
 const GUARD_TO_POLICY = {
   canManageUsers: ['users', 'manage'],
@@ -83,45 +83,45 @@ const GUARD_TO_POLICY = {
   canWriteClientWorkspace: ['clientWorkspace', 'write'],
   canCreatePortalLink: ['portal', 'create'],
   canReadPortal: ['portal', 'read']
-};
+}
 
 function createPolicyError(message, code, details = null) {
-  const error = new Error(message);
-  error.statusCode = 403;
-  error.code = code;
-  error.details = details;
-  return error;
+  const error = new Error(message)
+  error.statusCode = 403
+  error.code = code
+  error.details = details
+  return error
 }
 
 export function createPolicy() {
   function evaluateGuard(user, guardName) {
-    const mapping = GUARD_TO_POLICY[guardName];
+    const mapping = GUARD_TO_POLICY[guardName]
     if (!mapping) {
-      return { allowed: false, reasonCode: 'POLICY_GUARD_UNKNOWN', details: { guardName } };
+      return { allowed: false, reasonCode: 'POLICY_GUARD_UNKNOWN', details: { guardName } }
     }
     if (!user?.role) {
-      return { allowed: false, reasonCode: 'POLICY_USER_ROLE_MISSING', details: { guardName } };
+      return { allowed: false, reasonCode: 'POLICY_USER_ROLE_MISSING', details: { guardName } }
     }
 
-    const [resource, action] = mapping;
-    const allowed = Boolean(POLICY_MATRIX[user.role]?.[resource]?.[action]);
+    const [resource, action] = mapping
+    const allowed = Boolean(POLICY_MATRIX[user.role]?.[resource]?.[action])
     if (!allowed) {
       return {
         allowed: false,
         reasonCode: 'POLICY_ACCESS_DENIED',
         details: { guardName, role: user.role, resource, action }
-      };
+      }
     }
 
-    return { allowed: true, reasonCode: 'POLICY_ALLOW', details: { guardName, role: user.role, resource, action } };
+    return { allowed: true, reasonCode: 'POLICY_ALLOW', details: { guardName, role: user.role, resource, action } }
   }
 
   function requireGuard(user, guardName) {
-    const decision = evaluateGuard(user, guardName);
+    const decision = evaluateGuard(user, guardName)
     if (!decision.allowed) {
-      throw createPolicyError(`Policy denied for guard ${guardName}`, decision.reasonCode, decision.details);
+      throw createPolicyError(`Policy denied for guard ${guardName}`, decision.reasonCode, decision.details)
     }
-    return decision;
+    return decision
   }
 
   return {
@@ -130,7 +130,7 @@ export function createPolicy() {
     evaluateGuard,
     requireGuard,
     requirePermission(user, permission) {
-      return requireGuard(user, permission);
+      return requireGuard(user, permission)
     }
-  };
+  }
 }
