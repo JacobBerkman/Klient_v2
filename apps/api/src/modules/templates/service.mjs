@@ -5,10 +5,16 @@ export function createTemplatesService({ templateRepository, policy, store = nul
 
   return {
     list(user) {
+      if (templatesCompatibility?.listDocuments) {
+        return templatesCompatibility.listDocuments(user)
+      }
       policy.requireGuard(user, 'canReadTemplate')
       return templateRepository.listDocumentTemplates(createFirmContext(user))
     },
     create(user, input) {
+      if (templatesCompatibility?.createDocument) {
+        return templatesCompatibility.createDocument(user, input)
+      }
       policy.requireGuard(user, 'canEditTemplate')
       return runMutation(() => templateRepository.createDocumentTemplate(user, input))
     },

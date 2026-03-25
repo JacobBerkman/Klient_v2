@@ -93,6 +93,25 @@ export class StoreTemplateRepository extends TemplateRepository {
   }
 }
 
+export class StoreTemplatesV2Repository extends TemplatesV2Repository {
+  constructor(store) {
+    super()
+    this.store = store
+  }
+  listCanonicalTemplates(user, filters = {}) {
+    return this.store.listTemplateAggregates(user, filters)
+  }
+  createCanonicalTemplate(user, input) {
+    return this.store.createTemplateAggregate(user, input)
+  }
+  updateCanonicalTemplate(user, templateId, patch) {
+    return this.store.updateTemplateAggregate(user, templateId, patch)
+  }
+  transitionLifecycle(user, templateId, nextState) {
+    return this.store.transitionTemplateLifecycle(user, templateId, nextState)
+  }
+}
+
 export class StorePipelineRepository extends PipelineRepository {
   constructor(store) {
     super()

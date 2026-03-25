@@ -1437,21 +1437,24 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       persist()
       return note
     },
-    listFormTemplates(user) {
+    listTemplateAggregates(user, filters = {}) {
       requirePermission(user, 'profiles:read')
-      return state.templateAggregates
-        .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
-        .map(formTemplateAdapter)
+      const kind = filters.kind || null
+      return state.templateAggregates.filter((entry) => {
+        if (entry.firmId !== user.firmId) return false
+        if (kind === 'form') return entry.kind === 'form'
+        if (kind === 'document') return entry.kind !== 'form'
+        return true
+      })
     },
-    createFormTemplate(user, input) {
-      requirePermission(user, 'forms:write')
+    createTemplateAggregate(user, input) {
       const createdAt = now()
       const formSchema = validateFormDefinitionSchema({ sections: input.sections || [] }, { contextPath: '/sections' }).schema
       const template = normalizeTemplateAggregate(
         {
           id: randomUUID(),
           firmId: user.firmId,
-          kind: 'form',
+          kind,
           name: input.name,
           description: input.description || '',
           formSchema,
@@ -1466,19 +1469,82 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
               blueprint: { sections: [] },
               mappings: [],
               publishState: 'draft',
-              createdAt
+              createdAt,
+              actorUserId: user.id
             }
           ],
           createdAt,
           updatedAt: createdAt
         },
-        'form'
+        kind
       )
       state.templateAggregates.push(template)
-      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'form_template.created', {
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'template_aggregate.created', {
+        kind: template.kind,
         name: template.name
       })
       persist()
+      return template
+    },
+    updateTemplateAggregate(user, templateId, patch = {}) {
+      requirePermission(user, 'templates:write')
+      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId)
+      if (!template) throw new Error('Template not found.')
+      if (patch.mappings) {
+        template.mappings = patch.mappings
+        template.mappingRules = patch.mappings
+      }
+      if (patch.formSchema) template.formSchema = patch.formSchema
+      if (patch.blueprint) template.blueprint = patch.blueprint
+      if (Array.isArray(patch.extractedFields)) template.extractedFields = patch.extractedFields
+      if (typeof patch.description === 'string') template.description = patch.description
+      template.versions.push(
+        createTemplateVersion(template, 'updated', {
+          mappings: template.mappings,
+          blueprint: template.blueprint,
+          formSchema: template.formSchema,
+          diff: { patchApplied: true },
+          actorUserId: user.id
+        })
+      )
+      template.updatedAt = now()
+      persist()
+      return template
+    },
+    transitionTemplateLifecycle(user, templateId, nextState) {
+      requirePermission(user, 'templates:write')
+      const template = state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId)
+      if (!template) throw new Error('Template not found.')
+      const allowed = new Set(['draft', 'published', 'archived'])
+      if (!allowed.has(nextState)) throw new Error('Invalid publish state.')
+      const previousState = template.publishState || 'draft'
+      template.publishState = nextState
+      template.status = nextState
+      template.publishTransitions ||= []
+      template.publishTransitions.push({ from: previousState, to: nextState, at: now(), actorUserId: user.id })
+      template.versions.push(
+        createTemplateVersion(template, `lifecycle_${nextState}`, {
+          publishState: nextState,
+          diff: { publishTransition: { from: previousState, to: nextState } },
+          actorUserId: user.id
+        })
+      )
+      template.updatedAt = now()
+      persist()
+      return template
+    },
+    listFormTemplates(user) {
+      return this.listTemplateAggregates(user, { kind: 'form' }).map(formTemplateAdapter)
+    },
+    createFormTemplate(user, input) {
+      const template = this.createTemplateAggregate(user, {
+        kind: 'form',
+        name: input.name,
+        description: input.description || '',
+        formSchema: { sections: input.sections || [] },
+        blueprint: { sections: [] },
+        mappings: []
+      })
       return formTemplateAdapter(template)
     },
     listFormSubmissions(user, status = null) {
@@ -1763,10 +1829,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return { ok: true, submission }
     },
     listDocumentTemplates(user) {
-      requirePermission(user, 'templates:write')
-      return state.templateAggregates
-        .filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form')
-        .map(documentTemplateAdapter)
+      return this.listTemplateAggregates(user, { kind: 'document' }).map(documentTemplateAdapter)
     },
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write')
@@ -1809,7 +1872,6 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.created', {
         name: template.name
       })
-      persist()
       return documentTemplateAdapter(template)
     },
     updateTemplateMappings(user, templateId, mappings, input = {}) {

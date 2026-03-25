@@ -6,15 +6,18 @@ import { createPipelineService } from './pipeline/service.mjs'
 import { createHouseholdsService } from './households/service.mjs'
 import { createFormsService } from './forms/service.mjs'
 import { createTemplatesService } from './templates/service.mjs'
+import { createTemplatesV2Service } from './templates-v2/service.mjs'
 import { createExportsService } from './exports/service.mjs'
 import { createAuditService } from './audit/service.mjs'
 import { createAnalyticsService } from './analytics/service.mjs'
-import { StoreProfileRepository, StoreTemplateRepository } from '../repositories/store-adapters.mjs'
+import { StoreProfileRepository, StoreTemplateRepository, StoreTemplatesV2Repository } from '../repositories/store-adapters.mjs'
 
 export function createModules({ store, reads }) {
   const policy = createPolicy({ store })
   const profileRepository = new StoreProfileRepository(store, reads)
   const templateRepository = new StoreTemplateRepository(store)
+  const templatesV2Repository = new StoreTemplatesV2Repository(store)
+  const templatesCompatibility = createTemplatesV2Service({ templatesV2Repository, policy })
 
   return {
     policy,
