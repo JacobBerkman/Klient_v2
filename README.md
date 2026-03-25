@@ -64,7 +64,10 @@ Open:
 - `http://localhost:3000`
 - `http://localhost:3000/portal?token=<token>`
 
-## Demo credentials
+## Demo mode (optional, non-production only)
+Set `ENABLE_DEMO_MODE=true` when running locally if you want seeded demo data and UI shortcuts.
+
+Demo credentials (only when demo mode is enabled):
 - Email: `admin@demo.test`
 - Password: `ChangeMe123!`
 
@@ -105,6 +108,8 @@ npm run validate:master
 ```
 
 `npm run test:all` remains available and now delegates to `validate:master`.
+
+CI uses this same canonical gate (`npm run validate:master`) across supported Node versions (20 and 22), uploads gate logs plus parity/backup evidence artifacts, and exposes `required-status-checks` as the branch-protection-friendly merge check.
 ## Main parity check
 Run the parity sync/report command:
 
@@ -145,6 +150,8 @@ curl -X POST http://localhost:3000/api/login \
 ```
 `/ready` now includes config validation output, SQLite quick-check results, export worker status summary, and audit event counts. `/api/ops/diagnostics` adds richer startup/runtime metadata for on-call troubleshooting.
 
+Public runtime feature flags are available at `GET /api/runtime`.
+
 ## Portal view
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
 
@@ -156,7 +163,7 @@ node scripts/backup-db.mjs
 Runtime data is stored in:
 - `data/app.db`
 
-Delete the file to reseed the demo dataset.
+Delete the file to reseed state. If `ENABLE_DEMO_MODE=true`, the demo dataset is seeded; otherwise startup state remains empty.
 
 ## Backups
 ```bash
