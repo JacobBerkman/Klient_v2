@@ -79,11 +79,25 @@ const DEFAULT_PIPELINE_STAGES = [
   { id: 'drop_dead_lead', label: 'Drop / Dead Lead', order: 9, active: true },
   { id: 'drop_nurture', label: 'Drop / Nurture', order: 10, active: true }
 ]
+const DEFAULT_STAGE_DEFINITIONS = createDefaultFirmStageConfig().stages.map((stage, index) => {
+  const id = getStageKey(stage)
+  return {
+    id,
+    label: stage.label || id,
+    order: Number(stage.order) || index + 1,
+    isTerminal: id === 'completed',
+    isDrop: id.startsWith('drop_')
+  }
+})
 const LEGACY_STAGE_BUCKET = 'legacy_unassigned'
-const DEFAULT_ANALYTICS_STAGE_DEFINITIONS = BOARD_COLUMNS.map((id) => ({
-  id,
-  role: id === 'discovery' ? 'start' : id === 'completed' ? 'end' : id.startsWith('drop_') ? 'dropped' : 'active'
-}))
+const DEFAULT_ANALYTICS_STAGE_DEFINITIONS = createDefaultFirmStageConfig().stages.map((stage) => {
+  const id = getStageKey(stage)
+  return {
+    id,
+    order: Number(stage.order) || 0,
+    role: id === 'discovery' ? 'start' : id === 'completed' ? 'end' : id.startsWith('drop_') ? 'dropped' : 'active'
+  }
+})
 
 function normalizeStageRole(value) {
   const normalized = String(value || '')
@@ -1219,6 +1233,25 @@ export function createStore({
       }
     }
     return normalizedStages
+  }
+
+  function getFirmStageMetadata(firmId) {
+    const firm = state.firms.find((entry) => entry.id === firmId) || null
+    const analyticsStages = resolveFirmAnalyticsStages(firm)
+    const definitionsById = new Map(getFirmPipelineStageDefinitions(firmId).map((stage) => [stage.id, stage]))
+    return analyticsStages.stageOrder.map((stageId, index) => {
+      const definition = definitionsById.get(stageId)
+      return {
+        id: stageId,
+        label: definition?.label || toStageLabel(stageId),
+        order: index + 1,
+        active: definition?.active !== false,
+        legacy: Boolean(definition?.legacy),
+        isStart: stageId === analyticsStages.startStage,
+        isTerminal: stageId === analyticsStages.endStage,
+        isDrop: stageId.startsWith('drop_')
+      }
+    })
   }
 
   function buildBoardPayload(user, conflict = null) {
@@ -3235,6 +3268,7 @@ export function createStore({
 
       const firm = state.firms.find((entry) => entry.id === user.firmId) || null
       const stageConfig = resolveFirmAnalyticsStages(firm)
+      const stageMetadata = getFirmStageMetadata(user.firmId)
       const toAnalyticsStage = (stage) => {
         const value = String(stage || '').trim()
         return value && stageConfig.stageIdSet.has(value) ? value : LEGACY_STAGE_BUCKET
@@ -3270,6 +3304,7 @@ export function createStore({
         .slice()
         .sort((a, b) => parseIso(a.changedAt) - parseIso(b.changedAt))
       const stageEntryTimes = new Map()
+      const stageAging = {}
       stageEvents.forEach((event) => {
         const key = `${event.clientId}:${toAnalyticsStage(event.toStage)}`
         if (!stageEntryTimes.has(key)) stageEntryTimes.set(key, parseIso(event.changedAt))
@@ -3289,7 +3324,7 @@ export function createStore({
         if (entry.count) entry.avgDays = Number((entry.totalDays / entry.count).toFixed(2))
         delete entry.totalDays
       })
-      const stageAging = stageMetadata.map((stage) => ({
+      const stageAgingOrdered = stageMetadata.map((stage) => ({
         stage: stage.id,
         stageId: stage.id,
         stageLabel: stage.label,
@@ -3298,7 +3333,9 @@ export function createStore({
         count: stageAgingMap[stage.id]?.count || 0,
         avgDays: stageAgingMap[stage.id]?.avgDays || 0
       }))
-      const stageAgingById = Object.fromEntries(stageAging.map((entry) => [entry.stageId, { count: entry.count, avgDays: entry.avgDays }]))
+      const stageAgingById = Object.fromEntries(
+        stageAgingOrdered.map((entry) => [entry.stageId, { count: entry.count, avgDays: entry.avgDays }])
+      )
 
       const templateIds = new Set(
         state.templateAggregates
@@ -3405,7 +3442,7 @@ export function createStore({
         }, {})
       }
 
-      const bottlenecks = stageAging
+      const bottlenecks = stageAgingOrdered
         .filter((entry) => !entry.isTerminal && !entry.isDrop)
         .filter((entry) => entry.count > 0)
         .sort((a, b) => b.avgDays - a.avgDays)
@@ -3425,7 +3462,7 @@ export function createStore({
         funnel,
         overallConversionRate: firstStage ? Number((lastStage / firstStage).toFixed(4)) : 0,
         stageAging: stageAgingById,
-        stageAgingOrdered: stageAging,
+        stageAgingOrdered,
         bottlenecks,
         formCompletionRates: Object.values(formsByTemplate),
         formCompletionLatency: latencyByTemplate,
@@ -3438,7 +3475,7 @@ export function createStore({
           .length,
         avgProspectStageAgeDays: Number(
           average(
-            stageAging
+            stageAgingOrdered
               .filter((entry) => !entry.isTerminal && !entry.isDrop)
               .map((entry) => entry.avgDays || 0)
           ).toFixed(2)
