@@ -2,6 +2,8 @@
 
 ## Canonical runtime
 Deploy the application by running the single Node server at `apps/api/src/server.mjs`.
+
+Node runtime policy: production containers track the active Node.js **LTS major** (currently 22) and pin an immutable base-image digest for reproducible builds.
 That process serves:
 - the JSON API,
 - the advisor SPA from `apps/web/public`,
@@ -59,6 +61,14 @@ docker compose --env-file .env up --build -d
 ```
 
 The app will be available at `http://localhost:3000`.
+
+### Container filesystem policy
+- The runtime container is designed to run with a **read-only root filesystem**.
+- Required writable paths are:
+  - `/app/data` for SQLite runtime state (`data/app.db`)
+  - `/tmp` for temporary files
+  - `/app/tmp` for app-scoped temporary files
+- `docker-compose.yml` enables this policy via `read_only: true`, two `tmpfs` mounts (`/tmp`, `/app/tmp`), and a bind/volume mount for `/app/data`.
 
 ## Health and readiness
 Use:
