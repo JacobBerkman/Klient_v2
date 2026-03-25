@@ -10,20 +10,32 @@ Run the hard gate:
 npm run validate:master
 ```
 
+Machine-readable gate summary artifact:
+
+```text
+artifacts/release-evidence/validate-master-summary.json
+```
+
+Optional release-specific artifact path:
+
+```bash
+RELEASE_EVIDENCE_FILE=artifacts/release-evidence/<release-id>.json npm run validate:master
+```
+
 ## Objective pass/fail criteria
 
-| Gate | Owner | Evidence command | PASS criteria | Severity if failed | Rollback trigger (SLO/SLA) |
-|---|---|---|---|---|---|
-| API contract | API Lead | `npm run test:contract` | Exit code `0`; contract script prints success payload with required API workflow coverage. | **SEV-1** | Roll back immediately if post-deploy contract checks fail for any public endpoint for more than **5 minutes** (SLO breach) or if external consumers report incompatible responses in production (**SLA breach**). |
-| Integration suites | QA Lead | `npm run test:integration` | Exit code `0`; all ordered integration scripts pass. | **SEV-1** | Roll back if critical workflow integration failure persists for **10 minutes** after deploy or blocks tenant onboarding/submission completion. |
-| Migration checks | Data/DB Owner | `npm run check:migrations` | Exit code `0`; migration order and idempotency checks pass for template aggregate + PII re-encryption path. | **SEV-1** | Roll back if migration idempotency fails, aggregate counts drift, or any data correctness SLO is violated; database restore required on confirmed corruption (SLA). |
-| Smoke | Release Manager | `npm run test:smoke` | Exit code `0`; login, profile, template publish, and export flow succeed end-to-end. | **SEV-1** | Roll back if smoke journey fails twice consecutively post-deploy or any core user journey remains broken for **10 minutes**. |
-| Security checks | Security Owner | `npm run test:security` | Exit code `0`; auth policy and PII crypto tests pass. | **SEV-0/1** | Roll back immediately on auth bypass, PII exposure risk, or crypto regression (SLA/security policy breach). |
-| Claim-status review | Product + Release Manager | `rg -n "(implemented|partial|roadmap)" README.md docs/release-ready-checklist.md apps/web/public/index.html` | Every user-facing marketing/UI claim is tagged (`implemented`/`partial`/`roadmap`) and any non-implemented claim has feature-flag indicator + milestone link. | **SEV-1** | Block production deploy until claim status audit is complete and signed; roll back if a production claim is found materially incorrect post-deploy. |
-| Branch parity | Engineering Manager | `npm run check:merge-main` | Exit code `0`; branch is merge-compatible with `main`. | **SEV-2** | No runtime rollback trigger by itself; block release until parity is restored. |
-| Backup present | SRE / On-call | `npm run backup` | New timestamped backup artifact exists in `data/`. | **SEV-1** | Roll back and halt further deploys if deploy proceeds without a verified fresh backup. |
-| Runtime health after deploy | SRE / On-call | `curl -fsS "$KLIENT_BASE_URL/health" && curl -fsS "$KLIENT_BASE_URL/ready"` | Both endpoints return HTTP `200` and readiness `status=ready`. | **SEV-1** | Roll back if health/readiness are non-200 for **>5 minutes** or if readiness remains degraded after one remediation attempt. |
-| Operational telemetry | Observability Owner | `test -n "$KLIENT_TELEMETRY_BUNDLE" && test -f "$KLIENT_TELEMETRY_BUNDLE"` | Logs, metrics, and alerts all meet operational acceptance criteria and no unresolved high-urgency alerts remain. | **SEV-1** | Roll back if telemetry SLOs are violated for **>10 minutes** or if paging alerts stay firing after mitigation attempt. |
+| Gate | Owner | Evidence command | Evidence artifact target | PASS criteria | Severity if failed | Rollback trigger (SLO/SLA) |
+|---|---|---|---|---|---|---|
+| API contract | API Lead | `npm run test:contract \| tee artifacts/release-evidence/api-contract.txt` | `artifacts/release-evidence/api-contract.txt` | Exit code `0`; contract script prints success payload with required API workflow coverage. | **SEV-1** | Roll back immediately if post-deploy contract checks fail for any public endpoint for more than **5 minutes** (SLO breach) or if external consumers report incompatible responses in production (**SLA breach**). |
+| Integration suites | QA Lead | `npm run test:integration \| tee artifacts/release-evidence/integration.txt` | `artifacts/release-evidence/integration.txt` | Exit code `0`; all ordered integration scripts pass. | **SEV-1** | Roll back if critical workflow integration failure persists for **10 minutes** after deploy or blocks tenant onboarding/submission completion. |
+| Migration checks | Data/DB Owner | `npm run check:migrations \| tee artifacts/release-evidence/migrations.txt` | `artifacts/release-evidence/migrations.txt` | Exit code `0`; migration order and idempotency checks pass for template aggregate + PII re-encryption path. | **SEV-1** | Roll back if migration idempotency fails, aggregate counts drift, or any data correctness SLO is violated; database restore required on confirmed corruption (SLA). |
+| Smoke | Release Manager | `npm run test:smoke \| tee artifacts/release-evidence/smoke.txt` | `artifacts/release-evidence/smoke.txt` | Exit code `0`; login, profile, template publish, and export flow succeed end-to-end. | **SEV-1** | Roll back if smoke journey fails twice consecutively post-deploy or any core user journey remains broken for **10 minutes**. |
+| Security checks | Security Owner | `npm run test:security \| tee artifacts/release-evidence/security.txt` | `artifacts/release-evidence/security.txt` | Exit code `0`; auth policy and PII crypto tests pass. | **SEV-0/1** | Roll back immediately on auth bypass, PII exposure risk, or crypto regression (SLA/security policy breach). |
+| Claim-status review | Product + Release Manager | `rg -n "(implemented\|partial\|roadmap)" README.md docs/release-ready-checklist.md apps/web/public/index.html \| tee artifacts/release-evidence/claim-status.txt` | `artifacts/release-evidence/claim-status.txt` | Every user-facing marketing/UI claim is tagged (`implemented`/`partial`/`roadmap`) and any non-implemented claim has feature-flag indicator + milestone link. | **SEV-1** | Block production deploy until claim status audit is complete and signed; roll back if a production claim is found materially incorrect post-deploy. |
+| Branch parity | Engineering Manager | `npm run check:merge-main \| tee artifacts/release-evidence/branch-parity.txt` | `artifacts/release-evidence/branch-parity.txt` | Exit code `0`; branch is merge-compatible with `main`. | **SEV-2** | No runtime rollback trigger by itself; block release until parity is restored. |
+| Backup present | SRE / On-call | `npm run backup && ls -l data/backup-*.db \| tail -n 1 \| tee artifacts/release-evidence/backup-latest.txt` | `artifacts/release-evidence/backup-latest.txt` | New timestamped backup artifact exists in `data/`. | **SEV-1** | Roll back and halt further deploys if deploy proceeds without a verified fresh backup. |
+| Runtime health after deploy | SRE / On-call | `curl -fsS "$KLIENT_BASE_URL/health" \| tee artifacts/release-evidence/health.json && curl -fsS "$KLIENT_BASE_URL/ready" \| tee artifacts/release-evidence/ready.json` | `artifacts/release-evidence/health.json`, `artifacts/release-evidence/ready.json` | Both endpoints return HTTP `200` and readiness `status=ready`. | **SEV-1** | Roll back if health/readiness are non-200 for **>5 minutes** or if readiness remains degraded after one remediation attempt. |
+| Operational telemetry | Observability Owner | `test -n "$KLIENT_TELEMETRY_BUNDLE" && test -f "$KLIENT_TELEMETRY_BUNDLE" && cp "$KLIENT_TELEMETRY_BUNDLE" artifacts/release-evidence/telemetry-bundle.json` | `artifacts/release-evidence/telemetry-bundle.json` | Logs, metrics, and alerts all meet operational acceptance criteria and no unresolved high-urgency alerts remain. | **SEV-1** | Roll back if telemetry SLOs are violated for **>10 minutes** or if paging alerts stay firing after mitigation attempt. |
 
 ## Operational acceptance criteria (logs/metrics/alerts)
 
@@ -64,16 +76,16 @@ Use this template for every release and store it with deployment artifacts:
 
 | Gate | Owner | Status (PASS/FAIL) | Severity if failed | Command / Dashboard link | Run ID | Timestamp (UTC) | Evidence link |
 |---|---|---|---|---|---|---|---|
-| API contract | API Lead |  | SEV-1 | `npm run test:contract` |  |  |  |
-| Integration suites | QA Lead |  | SEV-1 | `npm run test:integration` |  |  |  |
-| Migration checks | Data/DB Owner |  | SEV-1 | `npm run check:migrations` |  |  |  |
-| Smoke | Release Manager |  | SEV-1 | `npm run test:smoke` |  |  |  |
-| Security checks | Security Owner |  | SEV-0/1 | `npm run test:security` |  |  |  |
-| Claim-status review | Product + Release Manager |  | SEV-1 | `rg -n "(implemented|partial|roadmap)" README.md docs/release-ready-checklist.md apps/web/public/index.html` |  |  |  |
-| Branch parity | Engineering Manager |  | SEV-2 | `npm run check:merge-main` |  |  |  |
-| Backup present | SRE / On-call |  | SEV-1 | `npm run backup` |  |  |  |
-| Runtime health after deploy | SRE / On-call |  | SEV-1 | `curl -fsS "$KLIENT_BASE_URL/health" && curl -fsS "$KLIENT_BASE_URL/ready"` |  |  |  |
-| Operational telemetry | Observability Owner |  | SEV-1 | `test -n "$KLIENT_TELEMETRY_BUNDLE" && test -f "$KLIENT_TELEMETRY_BUNDLE"` |  |  |  |
+| API contract | API Lead |  | SEV-1 | `npm run test:contract \| tee artifacts/release-evidence/api-contract.txt` |  |  | `artifacts/release-evidence/api-contract.txt` |
+| Integration suites | QA Lead |  | SEV-1 | `npm run test:integration \| tee artifacts/release-evidence/integration.txt` |  |  | `artifacts/release-evidence/integration.txt` |
+| Migration checks | Data/DB Owner |  | SEV-1 | `npm run check:migrations \| tee artifacts/release-evidence/migrations.txt` |  |  | `artifacts/release-evidence/migrations.txt` |
+| Smoke | Release Manager |  | SEV-1 | `npm run test:smoke \| tee artifacts/release-evidence/smoke.txt` |  |  | `artifacts/release-evidence/smoke.txt` |
+| Security checks | Security Owner |  | SEV-0/1 | `npm run test:security \| tee artifacts/release-evidence/security.txt` |  |  | `artifacts/release-evidence/security.txt` |
+| Claim-status review | Product + Release Manager |  | SEV-1 | `rg -n "(implemented\|partial\|roadmap)" README.md docs/release-ready-checklist.md apps/web/public/index.html \| tee artifacts/release-evidence/claim-status.txt` |  |  | `artifacts/release-evidence/claim-status.txt` |
+| Branch parity | Engineering Manager |  | SEV-2 | `npm run check:merge-main \| tee artifacts/release-evidence/branch-parity.txt` |  |  | `artifacts/release-evidence/branch-parity.txt` |
+| Backup present | SRE / On-call |  | SEV-1 | `npm run backup && ls -l data/backup-*.db \| tail -n 1 \| tee artifacts/release-evidence/backup-latest.txt` |  |  | `artifacts/release-evidence/backup-latest.txt` |
+| Runtime health after deploy | SRE / On-call |  | SEV-1 | `curl -fsS "$KLIENT_BASE_URL/health" \| tee artifacts/release-evidence/health.json && curl -fsS "$KLIENT_BASE_URL/ready" \| tee artifacts/release-evidence/ready.json` |  |  | `artifacts/release-evidence/health.json`, `artifacts/release-evidence/ready.json` |
+| Operational telemetry | Observability Owner |  | SEV-1 | `test -n "$KLIENT_TELEMETRY_BUNDLE" && test -f "$KLIENT_TELEMETRY_BUNDLE" && cp "$KLIENT_TELEMETRY_BUNDLE" artifacts/release-evidence/telemetry-bundle.json` |  |  | `artifacts/release-evidence/telemetry-bundle.json` |
 
 ## Deployment timeline
 
