@@ -117,6 +117,13 @@ node scripts/restore-db.mjs data/backup-<timestamp>.db
 ## Rollback playbook
 Rollback is mandatory if health checks degrade, smoke fails, or security regressions are observed.
 
+### Explicit rollback SLO/SLA triggers
+- `/health` or `/ready` non-200 for more than **5 minutes** after deploy.
+- Critical smoke journey failure persisting more than **10 minutes** after one remediation attempt.
+- Contract incompatibility affecting any production consumer (SLA breach).
+- Security regression (auth bypass, PII exposure risk, or crypto integrity failure).
+- Observability SLO breach: sustained high error rate / latency / queue saturation for **10+ minutes** with active alerts.
+
 1. Stop unhealthy revision and redeploy the previous known-good image/tag.
 2. Restore database only when data integrity is compromised:
    ```bash
@@ -138,6 +145,12 @@ Use your container/runtime log collector to ship them to your observability stac
 The server also handles `SIGTERM`/`SIGINT` for graceful shutdown.
 
 On startup, the app emits a `server.started` log event with an embedded diagnostics snapshot. If configuration warnings exist, a `runtime.config.warnings` event is emitted; configuration errors produce `runtime.config.invalid`.
+
+### Operational acceptance criteria (release validation)
+Release validation is incomplete unless all three telemetry domains pass:
+- **Logs**: deployment-window logs present, structured, and searchable with startup + error events.
+- **Metrics**: error rate, latency, and saturation remain within SLO thresholds across validation window.
+- **Alerts**: no unresolved critical/high alerts for the new revision; warning alerts have owner and ETA.
 
 ## Build context hygiene
 A `.dockerignore` file excludes git metadata, local SQLite data, logs, and `node_modules` from image builds so Docker packages only the shipped runtime assets.
