@@ -623,6 +623,8 @@ export function enqueueExportJob(job) {
     firmId: job.firmId,
     clientId: job.clientId || null,
     templateId: job.templateId || null,
+    submissionId: job.submissionId || null,
+    renderContext: job.renderContext || null,
     type: job.type || 'pdf',
     status: 'queued',
     attempts: 0,

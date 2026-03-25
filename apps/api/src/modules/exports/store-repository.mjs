@@ -6,7 +6,59 @@ import {
   readExportWorkerStatus,
   requeueExportJob
 } from '../../storage.mjs'
+import { buildExportArtifact } from '../../export-artifact.mjs'
+import { resolveExportData, computeMappingVersionHash } from '../../export-data-resolution.mjs'
 import { createFirmContext, validateEntityOwnership } from '../shared/tenancy.mjs'
+
+function latestTemplateVersion(template) {
+  const latest = Array.isArray(template?.versions) && template.versions.length > 0 ? template.versions[template.versions.length - 1] : null
+  return latest?.versionHash || template?.versionHash || latest?.version || null
+}
+
+function resolveSubmission(state, firmId, submissionId, clientId) {
+  if (submissionId) {
+    return state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === firmId) || null
+  }
+  const candidates = state.formSubmissions
+    .filter((entry) => entry.firmId === firmId && (!clientId || entry.profileId === clientId))
+    .sort((a, b) => String(b.submittedAt || b.createdAt || '').localeCompare(String(a.submittedAt || a.createdAt || '')) ||
+      String(b.id).localeCompare(String(a.id)))
+  return candidates[0] || null
+}
+
+function createRenderContext({ template, client, submission }) {
+  const mappings = template?.mappings || []
+  const resolved = resolveExportData({ mappings, profile: client, submission })
+  return {
+    template: {
+      id: template?.id || null,
+      name: template?.name || null,
+      version: latestTemplateVersion(template),
+      versionHash: latestTemplateVersion(template),
+      mappingVersionHash: resolved.mappingVersionHash || computeMappingVersionHash(mappings),
+      mappings
+    },
+    client: client ? {
+      id: client.id,
+      firstName: client.firstName || null,
+      lastName: client.lastName || null,
+      email: client.email || null,
+      phone: client.phone || null,
+      dateOfBirth: client.dateOfBirth || null,
+      kind: client.kind || null,
+      stage: client.stage || null,
+      source: client.source || null
+    } : null,
+    submission: submission ? {
+      id: submission.id,
+      profileId: submission.profileId || null,
+      templateId: submission.templateId || null,
+      submittedAt: submission.submittedAt || submission.createdAt || null,
+      data: submission.data || {}
+    } : null,
+    resolved
+  }
+}
 
 export function createStoreExportsRepository({ state, persist, addAuditEvent, objectStorage, now = () => new Date().toISOString() }) {
   return {
@@ -20,12 +72,18 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
       )
       if (!template) throw new Error('Template not found.')
 
+      const client = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId) || null
+      const submission = resolveSubmission(state, user.firmId, String(input.submissionId || '').trim(), input.clientId)
+      const renderContext = createRenderContext({ template, client, submission })
+
       const queued = enqueueExportJob({
         id: randomUUID(),
         firmId: user.firmId,
         clientId: input.clientId,
+        submissionId: submission?.id || null,
         templateId: input.templateId,
         createdByUserId: user.id,
+        renderContext,
         type: input.type || 'pdf',
         idempotencyKey: input.idempotencyKey || null,
         maxAttempts: Number(input.maxAttempts || 3),
@@ -115,17 +173,18 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
             job.metadata.simulateFailuresRemaining = failCount - 1
             throw new Error(`Simulated export failure for ${job.id}`)
           }
-          const fileName = `${job.type}-${Date.now()}.json`
-          const key = `${job.firmId}/exports/${fileName}`
+          const artifact = buildExportArtifact(job)
+          const key = `${job.firmId}/exports/${artifact.fileName}`
           return {
-            fileName,
-            preview: { clientId: job.clientId, templateId: job.templateId },
+            ...artifact,
+            idempotencyKey: job.execution?.idempotencyKey || job.idempotencyKey || job.id,
+            execution: job.execution || null,
             object: {
               bucket: objectStorage.bucketExports,
               key,
-              checksum: null,
-              contentType: 'application/json',
-              retentionClass: 'export_artifact'
+              checksum: artifact.object.checksum,
+              contentType: artifact.object.contentType,
+              retentionClass: artifact.object.retentionClass
             }
           }
         }

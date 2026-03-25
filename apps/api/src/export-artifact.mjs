@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { deflateRawSync } from 'node:zlib'
+import { resolveExportData, computeMappingVersionHash } from './export-data-resolution.mjs'
 
 const FORMAT_MAP = {
   pdf: { extension: 'pdf', contentType: 'application/pdf' },
@@ -18,14 +19,19 @@ function pdfEscape(value) {
   return String(value ?? '').replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)')
 }
 
-function createPdfArtifact(job) {
+function createPdfArtifact({ job, metadata, resolvedRows = [] }) {
   const lines = [
     `Export Job: ${job.id}`,
     `Firm: ${job.firmId}`,
     `Client: ${job.clientId}`,
     `Template: ${job.templateId}`,
-    `Generated: ${new Date().toISOString()}`
+    `Generated: ${metadata.generatedAt}`,
+    `Template Version: ${metadata.templateVersion}`,
+    `Mapping Hash: ${metadata.mappingVersionHash}`
   ]
+  for (const row of resolvedRows.slice(0, 24)) {
+    lines.push(`${row.pdfField}: ${row.value ?? ''}`)
+  }
   const text = ['BT', '/F1 12 Tf', '50 780 Td', `(${pdfEscape(lines[0])}) Tj`]
   for (let i = 1; i < lines.length; i += 1) {
     text.push('0 -18 Td')
@@ -135,14 +141,19 @@ function zipEntries(entries) {
   return Buffer.concat([...localParts, centralDirectory, end])
 }
 
-function createXlsxArtifact(job) {
+function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
   const rows = [
     ['Export Job', job.id],
     ['Firm ID', job.firmId],
     ['Client ID', job.clientId],
     ['Template ID', job.templateId],
-    ['Generated At', new Date().toISOString()]
+    ['Generated At', metadata.generatedAt],
+    ['Template Version', metadata.templateVersion],
+    ['Mapping Hash', metadata.mappingVersionHash]
   ]
+  for (const row of resolvedRows) {
+    rows.push([row.pdfField, row.value])
+  }
   const sheetRows = rows
     .map(
       (row, idx) =>
@@ -218,18 +229,47 @@ function createXlsxArtifact(job) {
 export function buildExportArtifact(job) {
   const type = String(job?.type || 'pdf').toLowerCase()
   const spec = FORMAT_MAP[type] || FORMAT_MAP.pdf
-  const generatedAt = new Date().toISOString()
+  const generatedAt = job?.execution?.leasedAt || new Date().toISOString()
   const fileName = `${type}-${Date.now()}.${spec.extension}`
-  const body = type === 'xlsx' ? createXlsxArtifact(job) : createPdfArtifact(job)
+
+  const renderContext = job?.renderContext || {}
+  const template = renderContext.template || {}
+  const templateMappings = template.mappings || []
+  const resolved = renderContext.resolved || resolveExportData({
+    mappings: templateMappings,
+    profile: renderContext.client || null,
+    submission: renderContext.submission || null
+  })
+
+  const metadata = {
+    templateVersion: template.versionHash || template.version || 'unknown',
+    mappingVersionHash: resolved.mappingVersionHash || computeMappingVersionHash(templateMappings),
+    generatedAt
+  }
+
+  const body =
+    type === 'xlsx'
+      ? createXlsxArtifact({ job, metadata, resolvedRows: resolved.rows })
+      : createPdfArtifact({ job, metadata, resolvedRows: resolved.rows })
   const checksum = createHash('sha256').update(body).digest('hex')
 
   return {
     fileName,
-    preview: { clientId: job.clientId, templateId: job.templateId },
+    preview: {
+      clientId: job.clientId,
+      templateId: job.templateId,
+      templateVersion: metadata.templateVersion,
+      mappingVersionHash: metadata.mappingVersionHash,
+      generatedAt: metadata.generatedAt,
+      rows: resolved.rows
+    },
     artifact: {
       format: type,
       generatedAt,
-      sizeBytes: body.length
+      sizeBytes: body.length,
+      templateVersion: metadata.templateVersion,
+      mappingVersionHash: metadata.mappingVersionHash,
+      checksum
     },
     object: {
       keySuffix: spec.extension,

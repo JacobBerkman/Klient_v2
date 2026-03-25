@@ -41,28 +41,76 @@ try {
     body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Integration exports publish' })
   })
 
+
+  const formTemplate = await context.request('/api/forms/templates', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      name: 'Export Intake',
+      sections: [
+        {
+          title: 'Income',
+          key: 'income',
+          fields: [
+            { key: 'salary', label: 'Salary', type: 'number' },
+            { key: 'startDate', label: 'Start Date', type: 'date' },
+            { key: 'isRetired', label: 'Retired', type: 'checkbox' }
+          ]
+        }
+      ]
+    })
+  })
+  const submission = await context.request('/api/forms/submissions', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      clientId: profile.id,
+      templateId: formTemplate.id,
+      status: 'submitted',
+      data: {
+        salary: 123456.78,
+        startDate: '2024-04-10',
+        isRetired: false
+      }
+    })
+  })
+
+  await context.request(`/api/templates/${template.id}/mappings`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      mappings: [
+        { pdfField: 'client_name', sourcePath: 'profile.firstName' },
+        { pdfField: 'salary', sourcePath: 'salary', transform: { type: 'currency' } },
+        { pdfField: 'started', sourcePath: 'startDate', transform: { type: 'date' } },
+        { pdfField: 'retired', sourcePath: 'isRetired', transform: { type: 'checkbox' } },
+        { pdfField: 'missing_with_default', sourcePath: 'missing.path', defaultValue: 'N/A' }
+      ]
+    })
+  })
+
   const completedJob = await context.request('/api/exports', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' })
+    body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: 'pdf' })
   })
 
   const duplicateA = await context.request('/api/exports', {
     method: 'POST',
     headers: { ...headers, 'Idempotency-Key': `idem-${Date.now()}` },
-    body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' })
+    body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: 'pdf' })
   })
   const duplicateB = await context.request('/api/exports', {
     method: 'POST',
     headers: { ...headers, 'Idempotency-Key': duplicateA.idempotencyKey },
-    body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' })
+    body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: 'pdf' })
   })
 
 
   const xlsxJob = await context.request('/api/exports', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'xlsx' })
+    body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: 'xlsx' })
   })
 
   const flakyJob = await context.request('/api/exports', {
@@ -70,6 +118,7 @@ try {
     headers,
     body: JSON.stringify({
       clientId: profile.id,
+      submissionId: submission.id,
       templateId: template.id,
       type: 'pdf',
       metadata: { simulateFailuresRemaining: 1 },
@@ -82,6 +131,7 @@ try {
     headers,
     body: JSON.stringify({
       clientId: profile.id,
+      submissionId: submission.id,
       templateId: template.id,
       type: 'pdf',
       metadata: { simulateFailuresRemaining: 9 },
@@ -132,6 +182,16 @@ try {
     assert(completed?.output?.fileName?.endsWith('.pdf'), 'Expected PDF export file extension')
     assert(completed?.output?.object?.contentType === 'application/pdf', 'Expected PDF content type metadata')
     assert(typeof completed?.output?.object?.checksum === 'string', 'Expected checksum on completed export artifact')
+    assert(typeof completed?.output?.artifact?.templateVersion === 'string', 'Expected template version metadata')
+    assert(typeof completed?.output?.artifact?.mappingVersionHash === 'string', 'Expected mapping version hash metadata')
+    assert(typeof completed?.output?.preview?.generatedAt === 'string', 'Expected generated timestamp metadata')
+    const byField = Object.fromEntries((completed?.output?.preview?.rows || []).map((row) => [row.pdfField, row.value]))
+    assert(byField.client_name === 'Export', 'Expected profile mapping value in preview rows')
+    assert(byField.salary === '$123,456.78', 'Expected currency transform to format salary')
+    assert(byField.started === '2024-04-10', 'Expected date transform output')
+    assert(byField.retired === 'No', 'Expected checkbox transform output')
+    assert(byField.missing_with_default === 'N/A', 'Expected defaultValue fallback output')
+    assert(completed?.output?.artifact?.checksum === completed?.output?.object?.checksum, 'Expected checksum stability across metadata')
   }
   assert(
     ['queued', 'processing', 'completed', 'failed'].includes(flaky?.status),

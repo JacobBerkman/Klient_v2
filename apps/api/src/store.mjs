@@ -15,6 +15,7 @@ import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs'
 import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
 import { buildExportArtifact } from './export-artifact.mjs'
+import { resolveExportData } from './export-data-resolution.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
 import { requireFirmContext, validateEntityOwnership as validateTenantEntityOwnership } from './modules/shared/tenancy.mjs'
 import {
@@ -392,12 +393,6 @@ function profileSourcePaths() {
   ])
 }
 
-function resolvePathFromObject(value, path) {
-  return String(path || '')
-    .split('.')
-    .filter(Boolean)
-    .reduce((current, segment) => (current == null ? undefined : current[segment]), value)
-}
 
 function migrateTemplateSystems(state) {
   state.templateAggregates ||= []
@@ -2141,17 +2136,16 @@ export function createStore({
         user,
         'Submission not found.'
       )
-      const rows = (template.mappings || []).map((rule) => {
-        const sourcePath = String(rule.sourcePath || '')
-        const resolvedValue = sourcePath.startsWith('profile.')
-          ? resolvePathFromObject(profile, sourcePath.replace(/^profile\./, ''))
-          : resolvePathFromObject(submission.data || {}, sourcePath)
-        return {
-          pdfField: rule.pdfField,
-          sourcePath,
-          value: resolvedValue === undefined ? null : resolvedValue
-        }
+      const resolved = resolveExportData({
+        mappings: template.mappings || [],
+        profile,
+        submission
       })
+      const rows = resolved.rows.map((entry) => ({
+        pdfField: entry.pdfField,
+        sourcePath: entry.sourcePath,
+        value: entry.value
+      }))
       return {
         templateId: template.id,
         clientId,
