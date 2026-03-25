@@ -390,7 +390,7 @@ function syncQueryTables(state) {
     event.id,
     event.firmId,
     event.action,
-    event.occurredAt,
+    event.timestamp || event.occurredAt,
     JSON.stringify(event)
   ])
 }
