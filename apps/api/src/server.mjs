@@ -529,6 +529,14 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }
+      if (pathname === '/api/pipeline/reorder' && req.method === 'PATCH') {
+        const body = await parseBody(req)
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canMovePipeline')
+        const result = modules.pipeline.reorderBoard(user, body)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/profiles/') && req.method === 'PATCH') {
         const id = pathname.split('/')[3]
         const user = requireUser()

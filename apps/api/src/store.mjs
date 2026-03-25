@@ -78,6 +78,19 @@ function parseIso(value) {
   return Number.isFinite(time) ? time : 0
 }
 
+function profileOrderIndex(profile) {
+  const raw = profile?.orderIndex ?? profile?.stageOrderIndex ?? null
+  const numeric = Number(raw)
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : Number.MAX_SAFE_INTEGER
+}
+
+function assignProspectOrderIndex(profile, index) {
+  const normalized = Number(index)
+  const next = Number.isFinite(normalized) && normalized > 0 ? normalized : null
+  profile.orderIndex = next
+  profile.stageOrderIndex = next
+}
+
 function average(values) {
   if (!values.length) return 0
   return values.reduce((sum, value) => sum + value, 0) / values.length
@@ -242,6 +255,28 @@ function migrateTemplateSystems(state) {
     .map(documentTemplateAdapter)
 }
 
+function migrateProspectOrdering(state) {
+  const profiles = Array.isArray(state?.profiles) ? state.profiles : []
+  const byFirmStage = new Map()
+  for (const profile of profiles) {
+    if (profile?.kind !== 'prospect') continue
+    const stage = profile.stage || 'discovery'
+    const key = `${profile.firmId}:${stage}`
+    if (!byFirmStage.has(key)) byFirmStage.set(key, [])
+    byFirmStage.get(key).push(profile)
+  }
+  for (const cards of byFirmStage.values()) {
+    cards.sort((a, b) => {
+      const indexDiff = profileOrderIndex(a) - profileOrderIndex(b)
+      if (indexDiff !== 0) return indexDiff
+      const updatedDiff = parseIso(a.updatedAt || a.createdAt) - parseIso(b.updatedAt || b.createdAt)
+      if (updatedDiff !== 0) return updatedDiff
+      return String(a.id || '').localeCompare(String(b.id || ''))
+    })
+    cards.forEach((card, index) => assignProspectOrderIndex(card, index + 1))
+  }
+}
+
 function pipelineConflict(message, details = {}) {
   const error = new Error(message)
   error.statusCode = 409
@@ -332,6 +367,7 @@ function seedState() {
         phone: '555-111-3333',
         stage: 'discovery',
         stageOrderIndex: 1,
+        orderIndex: 1,
         pipelineVersion: 1,
         source: {
           cityOrLocation: 'Austin',
@@ -355,6 +391,7 @@ function seedState() {
         phone: '555-111-4444',
         stage: 'analysis',
         stageOrderIndex: 1,
+        orderIndex: 1,
         pipelineVersion: 1,
         source: {
           cityOrLocation: 'Houston',
@@ -526,6 +563,7 @@ function seedState() {
 export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   const state = loadState(seedState)
   migrateTemplateSystems(state)
+  migrateProspectOrdering(state)
   saveState(state)
   state.pendingUploadIntents ||= []
 
@@ -633,11 +671,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           profile.id !== excludedProfileId
       )
       .sort((a, b) => {
-        const indexDiff =
-          (a.stageOrderIndex || Number.MAX_SAFE_INTEGER) - (b.stageOrderIndex || Number.MAX_SAFE_INTEGER)
+        const indexDiff = profileOrderIndex(a) - profileOrderIndex(b)
         if (indexDiff !== 0) return indexDiff
         const updatedDiff =
-          new Date(a.updatedAt || a.createdAt || 0).getTime() - new Date(b.updatedAt || b.createdAt || 0).getTime()
+          parseIso(a.updatedAt || a.createdAt || 0) - parseIso(b.updatedAt || b.createdAt || 0)
         if (updatedDiff !== 0) return updatedDiff
         return a.id.localeCompare(b.id)
       })
@@ -648,8 +685,8 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     let changed = false
     cards.forEach((card, index) => {
       const nextIndex = index + 1
-      if (card.stageOrderIndex !== nextIndex) {
-        card.stageOrderIndex = nextIndex
+      if (profileOrderIndex(card) !== nextIndex) {
+        assignProspectOrderIndex(card, nextIndex)
         changed = true
       }
     })
@@ -831,9 +868,10 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
           (profile) => !q || `${profile.firstName} ${profile.lastName} ${profile.email || ''}`.toLowerCase().includes(q)
         )
         .sort((a, b) =>
-          a.stage === b.stage
-            ? (a.stageOrderIndex || 0) - (b.stageOrderIndex || 0)
-            : a.lastName.localeCompare(b.lastName)
+          (a.stage || '').localeCompare(b.stage || '') ||
+          (profileOrderIndex(a) - profileOrderIndex(b)) ||
+          (parseIso(a.updatedAt || a.createdAt) - parseIso(b.updatedAt || b.createdAt)) ||
+          a.id.localeCompare(b.id)
         )
     },
     getProfileDetail(user, profileId) {
@@ -885,6 +923,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
         stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
+        orderIndex: input.kind === 'prospect' ? inStage + 1 : null,
         pipelineVersion: input.kind === 'prospect' ? 1 : null,
         address: input.address || {},
         customProfile: input.customProfile || {},
@@ -913,6 +952,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       if (patch.kind === 'client') {
         patch.stage = null
         patch.stageOrderIndex = null
+        patch.orderIndex = null
       }
       if (patch.kind === 'prospect' && !patch.stage) {
         patch.stage = 'discovery'
@@ -1008,7 +1048,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
 
           destinationCards.splice(insertIndex, 0, profile)
           destinationCards.forEach((card, index) => {
-            card.stageOrderIndex = index + 1
+            assignProspectOrderIndex(card, index + 1)
           })
 
           if (previousStage && previousStage !== toStage) {
