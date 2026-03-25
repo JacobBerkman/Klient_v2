@@ -69,10 +69,13 @@ try {
     throw new Error('Template migration verify stage failed.')
   }
 
-  const rotationRaw = await runNode(reencryptScript, tempRoot)
+  const rotationRaw = await runNode(reencryptScript, tempRoot, ['--validate'])
   const rotation = JSON.parse(rotationRaw || '{}')
   if (!rotation.ok || !Number.isInteger(rotation.rotatedProfiles) || !Number.isInteger(rotation.rotatedFields)) {
     throw new Error('PII re-encryption script did not return expected metrics.')
+  }
+  if (!rotation.validation?.ok || !Number.isInteger(rotation.validation?.profilesChecked)) {
+    throw new Error('PII re-encryption validation output did not match expected schema.')
   }
 
   const postState = loadState(() => ({}))
