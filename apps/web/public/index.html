@@ -54,6 +54,25 @@
             </form>
           </div>
           <pre id="auth-status"></pre>
+          <section id="mfa-panel" class="card inner">
+            <h3>Multi-Factor Authentication</h3>
+            <p id="mfa-hint" class="muted">Sign in to enroll MFA, or complete an MFA challenge during login.</p>
+            <form id="mfa-login-form" hidden>
+              <input name="totpCode" placeholder="Authenticator code" />
+              <input name="backupCode" placeholder="Backup code" />
+              <button type="submit">Verify Sign-In MFA</button>
+            </form>
+            <button id="mfa-enroll-start" type="button" hidden>Start MFA Enrollment</button>
+            <div id="mfa-enroll-details" hidden>
+              <p class="muted">Add this secret to your authenticator app:</p>
+              <pre id="mfa-secret"></pre>
+              <pre id="mfa-otpauth"></pre>
+              <form id="mfa-enroll-confirm-form">
+                <input name="code" placeholder="6-digit authenticator code" required />
+                <button type="submit">Confirm Enrollment</button>
+              </form>
+            </div>
+          </section>
         </section>
 
         <section class="card">
