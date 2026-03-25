@@ -114,6 +114,65 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`
 }
 
+function toFiniteNumber(value) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function normalizeExtensions(extensions = {}) {
+  if (!extensions || typeof extensions !== 'object' || Array.isArray(extensions)) return {}
+  const schema = extensions.schema && typeof extensions.schema === 'object' ? { ...extensions.schema } : null
+  const values = extensions.values && typeof extensions.values === 'object' ? { ...extensions.values } : {}
+  const schemaVersion = schema?.version || extensions.schemaVersion || '1.0.0'
+  if (schema?.properties && typeof schema.properties === 'object') {
+    const invalid = Object.entries(schema.properties).find(([key, descriptor]) => {
+      const expected = descriptor?.type
+      if (!expected || !(key in values)) return false
+      const actual = values[key]
+      if (actual == null) return false
+      if (expected === 'number') return typeof actual !== 'number' || Number.isNaN(actual)
+      if (expected === 'string') return typeof actual !== 'string'
+      if (expected === 'boolean') return typeof actual !== 'boolean'
+      if (expected === 'array') return !Array.isArray(actual)
+      return false
+    })
+    if (invalid) {
+      const [invalidKey, descriptor] = invalid
+      throw new Error(`Invalid extension field type for "${invalidKey}". Expected ${descriptor.type}.`)
+    }
+  }
+  return { schemaVersion, schema, values }
+}
+
+function normalizeFinancialSummary(input = {}, extensions = {}) {
+  const extensionValues = extensions.values || {}
+  const investableAssets = toFiniteNumber(input.investableAssets ?? extensionValues.investableAssets) || 0
+  const annualIncome = toFiniteNumber(input.annualIncome ?? extensionValues.annualIncome) || 0
+  const totalAssets = toFiniteNumber(input.totalAssets ?? extensionValues.totalAssets ?? investableAssets) || 0
+  const totalLiabilities = toFiniteNumber(input.totalLiabilities ?? extensionValues.totalLiabilities) || 0
+  const netWorth = toFiniteNumber(input.netWorth ?? extensionValues.netWorth ?? totalAssets - totalLiabilities) || 0
+  return {
+    investableAssets,
+    annualIncome,
+    totalAssets,
+    totalLiabilities,
+    netWorth
+  }
+}
+
+function normalizeProfileRecord(profile) {
+  const extensionSeed =
+    profile.extensions ||
+    (profile.customProfile ? { schemaVersion: '1.0.0', values: { ...profile.customProfile } } : {})
+  const extensions = normalizeExtensions(extensionSeed)
+  return {
+    ...profile,
+    status: profile.status || (profile.kind === 'client' ? 'active' : 'new'),
+    extensions,
+    financialSummary: normalizeFinancialSummary(profile.financialSummary || profile.customProfile || {}, extensions)
+  }
+}
+
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value))
 }
@@ -297,8 +356,14 @@ function seedState() {
           occurredOn: '2026-03-01',
           displayValue: sourceDisplay({ cityOrLocation: 'Dallas', venue: 'Referral', occurredOn: '2026-03-01' })
         },
+        status: 'active',
         address: { city: 'Dallas', state: 'TX' },
-        customProfile: { investableAssets: 850000 },
+        financialSummary: normalizeFinancialSummary({ investableAssets: 850000 }),
+        extensions: normalizeExtensions({
+          schemaVersion: '1.0.0',
+          schema: { properties: { legacyInvestableAssets: { type: 'number' } } },
+          values: { legacyInvestableAssets: 850000 }
+        }),
         householdId,
         spouseClientId: spouseId,
         createdAt,
@@ -314,8 +379,10 @@ function seedState() {
         email: 'jamie@example.com',
         phone: '555-000-2222',
         dateOfBirth: '1982-10-21',
+        status: 'active',
         address: { city: 'Dallas', state: 'TX' },
-        customProfile: {},
+        financialSummary: normalizeFinancialSummary({}),
+        extensions: normalizeExtensions({}),
         householdId,
         spouseClientId: clientId,
         createdAt,
@@ -339,8 +406,10 @@ function seedState() {
           occurredOn: '2026-03-10',
           displayValue: sourceDisplay({ cityOrLocation: 'Austin', venue: 'Seminar', occurredOn: '2026-03-10' })
         },
+        status: 'new',
         address: { city: 'Austin', state: 'TX' },
-        customProfile: {},
+        financialSummary: normalizeFinancialSummary({}),
+        extensions: normalizeExtensions({}),
         createdAt,
         updatedAt: createdAt
       },
@@ -362,8 +431,10 @@ function seedState() {
           occurredOn: '2026-03-15',
           displayValue: sourceDisplay({ cityOrLocation: 'Houston', venue: 'CPA Referral', occurredOn: '2026-03-15' })
         },
+        status: 'qualified',
         address: { city: 'Houston', state: 'TX' },
-        customProfile: {},
+        financialSummary: normalizeFinancialSummary({}),
+        extensions: normalizeExtensions({}),
         createdAt,
         updatedAt: createdAt
       }
@@ -526,6 +597,7 @@ function seedState() {
 export function createStore({ objectStorage = defaultObjectStorage } = {}) {
   const state = loadState(seedState)
   migrateTemplateSystems(state)
+  state.profiles = (state.profiles || []).map(normalizeProfileRecord)
   saveState(state)
   state.pendingUploadIntents ||= []
 
@@ -883,11 +955,18 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         phone: input.phone || '',
         dateOfBirth: input.dateOfBirth || '',
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
+        status: input.status || (input.kind === 'client' ? 'active' : 'new'),
         stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
         pipelineVersion: input.kind === 'prospect' ? 1 : null,
         address: input.address || {},
-        customProfile: input.customProfile || {},
+        financialSummary: normalizeFinancialSummary(input.financialSummary, input.extensions || {}),
+        extensions: normalizeExtensions(
+          input.extensions || {
+            schemaVersion: '1.0.0',
+            values: input.customProfile || {}
+          }
+        ),
         householdId: input.householdId || null,
         spouseClientId: input.spouseClientId || null,
         createdAt,
@@ -936,6 +1015,25 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
         }
         delete nextPatch.taxId
       }
+      if ('source' in nextPatch && nextPatch.source) {
+        nextPatch.source = { ...nextPatch.source, displayValue: sourceDisplay(nextPatch.source) }
+      }
+      if ('extensions' in nextPatch) {
+        nextPatch.extensions = normalizeExtensions(nextPatch.extensions)
+      }
+      if ('customProfile' in nextPatch && !('extensions' in nextPatch)) {
+        nextPatch.extensions = normalizeExtensions({
+          schemaVersion: '1.0.0',
+          values: nextPatch.customProfile || {}
+        })
+      }
+      if ('financialSummary' in nextPatch || 'extensions' in nextPatch) {
+        nextPatch.financialSummary = normalizeFinancialSummary(
+          nextPatch.financialSummary || profile.financialSummary || {},
+          nextPatch.extensions || profile.extensions || {}
+        )
+      }
+      if ('customProfile' in nextPatch) delete nextPatch.customProfile
       Object.assign(profile, nextPatch, { updatedAt: now() })
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) })
       persist()

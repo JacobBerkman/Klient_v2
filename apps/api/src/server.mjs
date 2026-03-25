@@ -473,10 +473,13 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/profiles' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadProfiles')
-        const result = modules.profiles.listProfiles(user, {
+        const query = {
           kind: url.searchParams.get('kind'),
           search: url.searchParams.get('search') || ''
-        })
+        }
+        const status = url.searchParams.get('status')
+        if (status) query.status = status
+        const result = modules.profiles.listProfiles(user, query)
         finalizeLog(200, { firmId: user.firmId })
         return json(res, 200, result, { 'X-Request-Id': requestId })
       }
