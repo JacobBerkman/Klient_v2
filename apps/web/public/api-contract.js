@@ -56,6 +56,7 @@ export const routes = {
   portalLinks: () => joinPath(API_PREFIX, 'portal-links'),
   exports: () => joinPath(API_PREFIX, 'exports'),
   exportRetry: (exportId) => joinPath(API_PREFIX, 'exports', exportId, 'retry'),
+  exportDownload: (exportId) => joinPath(API_PREFIX, 'exports', exportId, 'download'),
   exportsQueueHealth: () => joinPath(API_PREFIX, 'ops', 'exports', 'queue'),
   exportsRetryFailed: () => joinPath(API_PREFIX, 'ops', 'exports', 'retry-failed'),
   audit: () => joinPath(API_PREFIX, 'audit'),

@@ -1027,15 +1027,33 @@ function roleAccessMatrixMarkup() {
 }
 
 async function renderExports() {
-  const [jobs, queue] = await Promise.all([request(routes.exports()), request(routes.exportsQueueHealth())])
+  let jobs = []
+  let queue = { queue: {} }
+  try {
+    ;[jobs, queue] = await Promise.all([request(routes.exports()), request(routes.exportsQueueHealth())])
+  } catch (error) {
+    reportActionError('Exports', error)
+  }
   const canMutate = state.user?.role === 'admin' || state.user?.role === 'advisor'
+  const queueState = queue?.queue || {}
+  const queueCards = [
+    ['Queued', queueState.queued || 0],
+    ['Running', queueState.running || 0],
+    ['Failed', queueState.failed || 0],
+    ['Dead Letter', queueState.deadLetter || 0],
+    ['Completed', queueState.completed || 0],
+    ['Ready Now', queueState.readyNow || 0]
+  ]
   viewEl.innerHTML = `
     ${flashMarkup()}
     ${alertMarkup()}
     <div class="section-header"><div><h2>Exports Operations</h2><p class="muted">Queue health, retries, and artifact readiness by job.</p></div></div>
     <section class="item">
       <h3>Queue State</h3>
-      <pre>${escapeHtml(JSON.stringify(queue.queue || {}, null, 2))}</pre>
+      <div class="stat-grid">
+        ${queueCards.map(([label, value]) => metricCard(label, value)).join('')}
+      </div>
+      <pre>${escapeHtml(JSON.stringify(queueState, null, 2))}</pre>
       ${canMutate ? '<button id="retry-failed-jobs" class="tiny secondary">Retry failed jobs</button>' : '<p class="muted">Readonly role cannot trigger retries.</p>'}
     </section>
     <section class="item">
@@ -1045,8 +1063,15 @@ async function renderExports() {
           <td>${escapeHtml(job.id)}</td>
           <td>${escapeHtml(job.status)}</td>
           <td>${job.attempts || 0}/${job.maxAttempts || 0}</td>
-          <td>${job.output?.object?.key ? `<code>${escapeHtml(job.output.object.key)}</code>` : '<span class="muted">Not ready</span>'}</td>
-          <td>${canMutate ? `<button data-retry-export="${job.id}" class="tiny secondary" ${job.status === 'completed' ? 'disabled' : ''}>Retry</button>` : '<span class="muted">N/A</span>'}</td>
+          <td>${
+            job.artifactAvailable
+              ? `<div><code>${escapeHtml(job.artifact?.fileName || job.output?.fileName || 'artifact')}</code><div class="muted">${escapeHtml(job.artifact?.contentType || 'application/octet-stream')} · ${(job.artifact?.sizeBytes || 0).toLocaleString()} bytes</div></div>`
+              : '<span class="muted">Not ready</span>'
+          }</td>
+          <td>
+            <button data-download-export="${job.id}" class="tiny" ${job.artifactAvailable ? '' : 'disabled'}>Download</button>
+            ${canMutate ? `<button data-retry-export="${job.id}" class="tiny secondary" ${job.status === 'running' ? 'disabled' : ''}>Retry</button>` : ''}
+          </td>
         </tr>`).join('') || '<tr><td colspan="5">No export jobs.</td></tr>'}
       </tbody></table>
     </section>
@@ -1074,6 +1099,36 @@ async function renderExports() {
         reportActionError('Exports', error)
       }
       await renderExports()
+    })
+  })
+  document.querySelectorAll('[data-download-export]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const exportId = button.dataset.downloadExport
+      try {
+        button.disabled = true
+        const response = await fetch(routes.exportDownload(exportId), { credentials: 'same-origin' })
+        if (!response.ok) {
+          const text = await response.text()
+          throw new Error(text || 'Download failed')
+        }
+        const blob = await response.blob()
+        const disposition = response.headers.get('content-disposition') || ''
+        const matched = disposition.match(/filename=\"?([^\";]+)\"?/)
+        const fileName = matched?.[1] || `export-${exportId}`
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = fileName
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        reportActionSuccess('Exports', `Downloaded ${fileName}.`)
+      } catch (error) {
+        reportActionError('Exports', error)
+      } finally {
+        button.disabled = false
+      }
     })
   })
 }

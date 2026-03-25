@@ -26,6 +26,10 @@ export function createExportsService({ exportsRepository, policy, store }) {
     retryFailed(user, options = {}) {
       policy.requireGuard(user, 'canWriteExports')
       return exportsRepository.retryFailed(createFirmContext(user), options)
+    },
+    getDownload(user, exportId) {
+      policy.requireGuard(user, 'canReadExports')
+      return exportsRepository.getDownload(createFirmContext(user), exportId)
     }
   }
 }
