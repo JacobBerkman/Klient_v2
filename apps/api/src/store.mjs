@@ -10,6 +10,10 @@ import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
 import { createSamlAuthProvider } from './auth/saml-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
 import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
+import { createCanonicalAuditEvent } from './modules/audit/schema.mjs'
+import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs'
+import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
+import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
 import { buildExportArtifact } from './export-artifact.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
 import { convertLegacyFormDefinition } from './modules/forms/schema/form-definition-validator.mjs'
@@ -2781,6 +2785,57 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       if (!profile) throw new Error('Profile not found.')
       const ssn = decryptSensitiveValue(profile.pii?.ssnEncrypted || profile.pii?.ssnCiphertext)
       const taxId = decryptSensitiveValue(profile.pii?.taxIdEncrypted || profile.pii?.taxIdCiphertext)
+      const requestedUnmask = request.unmask === true
+      const commonMetadata = {
+        actor: { userId: user.id, role: user.role },
+        requestedUnmask,
+        grantedUnmask: false,
+        fieldScope: ['ssn', 'taxId'],
+        purpose: request.purpose || null,
+        reason: {
+          code: request.reasonCode || null,
+          justification: String(request.justification || ''),
+          privilegedPolicy: request.privilegedPolicy || null
+        }
+      }
+
+      if (requestedUnmask) {
+        try {
+          validateUnmaskRequest(request)
+        } catch (error) {
+          addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', {
+            ...commonMetadata,
+            outcome: 'denied',
+            denialReason: error.message
+          })
+          throw error
+        }
+      }
+
+      const canUnmask = requestedUnmask && canUnmaskSensitiveData(user, request)
+      if (requestedUnmask && !canUnmask) {
+        addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read_denied', {
+          ...commonMetadata,
+          outcome: 'denied',
+          denialReason: 'Sensitive read unmask denied by least-privilege policy.'
+        })
+        throw new Error('Sensitive read denied.')
+      }
+
+      addAudit(user.firmId, user.id, 'profile', profileId, 'sensitive.read', {
+        ...commonMetadata,
+        grantedUnmask: canUnmask,
+        outcome: 'granted'
+      })
+
+      if (canUnmask) {
+        return {
+          ssn,
+          taxId,
+          ssnMasked: maskSsn(ssn),
+          taxIdMasked: maskTaxId(taxId)
+        }
+      }
 
       if (request.unmask === true) {
         validateUnmaskRequest(request)
