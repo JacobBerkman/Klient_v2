@@ -1760,19 +1760,35 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     updateSubmission(user, submissionId, patch) {
       requirePermission(user, 'forms:write')
+      if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
+        throw new Error('Submission patch must be an object.')
+      }
       const submission = state.formSubmissions.find(
         (entry) => entry.id === submissionId && entry.firmId === user.firmId
       )
       if (!submission) throw new Error('Submission not found.')
-      Object.assign(submission, patch, { updatedAt: now() })
+      const { auditContext = null, ...nextPatch } = patch
+      Object.assign(submission, nextPatch, { updatedAt: now() })
+      const fields = Object.keys(nextPatch)
+      const action = auditContext?.action || 'form_submission.updated'
+      addAudit(user.firmId, user.id, 'form_submission', submission.id, action, {
+        fields,
+        ...(auditContext && typeof auditContext === 'object' ? auditContext : {})
+      })
       persist()
       return submission
     },
     deleteSubmission(user, submissionId) {
       requirePermission(user, 'forms:write')
+      const existing = state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId)
+      if (!existing) throw new Error('Submission not found.')
       state.formSubmissions = state.formSubmissions.filter(
         (entry) => !(entry.id === submissionId && entry.firmId === user.firmId)
       )
+      addAudit(user.firmId, user.id, 'form_submission', submissionId, 'form_submission.deleted', {
+        templateId: existing.templateId,
+        clientId: existing.clientId
+      })
       persist()
       return { ok: true }
     },

@@ -1,8 +1,12 @@
+import { appRoutes } from './api-contract.js'
+
 const state = {
   token: localStorage.getItem('klient-token') || '',
   user: null,
   view: 'dashboard',
-  flash: null
+  flash: null,
+  selectedClientId: null,
+  selectedSubmissionId: null
 }
 
 const viewEl = document.querySelector('#view')
@@ -188,6 +192,7 @@ async function renderForms() {
       <td>${draft.revisionId || 1}</td>
       <td>${draft.lock ? `Locked (${escapeHtml(draft.lock.holderUserId)})` : 'Unlocked'}</td>
       <td>
+        <a href="#${appRoutes.clientFormSubmission(draft.clientId, draft.id)}">Edit from profile</a>
         <button data-lock="${draft.id}">Acquire lock</button>
         <button data-save="${draft.id}">Save revision</button>
       </td>
@@ -246,6 +251,16 @@ async function renderForms() {
       await renderForms()
     })
   })
+}
+
+function applyHashRoute() {
+  const hashPath = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : ''
+  const route = appRoutes.parseClientFormSubmission(hashPath)
+  if (!route) return
+  state.view = 'forms'
+  state.selectedClientId = route.clientId
+  state.selectedSubmissionId = route.submissionId
+  setFlash('success', `Editing submission ${route.submissionId} for client ${route.clientId}.`)
 }
 
 async function renderFallback(title) {
@@ -450,4 +465,9 @@ document.querySelector('#portal-form').addEventListener('submit', async (event) 
 })
 
 await hydrateSession()
+applyHashRoute()
+window.addEventListener('hashchange', async () => {
+  applyHashRoute()
+  await renderCurrentView()
+})
 await renderCurrentView()

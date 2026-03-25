@@ -647,6 +647,44 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return json(res, 201, result, { 'X-Request-Id': requestId })
       }
+      if (
+        pathname.startsWith('/api/forms/submissions/') &&
+        pathname.includes('/sections/') &&
+        pathname.includes('/items/') &&
+        req.method === 'PATCH'
+      ) {
+        const parts = pathname.split('/')
+        const submissionId = parts[4]
+        const sectionKey = decodeURIComponent(parts[6] || '')
+        const itemKey = decodeURIComponent(parts[8] || '')
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteForms')
+        const result = modules.forms.updateSubmissionSectionItem(
+          user,
+          submissionId,
+          sectionKey,
+          itemKey,
+          await parseBody(req)
+        )
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
+      if (
+        pathname.startsWith('/api/forms/submissions/') &&
+        pathname.includes('/sections/') &&
+        pathname.includes('/items/') &&
+        req.method === 'DELETE'
+      ) {
+        const parts = pathname.split('/')
+        const submissionId = parts[4]
+        const sectionKey = decodeURIComponent(parts[6] || '')
+        const itemKey = decodeURIComponent(parts[8] || '')
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteForms')
+        const result = modules.forms.deleteSubmissionSectionItem(user, submissionId, sectionKey, itemKey)
+        finalizeLog(200)
+        return json(res, 200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/forms/submissions/') && req.method === 'PATCH') {
         const id = pathname.split('/')[4]
         const user = requireUser()
