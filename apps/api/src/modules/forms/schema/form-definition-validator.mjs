@@ -1,0 +1,128 @@
+function validationError(message, issues) {
+  const error = new Error(message)
+  error.statusCode = 400
+  error.code = 'SCHEMA_VALIDATION_FAILED'
+  error.details = { issues }
+  return error
+}
+
+function pushIssue(issues, path, message) {
+  issues.push({ path, message })
+}
+
+function isObject(value) {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+}
+
+function normalizeSegment(value, fallback = 'field') {
+  const base = String(value || fallback).trim()
+  return base.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').toLowerCase() || fallback
+}
+
+function normalizeLegacySections(input) {
+  if (Array.isArray(input)) {
+    return {
+      sections: input.map((entry, index) => {
+        if (typeof entry === 'string') {
+          return {
+            key: normalizeSegment(entry, `section_${index + 1}`),
+            title: entry,
+            fields: []
+          }
+        }
+        return entry
+      })
+    }
+  }
+  if (isObject(input) && Array.isArray(input.pages) && !Array.isArray(input.sections)) {
+    return {
+      sections: input.pages.map((page, index) => {
+        if (typeof page === 'string') {
+          return {
+            key: normalizeSegment(page, `section_${index + 1}`),
+            title: page,
+            fields: []
+          }
+        }
+        return page
+      })
+    }
+  }
+  return input
+}
+
+function collectRepeaterPaths(fields, parentPath, issues, basePath, target) {
+  if (!Array.isArray(fields)) return
+  for (let index = 0; index < fields.length; index += 1) {
+    const field = fields[index]
+    const fieldPath = `${basePath}/${index}`
+    if (!isObject(field)) {
+      pushIssue(issues, fieldPath, 'Field must be an object.')
+      continue
+    }
+    const id = field.path || field.key || field.name || field.id
+    if (!id || typeof id !== 'string') {
+      pushIssue(issues, `${fieldPath}/path`, 'Field requires path/key/name/id string.')
+      continue
+    }
+    const normalizedId = normalizeSegment(id, `field_${index + 1}`)
+    const fullPath = parentPath ? `${parentPath}.${normalizedId}` : normalizedId
+
+    if (field.type === 'repeater') {
+      target.add(fullPath)
+    }
+
+    if (Array.isArray(field.fields)) {
+      collectRepeaterPaths(field.fields, fullPath, issues, `${fieldPath}/fields`, target)
+    }
+    if (Array.isArray(field.items)) {
+      collectRepeaterPaths(field.items, fullPath, issues, `${fieldPath}/items`, target)
+    }
+  }
+}
+
+export function convertLegacyFormDefinition(input) {
+  const normalized = normalizeLegacySections(input)
+  if (isObject(normalized) && Array.isArray(normalized.sections)) {
+    return normalized
+  }
+  return { sections: [] }
+}
+
+export function validateFormDefinitionSchema(input, options = {}) {
+  const contextPath = options.contextPath || '/formSchema'
+  const schema = convertLegacyFormDefinition(input)
+  const issues = []
+
+  if (!isObject(schema)) {
+    pushIssue(issues, contextPath, 'Form definition must be an object.')
+  }
+  if (!Array.isArray(schema.sections)) {
+    pushIssue(issues, `${contextPath}/sections`, 'sections must be an array.')
+  }
+
+  const repeaterPaths = new Set()
+  if (Array.isArray(schema.sections)) {
+    schema.sections.forEach((section, sectionIndex) => {
+      const sectionPath = `${contextPath}/sections/${sectionIndex}`
+      if (typeof section === 'string') return
+      if (!isObject(section)) {
+        pushIssue(issues, sectionPath, 'Section must be a string or object.')
+        return
+      }
+      if (section.fields && !Array.isArray(section.fields)) {
+        pushIssue(issues, `${sectionPath}/fields`, 'fields must be an array when provided.')
+      }
+      collectRepeaterPaths(section.fields || [], '', issues, `${sectionPath}/fields`, repeaterPaths)
+    })
+  }
+
+  if (issues.length) {
+    throw validationError('Form definition schema validation failed.', issues)
+  }
+
+  return {
+    schema,
+    repeaterPaths
+  }
+}

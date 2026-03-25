@@ -34,8 +34,22 @@ db.exec(`
     kind TEXT NOT NULL,
     first_name TEXT NOT NULL,
     last_name TEXT NOT NULL,
+    email TEXT,
+    phone TEXT,
+    profile_status TEXT,
     stage TEXT,
     stage_order_index INTEGER,
+    source_city TEXT,
+    source_venue TEXT,
+    source_occurred_on TEXT,
+    household_id TEXT,
+    spouse_client_id TEXT,
+    investable_assets REAL,
+    annual_income REAL,
+    total_assets REAL,
+    total_liabilities REAL,
+    net_worth REAL,
+    extensions_payload TEXT,
     payload TEXT NOT NULL
   );
 
@@ -157,10 +171,32 @@ function ensureExportJobsColumns() {
   }
 }
 
-ensureExportJobsColumns()
-if (!hasColumn('csrf_tokens', 'consumed_at')) {
-  db.exec('ALTER TABLE csrf_tokens ADD COLUMN consumed_at TEXT')
+function ensureProfilesColumns() {
+  const definitions = [
+    ['email', 'TEXT'],
+    ['phone', 'TEXT'],
+    ['profile_status', 'TEXT'],
+    ['source_city', 'TEXT'],
+    ['source_venue', 'TEXT'],
+    ['source_occurred_on', 'TEXT'],
+    ['household_id', 'TEXT'],
+    ['spouse_client_id', 'TEXT'],
+    ['investable_assets', 'REAL'],
+    ['annual_income', 'REAL'],
+    ['total_assets', 'REAL'],
+    ['total_liabilities', 'REAL'],
+    ['net_worth', 'REAL'],
+    ['extensions_payload', 'TEXT']
+  ]
+  for (const [column, ddl] of definitions) {
+    if (!hasColumn('profiles', column)) {
+      db.exec(`ALTER TABLE profiles ADD COLUMN ${column} ${ddl}`)
+    }
+  }
 }
+
+ensureExportJobsColumns()
+ensureProfilesColumns()
 db.exec(
   'CREATE UNIQUE INDEX IF NOT EXISTS idx_export_jobs_firm_idempotency ON export_jobs (firm_id, idempotency_key) WHERE idempotency_key IS NOT NULL'
 )
@@ -173,6 +209,11 @@ db.exec(`
     created_at = COALESCE(created_at, json_extract(payload, '$.createdAt'), datetime('now')),
     updated_at = COALESCE(updated_at, json_extract(payload, '$.updatedAt'), datetime('now')),
     next_attempt_at = COALESCE(next_attempt_at, json_extract(payload, '$.nextAttemptAt'), created_at)
+`)
+
+db.exec(`
+  UPDATE profiles
+  SET order_index = COALESCE(order_index, stage_order_index, json_extract(payload, '$.orderIndex'), json_extract(payload, '$.stageOrderIndex'))
 `)
 
 function nowIso() {
@@ -367,8 +408,22 @@ function syncQueryTables(state) {
     profile.kind,
     profile.firstName,
     profile.lastName,
+    profile.email || null,
+    profile.phone || null,
+    profile.status || null,
     profile.stage || null,
     profile.stageOrderIndex || null,
+    profile.source?.cityOrLocation || null,
+    profile.source?.venue || null,
+    profile.source?.occurredOn || null,
+    profile.householdId || null,
+    profile.spouseClientId || null,
+    Number(profile.financialSummary?.investableAssets || 0),
+    Number(profile.financialSummary?.annualIncome || 0),
+    Number(profile.financialSummary?.totalAssets || 0),
+    Number(profile.financialSummary?.totalLiabilities || 0),
+    Number(profile.financialSummary?.netWorth || 0),
+    JSON.stringify(profile.extensions || {}),
     JSON.stringify(profile)
   ])
   replaceRows('households', state.households || [], (household) => [
@@ -409,7 +464,7 @@ function syncQueryTables(state) {
     event.id,
     event.firmId,
     event.action,
-    event.occurredAt,
+    event.timestamp || event.occurredAt,
     JSON.stringify(event)
   ])
 }
@@ -649,10 +704,10 @@ export function leaseExportJobs({ workerId = 'worker', limit = 5, leaseMs = 30_0
         `
       SELECT id
       FROM export_jobs
-      WHERE status IN ('queued', 'retrying', 'processing')
+      WHERE status IN ('queued', 'retrying', 'running')
         AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
         AND (
-          status != 'processing'
+          status != 'running'
           OR lease_expires_at IS NULL
           OR lease_expires_at <= ?
         )
@@ -672,7 +727,7 @@ export function leaseExportJobs({ workerId = 'worker', limit = 5, leaseMs = 30_0
     db.prepare(
       `
       UPDATE export_jobs
-      SET status = 'processing', leased_by = ?, lease_expires_at = ?, updated_at = ?
+      SET status = 'running', leased_by = ?, lease_expires_at = ?, updated_at = ?
       WHERE id IN (${placeholders})
     `
     ).run(workerId, leaseUntil, nowText, ...ids)
@@ -716,6 +771,27 @@ export function markExportJobCompleted(jobId, output) {
   return getExportJob(jobId)
 }
 
+function classifyFailure(message = '') {
+  const normalized = String(message).toLowerCase()
+  if (
+    normalized.includes('timeout') ||
+    normalized.includes('temporar') ||
+    normalized.includes('rate limit') ||
+    normalized.includes('simulated export failure')
+  ) {
+    return 'transient'
+  }
+  if (
+    normalized.includes('invalid') ||
+    normalized.includes('not found') ||
+    normalized.includes('forbidden') ||
+    normalized.includes('unauthorized')
+  ) {
+    return 'permanent'
+  }
+  return 'manual'
+}
+
 export function markExportJobFailed(jobId, errorMessage, options = {}) {
   const maxAttempts = Number(options.maxAttempts || 3)
   const baseBackoffMs = Number(options.baseBackoffMs || 500)
@@ -735,14 +811,16 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
   const previousError = String(existingPayload?.failure?.lastError || '')
   const repeatedErrorCount =
     normalizedError === previousError ? Number(existingPayload?.failure?.repeatedErrorCount || 0) + 1 : 1
+  const failureClass = options.failureClass || classifyFailure(normalizedError)
   const poisonDetected = repeatedErrorCount >= poisonErrorThreshold
-  const deadLetterNow = attempts >= effectiveMaxAttempts || poisonDetected
+  const deadLetterNow = failureClass === 'permanent' || attempts >= effectiveMaxAttempts || poisonDetected
 
   if (deadLetterNow) {
-    const deadLetterReason = poisonDetected ? 'poison_job' : 'max_attempts_exhausted'
+    const deadLetterReason =
+      failureClass === 'permanent' ? 'non_retryable_failure' : poisonDetected ? 'poison_job' : 'max_attempts_exhausted'
     const payload = {
       ...existingPayload,
-      status: 'dead_letter',
+      status: 'dead-letter',
       attempts,
       errorMessage: normalizedError,
       deadLetteredAt: timestamp,
@@ -757,18 +835,19 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
         lastFailedAt: timestamp,
         lastError: normalizedError,
         repeatedErrorCount,
-        poisonDetected
+        poisonDetected,
+        classification: failureClass
       }
     }
     db.prepare(
       `
       UPDATE export_jobs
-      SET status = 'dead_letter', attempts = ?, error_message = ?, leased_by = NULL,
+      SET status = 'dead-letter', attempts = ?, error_message = ?, leased_by = NULL,
         lease_expires_at = NULL, dead_lettered_at = ?, last_attempt_at = ?, updated_at = ?, payload = ?
       WHERE id = ?
     `
     ).run(attempts, normalizedError, timestamp, timestamp, timestamp, JSON.stringify(payload), jobId)
-  } else {
+  } else if (failureClass === 'transient') {
     const delayBaseMs = Math.min(baseBackoffMs * 2 ** (attempts - 1), maxBackoffMs)
     const jitterMs = Math.round((Math.random() * 2 - 1) * delayBaseMs * jitterRatio)
     const delayMs = Math.max(250, delayBaseMs + jitterMs)
@@ -792,7 +871,8 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
         lastError: normalizedError,
         repeatedErrorCount,
         jitterMs,
-        nextAttemptAt
+        nextAttemptAt,
+        classification: failureClass
       },
       metadata: {
         ...(existingPayload.metadata || {}),
@@ -807,6 +887,34 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
       WHERE id = ?
     `
     ).run(attempts, normalizedError, nextAttemptAt, timestamp, timestamp, JSON.stringify(payload), jobId)
+  } else {
+    const payload = {
+      ...existingPayload,
+      status: 'failed',
+      attempts,
+      errorMessage: normalizedError,
+      lastAttemptAt: timestamp,
+      updatedAt: timestamp,
+      failure: {
+        reason: 'retry_required',
+        workerId,
+        attempts,
+        maxAttempts: effectiveMaxAttempts,
+        firstFailedAt: existingPayload?.failure?.firstFailedAt || timestamp,
+        lastFailedAt: timestamp,
+        lastError: normalizedError,
+        repeatedErrorCount,
+        classification: failureClass
+      }
+    }
+    db.prepare(
+      `
+      UPDATE export_jobs
+      SET status = 'failed', attempts = ?, error_message = ?, leased_by = NULL,
+        lease_expires_at = NULL, last_attempt_at = ?, updated_at = ?, payload = ?
+      WHERE id = ?
+    `
+    ).run(attempts, normalizedError, timestamp, timestamp, JSON.stringify(payload), jobId)
   }
 
   syncStateExportsFromQueue()
@@ -823,7 +931,7 @@ export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs
 
   for (const job of leased) {
     const current = getExportJob(job.id)
-    if (current?.status === 'completed' || current?.status === 'dead_letter') {
+    if (current?.status === 'completed' || current?.status === 'dead-letter') {
       skipped += 1
       continue
     }
@@ -840,7 +948,11 @@ export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs
       markExportJobCompleted(job.id, output)
       processed += 1
     } catch (error) {
-      markExportJobFailed(job.id, error?.message || String(error), { maxAttempts: job.maxAttempts || 3, workerId })
+      markExportJobFailed(job.id, error?.message || String(error), {
+        maxAttempts: job.maxAttempts || 3,
+        workerId,
+        failureClass: error?.failureClass || null
+      })
       failed += 1
     }
   }
@@ -892,7 +1004,7 @@ export function readExportWorkerStatus() {
       `
     SELECT COUNT(*) AS count
     FROM export_jobs
-    WHERE status = 'processing' AND lease_expires_at > ?
+    WHERE status = 'running' AND lease_expires_at > ?
   `
     )
     .get(nowIso()).count
@@ -907,7 +1019,7 @@ export function readExportWorkerStatus() {
   `
     )
     .all()
-  const deadLetter = db.prepare("SELECT COUNT(*) AS count FROM export_jobs WHERE status = 'dead_letter'").get().count
+  const deadLetter = db.prepare("SELECT COUNT(*) AS count FROM export_jobs WHERE status = 'dead-letter'").get().count
   const readyNow = db
     .prepare(
       `
@@ -922,14 +1034,15 @@ export function readExportWorkerStatus() {
       `
     SELECT COUNT(*) AS count
     FROM export_jobs
-    WHERE status = 'processing' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
+    WHERE status = 'running' AND (lease_expires_at IS NULL OR lease_expires_at <= ?)
   `
     )
     .get(nowIso()).count
 
   return {
     queued: (byStatus.queued || 0) + (byStatus.retrying || 0),
-    processing: byStatus.processing || 0,
+    running: byStatus.running || 0,
+    processing: byStatus.running || 0,
     completed: byStatus.completed || 0,
     failed: byStatus.failed || 0,
     deadLetter,

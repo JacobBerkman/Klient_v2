@@ -112,6 +112,33 @@ test('production Node server contract supports auth and profile workflows', asyn
   assert.equal(moved.moved.stage, 'analysis')
   assert.ok(typeof moved.board.boardVersion === 'number')
 
+  const { response: reorderResponse, data: reordered } = await jsonFetch(port, '/api/pipeline/reorder', {
+    method: 'PATCH',
+    headers: authHeaders,
+    body: JSON.stringify({
+      profileId: profile.id,
+      toStage: 'analysis',
+      expectedVersion: moved.moved.pipelineVersion,
+      expectedUpdatedAt: moved.moved.updatedAt,
+      expectedBoardVersion: moved.board.boardVersion
+    })
+  })
+  assert.equal(reorderResponse.status, 200)
+  assert.ok(Number.isInteger(reordered.moved.orderIndex) && reordered.moved.orderIndex > 0)
+
+  const { response: staleResponse, data: staleError } = await jsonFetch(port, '/api/pipeline/reorder', {
+    method: 'PATCH',
+    headers: authHeaders,
+    body: JSON.stringify({
+      profileId: profile.id,
+      toStage: 'analysis',
+      expectedVersion: moved.moved.pipelineVersion,
+      expectedUpdatedAt: moved.moved.updatedAt
+    })
+  })
+  assert.equal(staleResponse.status, 409)
+  assert.equal(staleError.error?.code, 'PIPELINE_ORDER_CONFLICT')
+
   const { response: historyResponse, data: history } = await jsonFetch(
     port,
     `/api/profiles/${profile.id}/stage-history`,
