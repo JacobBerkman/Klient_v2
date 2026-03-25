@@ -1,10 +1,16 @@
-export function createFormsService({ store, policy }) {
+export function createFormsService({ store, policy, templatesCompatibility = null }) {
   return {
     listFormTemplates(user) {
+      if (templatesCompatibility?.listForms) {
+        return templatesCompatibility.listForms(user)
+      }
       policy.requireGuard(user, 'canReadForms')
       return store.listFormTemplates(user)
     },
     createFormTemplate(user, input) {
+      if (templatesCompatibility?.createForm) {
+        return templatesCompatibility.createForm(user, input)
+      }
       policy.requireGuard(user, 'canWriteForms')
       return store.createFormTemplate(user, input)
     },

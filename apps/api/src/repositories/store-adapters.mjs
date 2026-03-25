@@ -6,6 +6,7 @@ import { FormsRepository } from '../modules/forms/repository.mjs'
 import { ExportsRepository } from '../modules/exports/repository.mjs'
 import { AuditRepository } from '../modules/audit/repository.mjs'
 import { AnalyticsRepository } from '../modules/analytics/repository.mjs'
+import { TemplatesV2Repository } from '../modules/templates-v2/repository.mjs'
 
 export class StoreProfileRepository extends ProfileRepository {
   constructor(store, reads) {
@@ -65,6 +66,25 @@ export class StoreTemplateRepository extends TemplateRepository {
   }
   autoBuildTemplate(user, input) {
     return this.store.autoBuildTemplate(user, input)
+  }
+}
+
+export class StoreTemplatesV2Repository extends TemplatesV2Repository {
+  constructor(store) {
+    super()
+    this.store = store
+  }
+  listCanonicalTemplates(user, filters = {}) {
+    return this.store.listTemplateAggregates(user, filters)
+  }
+  createCanonicalTemplate(user, input) {
+    return this.store.createTemplateAggregate(user, input)
+  }
+  updateCanonicalTemplate(user, templateId, patch) {
+    return this.store.updateTemplateAggregate(user, templateId, patch)
+  }
+  transitionLifecycle(user, templateId, nextState) {
+    return this.store.transitionTemplateLifecycle(user, templateId, nextState)
   }
 }
 

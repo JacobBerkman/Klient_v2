@@ -5,9 +5,9 @@ import { join, resolve } from 'node:path'
 
 const repoRoot = resolve(new URL('..', import.meta.url).pathname)
 
-function runNode(scriptPath, cwd) {
+function runNode(scriptPath, cwd, args = []) {
   return new Promise((resolveRun, rejectRun) => {
-    const child = spawn(process.execPath, [scriptPath], {
+    const child = spawn(process.execPath, [scriptPath, ...args], {
       cwd,
       env: process.env,
       stdio: ['ignore', 'pipe', 'pipe']
@@ -26,11 +26,11 @@ function runNode(scriptPath, cwd) {
     child.on('error', rejectRun)
     child.on('exit', (code, signal) => {
       if (signal) {
-        rejectRun(new Error(`${scriptPath} terminated by signal ${signal}`))
+        rejectRun(new Error(`${scriptPath} ${args.join(' ')} terminated by signal ${signal}`))
         return
       }
       if (code !== 0) {
-        rejectRun(new Error(`${scriptPath} failed with code ${code}\n${stderr}`.trim()))
+        rejectRun(new Error(`${scriptPath} ${args.join(' ')} failed with code ${code}\n${stderr}`.trim()))
         return
       }
       resolveRun(stdout.trim())
@@ -48,19 +48,25 @@ try {
   seededState.documentTemplates = [{ id: 'doc-legacy-1', firmId: 'firm-default', name: 'Legacy Doc', mappings: [] }]
   saveState(seededState)
 
-  const migrateScript = resolve(repoRoot, 'scripts/migrate-template-aggregate.mjs')
+  const migrateScript = resolve(repoRoot, 'scripts/migrate-template-unification.mjs')
   const reencryptScript = resolve(repoRoot, 'scripts/reencrypt-pii.mjs')
 
-  const migrationRaw = await runNode(migrateScript, tempRoot)
+  const migrationRaw = await runNode(migrateScript, tempRoot, ['--stage=backfill'])
   const migration = JSON.parse(migrationRaw || '{}')
-  if (!migration.migrated || migration.templateAggregateCount !== 2) {
+  if (migration.copiedCount !== 2) {
     throw new Error('Template aggregate migration did not produce expected aggregate count.')
   }
 
-  const secondMigrationRaw = await runNode(migrateScript, tempRoot)
+  const secondMigrationRaw = await runNode(migrateScript, tempRoot, ['--stage=backfill'])
   const secondMigration = JSON.parse(secondMigrationRaw || '{}')
-  if (secondMigration.migrated !== false) {
+  if (secondMigration.copiedCount !== 0) {
     throw new Error('Template aggregate migration is not idempotent.')
+  }
+
+  const verifyRaw = await runNode(migrateScript, tempRoot, ['--stage=verify'])
+  const verify = JSON.parse(verifyRaw || '{}')
+  if (!verify.ok) {
+    throw new Error('Template migration verify stage failed.')
   }
 
   const rotationRaw = await runNode(reencryptScript, tempRoot)
@@ -81,6 +87,7 @@ try {
         checks: {
           templateMigration: 'pass',
           templateMigrationIdempotent: 'pass',
+          templateMigrationVerify: 'pass',
           piiReencryptionPath: 'pass'
         },
         templateAggregateCount: postState.templateAggregates.length,
