@@ -1,4 +1,5 @@
 import { createHmac, createHash, randomBytes, randomUUID } from 'node:crypto'
+import { createDefaultFirmStageConfig } from '../stage-config.mjs'
 
 const LOGIN_WINDOW_MS = 1000 * 60 * 15
 const MAX_LOGIN_ATTEMPTS = 5
@@ -309,7 +310,13 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       const normalizedEmail = normalizeEmail(email)
       if (state.users.some((user) => user.email === normalizedEmail))
         throw new Error('An account with this email already exists.')
-      const firm = { id: randomUUID(), name: firmName, slug: slugify(firmName), createdAt: nowIso() }
+      const firm = {
+        id: randomUUID(),
+        name: firmName,
+        slug: slugify(firmName),
+        stageConfig: createDefaultFirmStageConfig(),
+        createdAt: nowIso()
+      }
       const user = {
         id: randomUUID(),
         firmId: firm.id,

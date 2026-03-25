@@ -24,6 +24,7 @@ import {
 } from './modules/forms/schema/form-definition-validator.mjs'
 import { validateMappingRules } from './modules/templates/schema/mapping-rules-validator.mjs'
 import { extractTemplateFieldsFromPdfBytes } from './modules/templates/template-ingestion.mjs'
+import { createDefaultFirmStageConfig, getStageKey, normalizeFirmStageConfig } from './stage-config.mjs'
 
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 8
 const SESSION_IDLE_TIMEOUT_MS = 1000 * 60 * 30
@@ -66,19 +67,6 @@ const PERMISSIONS = {
   client: ['portal:read', 'client:write'],
   anonymous: []
 }
-const BOARD_COLUMNS = [
-  'discovery',
-  'gather_oi',
-  'analysis',
-  'advisor_proposal_meeting',
-  'intake',
-  'on_boarding',
-  'investment_strategy',
-  'completed',
-  'drop_dead_lead',
-  'drop_nurture'
-]
-
 function can(role, permission) {
   return PERMISSIONS[role]?.includes('*') || PERMISSIONS[role]?.includes(permission)
 }
@@ -456,6 +444,13 @@ function migrateProspectOrdering(state) {
   }
 }
 
+function migrateFirmStageConfig(state) {
+  state.firms = (state.firms || []).map((firm) => ({
+    ...firm,
+    stageConfig: normalizeFirmStageConfig(firm?.stageConfig)
+  }))
+}
+
 function pipelineConflict(message, details = {}) {
   const error = new Error(message)
   error.statusCode = 409
@@ -480,7 +475,15 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
   const documentUploadId = randomUUID()
 
   return {
-    firms: [{ id: firmId, name: 'Demo Advisory Group', slug: 'demo-advisory-group', createdAt }],
+    firms: [
+      {
+        id: firmId,
+        name: 'Demo Advisory Group',
+        slug: 'demo-advisory-group',
+        stageConfig: createDefaultFirmStageConfig(),
+        createdAt
+      }
+    ],
     users: [
       {
         id: adminId,
@@ -763,6 +766,7 @@ export function createStore({
 } = {}) {
   const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
+  migrateFirmStageConfig(state)
   state.profiles = (state.profiles || []).map(normalizeProfileRecord)
   saveState(state)
   state.pendingUploadIntents ||= []
@@ -947,6 +951,34 @@ export function createStore({
     return state.boardVersions[firmId]
   }
 
+  function getFirmRecord(firmId) {
+    return state.firms.find((firm) => firm.id === firmId) || null
+  }
+
+  function getFirmStageConfig(firmId) {
+    const firm = getFirmRecord(firmId)
+    if (!firm) return createDefaultFirmStageConfig()
+    if (!firm.stageConfig) {
+      firm.stageConfig = createDefaultFirmStageConfig()
+    } else {
+      firm.stageConfig = normalizeFirmStageConfig(firm.stageConfig)
+    }
+    return firm.stageConfig
+  }
+
+  function getActiveFirmStages(firmId) {
+    const config = getFirmStageConfig(firmId)
+    const activeKeys = config.stages
+      .filter((stage) => stage.active !== false)
+      .map((stage) => getStageKey(stage))
+      .filter(Boolean)
+    return activeKeys.length ? activeKeys : [getStageKey(config.stages[0] || { key: 'discovery' })]
+  }
+
+  function getDefaultFirmStage(firmId) {
+    return getActiveFirmStages(firmId)[0] || 'discovery'
+  }
+
   function bumpBoardVersion(firmId) {
     const current = getBoardVersion(firmId)
     state.boardVersions[firmId] = current + 1
@@ -986,7 +1018,7 @@ export function createStore({
   }
 
   function normalizePipelineIndices(firmId, stage = null) {
-    const stages = stage ? [stage] : BOARD_COLUMNS
+    const stages = stage ? [stage] : getActiveFirmStages(firmId)
     const normalizedStages = []
     for (const currentStage of stages) {
       if (compactStageIndices(firmId, currentStage)) {
@@ -997,7 +1029,7 @@ export function createStore({
   }
 
   function buildBoardPayload(user, conflict = null) {
-    const columns = BOARD_COLUMNS.map((stage) => ({
+    const columns = getActiveFirmStages(user.firmId).map((stage) => ({
       stage,
       orderingVersion: getBoardVersion(user.firmId),
       cards: listProspectsByStage(user.firmId, stage)
@@ -1251,11 +1283,16 @@ export function createStore({
     createProfile(user, input) {
       requirePermission(user, 'profiles:write')
       const createdAt = now()
+      const defaultStage = getDefaultFirmStage(user.firmId)
+      const requestedStage = input.stage || defaultStage
+      if (input.kind === 'prospect' && !getActiveFirmStages(user.firmId).includes(requestedStage)) {
+        throw new Error(`Unknown stage: ${requestedStage}.`)
+      }
       const inStage = state.profiles.filter(
         (profile) =>
           profile.firmId === user.firmId &&
           profile.kind === 'prospect' &&
-          profile.stage === (input.stage || 'discovery')
+          profile.stage === requestedStage
       ).length
       const profile = {
         pii: {
@@ -1275,7 +1312,7 @@ export function createStore({
         dateOfBirth: '',
         source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
         status: input.status || (input.kind === 'client' ? 'active' : 'new'),
-        stage: input.kind === 'prospect' ? input.stage || 'discovery' : null,
+        stage: input.kind === 'prospect' ? requestedStage : null,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
         orderIndex: input.kind === 'prospect' ? inStage + 1 : null,
         pipelineVersion: input.kind === 'prospect' ? 1 : null,
@@ -1316,7 +1353,7 @@ export function createStore({
         patch.orderIndex = null
       }
       if (patch.kind === 'prospect' && !patch.stage) {
-        patch.stage = 'discovery'
+        patch.stage = getDefaultFirmStage(user.firmId)
       }
       const profile = validateTenantEntityOwnership(
         firmContext,
@@ -1381,7 +1418,7 @@ export function createStore({
       if (!profileId || !toStage) {
         throw new Error('Reorder payload must include profileId and toStage.')
       }
-      if (!BOARD_COLUMNS.includes(toStage)) {
+      if (!getActiveFirmStages(user.firmId).includes(toStage)) {
         throw new Error(`Unknown stage: ${toStage}.`)
       }
 
@@ -2877,16 +2914,9 @@ export function createStore({
         return acc
       }, {})
       const totalProspects = prospects.length || 1
-      const stageOrder = [
-        'discovery',
-        'gather_oi',
-        'analysis',
-        'advisor_proposal_meeting',
-        'intake',
-        'on_boarding',
-        'investment_strategy',
-        'completed'
-      ]
+      const stageOrder = getActiveFirmStages(user.firmId).filter(
+        (stage) => !stage.startsWith('drop_')
+      )
       const funnel = stageOrder.map((stage) => {
         const count = stageCounts[stage] || 0
         return { stage, count, conversionRate: Number((count / totalProspects).toFixed(4)) }
