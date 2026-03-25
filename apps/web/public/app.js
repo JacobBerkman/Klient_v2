@@ -4,8 +4,10 @@ const state = {
   user: null,
   view: 'dashboard',
   flash: null,
+  alert: null,
   board: null,
   clientBoard: null,
+  pendingActions: {},
   mfa: {
     login: null,
     enrollment: null
@@ -63,6 +65,40 @@ function escapeHtml(value) {
 
 function setFlash(type, message) {
   state.flash = { type, message }
+}
+
+function setAlert(type, message) {
+  state.alert = { type, message }
+}
+
+function clearAlert() {
+  state.alert = null
+}
+
+function setActionPending(actionKey, status) {
+  state.pendingActions[actionKey] = status
+}
+
+function clearActionPending(actionKey) {
+  delete state.pendingActions[actionKey]
+}
+
+function pendingLabel(actionKey, defaultLabel, pendingLabel = 'Saving…') {
+  return state.pendingActions[actionKey] ? pendingLabel : defaultLabel
+}
+
+function reportActionSuccess(action, message) {
+  clearAlert()
+  setFlash('success', `${action}: ${message}`)
+}
+
+function reportActionError(action, error) {
+  const reason = error?.message || 'Request failed'
+  const details = error?.details?.issues
+  const detailText = Array.isArray(details) && details.length
+    ? ` (${details.map((issue) => `${issue.path}: ${issue.message}`).join(' | ')})`
+    : ''
+  setFlash('error', `${action}: ${reason}${detailText}`)
 }
 
 function stageLabel(stage) {
@@ -152,6 +188,12 @@ function flashMarkup() {
   if (!state.flash) return ''
   const cls = state.flash.type === 'error' ? 'error-banner' : 'success-banner'
   return `<div class="item compact ${cls}">${escapeHtml(state.flash.message)}</div>`
+}
+
+function alertMarkup() {
+  if (!state.alert) return ''
+  const cls = state.alert.type === 'error' ? 'error-banner' : 'success-banner'
+  return `<div class="item compact ${cls}">${escapeHtml(state.alert.message)}</div>`
 }
 
 async function request(path, options = {}) {
@@ -391,8 +433,8 @@ async function renderForms() {
       <td>${draft.lock ? `Locked (${escapeHtml(draft.lock.holderUserId)})` : 'Unlocked'}</td>
       <td>
         <a href="#${appRoutes.clientFormSubmission(draft.clientId, draft.id)}">Edit from profile</a>
-        <button data-lock="${draft.id}">Acquire lock</button>
-        <button data-save="${draft.id}">Save revision</button>
+        <button data-lock="${draft.id}">${pendingLabel(`lock-${draft.id}`, 'Acquire lock', 'Acquiring…')}</button>
+        <button data-save="${draft.id}">${pendingLabel(`draft-save-${draft.id}`, 'Save revision', 'Saving…')}</button>
       </td>
     </tr>
   `
@@ -401,6 +443,7 @@ async function renderForms() {
 
   viewEl.innerHTML = `
     ${flashMarkup()}
+    ${alertMarkup()}
     <h2>Forms + Collaboration</h2>
     <p class="muted">Draft editing now uses revision IDs, short leases, and conflict-aware save prompts.</p>
     <div class="stat-grid compact-stats">
@@ -412,14 +455,19 @@ async function renderForms() {
 
   document.querySelectorAll('[data-lock]').forEach((button) => {
     button.addEventListener('click', async () => {
+      const actionKey = `lock-${button.dataset.lock}`
+      setActionPending(actionKey, 'pending')
+      await renderForms()
       try {
         const result = await request(routes.formDraftLock(button.dataset.lock), {
           method: 'POST',
           body: JSON.stringify({ leaseMs: 30000 })
         })
-        setFlash('success', `Lock acquired. Lease ${result.lock.leaseId.slice(0, 8)}…`)
+        reportActionSuccess('Forms', `Lock acquired. Lease ${result.lock.leaseId.slice(0, 8)}…`)
       } catch (error) {
-        setFlash('error', error.message)
+        reportActionError('Forms', error)
+      } finally {
+        clearActionPending(actionKey)
       }
       await renderForms()
     })
@@ -429,6 +477,10 @@ async function renderForms() {
     button.addEventListener('click', async () => {
       const draftId = button.dataset.save
       const draft = drafts.find((item) => item.id === draftId)
+      const actionKey = `draft-save-${draftId}`
+      setActionPending(actionKey, 'pending')
+      setAlert('success', `Saving draft ${draftId} optimistically…`)
+      await renderForms()
       try {
         const response = await request(routes.formDraft(draftId), {
           method: 'PATCH',
@@ -439,12 +491,19 @@ async function renderForms() {
           })
         })
         if (!response.ok) {
-          setFlash('error', response.mergePrompt?.suggestion || 'Draft conflict.')
+          setAlert('error', response.mergePrompt?.suggestion || 'Draft conflict.')
+          reportActionError('Forms', new Error(response.mergePrompt?.suggestion || 'Draft conflict.'))
         } else {
-          setFlash('success', `Draft saved at revision ${response.submission.revisionId}.`)
+          clearAlert()
+          reportActionSuccess('Forms', `Draft saved at revision ${response.submission.revisionId}.`)
         }
       } catch (error) {
-        setFlash('error', error.message)
+        if (error?.details?.mergePrompt?.suggestion) {
+          setAlert('error', error.details.mergePrompt.suggestion)
+        }
+        reportActionError('Forms', error)
+      } finally {
+        clearActionPending(actionKey)
       }
       await renderForms()
     })
@@ -496,6 +555,14 @@ async function renderTemplates() {
   ])
   if (!state.selectedTemplateId && templates[0]?.id) state.selectedTemplateId = templates[0].id
   const template = templates.find((entry) => entry.id === state.selectedTemplateId) || templates[0] || null
+  const [versions, transitions] = template
+    ? await Promise.all([
+      request(routes.documentTemplateVersions(template.id)),
+      request(routes.documentTemplatePublishTransitions(template.id))
+    ])
+    : [[], []]
+  const versionOptions = (versions || []).map((entry) => `<option value="${entry.version}">${entry.version} · ${escapeHtml(entry.changeType || 'update')}</option>`).join('')
+  const latestVersion = versions?.[0]?.version || ''
   const knownPaths = knownProfileSourcePaths()
   ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
   const mappingIssuesByIndex = new Map((template?.mappings || []).map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
@@ -503,6 +570,7 @@ async function renderTemplates() {
 
   viewEl.innerHTML = `
     ${flashMarkup()}
+    ${alertMarkup()}
     <div class="section-header"><h2>Template Detail</h2></div>
     <label>Template
       <select id="template-select">${templates.map((entry) => `<option value="${entry.id}" ${entry.id === template?.id ? 'selected' : ''}>${escapeHtml(entry.name)}</option>`).join('')}</select>
@@ -550,6 +618,34 @@ async function renderTemplates() {
         <h3>Publish</h3>
         <button id="publish-template" class="tiny" ${hasLocalMappingErrors ? 'disabled' : ''}>Publish</button>
         ${hasLocalMappingErrors ? '<p class="muted">Publish is blocked until local mapping errors are resolved.</p>' : ''}
+      </section>
+      <section class="item">
+        <h3>Version History</h3>
+        <table><thead><tr><th>Version</th><th>Type</th><th>Created</th></tr></thead><tbody>
+          ${(versions || []).map((entry) => `<tr><td>${entry.version}</td><td>${escapeHtml(entry.changeType || 'update')}</td><td>${escapeHtml(new Date(entry.createdAt || Date.now()).toLocaleString())}</td></tr>`).join('') || '<tr><td colspan="3">No versions yet.</td></tr>'}
+        </tbody></table>
+      </section>
+      <section class="item">
+        <h3>Compare Versions</h3>
+        <div class="row gap-sm wrap">
+          <select id="compare-base">${versionOptions}</select>
+          <select id="compare-target">${versionOptions}</select>
+          <button id="compare-template-versions" class="tiny">Compare</button>
+        </div>
+        <div id="compare-results" class="muted">Select two versions to compare field + mapping changes.</div>
+      </section>
+      <section class="item">
+        <h3>Revert Version</h3>
+        <div class="row gap-sm wrap">
+          <select id="revert-version">${versionOptions}</select>
+          <button id="revert-template-version" class="tiny secondary">Revert to selected version</button>
+        </div>
+      </section>
+      <section class="item">
+        <h3>Publish Transition Log</h3>
+        <table><thead><tr><th>From</th><th>To</th><th>When</th><th>By</th></tr></thead><tbody>
+          ${(transitions || []).map((entry) => `<tr><td>${entry.fromVersion ?? 'N/A'}</td><td>${entry.toVersion ?? 'N/A'}</td><td>${escapeHtml(new Date(entry.createdAt || Date.now()).toLocaleString())}</td><td>${escapeHtml(entry.createdByUserId || 'system')}</td></tr>`).join('') || '<tr><td colspan="4">No publish transitions yet.</td></tr>'}
+        </tbody></table>
       </section>` : '<p class="muted">No document templates found.</p>'}
   `
 
@@ -655,10 +751,41 @@ async function renderTemplates() {
         method: 'POST',
         body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Publish template mapping updates.' })
       })
-      setFlash('success', 'Template published.')
+      reportActionSuccess('Templates', 'Template published.')
     } catch (error) {
-      const issues = error.details?.issues || []
-      setFlash('error', issues.length ? issues.map((issue) => `${issue.path}: ${issue.message}`).join(' | ') : error.message)
+      reportActionError('Templates', error)
+    }
+    await renderTemplates()
+  })
+  document.querySelector('#compare-base')?.addEventListener('change', (event) => {
+    if (!document.querySelector('#compare-target')?.value) {
+      document.querySelector('#compare-target').value = event.target.value
+    }
+  })
+  const compareTargetEl = document.querySelector('#compare-target')
+  if (compareTargetEl && latestVersion) compareTargetEl.value = latestVersion
+  document.querySelector('#compare-template-versions')?.addEventListener('click', async () => {
+    try {
+      const baseVersion = Number(document.querySelector('#compare-base')?.value)
+      const targetVersion = Number(document.querySelector('#compare-target')?.value)
+      const diff = await request(routes.documentTemplateCompare(template.id, { baseVersion, targetVersion }))
+      document.querySelector('#compare-results').innerHTML = `<pre>${escapeHtml(JSON.stringify(diff, null, 2))}</pre>`
+      reportActionSuccess('Templates', `Compared versions ${baseVersion} and ${targetVersion}.`)
+    } catch (error) {
+      reportActionError('Templates', error)
+      await renderTemplates()
+    }
+  })
+  document.querySelector('#revert-template-version')?.addEventListener('click', async () => {
+    try {
+      const targetVersion = Number(document.querySelector('#revert-version')?.value)
+      await request(routes.documentTemplateRevert(template.id), {
+        method: 'POST',
+        body: JSON.stringify({ targetVersion, reason: `UI revert to version ${targetVersion}` })
+      })
+      reportActionSuccess('Templates', `Reverted template to version ${targetVersion}.`)
+    } catch (error) {
+      reportActionError('Templates', error)
     }
     await renderTemplates()
   })
@@ -680,7 +807,7 @@ function boardCardMarkup(card, kind) {
           ${BOARD_STAGES.map((stage) => `<option value="${stage}" ${stage === (card.stage || 'discovery') ? 'selected' : ''}>${escapeHtml(stageLabel(stage))}</option>`).join('')}
         </select>
       </div>
-      <form class="inline-edit hidden top-gap" data-edit-form="${card.id}">
+      <form class="inline-edit hidden top-gap" data-edit-form="${card.id}" data-updated-at="${escapeHtml(card.updatedAt || '')}">
         <div class="grid two">
           <input name="firstName" value="${escapeHtml(card.firstName || '')}" placeholder="First name" required />
           <input name="lastName" value="${escapeHtml(card.lastName || '')}" placeholder="Last name" required />
@@ -688,7 +815,7 @@ function boardCardMarkup(card, kind) {
         <input name="email" type="email" value="${escapeHtml(card.email || '')}" placeholder="Email" />
         <input name="phone" value="${escapeHtml(card.phone || '')}" placeholder="Phone" />
         <div class="actions-row">
-          <button type="submit" class="tiny">Save</button>
+          <button type="submit" class="tiny">${pendingLabel(`profile-save-${card.id}`, 'Save', 'Saving…')}</button>
           <button type="button" class="secondary tiny" data-cancel-edit="${card.id}">Cancel</button>
         </div>
       </form>
@@ -700,6 +827,7 @@ function boardCardMarkup(card, kind) {
 function boardMarkup(kind, board) {
   return `
     ${flashMarkup()}
+    ${alertMarkup()}
     <div class="section-header">
       <div>
         <h2>${escapeHtml(kind === 'prospect' ? 'Prospects' : 'Clients')} Board</h2>
@@ -747,11 +875,15 @@ async function reorderCard(kind, move) {
   }
 }
 
-async function saveInlineProfile(kind, profileId, patch) {
+async function saveInlineProfile(kind, profileId, patch, expectedUpdatedAt = '') {
   const boardKey = kind === 'prospect' ? 'board' : 'clientBoard'
   const previousBoard = state[boardKey] ? structuredClone(state[boardKey]) : null
   if (previousBoard) state[boardKey] = updateCardInBoard(previousBoard, profileId, patch)
   try {
+    const latest = await request(routes.profileDetail(profileId))
+    if (expectedUpdatedAt && latest?.profile?.updatedAt && latest.profile.updatedAt !== expectedUpdatedAt) {
+      throw new Error('Conflict detected: this profile was edited elsewhere. Please reload and try again.')
+    }
     await request(`/api/profiles/${profileId}`, {
       method: 'PATCH',
       body: JSON.stringify(patch)
@@ -827,11 +959,24 @@ function wireBoardInteractions(kind) {
       event.preventDefault()
       const profileId = form.dataset.editForm
       const payload = Object.fromEntries(new FormData(form).entries())
+      const submitButton = form.querySelector('button[type="submit"]')
+      if (submitButton) {
+        submitButton.disabled = true
+        submitButton.textContent = 'Saving…'
+      }
+      setAlert('success', `Saving profile ${profileId} optimistically…`)
       try {
-        await saveInlineProfile(kind, profileId, payload)
-        setFlash('success', 'Profile updated.')
+        await saveInlineProfile(kind, profileId, payload, form.dataset.updatedAt || '')
+        clearAlert()
+        reportActionSuccess('Profiles', 'Profile updated.')
       } catch (error) {
-        setFlash('error', `Failed to save profile: ${error.message}`)
+        setAlert('error', error.message)
+        reportActionError('Profiles', error)
+      } finally {
+        if (submitButton) {
+          submitButton.disabled = false
+          submitButton.textContent = 'Save'
+        }
       }
       await renderCurrentView()
     })
@@ -864,6 +1009,73 @@ async function renderBoard(kind) {
   wireBoardInteractions(kind)
 }
 
+function roleAccessMatrixMarkup() {
+  const matrix = [
+    ['Dashboard', ['admin', 'advisor', 'readonly']],
+    ['Prospects', ['admin', 'advisor']],
+    ['Clients', ['admin', 'advisor', 'readonly']],
+    ['Forms', ['admin', 'advisor', 'readonly']],
+    ['Templates', ['admin', 'advisor']],
+    ['Exports', ['admin', 'advisor']],
+    ['Analytics', ['admin', 'advisor', 'readonly']]
+  ]
+  return `<table><thead><tr><th>Action/View</th><th>admin</th><th>advisor</th><th>readonly</th></tr></thead><tbody>
+    ${matrix.map(([name, roles]) => `<tr><td>${name}</td><td>${roles.includes('admin') ? '✅' : '—'}</td><td>${roles.includes('advisor') ? '✅' : '—'}</td><td>${roles.includes('readonly') ? '✅' : '—'}</td></tr>`).join('')}
+  </tbody></table>`
+}
+
+async function renderExports() {
+  const [jobs, queue] = await Promise.all([request(routes.exports()), request(routes.exportsQueueHealth())])
+  const canMutate = state.user?.role === 'admin' || state.user?.role === 'advisor'
+  viewEl.innerHTML = `
+    ${flashMarkup()}
+    ${alertMarkup()}
+    <div class="section-header"><div><h2>Exports Operations</h2><p class="muted">Queue health, retries, and artifact readiness by job.</p></div></div>
+    <section class="item">
+      <h3>Queue State</h3>
+      <pre>${escapeHtml(JSON.stringify(queue.queue || {}, null, 2))}</pre>
+      ${canMutate ? '<button id="retry-failed-jobs" class="tiny secondary">Retry failed jobs</button>' : '<p class="muted">Readonly role cannot trigger retries.</p>'}
+    </section>
+    <section class="item">
+      <h3>Per-job Artifact Status</h3>
+      <table><thead><tr><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact</th><th>Actions</th></tr></thead><tbody>
+        ${jobs.map((job) => `<tr>
+          <td>${escapeHtml(job.id)}</td>
+          <td>${escapeHtml(job.status)}</td>
+          <td>${job.attempts || 0}/${job.maxAttempts || 0}</td>
+          <td>${job.output?.object?.key ? `<code>${escapeHtml(job.output.object.key)}</code>` : '<span class="muted">Not ready</span>'}</td>
+          <td>${canMutate ? `<button data-retry-export="${job.id}" class="tiny secondary" ${job.status === 'completed' ? 'disabled' : ''}>Retry</button>` : '<span class="muted">N/A</span>'}</td>
+        </tr>`).join('') || '<tr><td colspan="5">No export jobs.</td></tr>'}
+      </tbody></table>
+    </section>
+    <section class="item">
+      <h3>Role Visibility Validation</h3>
+      <p class="muted">Current signed-in role: <strong>${escapeHtml(state.user?.role || 'anonymous')}</strong></p>
+      ${roleAccessMatrixMarkup()}
+    </section>
+  `
+  document.querySelector('#retry-failed-jobs')?.addEventListener('click', async () => {
+    try {
+      const result = await request(routes.exportsRetryFailed(), { method: 'POST', body: JSON.stringify({ includeDeadLetter: true, limit: 50 }) })
+      reportActionSuccess('Exports', `Retried ${result.retriedCount || 0} failed jobs.`)
+    } catch (error) {
+      reportActionError('Exports', error)
+    }
+    await renderExports()
+  })
+  document.querySelectorAll('[data-retry-export]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      try {
+        await request(routes.exportRetry(button.dataset.retryExport), { method: 'POST', body: JSON.stringify({}) })
+        reportActionSuccess('Exports', `Retry requested for ${button.dataset.retryExport}.`)
+      } catch (error) {
+        reportActionError('Exports', error)
+      }
+      await renderExports()
+    })
+  })
+}
+
 function applyHashRoute() {
   const hashPath = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : ''
   const route = appRoutes.parseClientFormSubmission(hashPath)
@@ -887,6 +1099,7 @@ async function renderCurrentView() {
   if (state.view === 'analytics') return renderAnalytics()
   if (state.view === 'forms') return renderForms()
   if (state.view === 'templates') return renderTemplates()
+  if (state.view === 'exports') return renderExports()
   if (state.view === 'prospects') return renderBoard('prospect')
   if (state.view === 'clients') return renderBoard('client')
   return renderFallback(state.view)
@@ -998,11 +1211,11 @@ document.querySelector('#profile-form').addEventListener('submit', async (event)
       })
     })
     event.target.reset()
-    setFlash('success', 'Profile created.')
+    reportActionSuccess('Profiles', 'Profile created.')
     await refreshSelects()
     await renderCurrentView()
   } catch (error) {
-    setFlash('error', error.message)
+    reportActionError('Profiles', error)
     await renderCurrentView()
   }
 })
@@ -1013,10 +1226,10 @@ document.querySelector('#household-form').addEventListener('submit', async (even
     const payload = Object.fromEntries(new FormData(event.target).entries())
     await request(routes.households(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
-    setFlash('success', 'Household created.')
+    reportActionSuccess('Households', 'Household created.')
     await renderCurrentView()
   } catch (error) {
-    setFlash('error', error.message)
+    reportActionError('Households', error)
     await renderCurrentView()
   }
 })
@@ -1028,10 +1241,10 @@ document.querySelector('#form-template-form').addEventListener('submit', async (
     await request(routes.formTemplates(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
     state.view = 'forms'
-    setFlash('success', 'Form template created.')
+    reportActionSuccess('Forms', 'Form template created.')
     await renderCurrentView()
   } catch (error) {
-    setFlash('error', error.message)
+    reportActionError('Forms', error)
     await renderCurrentView()
   }
 })
@@ -1046,10 +1259,10 @@ document.querySelector('#doc-template-form').addEventListener('submit', async (e
     }
     await request(routes.documentTemplates(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
-    setFlash('success', 'Document template created.')
+    reportActionSuccess('Templates', 'Document template created.')
     await renderCurrentView()
   } catch (error) {
-    setFlash('error', error.message)
+    reportActionError('Templates', error)
     await renderCurrentView()
   }
 })
@@ -1060,10 +1273,10 @@ document.querySelector('#invite-form').addEventListener('submit', async (event) 
     const payload = Object.fromEntries(new FormData(event.target).entries())
     const invite = await request(routes.invites(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
-    setFlash('success', `Invite created (${invite.token}).`)
+    reportActionSuccess('Invites', `Invite created (${invite.token}).`)
     await renderCurrentView()
   } catch (error) {
-    setFlash('error', error.message)
+    reportActionError('Invites', error)
     await renderCurrentView()
   }
 })
@@ -1073,10 +1286,10 @@ document.querySelector('#portal-form').addEventListener('submit', async (event) 
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
     const link = await request(routes.portalLinks(), { method: 'POST', body: JSON.stringify(payload) })
-    setFlash('success', `Portal link created: /portal?token=${link.token}`)
+    reportActionSuccess('Portal', `Portal link created: /portal?token=${link.token}`)
     await renderCurrentView()
   } catch (error) {
-    setFlash('error', error.message)
+    reportActionError('Portal', error)
     await renderCurrentView()
   }
 })
