@@ -29,11 +29,16 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const publicDir = resolve(__dirname, '../../web/public')
 const bootedAt = new Date().toISOString()
 const startupDiagnostics = validateRuntimeConfig()
+const AUTH_SESSION_COOKIE = '__Host-klient-session'
 const CSRF_SESSION_COOKIE = '__Host-klient-csrf'
+const AUTH_COMPATIBILITY_HEADER = 'x-klient-auth-compat'
+const AUTH_COMPATIBILITY_MODE = 'bearer'
+const AUTH_COMPATIBILITY_SUNSET = 'Tue, 30 Jun 2026 00:00:00 GMT'
 const CSRF_HEADER = 'x-csrf-token'
 const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const CSRF_BOOTSTRAP_PATH = '/api/csrf'
 const CSRF_TTL_SECONDS = 60 * 15
+const SESSION_TTL_SECONDS = 60 * 60 * 8
 const CSRF_EXEMPT_PATHS = new Set([
   '/api/login',
   '/api/register',
@@ -66,18 +71,19 @@ function parseCookies(req) {
   )
 }
 
-function cookieConfig(req) {
+function cookieConfig(req, overrides = {}) {
   const xfProto = String(req.headers['x-forwarded-proto'] || '')
     .split(',')[0]
     .trim()
     .toLowerCase()
-  const secure = runtime.isProduction || xfProto === 'https'
+  const secure = runtime.isProduction ? true : xfProto === 'https'
   return {
     secure,
-    sameSite: secure ? 'Strict' : 'Lax',
+    sameSite: runtime.isProduction ? 'Strict' : secure ? 'Strict' : 'Lax',
     httpOnly: true,
     path: '/api',
-    maxAge: CSRF_TTL_SECONDS
+    maxAge: CSRF_TTL_SECONDS,
+    ...overrides
   }
 }
 
@@ -89,6 +95,45 @@ function serializeCookie(name, value, options = {}) {
   if (options.httpOnly) parts.push('HttpOnly')
   if (options.secure) parts.push('Secure')
   return parts.join('; ')
+}
+
+function buildSessionCookie(req, sessionToken) {
+  return serializeCookie(AUTH_SESSION_COOKIE, sessionToken, cookieConfig(req, { maxAge: SESSION_TTL_SECONDS }))
+}
+
+function clearSessionCookie(req) {
+  return serializeCookie(AUTH_SESSION_COOKIE, '', cookieConfig(req, { maxAge: 0 }))
+}
+
+function clearCsrfCookie(req) {
+  return serializeCookie(CSRF_SESSION_COOKIE, '', cookieConfig(req, { maxAge: 0 }))
+}
+
+function getBearerToken(req) {
+  return req.headers.authorization?.replace('Bearer ', '').trim()
+}
+
+function shouldIssueCompatibilityBearer(req) {
+  if (!runtime.enableBearerAuthCompat) return false
+  return String(req.headers[AUTH_COMPATIBILITY_HEADER] || '').toLowerCase() === AUTH_COMPATIBILITY_MODE
+}
+
+function resolveSessionToken(req) {
+  const cookies = parseCookies(req)
+  const cookieToken = String(cookies[AUTH_SESSION_COOKIE] || '').trim()
+  if (cookieToken) return cookieToken
+  if (runtime.enableBearerAuthCompat) {
+    return getBearerToken(req)
+  }
+  return ''
+}
+
+function compatibilityHeadersFor(req) {
+  if (!shouldIssueCompatibilityBearer(req)) return {}
+  return {
+    Deprecation: 'true',
+    Sunset: AUTH_COMPATIBILITY_SUNSET
+  }
 }
 
 function requiresCsrfProtection(method = 'GET') {
@@ -319,10 +364,6 @@ function parseRawBody(req) {
   })
 }
 
-function getToken(req) {
-  return req.headers.authorization?.replace('Bearer ', '')
-}
-
 function getClientIp(req) {
   const forwarded = String(req.headers['x-forwarded-for'] || '')
     .split(',')[0]
@@ -420,9 +461,9 @@ export function createHttpServer({ modules }) {
     let sessionToken = null
     let authenticatedUser = null
     let rotateCsrfAfterResponse = false
-    const requireUser = () => modules.auth.requireUser(getToken(req))
+    const requireUser = () => modules.auth.requireUser(resolveSessionToken(req))
     const authorize = (guard, { allowAnonymous = false } = {}) => {
-      const token = getToken(req)
+      const token = resolveSessionToken(req)
       if (!token && allowAnonymous) {
         modules.policy.requireGuard({ role: 'anonymous' }, guard)
         return null
@@ -529,7 +570,7 @@ export function createHttpServer({ modules }) {
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/csrf' && req.method === 'GET') {
-        sessionToken = getToken(req)
+        sessionToken = resolveSessionToken(req)
         if (!sessionToken) {
           finalizeLog(401)
           return replyJson(401, { message: 'Authentication required.' }, { 'X-Request-Id': requestId })
@@ -553,7 +594,7 @@ export function createHttpServer({ modules }) {
         return replyJson(200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId });
       }
       if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method) && !isCsrfExempt(pathname)) {
-        sessionToken = getToken(req)
+        sessionToken = resolveSessionToken(req)
         authenticatedUser = modules.auth.requireUser(sessionToken)
         const csrfError = validateCsrf(req, requestId, sessionToken, authenticatedUser)
         if (csrfError) {
@@ -565,12 +606,19 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/register' && req.method === 'POST') {
         authorize('canRegister', { allowAnonymous: true })
         const result = modules.auth.register(await parseBody(req))
+        const responseBody = shouldIssueCompatibilityBearer(req) ? result : { ...result, token: undefined }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(201)
-        return replyJson(201, { ...result, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt }, {
-          'X-Request-Id': requestId,
-          ...csrf.headers
-        })
+        return replyJson(
+          201,
+          { ...responseBody, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
+          {
+            'X-Request-Id': requestId,
+            ...compatibilityHeadersFor(req),
+            'Set-Cookie': [buildSessionCookie(req, result.token), csrf.headers['Set-Cookie']],
+            [CSRF_HEADER]: csrf.headers[CSRF_HEADER]
+          }
+        )
       }
       if (pathname === '/api/login' && req.method === 'POST') {
         authorize('canLogin', { allowAnonymous: true })
@@ -580,11 +628,18 @@ export function createHttpServer({ modules }) {
           return replyJson(200, { ...result, csrfToken: null, csrfExpiresAt: null }, { 'X-Request-Id': requestId })
         }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
+        const responseBody = shouldIssueCompatibilityBearer(req) ? result : { ...result, token: undefined }
         finalizeLog(200)
-        return replyJson(200, { ...result, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt }, {
-          'X-Request-Id': requestId,
-          ...csrf.headers
-        })
+        return replyJson(
+          200,
+          { ...responseBody, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
+          {
+            'X-Request-Id': requestId,
+            ...compatibilityHeadersFor(req),
+            'Set-Cookie': [buildSessionCookie(req, result.token), csrf.headers['Set-Cookie']],
+            [CSRF_HEADER]: csrf.headers[CSRF_HEADER]
+          }
+        )
       }
       if (pathname === '/api/invites' && req.method === 'POST') {
         const user = requireUser()
@@ -596,12 +651,19 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/invites/accept' && req.method === 'POST') {
         authorize('canAcceptInvite', { allowAnonymous: true })
         const result = modules.firmsUsers.acceptInvite(await parseBody(req))
+        const responseBody = shouldIssueCompatibilityBearer(req) ? result : { ...result, token: undefined }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(200)
-        return replyJson(200, { ...result, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt }, {
-          'X-Request-Id': requestId,
-          ...csrf.headers
-        })
+        return replyJson(
+          200,
+          { ...responseBody, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
+          {
+            'X-Request-Id': requestId,
+            ...compatibilityHeadersFor(req),
+            'Set-Cookie': [buildSessionCookie(req, result.token), csrf.headers['Set-Cookie']],
+            [CSRF_HEADER]: csrf.headers[CSRF_HEADER]
+          }
+        )
       }
       if (pathname === '/api/password-resets' && req.method === 'POST') {
         authorize('canRequestPasswordReset', { allowAnonymous: true })
@@ -659,11 +721,14 @@ export function createHttpServer({ modules }) {
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/logout' && req.method === 'POST') {
-        const token = getToken(req)
+        const token = resolveSessionToken(req)
         const result = modules.auth.logout(token)
         deleteCsrfTokensBySession(token)
         finalizeLog(200)
-        return replyJson(200, result, { 'X-Request-Id': requestId })
+        return replyJson(200, result, {
+          'X-Request-Id': requestId,
+          'Set-Cookie': [clearSessionCookie(req), clearCsrfCookie(req)]
+        })
       }
       if (pathname === '/api/dashboard' && req.method === 'GET') {
         const user = requireUser()

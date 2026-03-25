@@ -37,6 +37,15 @@ async function jsonFetch(port, path, options = {}) {
   return { response, data }
 }
 
+function extractSessionCookie(response) {
+  const raw = response.headers.get('set-cookie') || ''
+  const match = raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .find((entry) => entry.startsWith('__Host-klient-session='))
+  return match ? match.split(';')[0] : ''
+}
+
 test('production Node server contract supports auth and profile workflows', async (t) => {
   const cwd = await mkdtemp(join(tmpdir(), 'klient-contract-'))
   const port = 3210 + Math.floor(Math.random() * 200)
@@ -77,21 +86,22 @@ test('production Node server contract supports auth and profile workflows', asyn
   })
   assert.equal(loginResponse.status, 200, stderr)
   assert.equal(login.user.email, 'admin@demo.test')
+  const adminCookie = extractSessionCookie(loginResponse)
+  assert.ok(adminCookie.startsWith('__Host-klient-session='))
 
   const authHeaders = {
-    'Content-Type': 'application/json',
-    Authorization: `Bearer ${login.token}`
+    'Content-Type': 'application/json'
   }
 
   const { response: sessionResponse, data: session } = await jsonFetch(port, '/api/session', {
-    headers: { Authorization: `Bearer ${login.token}` }
+    headers: { Cookie: adminCookie }
   })
   assert.equal(sessionResponse.status, 200)
   assert.equal(session.user.role, 'admin')
 
   const { response: createResponse, data: profile } = await jsonFetch(port, '/api/profiles', {
     method: 'POST',
-    headers: authHeaders,
+    headers: { ...authHeaders, Cookie: adminCookie },
     body: JSON.stringify({
       kind: 'prospect',
       firstName: 'Jordan',
@@ -111,7 +121,7 @@ test('production Node server contract supports auth and profile workflows', asyn
 
   const { response: moveResponse, data: moved } = await jsonFetch(port, `/api/profiles/${profile.id}/stage`, {
     method: 'PATCH',
-    headers: authHeaders,
+    headers: { ...authHeaders, Cookie: adminCookie },
     body: JSON.stringify({ stage: 'analysis' })
   })
   assert.equal(moveResponse.status, 200)
@@ -120,7 +130,7 @@ test('production Node server contract supports auth and profile workflows', asyn
 
   const { response: reorderResponse, data: reordered } = await jsonFetch(port, '/api/pipeline/reorder', {
     method: 'PATCH',
-    headers: authHeaders,
+    headers: { ...authHeaders, Cookie: adminCookie },
     body: JSON.stringify({
       profileId: profile.id,
       toStage: 'analysis',
@@ -134,7 +144,7 @@ test('production Node server contract supports auth and profile workflows', asyn
 
   const { response: staleResponse, data: staleError } = await jsonFetch(port, '/api/pipeline/reorder', {
     method: 'PATCH',
-    headers: authHeaders,
+    headers: { ...authHeaders, Cookie: adminCookie },
     body: JSON.stringify({
       profileId: profile.id,
       toStage: 'analysis',
@@ -149,27 +159,27 @@ test('production Node server contract supports auth and profile workflows', asyn
     port,
     `/api/profiles/${profile.id}/stage-history`,
     {
-      headers: { Authorization: `Bearer ${login.token}` }
+      headers: { Cookie: adminCookie }
     }
   )
   assert.equal(historyResponse.status, 200)
   assert.equal(history.at(-1).toStage, 'analysis')
 
   const { response: profilesResponse, data: profiles } = await jsonFetch(port, '/api/profiles?search=Contract', {
-    headers: { Authorization: `Bearer ${login.token}` }
+    headers: { Cookie: adminCookie }
   })
   assert.equal(profilesResponse.status, 200)
   assert.ok(profiles.some((entry) => entry.id === profile.id))
 
   const { response: auditResponse, data: audit } = await jsonFetch(port, '/api/audit', {
-    headers: { Authorization: `Bearer ${login.token}` }
+    headers: { Cookie: adminCookie }
   })
   assert.equal(auditResponse.status, 200)
   assert.ok(audit.some((entry) => entry.entityId === profile.id && entry.action === 'pipeline.stage_changed'))
 
   const { response: templateCreateResponse, data: template } = await jsonFetch(port, '/api/templates', {
     method: 'POST',
-    headers: authHeaders,
+    headers: { ...authHeaders, Cookie: adminCookie },
     body: JSON.stringify({
       name: 'Contract Template',
       fileName: 'contract-template.pdf',
@@ -181,7 +191,7 @@ test('production Node server contract supports auth and profile workflows', asyn
 
   const { response: templatePublishResponse } = await jsonFetch(port, `/api/templates/${template.id}/publish`, {
     method: 'POST',
-    headers: authHeaders,
+    headers: { ...authHeaders, Cookie: adminCookie },
     body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Contract test publish' })
   })
   assert.equal(templatePublishResponse.status, 200)
@@ -190,7 +200,7 @@ test('production Node server contract supports auth and profile workflows', asyn
   const readonlyPassword = 'ReadonlyPass123!'
   const { response: inviteResponse, data: invite } = await jsonFetch(port, '/api/invites', {
     method: 'POST',
-    headers: authHeaders,
+    headers: { ...authHeaders, Cookie: adminCookie },
     body: JSON.stringify({ email: readonlyEmail, role: 'readonly' })
   })
   assert.equal(inviteResponse.status, 201, JSON.stringify(invite))
@@ -206,8 +216,10 @@ test('production Node server contract supports auth and profile workflows', asyn
     })
   })
   assert.equal(acceptInviteResponse.status, 200, JSON.stringify(readonlySession))
+  const readonlyCookie = extractSessionCookie(acceptInviteResponse)
+  assert.ok(readonlyCookie.startsWith('__Host-klient-session='))
 
-  const readonlyAuth = { Authorization: `Bearer ${readonlySession.token}` }
+  const readonlyAuth = { Cookie: readonlyCookie }
   const { response: readonlyVersionsResponse, data: readonlyVersions } = await jsonFetch(
     port,
     `/api/templates/${template.id}/versions`,
@@ -238,8 +250,10 @@ test('production Node server contract supports auth and profile workflows', asyn
     })
   })
   assert.equal(outsiderRegisterResponse.status, 201, JSON.stringify(outsider))
+  const outsiderCookie = extractSessionCookie(outsiderRegisterResponse)
+  assert.ok(outsiderCookie.startsWith('__Host-klient-session='))
 
-  const outsiderAuth = { Authorization: `Bearer ${outsider.token}` }
+  const outsiderAuth = { Cookie: outsiderCookie }
   const { response: outsiderVersionsResponse } = await jsonFetch(port, `/api/templates/${template.id}/versions`, {
     headers: outsiderAuth
   })
