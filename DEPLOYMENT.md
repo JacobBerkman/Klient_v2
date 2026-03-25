@@ -2,6 +2,8 @@
 
 ## Canonical runtime
 Deploy the application by running the single Node server at `apps/api/src/server.mjs`.
+
+Node runtime policy: production containers track the active Node.js **LTS major** (currently 22) and pin an immutable base-image digest for reproducible builds.
 That process serves:
 - the JSON API,
 - the advisor SPA from `apps/web/public`,
@@ -20,6 +22,22 @@ ENABLE_DEMO_MODE=false
 ```
 
 ### Production requirements
+
+### PII KMS key provider configuration
+If you set `PII_KEY_PROVIDER=kms`, configure the bootstrap key adapter values as well:
+
+```bash
+PII_KEY_PROVIDER=kms
+PII_KMS_KEY_ALIAS=pii-master
+PII_KMS_ACTIVE_KEY_ID=kms-key-v1
+PII_KMS_KEYRING={"kms-key-v1":"plain:base-key-material-v1"}
+```
+
+Required behavior and validation:
+- `PII_KMS_KEYRING` must be a JSON object keyed by key id.
+- `PII_KMS_ACTIVE_KEY_ID` must exist in `PII_KMS_KEYRING` at startup.
+- Key material values are decrypted by the KMS adapter before use; unreadable key material fails startup/initialization.
+- Rotation requires adding the next key id to `PII_KMS_KEYRING` before switching `PII_KMS_ACTIVE_KEY_ID`.
 - `APP_SECRET` must be set to a long random value.
 - Passwords accepted by registration, invite acceptance, and password reset must satisfy the runtime password policy.
 - Sessions expire after 8 hours.
@@ -67,6 +85,14 @@ docker compose --env-file .env up --build -d
 ```
 
 The app will be available at `http://localhost:3000`.
+
+### Container filesystem policy
+- The runtime container is designed to run with a **read-only root filesystem**.
+- Required writable paths are:
+  - `/app/data` for SQLite runtime state (`data/app.db`)
+  - `/tmp` for temporary files
+  - `/app/tmp` for app-scoped temporary files
+- `docker-compose.yml` enables this policy via `read_only: true`, two `tmpfs` mounts (`/tmp`, `/app/tmp`), and a bind/volume mount for `/app/data`.
 
 ## Health and readiness
 Use:
@@ -125,6 +151,13 @@ node scripts/restore-db.mjs data/backup-<timestamp>.db
 ## Rollback playbook
 Rollback is mandatory if health checks degrade, smoke fails, or security regressions are observed.
 
+### Explicit rollback SLO/SLA triggers
+- `/health` or `/ready` non-200 for more than **5 minutes** after deploy.
+- Critical smoke journey failure persisting more than **10 minutes** after one remediation attempt.
+- Contract incompatibility affecting any production consumer (SLA breach).
+- Security regression (auth bypass, PII exposure risk, or crypto integrity failure).
+- Observability SLO breach: sustained high error rate / latency / queue saturation for **10+ minutes** with active alerts.
+
 1. Stop unhealthy revision and redeploy the previous known-good image/tag.
 2. Restore database only when data integrity is compromised:
    ```bash
@@ -146,6 +179,12 @@ Use your container/runtime log collector to ship them to your observability stac
 The server also handles `SIGTERM`/`SIGINT` for graceful shutdown.
 
 On startup, the app emits a `server.started` log event with an embedded diagnostics snapshot. If configuration warnings exist, a `runtime.config.warnings` event is emitted; configuration errors produce `runtime.config.invalid`.
+
+### Operational acceptance criteria (release validation)
+Release validation is incomplete unless all three telemetry domains pass:
+- **Logs**: deployment-window logs present, structured, and searchable with startup + error events.
+- **Metrics**: error rate, latency, and saturation remain within SLO thresholds across validation window.
+- **Alerts**: no unresolved critical/high alerts for the new revision; warning alerts have owner and ETA.
 
 ## Build context hygiene
 A `.dockerignore` file excludes git metadata, local SQLite data, logs, and `node_modules` from image builds so Docker packages only the shipped runtime assets.

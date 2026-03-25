@@ -108,6 +108,8 @@ npm run validate:master
 ```
 
 `npm run test:all` remains available and now delegates to `validate:master`.
+
+CI uses this same canonical gate (`npm run validate:master`) across supported Node versions (20 and 22), uploads gate logs plus parity/backup evidence artifacts, and exposes `required-status-checks` as the branch-protection-friendly merge check.
 ## Main parity check
 Run the parity sync/report command:
 
