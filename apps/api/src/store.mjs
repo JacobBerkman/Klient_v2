@@ -2310,6 +2310,10 @@ export function createStore({
       requirePermission(user, 'exports:write')
       return exportsRepository.retryFailed(user, options)
     },
+    getExportDownload(user, exportId) {
+      requirePermission(user, 'exports:read')
+      return exportsRepository.getDownload(user, exportId)
+    },
     async processQueuedExports() {
       const result = processExportQueueTick({
         workerId: 'api-process-endpoint',

@@ -6,7 +6,7 @@ import {
   readExportWorkerStatus,
   requeueExportJob
 } from '../../storage.mjs'
-import { buildExportArtifact } from '../../export-artifact.mjs'
+import { buildExportArtifact, buildExportArtifactPayload } from '../../export-artifact.mjs'
 import { resolveExportData, computeMappingVersionHash } from '../../export-data-resolution.mjs'
 import { createFirmContext, validateEntityOwnership } from '../shared/tenancy.mjs'
 
@@ -61,10 +61,26 @@ function createRenderContext({ template, client, submission }) {
 }
 
 export function createStoreExportsRepository({ state, persist, addAuditEvent, objectStorage, now = () => new Date().toISOString() }) {
+  function withArtifactMetadata(job) {
+    const artifact = job?.output?.artifact || null
+    return {
+      ...job,
+      artifact: artifact
+        ? {
+            ...artifact,
+            contentType: job?.output?.object?.contentType || null,
+            fileName: job?.output?.fileName || null,
+            key: job?.output?.object?.key || null
+          }
+        : null,
+      artifactAvailable: Boolean(job?.status === 'completed' && artifact)
+    }
+  }
+
   return {
     list(user) {
       state.exportJobs = listExportQueueJobs()
-      return state.exportJobs.filter((entry) => entry.firmId === user.firmId)
+      return state.exportJobs.filter((entry) => entry.firmId === user.firmId).map(withArtifactMetadata)
     },
     create(user, input = {}) {
       const template = state.templateAggregates.find(
@@ -190,6 +206,22 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
         }
       })
       return { processed: result.processed, leased: result.leased, failed: result.failed }
+    },
+    getDownload(user, exportId) {
+      const firmContext = createFirmContext(user, { method: 'exports.download' })
+      const job = validateEntityOwnership(firmContext, state.exportJobs.find((entry) => entry.id === exportId), {
+        entityName: 'Export'
+      })
+      if (job.status !== 'completed') throw new Error('Export is not completed yet.')
+
+      const payload = buildExportArtifactPayload(job)
+      return {
+        body: payload.body,
+        fileName: payload.fileName,
+        contentType: payload.contentType,
+        checksum: payload.artifact.checksum,
+        sizeBytes: payload.artifact.sizeBytes
+      }
     }
   }
 }
