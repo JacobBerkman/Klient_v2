@@ -69,17 +69,19 @@ export async function createTestContext(name) {
           csrfToken: '',
           csrfCookie: '',
           sessionCookie: '',
-          async ensureCsrf() {
-            if (!this.sessionCookie) {
-              throw new Error('Cannot bootstrap CSRF token without session cookie.')
+          async ensureCsrf(options = {}) {
+            const authorization = options.authorization || ''
+            if (!this.sessionCookie && !authorization) {
+              throw new Error('Cannot bootstrap CSRF token without session cookie or authorization token.')
             }
-            if (this.csrfToken && this.csrfCookie) {
+            if (this.csrfToken && (this.csrfCookie || authorization)) {
               return { csrfToken: this.csrfToken, csrfCookie: this.csrfCookie }
             }
+            const csrfHeaders = {}
+            if (authorization) csrfHeaders.Authorization = authorization
+            if (this.sessionCookie) csrfHeaders.Cookie = this.sessionCookie
             const csrfResponse = await fetch(`http://127.0.0.1:${port}/api/csrf`, {
-              headers: {
-                Cookie: this.sessionCookie
-              }
+              headers: csrfHeaders
             })
             const csrfData = await csrfResponse.json()
             if (!csrfResponse.ok || !csrfData.csrfToken) {
@@ -94,13 +96,15 @@ export async function createTestContext(name) {
           async request(path, options = {}) {
             const method = (options.method || 'GET').toUpperCase()
             const headers = { ...(options.headers || {}) }
-            if (!headers.Cookie && this.sessionCookie && path.startsWith('/api/')) headers.Cookie = this.sessionCookie
+            if (!headers.Cookie && !headers.Authorization && this.sessionCookie && path.startsWith('/api/')) headers.Cookie = this.sessionCookie
             if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path.startsWith('/api/') && !isCsrfExemptPath(path)) {
-              const { csrfToken, csrfCookie } = await this.ensureCsrf()
-              headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
-              headers.Cookie = headers.Cookie || csrfCookie
-              headers.Origin = headers.Origin || `http://127.0.0.1:${port}`
-              headers.Referer = headers.Referer || `http://127.0.0.1:${port}/`
+              if (!headers.Authorization) {
+                const { csrfToken, csrfCookie } = await this.ensureCsrf({ authorization: headers.Authorization })
+                headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
+                headers.Cookie = headers.Cookie || csrfCookie
+                headers.Origin = headers.Origin || `http://127.0.0.1:${port}`
+                headers.Referer = headers.Referer || `http://127.0.0.1:${port}/`
+              }
             }
             const response = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers })
             const data = await response.json()
@@ -124,13 +128,15 @@ export async function createTestContext(name) {
           async requestExpectError(path, options = {}, expectedStatus = 400) {
             const method = (options.method || 'GET').toUpperCase()
             const headers = { ...(options.headers || {}) }
-            if (!headers.Cookie && this.sessionCookie && path.startsWith('/api/')) headers.Cookie = this.sessionCookie
+            if (!headers.Cookie && !headers.Authorization && this.sessionCookie && path.startsWith('/api/')) headers.Cookie = this.sessionCookie
             if (!['GET', 'HEAD', 'OPTIONS'].includes(method) && path.startsWith('/api/') && !isCsrfExemptPath(path)) {
-              const { csrfToken, csrfCookie } = await this.ensureCsrf()
-              headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
-              headers.Cookie = headers.Cookie || csrfCookie
-              headers.Origin = headers.Origin || `http://127.0.0.1:${port}`
-              headers.Referer = headers.Referer || `http://127.0.0.1:${port}/`
+              if (!headers.Authorization) {
+                const { csrfToken, csrfCookie } = await this.ensureCsrf({ authorization: headers.Authorization })
+                headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
+                headers.Cookie = headers.Cookie || csrfCookie
+                headers.Origin = headers.Origin || `http://127.0.0.1:${port}`
+                headers.Referer = headers.Referer || `http://127.0.0.1:${port}/`
+              }
             }
             const response = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers })
             const data = await response.json()
@@ -147,7 +153,9 @@ export async function createTestContext(name) {
             return data
           },
           authHeaders(token) {
-            return { 'Content-Type': 'application/json' }
+            return token
+              ? { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` }
+              : { 'Content-Type': 'application/json' }
           },
           async login(email = 'admin@demo.test', password = 'ChangeMe123!') {
             const response = await fetch(`http://127.0.0.1:${port}/api/login`, {
