@@ -250,7 +250,7 @@ function pipelineConflict(message, details = {}) {
   return error
 }
 
-function seedState() {
+function seedState({ objectStorage = defaultObjectStorage } = {}) {
   const createdAt = now()
   const firmId = randomUUID()
   const adminId = randomUUID()
@@ -472,7 +472,7 @@ function seedState() {
         output: {
           fileName: 'client-intake-demo.json',
           object: {
-            bucket: defaultObjectStorage.bucketExports,
+            bucket: objectStorage.bucketExports,
             key: `${firmId}/exports/client-intake-demo.json`,
             checksum: null,
             contentType: 'application/json',
@@ -494,7 +494,7 @@ function seedState() {
         status: 'uploaded',
         uploadedBy: 'advisor',
         object: {
-          bucket: defaultObjectStorage.bucketDocuments,
+          bucket: objectStorage.bucketDocuments,
           key: `${firmId}/documents/${clientId}/driver-license-demo.pdf`,
           checksum: null,
           contentType: 'application/pdf',
@@ -524,7 +524,7 @@ function seedState() {
 }
 
 export function createStore({ objectStorage = defaultObjectStorage } = {}) {
-  const state = loadState(seedState)
+  const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
   saveState(state)
   state.pendingUploadIntents ||= []
