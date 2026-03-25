@@ -63,6 +63,19 @@ async function request(path, options = {}) {
   return data
 }
 
+async function requestText(path, options = {}) {
+  const response = await fetch(path, {
+    ...options,
+    headers: {
+      ...(state.token ? { Authorization: `Bearer ${state.token}` } : {}),
+      ...(options.headers || {})
+    }
+  })
+  const text = await response.text()
+  if (!response.ok) throw new Error(text || 'Request failed')
+  return text
+}
+
 
 async function hydrateRuntime() {
   try {
@@ -132,7 +145,9 @@ function analyticsPanel(title, body) {
 }
 
 async function renderAnalytics() {
-  const analytics = await request('/api/analytics')
+  const filters = new URLSearchParams({ startDate: '2026-01-01', endDate: '2026-12-31', cohortBy: 'all' })
+  const analytics = await request(`/api/analytics?${filters.toString()}`)
+  const dashboard = await request(`/api/analytics/dashboard?${filters.toString()}`)
   const summary = analytics.summary || {}
   const funnelRows = (summary.funnel || [])
     .map(
@@ -159,6 +174,15 @@ async function renderAnalytics() {
     )
     .join('')
   const mat = analytics.materialized
+  const bottleneckRows = (dashboard.bottlenecks || [])
+    .map((entry) => `<tr><td>${escapeHtml(entry.stage)}</td><td>${entry.count}</td><td>${entry.avgDays}</td></tr>`)
+    .join('')
+  const latencyRows = (dashboard.formCompletionLatency || [])
+    .map((entry) => `<tr><td>${escapeHtml(entry.templateId)}</td><td>${entry.submissions}</td><td>${entry.avgHours}</td></tr>`)
+    .join('')
+  const exportRows = (dashboard.exportUsage?.byAdvisor || [])
+    .map((entry) => `<tr><td>${escapeHtml(entry.advisorName)}</td><td>${entry.total}</td></tr>`)
+    .join('')
 
   viewEl.innerHTML = `
     ${flashMarkup()}
@@ -172,9 +196,27 @@ async function renderAnalytics() {
     ${analyticsPanel('Funnel Conversion', `<table><thead><tr><th>Stage</th><th>Count</th><th>Conversion</th></tr></thead><tbody>${funnelRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Stage Aging', `<table><thead><tr><th>Stage</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${agingRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Form Completion Rates', `<table><thead><tr><th>Template</th><th>Drafts</th><th>Submitted</th><th>Completion</th></tr></thead><tbody>${completionRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Form Completion Latency', `<table><thead><tr><th>Template</th><th>Submissions</th><th>Avg hours</th></tr></thead><tbody>${latencyRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Advisor Productivity', `<table><thead><tr><th>Advisor</th><th>Managed</th><th>Notes</th><th>Stage moves</th><th>Score</th></tr></thead><tbody>${productivityRows || '<tr><td colspan="5">No advisor events yet</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Stage Bottlenecks', `<table><thead><tr><th>Stage</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${bottleneckRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Export Usage', `<table><thead><tr><th>Advisor</th><th>Exports</th></tr></thead><tbody>${exportRows || '<tr><td colspan="2">No exports yet</td></tr>'}</tbody></table><button id="download-analytics-csv">Download CSV</button>`)}
     ${analyticsPanel('Materialized Summary Health', `<div class="muted">${mat ? `Refreshed ${new Date(mat.updatedAt).toLocaleString()} for firm ${escapeHtml(mat.firmId)}` : 'Materialized summary unavailable.'}</div>`)}
   `
+  document.querySelector('#download-analytics-csv')?.addEventListener('click', async () => {
+    try {
+      const csv = await requestText(`/api/analytics/export?${filters.toString()}`)
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' })
+      const url = URL.createObjectURL(blob)
+      const anchor = document.createElement('a')
+      anchor.href = url
+      anchor.download = 'analytics-report.csv'
+      anchor.click()
+      URL.revokeObjectURL(url)
+    } catch (error) {
+      setFlash('error', `Failed to export analytics CSV: ${error.message}`)
+      await renderAnalytics()
+    }
+  })
 }
 
 async function renderForms() {

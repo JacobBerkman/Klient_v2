@@ -8,17 +8,19 @@ function parsePayloadRows(rows) {
 }
 
 export class SqliteReadRepository {
-  listProfiles(firmId, { kind, search } = {}) {
+  listProfiles(firmId, { kind, search, status } = {}) {
     const conditions = ['firm_id = ?']
     const params = [firmId]
     if (kind) {
       conditions.push('kind = ?')
       params.push(kind)
     }
+    if (status) {
+      conditions.push('profile_status = ?')
+      params.push(status)
+    }
     if (search) {
-      conditions.push(
-        "(lower(first_name) LIKE ? OR lower(last_name) LIKE ? OR lower(json_extract(payload, '$.email')) LIKE ?)"
-      )
+      conditions.push('(lower(first_name) LIKE ? OR lower(last_name) LIKE ? OR lower(email) LIKE ?)')
       const q = `%${String(search).toLowerCase()}%`
       params.push(q, q, q)
     }
