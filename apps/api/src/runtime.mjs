@@ -1,5 +1,9 @@
 import { hostname } from 'node:os'
 
+const DEFAULT_APP_SECRET = 'kinetic-klient-dev-secret';
+const MIN_APP_SECRET_LENGTH = 24;
+const MIN_APP_SECRET_ENTROPY_BITS = 80;
+
 function normalizeNodeEnv(value) {
   return ['development', 'test', 'production'].includes(value) ? value : 'development'
 }
@@ -67,6 +71,9 @@ export const runtime = {
   host: process.env.HOST || '0.0.0.0',
   port: readNumber('PORT', 3000),
   appSecret,
+  appSecretHealth,
+  allowDevFallbackSecret,
+  allowUnsafeAppSecret,
   authProvider: readAuthProvider(process.env.AUTH_PROVIDER),
   piiKeyProvider: readPiiKeyProvider(process.env.PII_KEY_PROVIDER),
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
