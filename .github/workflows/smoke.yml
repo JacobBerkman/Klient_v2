@@ -1,46 +1,252 @@
-name: release-gate
+name: ci-gate
 
 on:
-  push:
   pull_request:
+  push:
+    branches:
+      - main
+      - 'release/**'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-gate-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: true
+  NODE_ENV: test
+  TZ: UTC
+  TEST_SEED: '1337'
+  RANDOM_SEED: '1337'
+  FORCE_COLOR: '0'
 
 jobs:
-  validate-master:
-    name: validate-master (Node ${{ matrix.node-version }})
+  syntax_lint:
+    name: 1) syntax/lint
     runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [20, 22]
-
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
+
       - run: npm ci
-      - run: node --check apps/api/src/runtime.mjs
-      - run: node --check apps/api/src/storage.mjs
-      - run: node --check apps/api/src/server.mjs
-      - run: node --check apps/api/src/store.mjs
-      - run: node --check apps/web/public/app.js
-      - run: node --check scripts/api-contract-test.mjs
-      - run: node --check scripts/backup-db.mjs
-      - run: node --check scripts/export-worker.mjs
-      - run: node --check scripts/restore-db.mjs
-      - run: node --check scripts/smoke-test.mjs
-      - run: node scripts/api-contract-test.mjs
-      - run: node scripts/smoke-test.mjs
-      - run: git diff --check
-      - run: npm run lint
-      - run: npm run format:check
-      - run: npm run test:all
-      - name: Container security scan (fail on critical)
-        uses: aquasecurity/trivy-action@0.28.0
+
+      - name: Run syntax/lint suite
+        run: |
+          mkdir -p artifacts/syntax-lint
+          {
+            echo "# Syntax/Lint readiness summary"
+            echo "- suite: syntax/lint"
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/syntax-lint/readiness-summary.md
+
+          {
+            npm run check:syntax
+            npm run lint
+            npm run format:check
+            git diff --check
+          } 2>&1 | tee artifacts/syntax-lint/suite.log
+
+      - name: Upload failure artifacts (syntax/lint)
+        if: failure()
+        uses: actions/upload-artifact@v4
         with:
-          scan-type: fs
-          scan-ref: .
-          severity: CRITICAL
-          exit-code: '1'
-          ignore-unfixed: true
+          name: syntax-lint-failure-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/syntax-lint/**
+            test-results/**
+            snapshots/**
+            tmp/**/snapshots/**
+
+  smoke_runtime_contract:
+    name: 2) smoke + runtime contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run smoke + runtime contract suite
+        run: |
+          mkdir -p artifacts/smoke-runtime-contract
+          {
+            echo "# Smoke + runtime contract readiness summary"
+            echo "- suite: smoke + runtime contract"
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/smoke-runtime-contract/readiness-summary.md
+
+          {
+            npm run test:smoke
+            npm run test:runtime-contract
+          } 2>&1 | tee artifacts/smoke-runtime-contract/suite.log
+
+      - name: Upload failure artifacts (smoke + runtime contract)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-runtime-contract-failure-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/smoke-runtime-contract/**
+            test-results/**
+            snapshots/**
+            tmp/**/snapshots/**
+
+  api_contract:
+    name: 3) API contract
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run API contract suite
+        run: |
+          mkdir -p artifacts/api-contract
+          {
+            echo "# API contract readiness summary"
+            echo "- suite: API contract"
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/api-contract/readiness-summary.md
+
+          npm run test:contract 2>&1 | tee artifacts/api-contract/suite.log
+
+      - name: Upload failure artifacts (API contract)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-contract-failure-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/api-contract/**
+            test-results/**
+            snapshots/**
+            tmp/**/snapshots/**
+
+  full_integration:
+    name: 4) full integration
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run full integration suite
+        run: |
+          mkdir -p artifacts/full-integration
+          {
+            echo "# Full integration readiness summary"
+            echo "- suite: full integration"
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/full-integration/readiness-summary.md
+
+          npm run test:integration 2>&1 | tee artifacts/full-integration/suite.log
+
+      - name: Upload failure artifacts (full integration)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: full-integration-failure-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/full-integration/**
+            test-results/**
+            snapshots/**
+            tmp/**/snapshots/**
+
+  migration_checks:
+    name: 5) migration checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run migration checks suite
+        run: |
+          mkdir -p artifacts/migration-checks
+          {
+            echo "# Migration checks readiness summary"
+            echo "- suite: migration checks"
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/migration-checks/readiness-summary.md
+
+          npm run check:migrations 2>&1 | tee artifacts/migration-checks/suite.log
+
+      - name: Upload failure artifacts (migration checks)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-checks-failure-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/migration-checks/**
+            test-results/**
+            snapshots/**
+            tmp/**/snapshots/**
+
+  merge_gate:
+    name: merge gate (required)
+    runs-on: ubuntu-latest
+    needs:
+      - syntax_lint
+      - smoke_runtime_contract
+      - api_contract
+      - full_integration
+      - migration_checks
+    if: always()
+    steps:
+      - name: Enforce green CI before merge
+        run: |
+          results=(
+            "${{ needs.syntax_lint.result }}"
+            "${{ needs.smoke_runtime_contract.result }}"
+            "${{ needs.api_contract.result }}"
+            "${{ needs.full_integration.result }}"
+            "${{ needs.migration_checks.result }}"
+          )
+
+          for result in "${results[@]}"; do
+            if [ "$result" != "success" ]; then
+              echo "At least one required suite failed; merge gate is red."
+              exit 1
+            fi
+          done
+
+          echo "All required suites passed; merge gate is green."

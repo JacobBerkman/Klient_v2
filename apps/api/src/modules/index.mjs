@@ -24,7 +24,7 @@ export function createModules({ store, reads }) {
     pipeline: createPipelineService({ store, policy }),
     households: createHouseholdsService({ store, policy }),
     forms: createFormsService({ store, policy }),
-    templates: createTemplatesService({ templateRepository, policy }),
+    templates: createTemplatesService({ templateRepository, policy, store }),
     exports: createExportsService({ store, policy }),
     audit: createAuditService({ store, policy }),
     analytics: createAnalyticsService({ store, reads, policy })

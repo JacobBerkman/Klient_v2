@@ -135,7 +135,12 @@ function estimateAppSecretEntropyBits(secret) {
 const nodeEnv = normalizeNodeEnv(process.env.NODE_ENV || 'development')
 const allowDevFallbackSecret = readBoolean('ALLOW_DEV_FALLBACK_APP_SECRET', false)
 const allowUnsafeAppSecret = readBoolean('UNSAFE_ALLOW_WEAK_APP_SECRET', false)
+const enableTestCsrfBypass = readBoolean('ENABLE_TEST_CSRF_BYPASS', false)
 const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
+
+if (nodeEnv === 'production' && enableTestCsrfBypass) {
+  throw new Error('ENABLE_TEST_CSRF_BYPASS cannot be enabled in production.')
+}
 
 const appSecretHealth = {
   usingFallback: appSecret === DEFAULT_APP_SECRET,
@@ -175,6 +180,7 @@ export const runtime = {
   appSecretHealth,
   allowDevFallbackSecret,
   allowUnsafeAppSecret,
+  enableTestCsrfBypass: nodeEnv === 'test' && enableTestCsrfBypass,
   authProvider: readAuthProvider(process.env.AUTH_PROVIDER),
   authStartupDiagnostics: providerRuntimeDiagnostics(readAuthProvider(process.env.AUTH_PROVIDER)),
   piiKeyProvider: readPiiKeyProvider(process.env.PII_KEY_PROVIDER),
@@ -258,6 +264,9 @@ export function validateRuntimeConfig() {
 
   if (runtime.nodeEnv === 'production' && readBoolean('ENABLE_DEMO_MODE', false)) {
     warnings.push('ENABLE_DEMO_MODE is ignored in production and forced off.')
+  }
+  if (readBoolean('ENABLE_TEST_CSRF_BYPASS', false) && runtime.nodeEnv !== 'test') {
+    warnings.push('ENABLE_TEST_CSRF_BYPASS is only honored when NODE_ENV=test.')
   }
 
   return {

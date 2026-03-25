@@ -258,15 +258,26 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       ensureLoginAllowed(normalizedEmail, ipAddress)
       const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password))
       if (!user) {
-        registerFailedLogin(normalizedEmail, ipAddress)
+        recordLoginAttempt(normalizedEmail, false)
+        addAudit(null, null, 'auth', normalizedEmail, 'auth.login.failed', {
+          after: { email: normalizedEmail, reason: 'invalid_credentials' }
+        })
         throw new Error('Invalid email or password.')
       }
       registerSuccessfulLogin(user, ipAddress)
       const mfa = ensureMfaData(user)
-      if (!mfa.enabled) return createSession(user)
+      if (!mfa.enabled) {
+        addAudit(user.firmId, user.id, 'user', user.id, 'auth.login.succeeded', {
+          after: { email: normalizedEmail, mfaEnabled: false }
+        })
+        return createSession(user)
+      }
 
       if (!mfaChallengeToken) {
         const challenge = createAndPersistMfaChallenge(user.id)
+        addAudit(user.firmId, user.id, 'user', user.id, 'auth.mfa.challenge_issued', {
+          after: { challengeToken: challenge.token, method: challenge.method }
+        })
         return { mfaRequired: true, challengeToken: challenge.token, methods: ['totp', 'backup_code'] }
       }
 
@@ -281,10 +292,14 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       const backupValid = backupCode ? consumeBackupCode(user, backupCode) : false
       if (!totpValid && !backupValid) {
         persist()
+        addAudit(user.firmId, user.id, 'user', user.id, 'auth.mfa.challenge_failed', { after: { challengeId: challenge.id } })
         throw new Error('Invalid MFA verification code.')
       }
 
       state.mfaChallenges = state.mfaChallenges.filter((entry) => entry.id !== challenge.id)
+      addAudit(user.firmId, user.id, 'user', user.id, 'auth.login.succeeded', {
+        after: { email: normalizedEmail, mfaEnabled: true, challengeId: challenge.id }
+      })
       persist()
       return createSession(user)
     },
@@ -453,6 +468,9 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         throw new Error('Invalid MFA verification code.')
       }
       state.mfaChallenges = state.mfaChallenges.filter((entry) => entry.id !== challenge.id)
+      addAudit(actor.firmId, actor.id, 'user', actor.id, 'auth.mfa.challenge_verified', {
+        after: { challengeId: challenge.id }
+      })
       persist()
       return { ok: true }
     },
