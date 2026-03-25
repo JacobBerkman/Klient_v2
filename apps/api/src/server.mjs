@@ -455,7 +455,7 @@ export function createHttpServer({ modules }) {
         )
       }
       if (pathname === '/api/ops/diagnostics' && req.method === 'GET') {
-        const user = requireUser()
+        const user = authorize('canReadDiagnostics')
         const { auditEvents, exports } = modules.analytics.getDiagnosticsContext(user)
         const queue = readExportWorkerStatus()
         const byStatus = exports.reduce((acc, job) => {
@@ -527,6 +527,7 @@ export function createHttpServer({ modules }) {
         )
       }
       if (pathname === '/api/runtime' && req.method === 'GET') {
+        authorize('canAccessRuntime', { allowAnonymous: true })
         finalizeLog(200);
         return replyJson(200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId });
       }
@@ -541,6 +542,7 @@ export function createHttpServer({ modules }) {
         rotateCsrfAfterResponse = true
       }
       if (pathname === '/api/register' && req.method === 'POST') {
+        authorize('canRegister', { allowAnonymous: true })
         const result = modules.auth.register(await parseBody(req))
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(201)
@@ -550,6 +552,7 @@ export function createHttpServer({ modules }) {
         })
       }
       if (pathname === '/api/login' && req.method === 'POST') {
+        authorize('canLogin', { allowAnonymous: true })
         const result = modules.auth.login(await parseBody(req))
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(200)
@@ -566,6 +569,7 @@ export function createHttpServer({ modules }) {
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/invites/accept' && req.method === 'POST') {
+        authorize('canAcceptInvite', { allowAnonymous: true })
         const result = modules.firmsUsers.acceptInvite(await parseBody(req))
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(200)
@@ -575,11 +579,13 @@ export function createHttpServer({ modules }) {
         })
       }
       if (pathname === '/api/password-resets' && req.method === 'POST') {
+        authorize('canRequestPasswordReset', { allowAnonymous: true })
         const result = modules.auth.requestReset(await parseBody(req))
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/password-resets/confirm' && req.method === 'POST') {
+        authorize('canConfirmPasswordReset', { allowAnonymous: true })
         const result = modules.auth.resetPassword(await parseBody(req))
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -592,7 +598,7 @@ export function createHttpServer({ modules }) {
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/session' && req.method === 'GET') {
-        const result = { user: requireUser() }
+        const result = { user: authorize('canReadSession') }
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
