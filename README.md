@@ -2,6 +2,15 @@
 
 This repository contains a **single-command runnable advisory onboarding app** with a plain Node.js HTTP server as the production backend, persistent SQLite storage, structured API logging, Docker packaging, health/readiness probes, backup/restore scripts, and end-to-end contract coverage for the main user flows.
 
+## User-facing claim status (audited)
+
+| Claim | Status | Notes |
+|---|---|---|
+| Advisory onboarding dashboard + prospects/clients/households/forms | `implemented` | Fully available in current runtime. |
+| Advisor analytics panels (funnel, stage aging, completion, productivity) | `implemented` | Available in advisor UI and analytics endpoints. |
+| Collaborative draft editing safeguards | `partial` | Core flows exist; conflict hardening remains gated behind `FF_DRAFT_CONFLICT_GUARD`. See [Milestone M2](docs/milestones/claims-roadmap.md#milestone-m2-draft-collaboration-hardening). |
+| Queue-backed export/document automation | `roadmap` | Foundation exists, end-to-end orchestration is planned behind `FF_EXPORT_AUTOMATION`. See [Milestone M3](docs/milestones/claims-roadmap.md#milestone-m3-export-automation). |
+
 ## What is included
 - admin firm bootstrap and sign-in
 - persistent SQLite-backed local data storage in `data/app.db`
@@ -12,7 +21,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - dynamic form template and submission flows
 - collaborative draft editing with revision IDs, lock leases, and conflict prompts
 - guided client portal for draft and submitted onboarding responses
-- document template and export job foundations
+- document template and export job foundations (`roadmap` for full queue-backed automation)
 - audit trail plus advisor-facing analytics panels (funnel conversion, stage aging, form completion, productivity)
 - invite flow and password reset endpoints
 - internal web UI served by the backend

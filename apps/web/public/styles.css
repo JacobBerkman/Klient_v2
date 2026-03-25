@@ -172,6 +172,34 @@ textarea {
 .badge.subtle {
   background: #334155;
 }
+.badge.claim-status {
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-weight: 600;
+}
+.badge.claim-status.implemented {
+  background: #166534;
+}
+.badge.claim-status.partial {
+  background: #b45309;
+}
+.badge.claim-status.roadmap {
+  background: #7c3aed;
+}
+.claim-list {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+.claim-list li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.claim-list a {
+  color: #93c5fd;
+}
 .section-card {
   display: grid;
   gap: 12px;
