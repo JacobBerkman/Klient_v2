@@ -53,7 +53,7 @@ function createDeps() {
     households: createHouseholdsService({ store: mutatingStore, policy }),
     forms: createFormsService({ store: mutatingStore, policy }),
     templates: createTemplatesService({ templateRepository, policy, store }),
-    exports: createExportsService({ store: mutatingStore, policy }),
+    exports: createExportsService({ exportsRepository: mutatingStore, policy, store: mutatingStore }),
     audit: createAuditService({ store: mutatingStore, policy }),
     analytics: createAnalyticsService({ store: mutatingStore, reads, policy })
   }

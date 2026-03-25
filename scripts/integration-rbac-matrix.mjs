@@ -10,6 +10,16 @@ function allowedRoles(guard) {
   return new Set((policyMatrix[guard] || []).filter((role) => role !== 'anonymous'))
 }
 
+function ensureGuardCoverage(checks) {
+  const missingGuards = []
+  for (const check of checks) {
+    if (!Object.prototype.hasOwnProperty.call(policyMatrix, check.guard)) {
+      missingGuards.push(`${check.guard} (${check.method} ${check.path})`)
+    }
+  }
+  assert(missingGuards.length === 0, `RBAC matrix checks reference unknown guards: ${missingGuards.join(', ')}`)
+}
+
 try {
   const adminSession = await context.login()
   const adminHeaders = context.authHeaders(adminSession.token)
@@ -114,8 +124,12 @@ try {
     { path: `/api/portal/${portalLink.token}/uploads`, method: 'POST', body: { name: 'client-doc' }, guard: 'canUploadPortal' }
   ]
 
+  ensureGuardCoverage(checks)
+  const observedDenials = new Set()
+
   for (const check of checks) {
     const allow = allowedRoles(check.guard)
+    assert(allow.size > 0, `Guard ${check.guard} has no allowed authenticated roles in policy matrix`)
     for (const role of roles) {
       const token = actors[role]
       const method = check.method || 'GET'
@@ -130,6 +144,7 @@ try {
         for (const status of [401, 403, 404]) {
           try {
             denied = await context.requestExpectError(check.path, options, status)
+            observedDenials.add(`${role}:${check.guard}`)
             break
           } catch {
             // try alternate denial status
@@ -140,7 +155,11 @@ try {
     }
   }
 
-  console.log(JSON.stringify({ suite: 'integration-rbac-matrix', checks: checks.length }, null, 2))
+  assert(observedDenials.size > 0, 'RBAC matrix did not observe any denied routes; deny-path coverage is required')
+
+  console.log(
+    JSON.stringify({ suite: 'integration-rbac-matrix', checks: checks.length, denyPathsObserved: observedDenials.size }, null, 2)
+  )
 } finally {
   await context.shutdown()
 }
