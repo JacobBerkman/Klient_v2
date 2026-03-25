@@ -6,11 +6,12 @@ try {
   const baseUrl = `http://127.0.0.1:${context.port}`
 
   const login = await context.login()
-  assert(Boolean(login.token), 'Login should return bearer token')
+  assert(Boolean(login.user?.id), 'Login should return authenticated user')
+  assert(Boolean(context.sessionCookie), 'Login should issue session cookie')
 
   const csrfBootstrap = await fetch(`${baseUrl}/api/csrf`, {
     headers: {
-      Authorization: `Bearer ${login.token}`
+      Cookie: context.sessionCookie
     }
   })
   const csrfData = await csrfBootstrap.json()
@@ -27,11 +28,10 @@ try {
   assert(setCookie.includes('Max-Age='), 'CSRF cookie must include Max-Age')
 
   const mutatingHeaders = {
-    Authorization: `Bearer ${login.token}`,
     'Content-Type': 'application/json',
     Origin: baseUrl,
     Referer: `${baseUrl}/`,
-    Cookie: csrfCookie,
+    Cookie: `${context.sessionCookie}; ${csrfCookie}`,
     'X-CSRF-Token': csrfData.csrfToken
   }
 
@@ -58,7 +58,7 @@ try {
   const secondLogin = await context.login()
   const staleCandidateResponse = await fetch(`${baseUrl}/api/csrf`, {
     headers: {
-      Authorization: `Bearer ${secondLogin.token}`
+      Cookie: context.sessionCookie
     }
   })
   const staleCandidateData = await staleCandidateResponse.json()
@@ -66,7 +66,7 @@ try {
 
   const freshCsrfResponse = await fetch(`${baseUrl}/api/csrf`, {
     headers: {
-      Authorization: `Bearer ${secondLogin.token}`
+      Cookie: context.sessionCookie
     }
   })
   const freshCsrfData = await freshCsrfResponse.json()
@@ -75,9 +75,8 @@ try {
   const staleTokenResponse = await fetch(`${baseUrl}/api/exports/process`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${secondLogin.token}`,
       'X-CSRF-Token': staleCandidateData.csrfToken,
-      Cookie: staleCandidateCookie,
+      Cookie: `${context.sessionCookie}; ${staleCandidateCookie}`,
       Origin: baseUrl,
       Referer: `${baseUrl}/`
     }
@@ -89,10 +88,9 @@ try {
   const missingTokenResponse = await fetch(`${baseUrl}/api/logout`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${secondLogin.token}`,
       Origin: baseUrl,
       Referer: `${baseUrl}/`,
-      Cookie: freshCookie
+      Cookie: `${context.sessionCookie}; ${freshCookie}`
     }
   })
   const missingTokenData = await missingTokenResponse.json()
@@ -105,9 +103,8 @@ try {
   const invalidOriginResponse = await fetch(`${baseUrl}/api/logout`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${secondLogin.token}`,
       'X-CSRF-Token': freshCsrfData.csrfToken,
-      Cookie: freshCookie,
+      Cookie: `${context.sessionCookie}; ${freshCookie}`,
       Origin: 'https://malicious.example',
       Referer: 'https://malicious.example/attack',
       'Content-Type': 'application/json'

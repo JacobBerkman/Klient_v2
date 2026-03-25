@@ -115,6 +115,45 @@ function serializeCookie(name, value, options = {}) {
   return parts.join('; ')
 }
 
+function buildSessionCookie(req, sessionToken) {
+  return serializeCookie(AUTH_SESSION_COOKIE, sessionToken, cookieConfig(req, { maxAge: SESSION_TTL_SECONDS }))
+}
+
+function clearSessionCookie(req) {
+  return serializeCookie(AUTH_SESSION_COOKIE, '', cookieConfig(req, { maxAge: 0 }))
+}
+
+function clearCsrfCookie(req) {
+  return serializeCookie(CSRF_SESSION_COOKIE, '', cookieConfig(req, { maxAge: 0 }))
+}
+
+function getBearerToken(req) {
+  return req.headers.authorization?.replace('Bearer ', '').trim()
+}
+
+function shouldIssueCompatibilityBearer(req) {
+  if (!runtime.enableBearerAuthCompat) return false
+  return String(req.headers[AUTH_COMPATIBILITY_HEADER] || '').toLowerCase() === AUTH_COMPATIBILITY_MODE
+}
+
+function resolveSessionToken(req) {
+  const cookies = parseCookies(req)
+  const cookieToken = String(cookies[AUTH_SESSION_COOKIE] || '').trim()
+  if (cookieToken) return cookieToken
+  if (runtime.enableBearerAuthCompat) {
+    return getBearerToken(req)
+  }
+  return ''
+}
+
+function compatibilityHeadersFor(req) {
+  if (!shouldIssueCompatibilityBearer(req)) return {}
+  return {
+    Deprecation: 'true',
+    Sunset: AUTH_COMPATIBILITY_SUNSET
+  }
+}
+
 function requiresCsrfProtection(method = 'GET') {
   if (runtime.nodeEnv === 'test' && runtime.enableTestCsrfBypass) return false
   return !CSRF_SAFE_METHODS.has(method.toUpperCase())
@@ -365,10 +404,6 @@ function parseRawBody(req) {
   })
 }
 
-function getToken(req) {
-  return req.headers.authorization?.replace('Bearer ', '')
-}
-
 function getClientIp(req) {
   const forwarded = String(req.headers['x-forwarded-for'] || '')
     .split(',')[0]
@@ -483,7 +518,7 @@ export function createHttpServer({ modules }) {
       }
     }
     const authorize = (guard, { allowAnonymous = false } = {}) => {
-      const token = getToken(req)
+      const token = resolveSessionToken(req)
       if (!token && allowAnonymous) {
         modules.policy.requireGuard({ role: 'anonymous' }, guard)
         return null
@@ -611,7 +646,7 @@ export function createHttpServer({ modules }) {
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/csrf' && req.method === 'GET') {
-        sessionToken = getToken(req)
+        sessionToken = resolveSessionToken(req)
         if (!sessionToken) {
           finalizeLog(401)
           return replyJson(401, { message: 'Authentication required.' }, { 'X-Request-Id': requestId })
@@ -635,7 +670,7 @@ export function createHttpServer({ modules }) {
         return replyJson(200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId });
       }
       if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method) && !isCsrfExempt(pathname)) {
-        sessionToken = getToken(req)
+        sessionToken = resolveSessionToken(req)
         authenticatedUser = modules.auth.requireUser(sessionToken)
         const csrfError = validateCsrf(req, requestId, sessionToken, authenticatedUser)
         if (csrfError) {
@@ -655,10 +690,16 @@ export function createHttpServer({ modules }) {
         }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(201)
-        return replyJson(201, { ...result, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt }, {
-          'X-Request-Id': requestId,
-          ...csrf.headers
-        })
+        return replyJson(
+          201,
+          { ...responseBody, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
+          {
+            'X-Request-Id': requestId,
+            ...compatibilityHeadersFor(req),
+            'Set-Cookie': [buildSessionCookie(req, result.token), csrf.headers['Set-Cookie']],
+            [CSRF_HEADER]: csrf.headers[CSRF_HEADER]
+          }
+        )
       }
       if (pathname === '/api/login' && req.method === 'POST') {
         authorize('canLogin', { allowAnonymous: true })
@@ -674,11 +715,18 @@ export function createHttpServer({ modules }) {
           securityDiagnostics.session.rotatedTotal += 1
         }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
+        const responseBody = shouldIssueCompatibilityBearer(req) ? result : { ...result, token: undefined }
         finalizeLog(200)
-        return replyJson(200, { ...result, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt }, {
-          'X-Request-Id': requestId,
-          ...csrf.headers
-        })
+        return replyJson(
+          200,
+          { ...responseBody, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
+          {
+            'X-Request-Id': requestId,
+            ...compatibilityHeadersFor(req),
+            'Set-Cookie': [buildSessionCookie(req, result.token), csrf.headers['Set-Cookie']],
+            [CSRF_HEADER]: csrf.headers[CSRF_HEADER]
+          }
+        )
       }
       if (pathname === '/api/invites' && req.method === 'POST') {
         const user = requireUser()
@@ -698,10 +746,16 @@ export function createHttpServer({ modules }) {
         }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(200)
-        return replyJson(200, { ...result, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt }, {
-          'X-Request-Id': requestId,
-          ...csrf.headers
-        })
+        return replyJson(
+          200,
+          { ...responseBody, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
+          {
+            'X-Request-Id': requestId,
+            ...compatibilityHeadersFor(req),
+            'Set-Cookie': [buildSessionCookie(req, result.token), csrf.headers['Set-Cookie']],
+            [CSRF_HEADER]: csrf.headers[CSRF_HEADER]
+          }
+        )
       }
       if (pathname === '/api/password-resets' && req.method === 'POST') {
         authorize('canRequestPasswordReset', { allowAnonymous: true })
@@ -768,7 +822,7 @@ export function createHttpServer({ modules }) {
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/logout' && req.method === 'POST') {
-        const token = getToken(req)
+        const token = resolveSessionToken(req)
         const result = modules.auth.logout(token)
         deleteCsrfTokensBySession(token)
         finalizeLog(200)
