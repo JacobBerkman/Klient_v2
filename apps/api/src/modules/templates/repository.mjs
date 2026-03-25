@@ -11,6 +11,9 @@ export class TemplateRepository {
   publishTemplate(_firmContext, _templateId) {
     throw new Error('TemplateRepository.publishTemplate not implemented')
   }
+  previewTemplateMappings(_firmContext, _templateId, _input) {
+    throw new Error('TemplateRepository.previewTemplateMappings not implemented')
+  }
   compareTemplateVersions() {
     throw new Error('TemplateRepository.compareTemplateVersions not implemented')
   }

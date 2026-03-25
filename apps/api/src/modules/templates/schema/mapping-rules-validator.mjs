@@ -75,11 +75,39 @@ function validateTransform(rule, issues, path) {
   }
 }
 
+function normalizeAllowedSourcePaths(allowedSourcePaths = null) {
+  if (!allowedSourcePaths) return null
+  const normalized = new Map()
+  if (allowedSourcePaths instanceof Map) {
+    for (const [path, metadata] of allowedSourcePaths.entries()) {
+      normalized.set(normalizePath(path), metadata || {})
+    }
+    return normalized
+  }
+  if (Array.isArray(allowedSourcePaths)) {
+    for (const value of allowedSourcePaths) {
+      normalized.set(normalizePath(value), {})
+    }
+    return normalized
+  }
+  if (isObject(allowedSourcePaths)) {
+    for (const [path, metadata] of Object.entries(allowedSourcePaths)) {
+      normalized.set(normalizePath(path), metadata || {})
+    }
+    return normalized
+  }
+  return null
+}
+
 export function validateMappingRules(input, options = {}) {
   const contextPath = options.contextPath || '/mappings'
   const repeaterPaths = options.repeaterPaths || new Set()
+  const requiredPdfFields = new Set((options.requiredPdfFields || []).map((value) => String(value || '').trim()).filter(Boolean))
+  const allowedSourcePaths = normalizeAllowedSourcePaths(options.allowedSourcePaths)
+  const enforceKnownSourcePaths = options.enforceKnownSourcePaths === true
   const mappings = convertLegacyMappingRules(input)
   const issues = []
+  const usedTargets = new Map()
 
   if (!Array.isArray(mappings)) {
     pushIssue(issues, contextPath, 'Mapping rules must be an array.')
@@ -96,10 +124,31 @@ export function validateMappingRules(input, options = {}) {
       if (!String(rule.sourcePath || '').trim()) {
         pushIssue(issues, `${rulePath}/sourcePath`, 'sourcePath is required.')
       }
+      const pdfField = String(rule.pdfField || '').trim()
+      if (pdfField) {
+        if (usedTargets.has(pdfField)) {
+          pushIssue(issues, `${rulePath}/pdfField`, `Duplicate pdfField "${pdfField}" is not allowed.`)
+        } else {
+          usedTargets.set(pdfField, index)
+        }
+      }
       validateTransform(rule, issues, rulePath)
 
       const repeaterPath = String(rule.repeaterPath || '').trim()
       const sourcePath = normalizePath(rule.sourcePath)
+      if (enforceKnownSourcePaths && allowedSourcePaths && sourcePath && !allowedSourcePaths.has(sourcePath)) {
+        pushIssue(issues, `${rulePath}/sourcePath`, `sourcePath "${String(rule.sourcePath)}" is not a known profile/form schema path.`)
+      }
+      const expectedTargetType = String(rule.targetType || '').trim()
+      const sourceMeta = sourcePath && allowedSourcePaths ? allowedSourcePaths.get(sourcePath) : null
+      const sourceType = String(sourceMeta?.type || '').trim()
+      if (expectedTargetType && sourceType && expectedTargetType !== sourceType) {
+        pushIssue(
+          issues,
+          `${rulePath}/targetType`,
+          `targetType "${expectedTargetType}" does not match source type "${sourceType}" for "${sourcePath}".`
+        )
+      }
       if (repeaterPath) {
         const normalizedRepeater = normalizePath(repeaterPath)
         if (!repeaterPaths.has(normalizedRepeater)) {
@@ -126,6 +175,12 @@ export function validateMappingRules(input, options = {}) {
       }
     })
   }
+
+  requiredPdfFields.forEach((requiredField) => {
+    if (!usedTargets.has(requiredField)) {
+      pushIssue(issues, contextPath, `Required mapping for pdfField "${requiredField}" is missing.`)
+    }
+  })
 
   if (issues.length) {
     throw validationError('Template mapping schema validation failed.', issues)

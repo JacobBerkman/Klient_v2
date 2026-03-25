@@ -31,6 +31,10 @@ export function createTemplatesService({ templateRepository, policy, store = nul
       policy.requireGuard(user, 'canEditTemplate')
       return templateRepository.updateTemplateMappings(user, templateId, mappings, input)
     },
+    previewMappings(user, templateId, input = {}) {
+      policy.requireGuard(user, 'canReadTemplate')
+      return templateRepository.previewTemplateMappings(user, templateId, input)
+    },
     listVersions(user, templateId) {
       policy.requireGuard(user, 'canReadTemplate')
       return templateRepository.listTemplateVersions(user, templateId)
