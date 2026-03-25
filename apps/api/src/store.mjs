@@ -22,6 +22,7 @@ import {
   validateFormDefinitionSchema
 } from './modules/forms/schema/form-definition-validator.mjs'
 import { validateMappingRules } from './modules/templates/schema/mapping-rules-validator.mjs'
+import { extractTemplateFieldsFromPdfBytes } from './modules/templates/template-ingestion.mjs'
 
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
 const INVITE_TTL_MS = 1000 * 60 * 60 * 24 * 7
@@ -242,12 +243,16 @@ function createTemplateVersion(template, event, overrides = {}) {
   const blueprint = deepClone(overrides.blueprint || template.blueprint || { sections: [] })
   const mappings = deepClone(overrides.mappings || template.mappings || [])
   const formSchema = deepClone(overrides.formSchema || template.formSchema || { sections: [] })
+  const extractedFields = deepClone(overrides.extractedFields || template.extractedFields || [])
+  const extraction = deepClone(overrides.extraction || template.extraction || { status: 'completed', reasonCode: null })
   return {
     version: (template.versions?.length || 0) + 1,
     event,
     blueprint,
     mappings,
     formSchema,
+    extractedFields,
+    extraction,
     publishState,
     immutable: overrides.immutable === true,
     changelog: overrides.changelog || null,
@@ -276,6 +281,7 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
     mappings,
     mappingRules: mappings,
     extractedFields: template.extractedFields || [],
+    extraction: template.extraction || { status: 'completed', reasonCode: null },
     publishState,
     status: publishState, // deprecated internal alias for compatibility payloads
     versions: (template.versions || []).map((entry, index) => ({
@@ -284,6 +290,8 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
       blueprint: deepClone(entry.blueprint || blueprint),
       mappings: deepClone(entry.mappings || mappings),
       formSchema: deepClone(entry.formSchema || formSchema),
+      extractedFields: deepClone(entry.extractedFields || template.extractedFields || []),
+      extraction: deepClone(entry.extraction || template.extraction || { status: 'completed', reasonCode: null }),
       publishState: entry.publishState || publishState,
       immutable: entry.immutable === true,
       changelog: entry.changelog || null,
@@ -329,6 +337,8 @@ function documentTemplateAdapter(entry) {
     fileName: entry.documentMetadata?.fileName || 'template.pdf',
     blueprint: deepClone(entry.blueprint || { sections: [] }),
     mappings: deepClone(entry.mappings || []),
+    extractedFields: deepClone(entry.extractedFields || []),
+    extraction: deepClone(entry.extraction || { status: 'completed', reasonCode: null }),
     versions: deepClone(entry.versions || []),
     status: entry.publishState || 'draft',
     publishState: entry.publishState || 'draft',
@@ -1885,6 +1895,8 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
           documentMetadata: { fileName: input.fileName || 'template.pdf' },
           blueprint: input.blueprint || { sections: [] },
           mappings,
+          extractedFields: input.extractedFields || [],
+          extraction: input.extraction || { status: 'completed', reasonCode: null },
           formSchema: formSchemaResult.schema,
           publishState: 'draft',
           versions: [
@@ -1893,6 +1905,8 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
               event: 'created',
               blueprint: input.blueprint || { sections: [] },
               mappings,
+              extractedFields: input.extractedFields || [],
+              extraction: input.extraction || { status: 'completed', reasonCode: null },
               formSchema: formSchemaResult.schema,
               publishState: 'draft',
               createdAt,
@@ -2028,6 +2042,8 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
       template.blueprint = deepClone(target.blueprint || { sections: [] })
       template.mappings = deepClone(target.mappings || [])
       template.mappingRules = template.mappings
+      template.extractedFields = deepClone(target.extractedFields || [])
+      template.extraction = deepClone(target.extraction || { status: 'completed', reasonCode: null })
       template.publishState = normalizeTemplateState(target.publishState || 'draft')
       template.status = template.publishState
       template.versions.push(
@@ -2327,8 +2343,16 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
     },
     autoBuildTemplate(user, input) {
       requirePermission(user, 'templates:write')
-      const sections = (input.fields || []).reduce((acc, field) => {
-        const sectionKey = field.split('.')[0] || 'general'
+      const pdfBytes =
+        typeof input.fileBytesBase64 === 'string'
+          ? Buffer.from(input.fileBytesBase64, 'base64')
+          : Array.isArray(input.fileBytes)
+            ? Buffer.from(input.fileBytes)
+            : null
+      const extraction = extractTemplateFieldsFromPdfBytes(pdfBytes)
+      const extractedFieldNames = extraction.fields.map((entry) => entry.fieldName)
+      const sections = extractedFieldNames.reduce((acc, field) => {
+        const sectionKey = String(field).split('.')[0] || 'general'
         acc[sectionKey] ||= []
         acc[sectionKey].push(field)
         return acc
@@ -2337,10 +2361,15 @@ export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvid
         name: input.name,
         fileName: input.fileName || 'uploaded.pdf',
         blueprint: { sections },
-        mappings: (input.fields || []).map((field) => ({
+        mappings: extractedFieldNames.map((field) => ({
           pdfField: field,
           sourcePath: field.replace(/\s+/g, '_').toLowerCase()
-        }))
+        })),
+        extractedFields: extraction.fields,
+        extraction: {
+          status: extraction.status,
+          reasonCode: extraction.reasonCode
+        }
       })
     },
     createPortalLink(user, profileId, options = {}) {
