@@ -1,17 +1,25 @@
-name: smoke-and-integration
+name: release-gate
 
 on:
   push:
   pull_request:
 
 jobs:
-  smoke:
+  validate-master:
+    name: validate-master (Node ${{ matrix.node-version }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [20, 22]
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - run: npm ci
       - run: node --check apps/api/src/runtime.mjs
       - run: node --check apps/api/src/storage.mjs
       - run: node --check apps/api/src/server.mjs
@@ -25,4 +33,14 @@ jobs:
       - run: node scripts/api-contract-test.mjs
       - run: node scripts/smoke-test.mjs
       - run: git diff --check
+      - run: npm run lint
+      - run: npm run format:check
       - run: npm run test:all
+      - name: Container security scan (fail on critical)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL
+          exit-code: '1'
+          ignore-unfixed: true
