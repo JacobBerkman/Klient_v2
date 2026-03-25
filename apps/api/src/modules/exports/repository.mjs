@@ -28,4 +28,7 @@ export class ExportsRepository {
   retryFailed(_firmContext, _options) {
     throw new Error('Not implemented')
   }
+  getDownload(_firmContext, _exportId) {
+    throw new Error('Not implemented')
+  }
 }

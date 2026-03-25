@@ -4,6 +4,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
 
 function loadStoreWithIsolatedState() {
   const previousCwd = process.cwd()
@@ -135,4 +136,50 @@ test('legacy store auth aliases remain backward-compatible', async () => {
   assert.equal(resetResult.ok, true)
   const session = store.login({ email: 'morgan@example.com', password: 'AliasReset123!' })
   assert.equal(store.requireUser(session.token).email, 'morgan@example.com')
+})
+
+test('firm stage configuration is initialized and backfilled for legacy payloads', async () => {
+  const previousCwd = process.cwd()
+  const tempDir = mkdtempSync(join(tmpdir(), 'klient-stage-config-'))
+  process.chdir(tempDir)
+  process.env.APP_SECRET = 'test-secret-for-auth-contract'
+  process.env.AUTH_PROVIDER = 'local'
+
+  const storeModuleUrl =
+    pathToFileURL(resolve(previousCwd, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
+  const storageModuleUrl =
+    pathToFileURL(resolve(previousCwd, 'apps/api/src/storage.mjs')).href + `?t=${Date.now()}-${Math.random()}`
+  const storeModule = await import(storeModuleUrl)
+  const storageModule = await import(storageModuleUrl)
+  const firstStore = storeModule.createStore()
+
+  firstStore.auth.register({
+    firmName: 'Stage Config Advisory',
+    firstName: 'Jordan',
+    lastName: 'Miles',
+    email: 'jordan+stage@example.com',
+    password: 'StageConfig123!'
+  })
+
+  const db = new DatabaseSync(storageModule.DB_PATH)
+  const current = db.prepare('SELECT payload FROM app_state WHERE id = 1').get()
+  const parsed = JSON.parse(current.payload)
+  parsed.firms = (parsed.firms || []).map(({ stageConfig, ...firm }) => ({ ...firm }))
+  db.prepare('UPDATE app_state SET payload = ?, updated_at = datetime(\'now\') WHERE id = 1').run(JSON.stringify(parsed))
+  db.close()
+
+  const reloadedModule =
+    pathToFileURL(resolve(previousCwd, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
+  const secondStore = (await import(reloadedModule)).createStore()
+  const restored = new DatabaseSync(storageModule.DB_PATH)
+  const backfilled = JSON.parse(restored.prepare('SELECT payload FROM app_state WHERE id = 1').get().payload)
+  restored.close()
+
+  const restoredFirm = backfilled.firms.find((firm) => firm.name === 'Stage Config Advisory')
+  assert.ok(restoredFirm?.stageConfig?.stages?.length > 0)
+  assert.equal(restoredFirm.stageConfig.stages[0].key, 'discovery')
+
+  const login = secondStore.auth.login({ email: 'jordan+stage@example.com', password: 'StageConfig123!' })
+  assert.ok(login.token)
+  process.chdir(previousCwd)
 })

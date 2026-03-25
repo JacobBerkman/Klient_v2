@@ -11,7 +11,8 @@ const state = {
   mfa: {
     login: null,
     enrollment: null
-  }
+  },
+  templatePreviewByTemplateId: {}
 }
 
 const viewEl = document.querySelector('#view')
@@ -25,6 +26,11 @@ const mfaOtpAuthEl = document.querySelector('#mfa-otpauth')
 const mfaEnrollConfirmFormEl = document.querySelector('#mfa-enroll-confirm-form')
 const householdPrimaryEl = document.querySelector('select[name="primaryClientId"]')
 const portalProfileEl = document.querySelector('select[name="profileId"]')
+const profileCreateFormEl = document.querySelector('#profile-form')
+const formTemplateFormEl = document.querySelector('#form-template-form')
+const docTemplateFormEl = document.querySelector('#doc-template-form')
+const inviteFormEl = document.querySelector('#invite-form')
+const portalFormEl = document.querySelector('#portal-form')
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 let csrfToken = ''
@@ -75,6 +81,21 @@ function clearAlert() {
   state.alert = null
 }
 
+function normalizeConflictMessage(error, fallbackMessage = 'Conflict detected. Reload and try again.') {
+  if (error?.details?.mergePrompt?.suggestion) return error.details.mergePrompt.suggestion
+  const rawMessage = String(error?.message || '').toLowerCase()
+  if (rawMessage.includes('conflict') || rawMessage.includes('stale') || rawMessage.includes('version')) {
+    return 'Conflict detected: another change was saved first. Review latest data and retry.'
+  }
+  return fallbackMessage
+}
+
+function isConflictError(error) {
+  if (error?.details?.mergePrompt?.suggestion) return true
+  const rawMessage = String(error?.message || '').toLowerCase()
+  return rawMessage.includes('conflict') || rawMessage.includes('stale') || rawMessage.includes('version')
+}
+
 function setActionPending(actionKey, status) {
   state.pendingActions[actionKey] = status
 }
@@ -85,6 +106,33 @@ function clearActionPending(actionKey) {
 
 function pendingLabel(actionKey, defaultLabel, pendingLabel = 'Saving…') {
   return state.pendingActions[actionKey] ? pendingLabel : defaultLabel
+}
+
+function setFormFeedback(form, message = '', type = 'error') {
+  const feedbackEl = form?.querySelector('[data-form-feedback]')
+  if (!feedbackEl) return
+  feedbackEl.textContent = message
+  feedbackEl.classList.remove('error-banner', 'success-banner')
+  if (message) feedbackEl.classList.add(type === 'success' ? 'success-banner' : 'error-banner')
+}
+
+function clearFormFeedback(form) {
+  setFormFeedback(form, '')
+}
+
+function withTrimmedFormData(form) {
+  return Object.fromEntries(
+    Array.from(new FormData(form).entries()).map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value])
+  )
+}
+
+function validateRequiredFields(form, requiredKeys = []) {
+  const payload = withTrimmedFormData(form)
+  const missingLabel = requiredKeys.find((key) => !payload[key])
+  if (missingLabel) {
+    throw new Error(`${missingLabel} is required.`)
+  }
+  return payload
 }
 
 function reportActionSuccess(action, message) {
@@ -295,13 +343,25 @@ function roleAllowed(buttonRoleCsv = '') {
   return buttonRoleCsv.split(',').includes(state.user.role)
 }
 
+function canMutateProfiles() {
+  return roleAllowed('admin,advisor')
+}
+
+function canMutateSection(sectionEl) {
+  return roleAllowed(sectionEl?.dataset.requiresRole || '')
+}
+
 function updateRoleVisibility() {
   document.querySelectorAll('[data-view]').forEach((button) => {
     button.hidden = !roleAllowed(button.dataset.roles || '')
   })
   document.querySelectorAll('[data-requires-role]').forEach((section) => {
     const roles = section.dataset.requiresRole || ''
-    section.hidden = !roleAllowed(roles)
+    const allowed = roleAllowed(roles)
+    section.hidden = !allowed
+    section.querySelectorAll('button, input, select, textarea').forEach((field) => {
+      field.disabled = !allowed
+    })
   })
 }
 
@@ -351,16 +411,18 @@ async function renderAnalytics() {
   const analytics = await request(routes.analytics(analyticsQuery))
   const dashboard = await request(routes.analyticsDashboard(analyticsQuery))
   const summary = analytics.summary || {}
+  const stageMetadata = summary.stageMetadata || dashboard.stageMetadata || []
+  const stageLabelById = new Map(stageMetadata.map((entry) => [entry.id, entry.label]))
   const funnelRows = (summary.funnel || [])
     .map(
       (entry) =>
-        `<tr><td>${escapeHtml(entry.stage)}</td><td>${entry.count}</td><td>${Math.round((entry.conversionRate || 0) * 100)}%</td></tr>`
+        `<tr><td>${escapeHtml(entry.stageLabel || stageLabelById.get(entry.stageId || entry.stage) || entry.stageId || entry.stage)}</td><td>${escapeHtml(entry.stageId || entry.stage)}</td><td>${entry.count}</td><td>${Math.round((entry.conversionRate || 0) * 100)}%</td></tr>`
     )
     .join('')
-  const agingRows = Object.entries(summary.stageAging || {})
+  const agingRows = (summary.stageAgingOrdered || dashboard.stageAgingOrdered || [])
     .map(
-      ([stage, value]) =>
-        `<tr><td>${escapeHtml(stage)}</td><td>${value.count || 0}</td><td>${value.avgDays || 0}</td></tr>`
+      (entry) =>
+        `<tr><td>${escapeHtml(entry.stageLabel || stageLabelById.get(entry.stageId || entry.stage) || entry.stageId || entry.stage)}</td><td>${escapeHtml(entry.stageId || entry.stage)}</td><td>${entry.count || 0}</td><td>${entry.avgDays || 0}</td></tr>`
     )
     .join('')
   const completionRows = (summary.formCompletionRates || [])
@@ -377,7 +439,7 @@ async function renderAnalytics() {
     .join('')
   const mat = analytics.materialized
   const bottleneckRows = (dashboard.bottlenecks || [])
-    .map((entry) => `<tr><td>${escapeHtml(entry.stage)}</td><td>${entry.count}</td><td>${entry.avgDays}</td></tr>`)
+    .map((entry) => `<tr><td>${escapeHtml(entry.stageLabel || stageLabelById.get(entry.stageId || entry.stage) || entry.stageId || entry.stage)}</td><td>${escapeHtml(entry.stageId || entry.stage)}</td><td>${entry.count}</td><td>${entry.avgDays}</td></tr>`)
     .join('')
   const latencyRows = (dashboard.formCompletionLatency || [])
     .map((entry) => `<tr><td>${escapeHtml(entry.templateId)}</td><td>${entry.submissions}</td><td>${entry.avgHours}</td></tr>`)
@@ -395,12 +457,12 @@ async function renderAnalytics() {
       ${metricCard('overall conversion', `${Math.round((summary.overallConversionRate || 0) * 100)}%`)}
       ${metricCard('avg stage age (days)', summary.avgProspectStageAgeDays || 0)}
     </div>
-    ${analyticsPanel('Funnel Conversion', `<table><thead><tr><th>Stage</th><th>Count</th><th>Conversion</th></tr></thead><tbody>${funnelRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
-    ${analyticsPanel('Stage Aging', `<table><thead><tr><th>Stage</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${agingRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Funnel Conversion', `<table><thead><tr><th>Stage</th><th>Stage ID</th><th>Count</th><th>Conversion</th></tr></thead><tbody>${funnelRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Stage Aging', `<table><thead><tr><th>Stage</th><th>Stage ID</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${agingRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Form Completion Rates', `<table><thead><tr><th>Template</th><th>Drafts</th><th>Submitted</th><th>Completion</th></tr></thead><tbody>${completionRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Form Completion Latency', `<table><thead><tr><th>Template</th><th>Submissions</th><th>Avg hours</th></tr></thead><tbody>${latencyRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Advisor Productivity', `<table><thead><tr><th>Advisor</th><th>Managed</th><th>Notes</th><th>Stage moves</th><th>Score</th></tr></thead><tbody>${productivityRows || '<tr><td colspan="5">No advisor events yet</td></tr>'}</tbody></table>`)}
-    ${analyticsPanel('Stage Bottlenecks', `<table><thead><tr><th>Stage</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${bottleneckRows || '<tr><td colspan="3">No data</td></tr>'}</tbody></table>`)}
+    ${analyticsPanel('Stage Bottlenecks', `<table><thead><tr><th>Stage</th><th>Stage ID</th><th>Prospects</th><th>Avg days</th></tr></thead><tbody>${bottleneckRows || '<tr><td colspan="4">No data</td></tr>'}</tbody></table>`)}
     ${analyticsPanel('Export Usage', `<table><thead><tr><th>Advisor</th><th>Exports</th></tr></thead><tbody>${exportRows || '<tr><td colspan="2">No exports yet</td></tr>'}</tbody></table><button id="download-analytics-csv">Download CSV</button>`)}
     ${analyticsPanel('Materialized Summary Health', `<div class="muted">${mat ? `Refreshed ${new Date(mat.updatedAt).toLocaleString()} for firm ${escapeHtml(mat.firmId)}` : 'Materialized summary unavailable.'}</div>`)}
   `
@@ -547,6 +609,16 @@ function mappingLocalIssues(mapping, knownPaths) {
   return issues
 }
 
+function previewWarningMarkup(warnings = []) {
+  if (!Array.isArray(warnings) || !warnings.length) return '<span class="muted">None</span>'
+  return warnings
+    .map((warning) => {
+      const title = escapeHtml(warning.message || warning.code || 'Warning')
+      return `<span class="badge" title="${title}">${escapeHtml(warning.code || 'warning')}</span>`
+    })
+    .join(' ')
+}
+
 async function renderTemplates() {
   const [templates, clients, submissions] = await Promise.all([
     request(routes.documentTemplates()),
@@ -565,8 +637,26 @@ async function renderTemplates() {
   const latestVersion = versions?.[0]?.version || ''
   const knownPaths = knownProfileSourcePaths()
   ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
-  const mappingIssuesByIndex = new Map((template?.mappings || []).map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
+  if (template && !Array.isArray(state.templateMappingDrafts[template.id])) {
+    state.templateMappingDrafts[template.id] = (template.mappings || []).map((mapping) => mappingDraftFromServer(mapping))
+  }
+  const draftMappings = template ? (state.templateMappingDrafts[template.id] || []) : []
+  const mappingIssuesByIndex = new Map(draftMappings.map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
   const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
+  const preview = template ? state.templatePreviewByTemplateId[template.id] : null
+  const previewWarningRows = new Set(
+    (preview?.rows || [])
+      .filter((row) => Array.isArray(row.warnings) && row.warnings.length)
+      .map((row) => Number(row.rowIndex))
+      .filter((value) => Number.isFinite(value))
+  )
+  const previewIssueRows = new Set(
+    (preview?.issues || [])
+      .map((issue) => Number(issue.rowIndex))
+      .filter((value) => Number.isFinite(value))
+  )
+  const hasBlockingPreviewWarnings = Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
+  const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings
 
   viewEl.innerHTML = `
     ${flashMarkup()}
@@ -590,15 +680,22 @@ async function renderTemplates() {
       </section>
       <section class="item">
         <h3>Mapping Rows</h3>
+        <datalist id="source-path-options">
+          ${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}
+        </datalist>
         <table><thead><tr><th>PDF Field</th><th>Source Path</th><th>Type</th><th>Validation</th><th>Actions</th></tr></thead><tbody>
-          ${(template.mappings || []).map((mapping, index) => {
+          ${draftMappings.map((mapping, index) => {
             const issues = mappingIssuesByIndex.get(index) || []
-            return `<tr>
-              <td>${escapeHtml(mapping.pdfField || '')}</td>
+            const previewFlags = []
+            if (previewIssueRows.has(index)) previewFlags.push('Preview issue')
+            if (previewWarningRows.has(index)) previewFlags.push('Preview warning')
+            const previewIndicator = previewFlags.length ? `<div class="muted">${escapeHtml(previewFlags.join(' · '))}</div>` : ''
+            return `<tr id="mapping-row-${index}">
+              <td><span>${escapeHtml(mapping.pdfField || '')}</span>${previewIndicator}</td>
               <td>${escapeHtml(mapping.sourcePath || '')}</td>
               <td>${escapeHtml(mapping.targetType || '')}</td>
               <td>${issues.length ? `<span class="badge">${escapeHtml(issues.join('; '))}</span>` : '<span class="muted">OK</span>'}</td>
-              <td><button data-edit-mapping="${index}" class="tiny secondary">Edit</button> <button data-remove-mapping="${index}" class="tiny secondary">Remove</button></td>
+              <td><button data-save-mapping-row="${index}" class="tiny">Save row</button> <button data-reset-mapping-row="${index}" class="tiny secondary">Reset row</button> <button data-remove-mapping-row="${index}" class="tiny secondary">Remove row</button></td>
             </tr>`
           }).join('')}
         </tbody></table>
@@ -612,12 +709,26 @@ async function renderTemplates() {
           <select id="preview-submission">${submissions.map((entry) => `<option value="${entry.id}">${escapeHtml(entry.id)} · ${escapeHtml(entry.templateId)}</option>`).join('')}</select>
           <button id="run-preview" class="tiny">Run Preview</button>
         </div>
-        <div id="preview-results" class="muted"></div>
+        <div id="preview-results" class="muted">${preview ? `
+          <div class="muted">mappingVersionHash: <code>${escapeHtml(preview.mappingVersionHash || '')}</code></div>
+          <div class="muted">warnings: ${escapeHtml(String(preview.warningsCount || 0))}</div>
+          ${preview.issues?.length ? `<div class="muted">issues: ${escapeHtml(String(preview.issues.length))}</div>` : ''}
+          <table><thead><tr><th>PDF field</th><th>Source path</th><th>Resolved value</th><th>Warnings</th></tr></thead><tbody>
+            ${(preview.rows || []).map((row) => `<tr>
+              <td>${escapeHtml(row.pdfField || '')}</td>
+              <td>${escapeHtml(row.sourcePath || '')}</td>
+              <td>${escapeHtml(row.value == null ? '' : String(row.value))}</td>
+              <td><button class="tiny secondary" data-jump-rowindex="${Number(row.rowIndex)}">Row ${Number(row.rowIndex) + 1}</button> ${previewWarningMarkup(row.warnings || [])}</td>
+            </tr>`).join('')}
+          </tbody></table>
+        ` : ''}</div>
       </section>
       <section class="item">
         <h3>Publish</h3>
-        <button id="publish-template" class="tiny" ${hasLocalMappingErrors ? 'disabled' : ''}>Publish</button>
+        <button id="publish-template" class="tiny" ${publishDisabled ? 'disabled' : ''}>Publish</button>
         ${hasLocalMappingErrors ? '<p class="muted">Publish is blocked until local mapping errors are resolved.</p>' : ''}
+        ${hasBlockingPreviewWarnings ? '<p class="muted">Publish is blocked by preview validation issues. Resolve highlighted mapping rows first.</p>' : ''}
+        ${preview && !hasBlockingPreviewWarnings && Number(preview.warningsCount || 0) > 0 ? `<p class="muted">Preview warning summary: ${escapeHtml(String(preview.warningsCount))} warning(s).</p>` : ''}
       </section>
       <section class="item">
         <h3>Version History</h3>
@@ -677,56 +788,59 @@ async function renderTemplates() {
     setFlash('success', 'Extracted field added.')
     await renderTemplates()
   })
-  document.querySelectorAll('[data-remove-mapping]').forEach((button) => {
+  document.querySelectorAll('[data-save-mapping-row]').forEach((button) => {
     button.addEventListener('click', async () => {
-      const next = [...(template.mappings || [])]
-      next.splice(Number(button.dataset.removeMapping), 1)
-      await request(routes.documentTemplateMappings(template.id), {
-        method: 'POST',
-        body: JSON.stringify({ mappings: next, requiredPdfFields: template.extractedFields || [] })
-      })
-      setFlash('success', 'Mapping removed.')
+      const index = Number(button.dataset.saveMappingRow)
+      const currentDraft = [...(state.templateMappingDrafts[template.id] || [])]
+      currentDraft[index] = {
+        ...(currentDraft[index] || {}),
+        pdfField: String(document.querySelector(`[data-mapping-row="${index}"][data-field="pdfField"]`)?.value || ''),
+        sourcePath: String(document.querySelector(`[data-mapping-row="${index}"][data-field="sourcePath"]`)?.value || ''),
+        targetType: String(document.querySelector(`[data-mapping-row="${index}"][data-field="targetType"]`)?.value || ''),
+        transformType: String(document.querySelector(`[data-mapping-row="${index}"][data-field="transformType"]`)?.value || ''),
+        transformExpression: String(document.querySelector(`[data-mapping-row="${index}"][data-field="transformExpression"]`)?.value || '')
+      }
+      state.templateMappingDrafts[template.id] = currentDraft
+      setFlash('success', `Mapping row ${index + 1} saved to draft.`)
       await renderTemplates()
     })
   })
-  document.querySelectorAll('[data-edit-mapping]').forEach((button) => {
+  document.querySelectorAll('[data-reset-mapping-row]').forEach((button) => {
     button.addEventListener('click', async () => {
-      const index = Number(button.dataset.editMapping)
-      const current = template.mappings[index] || {}
-      const pdfField = window.prompt('PDF field', current.pdfField || '')
-      if (!pdfField) return
-      const sourcePath = window.prompt('Source path', current.sourcePath || '')
-      if (!sourcePath) return
-      const targetType = window.prompt('Target type (optional)', current.targetType || '') || ''
-      const next = [...(template.mappings || [])]
-      next[index] = { ...current, pdfField, sourcePath, targetType }
-      await request(routes.documentTemplateMappings(template.id), {
-        method: 'POST',
-        body: JSON.stringify({ mappings: next, requiredPdfFields: template.extractedFields || [] })
-      })
-      setFlash('success', 'Mapping updated.')
+      const index = Number(button.dataset.resetMappingRow)
+      const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+      nextDraft[index] = template?.mappings?.[index]
+        ? mappingDraftFromServer(template.mappings[index])
+        : mappingDraftFromServer({})
+      state.templateMappingDrafts[template.id] = nextDraft
+      setFlash('success', `Mapping row ${index + 1} reset.`)
+      await renderTemplates()
+    })
+  })
+  document.querySelectorAll('[data-remove-mapping-row]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const index = Number(button.dataset.removeMappingRow)
+      const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+      nextDraft.splice(index, 1)
+      state.templateMappingDrafts[template.id] = nextDraft
+      setFlash('success', 'Mapping row removed from draft.')
       await renderTemplates()
     })
   })
   document.querySelector('#add-mapping-row')?.addEventListener('click', async () => {
-    const pdfField = window.prompt('PDF field')
-    if (!pdfField) return
-    const sourcePath = window.prompt('Source path')
-    if (!sourcePath) return
-    const targetType = window.prompt('Target type (optional)') || ''
-    const next = [...(template.mappings || []), { pdfField, sourcePath, targetType }]
-    await request(routes.documentTemplateMappings(template.id), {
-      method: 'POST',
-      body: JSON.stringify({ mappings: next, requiredPdfFields: template.extractedFields || [] })
-    })
-    setFlash('success', 'Mapping added.')
+    const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+    nextDraft.push(mappingDraftFromServer({}))
+    state.templateMappingDrafts[template.id] = nextDraft
+    setFlash('success', 'Blank mapping row added.')
     await renderTemplates()
   })
   document.querySelector('#save-mappings')?.addEventListener('click', async () => {
+    const mappings = (state.templateMappingDrafts[template.id] || []).map((mapping) => normalizeMappingDraft(mapping))
     await request(routes.documentTemplateMappings(template.id), {
       method: 'POST',
-      body: JSON.stringify({ mappings: template.mappings || [], requiredPdfFields: template.extractedFields || [] })
+      body: JSON.stringify({ mappings, requiredPdfFields: template.extractedFields || [] })
     })
+    state.templateMappingDrafts[template.id] = mappings.map((mapping) => mappingDraftFromServer(mapping))
     setFlash('success', 'Mappings saved.')
     await renderTemplates()
   })
@@ -738,15 +852,32 @@ async function renderTemplates() {
         method: 'POST',
         body: JSON.stringify({ clientId, submissionId })
       })
-      const resultEl = document.querySelector('#preview-results')
-      resultEl.innerHTML = `<pre>${escapeHtml(JSON.stringify(preview.rows, null, 2))}</pre>`
+      state.templatePreviewByTemplateId[template.id] = preview
+      await renderTemplates()
     } catch (error) {
       setFlash('error', error.message)
       await renderTemplates()
     }
   })
+  document.querySelectorAll('[data-jump-rowindex]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const rowIndex = Number(button.dataset.jumpRowindex)
+      const target = document.querySelector(`#mapping-row-${rowIndex}`)
+      if (!target) return
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      target.style.outline = '2px solid #f59e0b'
+      setTimeout(() => {
+        target.style.outline = ''
+      }, 1500)
+    })
+  })
   document.querySelector('#publish-template')?.addEventListener('click', async () => {
     try {
+      const latestPreview = state.templatePreviewByTemplateId[template.id] || null
+      const hasBlockingWarnings = Number(latestPreview?.blockingWarningsCount || 0) > 0 || (latestPreview?.issues || []).some((issue) => issue.blocking)
+      if (hasBlockingWarnings) {
+        throw new Error('Publish blocked: preview contains blocking warnings/issues.')
+      }
       await request(routes.documentTemplatePublish(template.id), {
         method: 'POST',
         body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Publish template mapping updates.' })
@@ -793,17 +924,18 @@ async function renderTemplates() {
 
 function boardCardMarkup(card, kind) {
   const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
+  const canEdit = canMutateProfiles()
   return `
-    <article class="board-card" draggable="true" data-card-id="${card.id}" data-stage="${card.stage || 'discovery'}">
+    <article class="board-card" draggable="${canEdit ? 'true' : 'false'}" data-card-id="${card.id}" data-stage="${card.stage || 'discovery'}">
       <header class="row between wrap">
         <strong>${escapeHtml(displayName)}</strong>
-        <button type="button" class="secondary tiny" data-edit-profile="${card.id}" aria-expanded="false">Edit</button>
+        <button type="button" class="secondary tiny" data-edit-profile="${card.id}" aria-expanded="false" ${canEdit ? '' : 'disabled'}>Edit</button>
       </header>
       <div class="muted compact-meta">${escapeHtml(card.email || 'No email')} · ${escapeHtml(card.phone || 'No phone')}</div>
       <div class="muted compact-meta">Stage: ${escapeHtml(stageLabel(card.stage || 'discovery'))}</div>
       <div class="row gap-sm wrap top-gap">
         <label class="sr-only" for="stage-${card.id}">Move ${escapeHtml(displayName)} to stage</label>
-        <select id="stage-${card.id}" data-stage-select="${card.id}">
+        <select id="stage-${card.id}" data-stage-select="${card.id}" ${canEdit ? '' : 'disabled'}>
           ${BOARD_STAGES.map((stage) => `<option value="${stage}" ${stage === (card.stage || 'discovery') ? 'selected' : ''}>${escapeHtml(stageLabel(stage))}</option>`).join('')}
         </select>
       </div>
@@ -815,8 +947,8 @@ function boardCardMarkup(card, kind) {
         <input name="email" type="email" value="${escapeHtml(card.email || '')}" placeholder="Email" />
         <input name="phone" value="${escapeHtml(card.phone || '')}" placeholder="Phone" />
         <div class="actions-row">
-          <button type="submit" class="tiny">${pendingLabel(`profile-save-${card.id}`, 'Save', 'Saving…')}</button>
-          <button type="button" class="secondary tiny" data-cancel-edit="${card.id}">Cancel</button>
+          <button type="submit" class="tiny" ${canEdit ? '' : 'disabled'}>${pendingLabel(`profile-save-${card.id}`, 'Save', 'Saving…')}</button>
+          <button type="button" class="secondary tiny" data-cancel-edit="${card.id}" ${canEdit ? '' : 'disabled'}>Cancel</button>
         </div>
       </form>
       <div class="muted compact-meta">Type: ${escapeHtml(kind)}</div>
@@ -863,7 +995,7 @@ async function reorderCard(kind, move) {
     const latest = await request(`/api/profiles/${move.profileId}`)
     const previousCard = previousBoard?.columns?.flatMap((column) => column.cards).find((entry) => entry.id === move.profileId)
     if (previousCard?.updatedAt && latest?.profile?.updatedAt && previousCard.updatedAt !== latest.profile.updatedAt) {
-      throw new Error('This client changed on the server. Reloaded latest board.')
+      throw new Error('Conflict detected: this client changed on the server. Review latest board and retry.')
     }
     await request(`/api/profiles/${move.profileId}`, {
       method: 'PATCH',
@@ -882,7 +1014,7 @@ async function saveInlineProfile(kind, profileId, patch, expectedUpdatedAt = '')
   try {
     const latest = await request(routes.profileDetail(profileId))
     if (expectedUpdatedAt && latest?.profile?.updatedAt && latest.profile.updatedAt !== expectedUpdatedAt) {
-      throw new Error('Conflict detected: this profile was edited elsewhere. Please reload and try again.')
+      throw new Error('Conflict detected: this profile was edited elsewhere. Review latest data and try again.')
     }
     await request(`/api/profiles/${profileId}`, {
       method: 'PATCH',
@@ -896,8 +1028,13 @@ async function saveInlineProfile(kind, profileId, patch, expectedUpdatedAt = '')
 
 function wireBoardInteractions(kind) {
   let activeCardId = null
+  const canMutate = canMutateProfiles()
   document.querySelectorAll('[data-card-id]').forEach((cardEl) => {
     cardEl.addEventListener('dragstart', (event) => {
+      if (!canMutate) {
+        event.preventDefault()
+        return
+      }
       activeCardId = cardEl.dataset.cardId
       event.dataTransfer.effectAllowed = 'move'
       event.dataTransfer.setData('text/plain', activeCardId)
@@ -910,6 +1047,7 @@ function wireBoardInteractions(kind) {
     cardEl.addEventListener('dragover', (event) => event.preventDefault())
     cardEl.addEventListener('drop', async (event) => {
       event.preventDefault()
+      if (!canMutate) return
       const profileId = event.dataTransfer.getData('text/plain') || activeCardId
       const toStage = cardEl.dataset.stage
       const beforeProfileId = cardEl.dataset.cardId
@@ -928,6 +1066,7 @@ function wireBoardInteractions(kind) {
     zone.addEventListener('dragover', (event) => event.preventDefault())
     zone.addEventListener('drop', async (event) => {
       event.preventDefault()
+      if (!canMutate) return
       const profileId = event.dataTransfer.getData('text/plain') || activeCardId
       const toStage = zone.dataset.dropStage
       if (!profileId || !toStage) return
@@ -943,6 +1082,7 @@ function wireBoardInteractions(kind) {
 
   document.querySelectorAll('[data-edit-profile]').forEach((button) => {
     button.addEventListener('click', () => {
+      if (!canMutate) return
       const profileId = button.dataset.editProfile
       const form = document.querySelector(`[data-edit-form="${profileId}"]`)
       form?.classList.toggle('hidden')
@@ -970,7 +1110,8 @@ function wireBoardInteractions(kind) {
         clearAlert()
         reportActionSuccess('Profiles', 'Profile updated.')
       } catch (error) {
-        setAlert('error', error.message)
+        const message = isConflictError(error) ? normalizeConflictMessage(error) : error.message
+        setAlert('error', message)
         reportActionError('Profiles', error)
       } finally {
         if (submitButton) {
@@ -1025,15 +1166,33 @@ function roleAccessMatrixMarkup() {
 }
 
 async function renderExports() {
-  const [jobs, queue] = await Promise.all([request(routes.exports()), request(routes.exportsQueueHealth())])
+  let jobs = []
+  let queue = { queue: {} }
+  try {
+    ;[jobs, queue] = await Promise.all([request(routes.exports()), request(routes.exportsQueueHealth())])
+  } catch (error) {
+    reportActionError('Exports', error)
+  }
   const canMutate = state.user?.role === 'admin' || state.user?.role === 'advisor'
+  const queueState = queue?.queue || {}
+  const queueCards = [
+    ['Queued', queueState.queued || 0],
+    ['Running', queueState.running || 0],
+    ['Failed', queueState.failed || 0],
+    ['Dead Letter', queueState.deadLetter || 0],
+    ['Completed', queueState.completed || 0],
+    ['Ready Now', queueState.readyNow || 0]
+  ]
   viewEl.innerHTML = `
     ${flashMarkup()}
     ${alertMarkup()}
     <div class="section-header"><div><h2>Exports Operations</h2><p class="muted">Queue health, retries, and artifact readiness by job.</p></div></div>
     <section class="item">
       <h3>Queue State</h3>
-      <pre>${escapeHtml(JSON.stringify(queue.queue || {}, null, 2))}</pre>
+      <div class="stat-grid">
+        ${queueCards.map(([label, value]) => metricCard(label, value)).join('')}
+      </div>
+      <pre>${escapeHtml(JSON.stringify(queueState, null, 2))}</pre>
       ${canMutate ? '<button id="retry-failed-jobs" class="tiny secondary">Retry failed jobs</button>' : '<p class="muted">Readonly role cannot trigger retries.</p>'}
     </section>
     <section class="item">
@@ -1043,8 +1202,15 @@ async function renderExports() {
           <td>${escapeHtml(job.id)}</td>
           <td>${escapeHtml(job.status)}</td>
           <td>${job.attempts || 0}/${job.maxAttempts || 0}</td>
-          <td>${job.output?.object?.key ? `<code>${escapeHtml(job.output.object.key)}</code>` : '<span class="muted">Not ready</span>'}</td>
-          <td>${canMutate ? `<button data-retry-export="${job.id}" class="tiny secondary" ${job.status === 'completed' ? 'disabled' : ''}>Retry</button>` : '<span class="muted">N/A</span>'}</td>
+          <td>${
+            job.artifactAvailable
+              ? `<div><code>${escapeHtml(job.artifact?.fileName || job.output?.fileName || 'artifact')}</code><div class="muted">${escapeHtml(job.artifact?.contentType || 'application/octet-stream')} · ${(job.artifact?.sizeBytes || 0).toLocaleString()} bytes</div></div>`
+              : '<span class="muted">Not ready</span>'
+          }</td>
+          <td>
+            <button data-download-export="${job.id}" class="tiny" ${job.artifactAvailable ? '' : 'disabled'}>Download</button>
+            ${canMutate ? `<button data-retry-export="${job.id}" class="tiny secondary" ${job.status === 'running' ? 'disabled' : ''}>Retry</button>` : ''}
+          </td>
         </tr>`).join('') || '<tr><td colspan="5">No export jobs.</td></tr>'}
       </tbody></table>
     </section>
@@ -1072,6 +1238,36 @@ async function renderExports() {
         reportActionError('Exports', error)
       }
       await renderExports()
+    })
+  })
+  document.querySelectorAll('[data-download-export]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const exportId = button.dataset.downloadExport
+      try {
+        button.disabled = true
+        const response = await fetch(routes.exportDownload(exportId), { credentials: 'same-origin' })
+        if (!response.ok) {
+          const text = await response.text()
+          throw new Error(text || 'Download failed')
+        }
+        const blob = await response.blob()
+        const disposition = response.headers.get('content-disposition') || ''
+        const matched = disposition.match(/filename=\"?([^\";]+)\"?/)
+        const fileName = matched?.[1] || `export-${exportId}`
+        const url = URL.createObjectURL(blob)
+        const a = document.createElement('a')
+        a.href = url
+        a.download = fileName
+        document.body.appendChild(a)
+        a.click()
+        a.remove()
+        URL.revokeObjectURL(url)
+        reportActionSuccess('Exports', `Downloaded ${fileName}.`)
+      } catch (error) {
+        reportActionError('Exports', error)
+      } finally {
+        button.disabled = false
+      }
     })
   })
 }
@@ -1191,32 +1387,49 @@ document.querySelector('#login-form').addEventListener('submit', async (event) =
   }
 })
 
-document.querySelector('#profile-form').addEventListener('submit', async (event) => {
+profileCreateFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-profile'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Profile', 'Creating…')
+  }
   try {
-    const form = new FormData(event.target)
-    const source = form.get('cityOrLocation')
-      ? { cityOrLocation: form.get('cityOrLocation'), venue: form.get('venue'), occurredOn: form.get('occurredOn') }
+    const payload = validateRequiredFields(formEl, ['firstName', 'lastName'])
+    const source = payload.cityOrLocation
+      ? { cityOrLocation: payload.cityOrLocation, venue: payload.venue, occurredOn: payload.occurredOn }
       : null
     await request(routes.profiles(), {
       method: 'POST',
       body: JSON.stringify({
-        kind: form.get('kind'),
-        firstName: form.get('firstName'),
-        lastName: form.get('lastName'),
-        email: form.get('email'),
-        phone: form.get('phone'),
-        stage: form.get('stage'),
+        kind: payload.kind,
+        firstName: payload.firstName,
+        lastName: payload.lastName,
+        email: payload.email,
+        phone: payload.phone,
+        stage: payload.stage,
         source
       })
     })
-    event.target.reset()
+    formEl.reset()
     reportActionSuccess('Profiles', 'Profile created.')
     await refreshSelects()
     await renderCurrentView()
   } catch (error) {
+    setFormFeedback(formEl, isConflictError(error) ? normalizeConflictMessage(error) : error.message)
     reportActionError('Profiles', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Profile'
+    }
   }
 })
 
@@ -1234,63 +1447,133 @@ document.querySelector('#household-form').addEventListener('submit', async (even
   }
 })
 
-document.querySelector('#form-template-form').addEventListener('submit', async (event) => {
+formTemplateFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-form-template'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Form Template', 'Creating…')
+  }
   try {
-    const payload = { ...Object.fromEntries(new FormData(event.target).entries()), sections: [] }
+    const payload = { ...validateRequiredFields(formEl, ['name']), sections: [] }
     await request(routes.formTemplates(), { method: 'POST', body: JSON.stringify(payload) })
-    event.target.reset()
+    formEl.reset()
     state.view = 'forms'
     reportActionSuccess('Forms', 'Form template created.')
     await renderCurrentView()
   } catch (error) {
+    setFormFeedback(formEl, error.message)
     reportActionError('Forms', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Form Template'
+    }
   }
 })
 
-document.querySelector('#doc-template-form').addEventListener('submit', async (event) => {
+docTemplateFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-doc-template'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Template', 'Creating…')
+  }
   try {
     const payload = {
-      ...Object.fromEntries(new FormData(event.target).entries()),
+      ...validateRequiredFields(formEl, ['name']),
       blueprint: { sections: [] },
       mappings: []
     }
     await request(routes.documentTemplates(), { method: 'POST', body: JSON.stringify(payload) })
-    event.target.reset()
+    formEl.reset()
     reportActionSuccess('Templates', 'Document template created.')
     await renderCurrentView()
   } catch (error) {
+    setFormFeedback(formEl, error.message)
     reportActionError('Templates', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Template'
+    }
   }
 })
 
-document.querySelector('#invite-form').addEventListener('submit', async (event) => {
+inviteFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-invite'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Invite', 'Creating…')
+  }
   try {
-    const payload = Object.fromEntries(new FormData(event.target).entries())
+    const payload = validateRequiredFields(formEl, ['email', 'role'])
     const invite = await request(routes.invites(), { method: 'POST', body: JSON.stringify(payload) })
-    event.target.reset()
+    formEl.reset()
+    clearFormFeedback(formEl)
     reportActionSuccess('Invites', `Invite created (${invite.token}).`)
     await renderCurrentView()
   } catch (error) {
+    setFormFeedback(formEl, error.message)
     reportActionError('Invites', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Invite'
+    }
   }
 })
 
-document.querySelector('#portal-form').addEventListener('submit', async (event) => {
+portalFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-portal-link'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Link', 'Creating…')
+  }
   try {
-    const payload = Object.fromEntries(new FormData(event.target).entries())
+    const payload = validateRequiredFields(formEl, ['profileId'])
     const link = await request(routes.portalLinks(), { method: 'POST', body: JSON.stringify(payload) })
+    clearFormFeedback(formEl)
     reportActionSuccess('Portal', `Portal link created: /portal?token=${link.token}`)
     await renderCurrentView()
   } catch (error) {
+    setFormFeedback(formEl, error.message)
     reportActionError('Portal', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Link'
+    }
   }
 })
 

@@ -259,6 +259,13 @@ function hashCsrfToken(token) {
   return createHash('sha256').update(token).digest('base64url')
 }
 
+function sanitizeDownloadFilename(value = 'export') {
+  const cleaned = String(value || 'export')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return cleaned || 'export'
+}
+
 function verifyHashEquals(actual, expected) {
   const actualBuffer = Buffer.from(String(actual))
   const expectedBuffer = Buffer.from(String(expected))
@@ -1230,6 +1237,23 @@ export function createHttpServer({ modules }) {
         const result = modules.exports.retry(user, id)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/exports/') && pathname.endsWith('/download') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadExports')
+        const artifact = modules.exports.getDownload(user, id)
+        const fileName = sanitizeDownloadFilename(artifact.fileName || `${id}.bin`)
+        res.writeHead(200, {
+          ...baseHeaders(),
+          'X-Request-Id': requestId,
+          'Content-Type': artifact.contentType || 'application/octet-stream',
+          'Content-Length': String(artifact.sizeBytes || artifact.body?.length || 0),
+          'Content-Disposition': `attachment; filename=\"${fileName}\"`,
+          'Cache-Control': 'private, no-store'
+        })
+        finalizeLog(200)
+        return res.end(artifact.body)
       }
       if (pathname === '/api/audit' && req.method === 'GET') {
         const user = requireUser()

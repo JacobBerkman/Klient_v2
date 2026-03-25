@@ -242,6 +242,9 @@ export class StoreExportsRepository extends ExportsRepository {
   retryFailed(firmContext, options = {}) {
     return this.store.retryFailedExports(firmContext.user || firmContext, options)
   }
+  getDownload(firmContext, exportId) {
+    return this.store.getExportDownload(firmContext.user || firmContext, exportId)
+  }
 }
 
 export class StoreAuditRepository extends AuditRepository {
