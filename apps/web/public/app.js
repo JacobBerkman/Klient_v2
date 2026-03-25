@@ -11,7 +11,8 @@ const state = {
   mfa: {
     login: null,
     enrollment: null
-  }
+  },
+  templateMappingDrafts: {}
 }
 
 const viewEl = document.querySelector('#view')
@@ -547,6 +548,36 @@ function mappingLocalIssues(mapping, knownPaths) {
   return issues
 }
 
+function mappingDraftFromServer(mapping = {}) {
+  const transformType = String(mapping?.transform?.type || mapping?.transformType || '').trim()
+  const transformExpression = transformType === 'expression'
+    ? String(mapping?.transform?.expression || mapping?.expression || '').trim()
+    : ''
+  return {
+    pdfField: String(mapping.pdfField || ''),
+    sourcePath: String(mapping.sourcePath || ''),
+    targetType: String(mapping.targetType || ''),
+    transformType,
+    transformExpression
+  }
+}
+
+function normalizeMappingDraft(mapping = {}) {
+  const normalized = {
+    pdfField: String(mapping.pdfField || '').trim(),
+    sourcePath: String(mapping.sourcePath || '').trim(),
+    targetType: String(mapping.targetType || '').trim()
+  }
+  const transformType = String(mapping.transformType || '').trim()
+  if (transformType) {
+    normalized.transform = { type: transformType }
+    if (transformType === 'expression') {
+      normalized.transform.expression = String(mapping.transformExpression || '').trim()
+    }
+  }
+  return normalized
+}
+
 async function renderTemplates() {
   const [templates, clients, submissions] = await Promise.all([
     request(routes.documentTemplates()),
@@ -565,7 +596,11 @@ async function renderTemplates() {
   const latestVersion = versions?.[0]?.version || ''
   const knownPaths = knownProfileSourcePaths()
   ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
-  const mappingIssuesByIndex = new Map((template?.mappings || []).map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
+  if (template && !Array.isArray(state.templateMappingDrafts[template.id])) {
+    state.templateMappingDrafts[template.id] = (template.mappings || []).map((mapping) => mappingDraftFromServer(mapping))
+  }
+  const draftMappings = template ? (state.templateMappingDrafts[template.id] || []) : []
+  const mappingIssuesByIndex = new Map(draftMappings.map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
   const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
 
   viewEl.innerHTML = `
@@ -590,15 +625,34 @@ async function renderTemplates() {
       </section>
       <section class="item">
         <h3>Mapping Rows</h3>
+        <datalist id="source-path-options">
+          ${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}
+        </datalist>
         <table><thead><tr><th>PDF Field</th><th>Source Path</th><th>Type</th><th>Validation</th><th>Actions</th></tr></thead><tbody>
-          ${(template.mappings || []).map((mapping, index) => {
+          ${draftMappings.map((mapping, index) => {
             const issues = mappingIssuesByIndex.get(index) || []
             return `<tr>
-              <td>${escapeHtml(mapping.pdfField || '')}</td>
-              <td>${escapeHtml(mapping.sourcePath || '')}</td>
-              <td>${escapeHtml(mapping.targetType || '')}</td>
+              <td data-mapping-row="${index}"><input data-mapping-row="${index}" data-field="pdfField" value="${escapeHtml(mapping.pdfField || '')}" placeholder="pdfField" /></td>
+              <td data-mapping-row="${index}">
+                <input data-mapping-row="${index}" data-field="sourcePath" value="${escapeHtml(mapping.sourcePath || '')}" placeholder="profile.name" list="source-path-options" />
+              </td>
+              <td data-mapping-row="${index}">
+                <select data-mapping-row="${index}" data-field="targetType">
+                  <option value="" ${!mapping.targetType ? 'selected' : ''}></option>
+                  ${['text', 'number', 'date', 'boolean'].map((type) => `<option value="${type}" ${mapping.targetType === type ? 'selected' : ''}>${type}</option>`).join('')}
+                </select>
+                <div class="top-gap">
+                  <select data-mapping-row="${index}" data-field="transformType">
+                    <option value="" ${!mapping.transformType ? 'selected' : ''}></option>
+                    ${['date', 'phone', 'currency', 'checkbox', 'expression'].map((type) => `<option value="${type}" ${mapping.transformType === type ? 'selected' : ''}>${type}</option>`).join('')}
+                  </select>
+                  ${mapping.transformType === 'expression'
+                    ? `<input data-mapping-row="${index}" data-field="transformExpression" value="${escapeHtml(mapping.transformExpression || '')}" placeholder="expression" class="top-gap" />`
+                    : ''}
+                </div>
+              </td>
               <td>${issues.length ? `<span class="badge">${escapeHtml(issues.join('; '))}</span>` : '<span class="muted">OK</span>'}</td>
-              <td><button data-edit-mapping="${index}" class="tiny secondary">Edit</button> <button data-remove-mapping="${index}" class="tiny secondary">Remove</button></td>
+              <td><button data-save-mapping-row="${index}" class="tiny">Save row</button> <button data-reset-mapping-row="${index}" class="tiny secondary">Reset row</button> <button data-remove-mapping-row="${index}" class="tiny secondary">Remove row</button></td>
             </tr>`
           }).join('')}
         </tbody></table>
@@ -677,56 +731,59 @@ async function renderTemplates() {
     setFlash('success', 'Extracted field added.')
     await renderTemplates()
   })
-  document.querySelectorAll('[data-remove-mapping]').forEach((button) => {
+  document.querySelectorAll('[data-save-mapping-row]').forEach((button) => {
     button.addEventListener('click', async () => {
-      const next = [...(template.mappings || [])]
-      next.splice(Number(button.dataset.removeMapping), 1)
-      await request(routes.documentTemplateMappings(template.id), {
-        method: 'POST',
-        body: JSON.stringify({ mappings: next, requiredPdfFields: template.extractedFields || [] })
-      })
-      setFlash('success', 'Mapping removed.')
+      const index = Number(button.dataset.saveMappingRow)
+      const currentDraft = [...(state.templateMappingDrafts[template.id] || [])]
+      currentDraft[index] = {
+        ...(currentDraft[index] || {}),
+        pdfField: String(document.querySelector(`[data-mapping-row="${index}"][data-field="pdfField"]`)?.value || ''),
+        sourcePath: String(document.querySelector(`[data-mapping-row="${index}"][data-field="sourcePath"]`)?.value || ''),
+        targetType: String(document.querySelector(`[data-mapping-row="${index}"][data-field="targetType"]`)?.value || ''),
+        transformType: String(document.querySelector(`[data-mapping-row="${index}"][data-field="transformType"]`)?.value || ''),
+        transformExpression: String(document.querySelector(`[data-mapping-row="${index}"][data-field="transformExpression"]`)?.value || '')
+      }
+      state.templateMappingDrafts[template.id] = currentDraft
+      setFlash('success', `Mapping row ${index + 1} saved to draft.`)
       await renderTemplates()
     })
   })
-  document.querySelectorAll('[data-edit-mapping]').forEach((button) => {
+  document.querySelectorAll('[data-reset-mapping-row]').forEach((button) => {
     button.addEventListener('click', async () => {
-      const index = Number(button.dataset.editMapping)
-      const current = template.mappings[index] || {}
-      const pdfField = window.prompt('PDF field', current.pdfField || '')
-      if (!pdfField) return
-      const sourcePath = window.prompt('Source path', current.sourcePath || '')
-      if (!sourcePath) return
-      const targetType = window.prompt('Target type (optional)', current.targetType || '') || ''
-      const next = [...(template.mappings || [])]
-      next[index] = { ...current, pdfField, sourcePath, targetType }
-      await request(routes.documentTemplateMappings(template.id), {
-        method: 'POST',
-        body: JSON.stringify({ mappings: next, requiredPdfFields: template.extractedFields || [] })
-      })
-      setFlash('success', 'Mapping updated.')
+      const index = Number(button.dataset.resetMappingRow)
+      const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+      nextDraft[index] = template?.mappings?.[index]
+        ? mappingDraftFromServer(template.mappings[index])
+        : mappingDraftFromServer({})
+      state.templateMappingDrafts[template.id] = nextDraft
+      setFlash('success', `Mapping row ${index + 1} reset.`)
+      await renderTemplates()
+    })
+  })
+  document.querySelectorAll('[data-remove-mapping-row]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const index = Number(button.dataset.removeMappingRow)
+      const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+      nextDraft.splice(index, 1)
+      state.templateMappingDrafts[template.id] = nextDraft
+      setFlash('success', 'Mapping row removed from draft.')
       await renderTemplates()
     })
   })
   document.querySelector('#add-mapping-row')?.addEventListener('click', async () => {
-    const pdfField = window.prompt('PDF field')
-    if (!pdfField) return
-    const sourcePath = window.prompt('Source path')
-    if (!sourcePath) return
-    const targetType = window.prompt('Target type (optional)') || ''
-    const next = [...(template.mappings || []), { pdfField, sourcePath, targetType }]
-    await request(routes.documentTemplateMappings(template.id), {
-      method: 'POST',
-      body: JSON.stringify({ mappings: next, requiredPdfFields: template.extractedFields || [] })
-    })
-    setFlash('success', 'Mapping added.')
+    const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+    nextDraft.push(mappingDraftFromServer({}))
+    state.templateMappingDrafts[template.id] = nextDraft
+    setFlash('success', 'Blank mapping row added.')
     await renderTemplates()
   })
   document.querySelector('#save-mappings')?.addEventListener('click', async () => {
+    const mappings = (state.templateMappingDrafts[template.id] || []).map((mapping) => normalizeMappingDraft(mapping))
     await request(routes.documentTemplateMappings(template.id), {
       method: 'POST',
-      body: JSON.stringify({ mappings: template.mappings || [], requiredPdfFields: template.extractedFields || [] })
+      body: JSON.stringify({ mappings, requiredPdfFields: template.extractedFields || [] })
     })
+    state.templateMappingDrafts[template.id] = mappings.map((mapping) => mappingDraftFromServer(mapping))
     setFlash('success', 'Mappings saved.')
     await renderTemplates()
   })
