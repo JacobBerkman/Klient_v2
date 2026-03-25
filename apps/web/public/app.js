@@ -732,21 +732,64 @@ async function renderTemplates() {
         request(routes.documentTemplatePublishTransitions(template.id))
       ])
     : [[], []]
+
+  if (!state.templateMappingDrafts) state.templateMappingDrafts = {}
+  if (!state.templateInspector) state.templateInspector = {}
+  if (!state.templateSaveStateByTemplateId) state.templateSaveStateByTemplateId = {}
+  if (!state.templateAutosaveTimers) state.templateAutosaveTimers = {}
+
+  const mappingDraftFromServer = (mapping = {}) => ({
+    pdfField: String(mapping.pdfField || ''),
+    fieldLabel: String(mapping.fieldLabel || mapping.label || ''),
+    sourcePath: String(mapping.sourcePath || ''),
+    defaultValue: mapping.defaultValue == null ? '' : String(mapping.defaultValue),
+    targetType: String(mapping.targetType || 'text'),
+    required: mapping.required === true,
+    enabled: mapping.enabled !== false,
+    transformType: String(mapping?.transform?.type || ''),
+    transformExpression: String(mapping?.transform?.expression || ''),
+    transformCurrency: String(mapping?.transform?.currency || '')
+  })
+  const normalizeMappingDraft = (draft = {}) => {
+    const sourcePath = String(draft.sourcePath || '').trim()
+    const transformType = String(draft.transformType || '').trim()
+    const transform = transformType
+      ? {
+          type: transformType,
+          ...(String(draft.transformExpression || '').trim() ? { expression: String(draft.transformExpression).trim() } : {}),
+          ...(String(draft.transformCurrency || '').trim() ? { currency: String(draft.transformCurrency).trim() } : {})
+        }
+      : null
+    const mapping = {
+      pdfField: String(draft.pdfField || '').trim(),
+      fieldLabel: String(draft.fieldLabel || '').trim(),
+      sourcePath,
+      targetType: String(draft.targetType || '').trim() || 'text',
+      required: draft.required === true,
+      enabled: draft.enabled !== false,
+      defaultValue: String(draft.defaultValue || '')
+    }
+    if (transform) mapping.transform = transform
+    return mapping
+  }
+
+  const serverMappings = (template?.mappings || []).map((mapping) => mappingDraftFromServer(mapping))
+  const existingDraft = state.templateMappingDrafts[template?.id] || []
+  const draftMappings =
+    existingDraft.length === serverMappings.length && existingDraft.length > 0
+      ? existingDraft
+      : serverMappings
+  if (template) state.templateMappingDrafts[template.id] = draftMappings
+
   const versionOptions = (versions || [])
-    .map(
-      (entry) =>
-        `<option value="${entry.version}">${entry.version} · ${escapeHtml(entry.changeType || 'update')}</option>`
-    )
+    .map((entry) => `<option value="${entry.version}">${entry.version} · ${escapeHtml(entry.changeType || 'update')}</option>`)
     .join('')
   const latestVersion = versions?.[0]?.version || ''
+
   const knownPaths = knownProfileSourcePaths()
-  ;(template?.formSchema?.sections || []).forEach((section) =>
-    collectTemplateSchemaPaths(section.fields || [], '', knownPaths)
-  )
-  const mappingIssuesByIndex = new Map(
-    (template?.mappings || []).map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)])
-  )
-  const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
+  ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
+
+  const mappingIssuesByIndex = new Map(draftMappings.map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
   const previewWarningRows = new Set(
     (preview?.rows || [])
@@ -754,27 +797,70 @@ async function renderTemplates() {
       .map((row) => Number(row.rowIndex))
       .filter((value) => Number.isFinite(value))
   )
-  const previewIssueRows = new Set(
-    (preview?.issues || [])
-      .map((issue) => Number(issue.rowIndex))
-      .filter((value) => Number.isFinite(value))
-  )
-  const hasBlockingPreviewWarnings = Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
+  const previewIssueRows = new Set((preview?.issues || []).map((issue) => Number(issue.rowIndex)).filter((value) => Number.isFinite(value)))
+  const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
+  const hasBlockingPreviewWarnings =
+    Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
   const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings
+
+  const selectedRowIndex = Number.isInteger(state.templateInspector?.[template?.id]?.rowIndex)
+    ? state.templateInspector[template.id].rowIndex
+    : 0
+  const safeSelectedRowIndex = Math.min(Math.max(selectedRowIndex, 0), Math.max(0, draftMappings.length - 1))
+  if (template) state.templateInspector[template.id] = { rowIndex: safeSelectedRowIndex }
+  const selectedMapping = draftMappings[safeSelectedRowIndex] || mappingDraftFromServer({})
+
+  const mappedFieldSet = new Set(draftMappings.map((entry) => String(entry.pdfField || '').trim()).filter(Boolean))
+  const extractedFields = template?.extractedFields || []
+  const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field)).length
+  const saveState = state.templateSaveStateByTemplateId[template?.id] || { status: 'idle', message: '' }
+
+  const sampleProfile = clients[0] || {}
+  const sampleSubmission = submissions[0] || {}
+  const resolveSampleValue = (path) => {
+    const value = String(path || '').trim()
+    if (!value) return ''
+    const pick = (obj, raw) =>
+      raw
+        .split('.')
+        .filter(Boolean)
+        .reduce((current, segment) => (current == null ? undefined : current[segment]), obj)
+    if (value.startsWith('profile.')) return pick(sampleProfile, value.replace(/^profile\./, ''))
+    if (value.startsWith('submission.') || value.startsWith('form.')) {
+      return pick(sampleSubmission?.data || {}, value.replace(/^(submission|form)\./, ''))
+    }
+    return pick(sampleSubmission?.data || {}, value) ?? pick(sampleProfile || {}, value)
+  }
 
   viewEl.innerHTML = `
     ${flashMarkup()}
     ${alertMarkup()}
-    <div class="section-header"><h2>Template Detail</h2></div>
+    <div class="section-header"><h2>Template Builder</h2></div>
     <label>Template
-      <select id="template-select">${templates.map((entry) => `<option value="${entry.id}" ${entry.id === template?.id ? 'selected' : ''}>${escapeHtml(entry.name)}</option>`).join('')}</select>
+      <select id="template-select">${templates
+        .map((entry) => `<option value="${entry.id}" ${entry.id === template?.id ? 'selected' : ''}>${escapeHtml(entry.name)}</option>`)
+        .join('')}</select>
     </label>
     ${
       template
         ? `
       <section class="item">
-        <h3>Extracted Fields</h3>
-        <ul>${(template.extractedFields || []).map((field, index) => `<li>${escapeHtml(field)} <button data-remove-extracted="${index}" class="secondary tiny">Remove</button></li>`).join('') || '<li class="muted">No extracted fields yet.</li>'}</ul>
+        <h3>Mapping Health</h3>
+        <div class="row wrap gap-sm">
+          <span class="badge">Mapped ${draftMappings.filter((entry) => entry.enabled !== false && String(entry.pdfField || '').trim()).length}</span>
+          <span class="badge subtle">Unmapped ${Math.max(0, extractedFields.length - mappedExtractedCount)}</span>
+          <span class="badge ${hasLocalMappingErrors ? 'error-badge' : 'warning-badge'}">Validation ${hasLocalMappingErrors ? 'Needs fixes' : 'Ready'}</span>
+          <span class="badge subtle">Save state: ${escapeHtml(saveState.status === 'saving' ? 'Saving…' : saveState.status === 'error' ? `Error (${saveState.message || 'retry'})` : 'Saved')}</span>
+        </div>
+      </section>
+      <section class="item">
+        <h3>Extracted AcroForm Fields</h3>
+        <ul>${extractedFields
+          .map((field, index) => {
+            const mapped = mappedFieldSet.has(field)
+            return `<li>${escapeHtml(field)} <span class="badge ${mapped ? 'subtle' : ''}">${mapped ? 'Mapped' : 'Unmapped'}</span><button data-remove-extracted="${index}" class="secondary tiny">Remove</button></li>`
+          })
+          .join('') || '<li class="muted">No extracted fields yet.</li>'}</ul>
         <div class="row gap-sm">
           <input id="new-extracted-field" placeholder="pdf_field_name" />
           <button id="add-extracted-field" class="tiny">Add</button>
@@ -782,62 +868,99 @@ async function renderTemplates() {
       </section>
       <section class="item">
         <h3>Source Path Discovery</h3>
-        <div class="muted">Known paths from profile + form schema: ${[...knownPaths.keys()].map((path) => `<code>${escapeHtml(path)}</code>`).join(', ')}</div>
+        <div class="muted">Known paths from profile + form schema: ${[...knownPaths.keys()]
+          .map((path) => `<code>${escapeHtml(path)}</code>`)
+          .join(', ')}</div>
       </section>
       <section class="item">
-        <h3>Mapping Rows</h3>
-        <datalist id="source-path-options">
-          ${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}
-        </datalist>
-        <table><thead><tr><th>PDF Field</th><th>Source Path</th><th>Type</th><th>Validation</th><th>Actions</th></tr></thead><tbody>
-          ${(template.mappings || [])
+        <h3>Mappings</h3>
+        <div class="row gap-sm wrap"><button id="add-mapping-row" class="tiny">Add Mapping</button><button id="save-mappings" class="tiny">Save Now</button></div>
+        <table><thead><tr><th>#</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Status</th><th>Preview</th></tr></thead><tbody>
+          ${draftMappings
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
-              return `<tr>
-              <td>${escapeHtml(mapping.pdfField || '')}</td>
-              <td>${escapeHtml(mapping.sourcePath || '')}</td>
-              <td>${escapeHtml(mapping.targetType || '')}</td>
-              <td>${issues.length ? `<span class="badge">${escapeHtml(issues.join('; '))}</span>` : '<span class="muted">OK</span>'}</td>
-              <td><button data-save-mapping-row="${index}" class="tiny">Save row</button> <button data-reset-mapping-row="${index}" class="tiny secondary">Reset row</button> <button data-remove-mapping-row="${index}" class="tiny secondary">Remove row</button></td>
-            </tr>`
+              const hasWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
+              const sampleValue = resolveSampleValue(mapping.sourcePath)
+              return `<tr id="mapping-row-${index}" data-select-row="${index}" style="cursor:pointer;${index === safeSelectedRowIndex ? 'outline:1px solid #60a5fa;' : ''}">
+                <td>${index + 1}</td>
+                <td>${escapeHtml(mapping.pdfField || '')}</td>
+                <td>${escapeHtml(mapping.sourcePath || '')}</td>
+                <td>${escapeHtml(mapping.fieldLabel || '')}</td>
+                <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span>` : hasWarnings ? '<span class="warning-badge">Preview warning</span>' : '<span class="muted">OK</span>'}</td>
+                <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
+              </tr>`
             })
-            .join('')}
+            .join('') || '<tr><td colspan="6" class="muted">No mappings configured.</td></tr>'}
         </tbody></table>
-        <button id="add-mapping-row" class="tiny">Add Mapping</button>
-        <button id="save-mappings" class="tiny">Save Mappings</button>
+      </section>
+      <section class="item">
+        <h3>Field Inspector</h3>
+        <div class="muted">Selected row ${safeSelectedRowIndex + 1} of ${Math.max(1, draftMappings.length)}${selectedMapping.enabled === false ? ' (disabled)' : ''}</div>
+        <datalist id="source-path-options">${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}</datalist>
+        <div class="grid two">
+          <label>PDF Field<input id="inspector-pdfField" value="${escapeHtml(selectedMapping.pdfField || '')}" /></label>
+          <label>Field Label/Name<input id="inspector-fieldLabel" value="${escapeHtml(selectedMapping.fieldLabel || '')}" /></label>
+          <label>Source Path<input id="inspector-sourcePath" list="source-path-options" value="${escapeHtml(selectedMapping.sourcePath || '')}" /></label>
+          <label>Default Value<input id="inspector-defaultValue" value="${escapeHtml(selectedMapping.defaultValue || '')}" /></label>
+          <label>Target Type<select id="inspector-targetType">${['text', 'number', 'boolean', 'date']
+            .map((type) => `<option value="${type}" ${selectedMapping.targetType === type ? 'selected' : ''}>${type}</option>`)
+            .join('')}</select></label>
+          <label>Transform Type<select id="inspector-transformType">${['', 'date', 'phone', 'currency', 'checkbox', 'expression']
+            .map((type) => `<option value="${type}" ${selectedMapping.transformType === type ? 'selected' : ''}>${type || 'none'}</option>`)
+            .join('')}</select></label>
+          <label>Transform Expression<input id="inspector-transformExpression" value="${escapeHtml(selectedMapping.transformExpression || '')}" /></label>
+          <label>Transform Currency<input id="inspector-transformCurrency" value="${escapeHtml(selectedMapping.transformCurrency || '')}" placeholder="USD" /></label>
+          <label><input type="checkbox" id="inspector-required" ${selectedMapping.required ? 'checked' : ''} /> Required</label>
+          <label><input type="checkbox" id="inspector-enabled" ${selectedMapping.enabled !== false ? 'checked' : ''} /> Mapping Enabled</label>
+        </div>
       </section>
       <section class="item">
         <h3>Mapping Preview</h3>
         <div class="row gap-sm wrap">
-          <select id="preview-client">${clients.map((profile) => `<option value="${profile.id}">${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</option>`).join('')}</select>
-          <select id="preview-submission">${submissions.map((entry) => `<option value="${entry.id}">${escapeHtml(entry.id)} · ${escapeHtml(entry.templateId)}</option>`).join('')}</select>
+          <select id="preview-client">${clients
+            .map((profile) => `<option value="${profile.id}">${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</option>`)
+            .join('')}</select>
+          <select id="preview-submission">${submissions
+            .map((entry) => `<option value="${entry.id}">${escapeHtml(entry.id)} · ${escapeHtml(entry.templateId)}</option>`)
+            .join('')}</select>
           <button id="run-preview" class="tiny">Run Preview</button>
         </div>
-        <div id="preview-results" class="muted">${preview ? `
+        <div id="preview-results" class="muted">${
+          preview
+            ? `
           <div class="muted">mappingVersionHash: <code>${escapeHtml(preview.mappingVersionHash || '')}</code></div>
           <div class="muted">warnings: ${escapeHtml(String(preview.warningsCount || 0))}</div>
           ${preview.issues?.length ? `<div class="muted">issues: ${escapeHtml(String(preview.issues.length))}</div>` : ''}
           <table><thead><tr><th>PDF field</th><th>Source path</th><th>Resolved value</th><th>Warnings</th></tr></thead><tbody>
-            ${(preview.rows || []).map((row) => `<tr>
+            ${(preview.rows || [])
+              .map(
+                (row) => `<tr>
               <td>${escapeHtml(row.pdfField || '')}</td>
               <td>${escapeHtml(row.sourcePath || '')}</td>
               <td>${escapeHtml(row.value == null ? '' : String(row.value))}</td>
               <td><button class="tiny secondary" data-jump-rowindex="${Number(row.rowIndex)}">Row ${Number(row.rowIndex) + 1}</button> ${previewWarningMarkup(row.warnings || [])}</td>
-            </tr>`).join('')}
+            </tr>`
+              )
+              .join('')}
           </tbody></table>
-        ` : ''}</div>
+        `
+            : 'Run preview to validate mapping output against real data. Sample values shown in the mapping table are non-blocking hints.'
+        }</div>
       </section>
       <section class="item">
         <h3>Publish</h3>
-        <button id="publish-template" class="tiny" ${publishDisabled ? 'disabled' : ''}>Publish</button>
-        ${hasLocalMappingErrors ? '<p class="muted">Publish is blocked until local mapping errors are resolved.</p>' : ''}
-        ${hasBlockingPreviewWarnings ? '<p class="muted">Publish is blocked by preview validation issues. Resolve highlighted mapping rows first.</p>' : ''}
-        ${preview && !hasBlockingPreviewWarnings && Number(preview.warningsCount || 0) > 0 ? `<p class="muted">Preview warning summary: ${escapeHtml(String(preview.warningsCount))} warning(s).</p>` : ''}
+        <button id="publish-template" class="tiny publish-action" ${publishDisabled ? 'disabled' : ''}>Publish</button>
+        ${hasLocalMappingErrors ? '<p class="publish-disabled-reason">Publish is blocked until local mapping errors are resolved.</p>' : ''}
+        ${hasBlockingPreviewWarnings ? '<p class="publish-disabled-reason">Publish is blocked by preview validation issues. Resolve highlighted rows first.</p>' : ''}
       </section>
       <section class="item">
         <h3>Version History</h3>
         <table><thead><tr><th>Version</th><th>Type</th><th>Created</th></tr></thead><tbody>
-          ${(versions || []).map((entry) => `<tr><td>${entry.version}</td><td>${escapeHtml(entry.changeType || 'update')}</td><td>${escapeHtml(new Date(entry.createdAt || Date.now()).toLocaleString())}</td></tr>`).join('') || '<tr><td colspan="3">No versions yet.</td></tr>'}
+          ${(versions || [])
+            .map(
+              (entry) => `<tr><td>${entry.version}</td><td>${escapeHtml(entry.changeType || 'update')}</td><td>${escapeHtml(new Date(entry.createdAt || Date.now()).toLocaleString())}</td></tr>`
+            )
+            .join('') || '<tr><td colspan="3">No versions yet.</td></tr>'}
         </tbody></table>
       </section>
       <section class="item">
@@ -859,12 +982,38 @@ async function renderTemplates() {
       <section class="item">
         <h3>Publish Transition Log</h3>
         <table><thead><tr><th>From</th><th>To</th><th>When</th><th>By</th></tr></thead><tbody>
-          ${(transitions || []).map((entry) => `<tr><td>${entry.fromVersion ?? 'N/A'}</td><td>${entry.toVersion ?? 'N/A'}</td><td>${escapeHtml(new Date(entry.createdAt || Date.now()).toLocaleString())}</td><td>${escapeHtml(entry.createdByUserId || 'system')}</td></tr>`).join('') || '<tr><td colspan="4">No publish transitions yet.</td></tr>'}
+          ${(transitions || [])
+            .map(
+              (entry) => `<tr><td>${entry.fromVersion ?? 'N/A'}</td><td>${entry.toVersion ?? 'N/A'}</td><td>${escapeHtml(new Date(entry.createdAt || Date.now()).toLocaleString())}</td><td>${escapeHtml(entry.createdByUserId || 'system')}</td></tr>`
+            )
+            .join('') || '<tr><td colspan="4">No publish transitions yet.</td></tr>'}
         </tbody></table>
       </section>`
         : '<p class="muted">No document templates found.</p>'
     }
   `
+
+  const persistMappings = async ({ autosave = false } = {}) => {
+    const actionKey = `template-map-save-${template.id}`
+    if (autosave) setActionPending(actionKey, 'saving')
+    state.templateSaveStateByTemplateId[template.id] = { status: 'saving' }
+    const mappings = (state.templateMappingDrafts[template.id] || []).map((mapping) => normalizeMappingDraft(mapping))
+    try {
+      await request(routes.documentTemplateMappings(template.id), {
+        method: 'POST',
+        body: JSON.stringify({ mappings, requiredPdfFields: template.extractedFields || [] })
+      })
+      state.templateSaveStateByTemplateId[template.id] = { status: 'saved', savedAt: new Date().toISOString() }
+      state.templateMappingDrafts[template.id] = mappings.map((mapping) => mappingDraftFromServer(mapping))
+      if (!autosave) setFlash('success', 'Mappings saved.')
+    } catch (error) {
+      state.templateSaveStateByTemplateId[template.id] = { status: 'error', message: error.message }
+      if (!autosave) setFlash('error', error.message)
+      throw error
+    } finally {
+      clearActionPending(actionKey)
+    }
+  }
 
   document.querySelector('#template-select')?.addEventListener('change', async (event) => {
     state.selectedTemplateId = event.target.value
@@ -876,7 +1025,7 @@ async function renderTemplates() {
       next.splice(Number(button.dataset.removeExtracted), 1)
       await request(routes.documentTemplateMappings(template.id), {
         method: 'POST',
-        body: JSON.stringify({ mappings: template.mappings || [], requiredPdfFields: next })
+        body: JSON.stringify({ mappings: (state.templateMappingDrafts[template.id] || []).map((entry) => normalizeMappingDraft(entry)), requiredPdfFields: next })
       })
       setFlash('success', 'Extracted field removed.')
       await renderTemplates()
@@ -889,82 +1038,93 @@ async function renderTemplates() {
     const next = Array.from(new Set([...(template.extractedFields || []), value]))
     await request(routes.documentTemplateMappings(template.id), {
       method: 'POST',
-      body: JSON.stringify({ mappings: template.mappings || [], requiredPdfFields: next })
+      body: JSON.stringify({ mappings: (state.templateMappingDrafts[template.id] || []).map((entry) => normalizeMappingDraft(entry)), requiredPdfFields: next })
     })
     setFlash('success', 'Extracted field added.')
     await renderTemplates()
   })
-  document.querySelectorAll('[data-save-mapping-row]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const index = Number(button.dataset.saveMappingRow)
-      const currentDraft = [...(state.templateMappingDrafts[template.id] || [])]
-      currentDraft[index] = {
-        ...(currentDraft[index] || {}),
-        pdfField: String(document.querySelector(`[data-mapping-row="${index}"][data-field="pdfField"]`)?.value || ''),
-        sourcePath: String(document.querySelector(`[data-mapping-row="${index}"][data-field="sourcePath"]`)?.value || ''),
-        targetType: String(document.querySelector(`[data-mapping-row="${index}"][data-field="targetType"]`)?.value || ''),
-        transformType: String(document.querySelector(`[data-mapping-row="${index}"][data-field="transformType"]`)?.value || ''),
-        transformExpression: String(document.querySelector(`[data-mapping-row="${index}"][data-field="transformExpression"]`)?.value || '')
+
+  document.querySelectorAll('[data-select-row]').forEach((row) => {
+    row.addEventListener('click', async () => {
+      if (!template) return
+      state.templateInspector[template.id] = { rowIndex: Number(row.dataset.selectRow) }
+      await renderTemplates()
+    })
+  })
+
+  const applyInspectorToDraft = async () => {
+    const idx = state.templateInspector[template.id]?.rowIndex || 0
+    const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+    nextDraft[idx] = {
+      ...(nextDraft[idx] || mappingDraftFromServer({})),
+      pdfField: String(document.querySelector('#inspector-pdfField')?.value || ''),
+      fieldLabel: String(document.querySelector('#inspector-fieldLabel')?.value || ''),
+      sourcePath: String(document.querySelector('#inspector-sourcePath')?.value || ''),
+      defaultValue: String(document.querySelector('#inspector-defaultValue')?.value || ''),
+      targetType: String(document.querySelector('#inspector-targetType')?.value || 'text'),
+      transformType: String(document.querySelector('#inspector-transformType')?.value || ''),
+      transformExpression: String(document.querySelector('#inspector-transformExpression')?.value || ''),
+      transformCurrency: String(document.querySelector('#inspector-transformCurrency')?.value || ''),
+      required: Boolean(document.querySelector('#inspector-required')?.checked),
+      enabled: Boolean(document.querySelector('#inspector-enabled')?.checked)
+    }
+    state.templateMappingDrafts[template.id] = nextDraft
+    if (state.templateAutosaveTimers[template.id]) clearTimeout(state.templateAutosaveTimers[template.id])
+    state.templateAutosaveTimers[template.id] = setTimeout(async () => {
+      try {
+        await persistMappings({ autosave: true })
+      } catch {
+        // handled via save state
       }
-      state.templateMappingDrafts[template.id] = currentDraft
-      setFlash('success', `Mapping row ${index + 1} saved to draft.`)
       await renderTemplates()
-    })
+    }, 700)
+  }
+
+  ;[
+    '#inspector-pdfField',
+    '#inspector-fieldLabel',
+    '#inspector-sourcePath',
+    '#inspector-defaultValue',
+    '#inspector-targetType',
+    '#inspector-transformType',
+    '#inspector-transformExpression',
+    '#inspector-transformCurrency',
+    '#inspector-required',
+    '#inspector-enabled'
+  ].forEach((selector) => {
+    document.querySelector(selector)?.addEventListener('input', applyInspectorToDraft)
+    document.querySelector(selector)?.addEventListener('change', applyInspectorToDraft)
   })
-  document.querySelectorAll('[data-reset-mapping-row]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const index = Number(button.dataset.resetMappingRow)
-      const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
-      nextDraft[index] = template?.mappings?.[index]
-        ? mappingDraftFromServer(template.mappings[index])
-        : mappingDraftFromServer({})
-      state.templateMappingDrafts[template.id] = nextDraft
-      setFlash('success', `Mapping row ${index + 1} reset.`)
-      await renderTemplates()
-    })
-  })
-  document.querySelectorAll('[data-remove-mapping-row]').forEach((button) => {
-    button.addEventListener('click', async () => {
-      const index = Number(button.dataset.removeMappingRow)
-      const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
-      nextDraft.splice(index, 1)
-      state.templateMappingDrafts[template.id] = nextDraft
-      setFlash('success', 'Mapping row removed from draft.')
-      await renderTemplates()
-    })
-  })
+
   document.querySelector('#add-mapping-row')?.addEventListener('click', async () => {
     const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
-    nextDraft.push(mappingDraftFromServer({}))
+    nextDraft.push(mappingDraftFromServer({ targetType: 'text', enabled: true }))
     state.templateMappingDrafts[template.id] = nextDraft
-    setFlash('success', 'Blank mapping row added.')
+    state.templateInspector[template.id] = { rowIndex: nextDraft.length - 1 }
     await renderTemplates()
   })
+
   document.querySelector('#save-mappings')?.addEventListener('click', async () => {
-    const mappings = (state.templateMappingDrafts[template.id] || []).map((mapping) => normalizeMappingDraft(mapping))
-    await request(routes.documentTemplateMappings(template.id), {
-      method: 'POST',
-      body: JSON.stringify({ mappings, requiredPdfFields: template.extractedFields || [] })
-    })
-    state.templateMappingDrafts[template.id] = mappings.map((mapping) => mappingDraftFromServer(mapping))
-    setFlash('success', 'Mappings saved.')
+    await persistMappings({ autosave: false })
     await renderTemplates()
   })
+
   document.querySelector('#run-preview')?.addEventListener('click', async () => {
     try {
       const clientId = document.querySelector('#preview-client')?.value
       const submissionId = document.querySelector('#preview-submission')?.value
-      const preview = await request(routes.documentTemplateMappingsPreview(template.id), {
+      const nextPreview = await request(routes.documentTemplateMappingsPreview(template.id), {
         method: 'POST',
         body: JSON.stringify({ clientId, submissionId })
       })
-      state.templatePreviewByTemplateId[template.id] = preview
+      state.templatePreviewByTemplateId[template.id] = nextPreview
       await renderTemplates()
     } catch (error) {
       setFlash('error', error.message)
       await renderTemplates()
     }
   })
+
   document.querySelectorAll('[data-jump-rowindex]').forEach((button) => {
     button.addEventListener('click', () => {
       const rowIndex = Number(button.dataset.jumpRowindex)
@@ -977,13 +1137,13 @@ async function renderTemplates() {
       }, 1500)
     })
   })
+
   document.querySelector('#publish-template')?.addEventListener('click', async () => {
     try {
       const latestPreview = state.templatePreviewByTemplateId[template.id] || null
-      const hasBlockingWarnings = Number(latestPreview?.blockingWarningsCount || 0) > 0 || (latestPreview?.issues || []).some((issue) => issue.blocking)
-      if (hasBlockingWarnings) {
-        throw new Error('Publish blocked: preview contains blocking warnings/issues.')
-      }
+      const hasBlockingWarnings =
+        Number(latestPreview?.blockingWarningsCount || 0) > 0 || (latestPreview?.issues || []).some((issue) => issue.blocking)
+      if (hasBlockingWarnings) throw new Error('Publish blocked: preview contains blocking warnings/issues.')
       await request(routes.documentTemplatePublish(template.id), {
         method: 'POST',
         body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Publish template mapping updates.' })
@@ -994,6 +1154,7 @@ async function renderTemplates() {
     }
     await renderTemplates()
   })
+
   document.querySelector('#compare-base')?.addEventListener('change', (event) => {
     if (!document.querySelector('#compare-target')?.value) {
       document.querySelector('#compare-target').value = event.target.value
@@ -1001,6 +1162,7 @@ async function renderTemplates() {
   })
   const compareTargetEl = document.querySelector('#compare-target')
   if (compareTargetEl && latestVersion) compareTargetEl.value = latestVersion
+
   document.querySelector('#compare-template-versions')?.addEventListener('click', async () => {
     try {
       const baseVersion = Number(document.querySelector('#compare-base')?.value)
@@ -1013,6 +1175,7 @@ async function renderTemplates() {
       await renderTemplates()
     }
   })
+
   document.querySelector('#revert-template-version')?.addEventListener('click', async () => {
     try {
       const targetVersion = Number(document.querySelector('#revert-version')?.value)

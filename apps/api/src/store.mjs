@@ -2494,23 +2494,22 @@ export function createStore({
       return documentTemplateAdapter(template)
     },
     previewTemplateMappings(user, templateId, input = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.previewTemplateMappings' })
       requirePermission(user, 'templates:read')
-      const template = validateEntityOwnership(
-        state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'),
-        user,
-        'Template not found.'
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
       )
       const clientId = String(input.clientId || '').trim()
       const submissionId = String(input.submissionId || '').trim()
-      const profile = validateEntityOwnership(
-        state.profiles.find((entry) => entry.id === clientId && entry.firmId === user.firmId),
-        user,
-        'Client profile not found.'
-      )
-      const submission = validateEntityOwnership(
-        state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === user.firmId),
-        user,
-        'Submission not found.'
+      const profile = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === clientId), {
+        entityName: 'Profile'
+      })
+      const submission = validateTenantEntityOwnership(
+        firmContext,
+        state.formSubmissions.find((entry) => entry.id === submissionId),
+        { entityName: 'Submission' }
       )
       const resolved = resolveExportData({
         mappings: template.mappings || [],

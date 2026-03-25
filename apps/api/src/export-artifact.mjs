@@ -35,41 +35,69 @@ function wrapPdfText(line, maxChars = 90) {
 }
 
 function createPdfArtifact({ job, metadata, resolvedRows = [] }) {
-  const lines = [
-    `Klient Export Artifact`,
-    `Export Job: ${job.id}`,
-    `Firm: ${job.firmId}`,
-    `Client: ${job.clientId}`,
-    `Template: ${job.templateId}`,
-    `Generated: ${metadata.generatedAt}`,
-    `Template Version: ${metadata.templateVersion}`,
-    `Mapping Hash: ${metadata.mappingVersionHash}`,
-    ''
+  const metadataLines = [
+    ['Export Job', job.id],
+    ['Firm', job.firmId],
+    ['Client', job.clientId],
+    ['Template', job.templateId],
+    ['Generated', metadata.generatedAt],
+    ['Template Version', metadata.templateVersion],
+    ['Mapping Hash', metadata.mappingVersionHash]
   ]
 
-  for (const row of resolvedRows) {
-    lines.push(`${row.pdfField}: ${row.value ?? ''}`)
-  }
+  const bodyLines = resolvedRows.length
+    ? resolvedRows.flatMap((row, index) => {
+        const label = row.fieldLabel || row.pdfField || `Field ${index + 1}`
+        const value = row.value == null ? '' : String(row.value)
+        return wrapPdfText(`${index + 1}. ${label}: ${value}`, 86)
+      })
+    : ['No mapping rows resolved for this export.']
 
-  const wrappedLines = lines.flatMap((line) => wrapPdfText(line))
-  const lineHeight = 16
   const pageHeight = 792
   const topY = 760
   const bottomY = 56
+  const lineHeight = 16
   const maxLinesPerPage = Math.max(1, Math.floor((topY - bottomY) / lineHeight))
-  const pageLines = []
-  for (let i = 0; i < wrappedLines.length; i += maxLinesPerPage) {
-    pageLines.push(wrappedLines.slice(i, i + maxLinesPerPage))
+
+  const buildPageTokens = (startIndex = 0) => {
+    const tokens = []
+    if (startIndex === 0) {
+      tokens.push({ text: 'Klient Export Artifact', style: 'title' })
+      tokens.push({ text: '', style: 'meta' })
+      for (const [key, value] of metadataLines) {
+        tokens.push({ text: `${key}: ${value || ''}`, style: 'meta' })
+      }
+      tokens.push({ text: '', style: 'meta' })
+      tokens.push({ text: 'Resolved Mapping Values', style: 'section' })
+    } else {
+      tokens.push({ text: 'Klient Export Artifact (continued)', style: 'section' })
+    }
+
+    let index = startIndex
+    while (index < bodyLines.length && tokens.length < maxLinesPerPage) {
+      tokens.push({ text: bodyLines[index], style: 'body' })
+      index += 1
+    }
+    return { tokens, nextIndex: index }
   }
+
+  const pages = []
+  let cursor = 0
+  do {
+    const page = buildPageTokens(cursor)
+    pages.push(page.tokens)
+    cursor = page.nextIndex
+  } while (cursor < bodyLines.length)
 
   const objects = []
   objects.push('<< /Type /Catalog /Pages 2 0 R >>')
 
   const pageObjectIds = []
   const contentObjectIds = []
-  const fontObjectId = 3 + pageLines.length * 2
+  const fontBodyId = 3 + pages.length * 2
+  const fontBoldId = fontBodyId + 1
 
-  for (let index = 0; index < pageLines.length; index += 1) {
+  for (let index = 0; index < pages.length; index += 1) {
     const pageObjectId = 3 + index * 2
     const contentObjectId = pageObjectId + 1
     pageObjectIds.push(pageObjectId)
@@ -78,25 +106,31 @@ function createPdfArtifact({ job, metadata, resolvedRows = [] }) {
 
   objects.push(`<< /Type /Pages /Count ${pageObjectIds.length} /Kids [${pageObjectIds.map((id) => `${id} 0 R`).join(' ')}] >>`)
 
-  for (let pageIndex = 0; pageIndex < pageLines.length; pageIndex += 1) {
+  for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
     const pageId = pageObjectIds[pageIndex]
     const contentId = contentObjectIds[pageIndex]
-    const contentLines = pageLines[pageIndex]
+    const tokens = pages[pageIndex]
 
-    objects[pageId - 1] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 ${pageHeight}] /Resources << /Font << /F1 ${fontObjectId} 0 R >> >> /Contents ${contentId} 0 R >>`
+    objects[pageId - 1] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 ${pageHeight}] /Resources << /Font << /F1 ${fontBodyId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>`
 
-    const textOps = ['BT', '/F1 11 Tf', `50 ${topY} Td`]
-    for (let i = 0; i < contentLines.length; i += 1) {
+    const textOps = ['BT', `50 ${topY} Td`]
+    tokens.forEach((token, i) => {
       if (i > 0) textOps.push(`0 -${lineHeight} Td`)
-      textOps.push(`(${pdfEscape(contentLines[i])}) Tj`)
-    }
+      const style = token.style === 'title' ? '/F2 16 Tf' : token.style === 'section' ? '/F2 12 Tf' : '/F1 10 Tf'
+      textOps.push(style)
+      textOps.push(`(${pdfEscape(token.text)}) Tj`)
+    })
     textOps.push('ET')
     const stream = `${textOps.join('\n')}\n`
     const compressed = deflateRawSync(Buffer.from(stream, 'utf8'))
-    objects[contentId - 1] = `<< /Length ${compressed.length} /Filter /FlateDecode >>\nstream\n${compressed.toString('binary')}\nendstream`
+    objects[contentId - 1] = `<< /Length ${compressed.length} /Filter /FlateDecode >>
+stream
+${compressed.toString('binary')}
+endstream`
   }
 
-  objects[fontObjectId - 1] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+  objects[fontBodyId - 1] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+  objects[fontBoldId - 1] = '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>'
 
   let pdf = '%PDF-1.4\n'
   const offsets = [0]
@@ -192,17 +226,23 @@ function zipEntries(entries) {
 
 function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
   const rows = [
-    ['Export Job', job.id],
-    ['Firm ID', job.firmId],
-    ['Client ID', job.clientId],
-    ['Template ID', job.templateId],
-    ['Generated At', metadata.generatedAt],
-    ['Template Version', metadata.templateVersion],
-    ['Mapping Hash', metadata.mappingVersionHash]
+    ['Klient Export Artifact', '', '', ''],
+    ['Export Job', job.id, '', ''],
+    ['Firm ID', job.firmId, '', ''],
+    ['Client ID', job.clientId, '', ''],
+    ['Template ID', job.templateId, '', ''],
+    ['Generated At', metadata.generatedAt, '', ''],
+    ['Template Version', metadata.templateVersion, '', ''],
+    ['Mapping Hash', metadata.mappingVersionHash, '', ''],
+    ['', '', '', ''],
+    ['Field', 'Value', 'Source Path', 'Status'],
+    ...resolvedRows.map((row) => [
+      row.fieldLabel || row.pdfField,
+      row.value == null ? '' : String(row.value),
+      row.sourcePath || '',
+      row.warnings?.length ? row.warnings.map((warning) => warning.code || 'warning').join(', ') : 'OK'
+    ])
   ]
-  for (const row of resolvedRows) {
-    rows.push([row.pdfField, row.value])
-  }
 
   const sharedStrings = []
   const sharedIndex = new Map()
@@ -218,10 +258,17 @@ function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
   const sheetRows = rows
     .map((row, idx) => {
       const rowIndex = idx + 1
-      const aId = sharedStringId(row[0])
-      const bId = sharedStringId(row[1])
-      const styleA = rowIndex === 1 ? ' s="1"' : ''
-      return `<row r="${rowIndex}"><c r="A${rowIndex}" t="s"${styleA}><v>${aId}</v></c><c r="B${rowIndex}" t="s"><v>${bId}</v></c></row>`
+      const rowCells = row
+        .map((value, colIndex) => {
+          const col = String.fromCharCode(65 + colIndex)
+          const id = sharedStringId(value)
+          const isTitle = rowIndex === 1
+          const isHeader = rowIndex === 10
+          const style = isTitle ? ' s="2"' : isHeader ? ' s="1"' : ''
+          return `<c r="${col}${rowIndex}" t="s"${style}><v>${id}</v></c>`
+        })
+        .join('')
+      return `<row r="${rowIndex}">${rowCells}</row>`
     })
     .join('')
 
@@ -294,22 +341,19 @@ function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
       content:
         '<?xml version="1.0" encoding="UTF-8"?>' +
         '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-        '<fonts count="2"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font></fonts>' +
-        '<fills count="1"><fill><patternFill patternType="none"/></fill></fills>' +
+        '<fonts count="3"><font><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="11"/><name val="Calibri"/></font><font><b/><sz val="14"/><name val="Calibri"/></font></fonts>' +
+        '<fills count="2"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF1D4ED8"/><bgColor indexed="64"/></patternFill></fill></fills>' +
         '<borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>' +
         '<cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>' +
-        '<cellXfs count="2"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>' +
+        '<cellXfs count="3"><xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/><xf numFmtId="0" fontId="1" fillId="1" borderId="0" xfId="0" applyFont="1" applyFill="1"/><xf numFmtId="0" fontId="2" fillId="0" borderId="0" xfId="0" applyFont="1"/></cellXfs>' +
         '</styleSheet>'
     },
-    {
-      name: 'xl/sharedStrings.xml',
-      content: sharedXml
-    },
+    { name: 'xl/sharedStrings.xml', content: sharedXml },
     {
       name: 'xl/worksheets/sheet1.xml',
       content:
         '<?xml version="1.0" encoding="UTF-8"?>' +
-        `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:B${rows.length}"/><sheetViews><sheetView workbookViewId="0"/></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="1" width="32" customWidth="1"/><col min="2" max="2" width="96" customWidth="1"/></cols><sheetData>${sheetRows}</sheetData></worksheet>`
+        `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:D${rows.length}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="10" topLeftCell="A11" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="1" width="30" customWidth="1"/><col min="2" max="2" width="60" customWidth="1"/><col min="3" max="3" width="45" customWidth="1"/><col min="4" max="4" width="28" customWidth="1"/></cols><mergeCells count="1"><mergeCell ref="A1:D1"/></mergeCells><sheetData>${sheetRows}</sheetData><autoFilter ref="A10:D10"/></worksheet>`
     }
   ]
 

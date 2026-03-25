@@ -52,6 +52,8 @@ The older duplicate Fastify/TypeScript backend path and related workspace scaffo
 - masked sensitive data handling for SSNs and tax IDs
 - form template creation plus advisor and portal submission flows
 - document templates, auto-build mappings, export jobs, and worker processing
+- production-grade template mapper/editor UX with mapping inspector, autosave state, AcroForm field status, and mapping preview checks
+- upgraded export rendering (PDF layout + formatted XLSX worksheet metadata) while preserving queue/object metadata behavior
 - invite and password reset flows
 - readiness/health probes, backup/restore scripts, Docker packaging, and smoke coverage
 

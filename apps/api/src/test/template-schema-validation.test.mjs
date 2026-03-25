@@ -186,3 +186,39 @@ test('mapping preview resolves values for selected client and submission', async
   assert.equal(preview.rows[0].value, profile.firstName)
   assert.ok(preview.rows.some((row) => row.pdfField === 'goals'))
 })
+
+
+test('mapping preview resolves profile and submission explicit path prefixes', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const template = store.createDocumentTemplate(user, {
+    name: 'Prefix preview template',
+    mappings: [
+      { pdfField: 'first_name', sourcePath: 'profile.firstName' },
+      { pdfField: 'goal_via_submission', sourcePath: 'submission.goals' },
+      { pdfField: 'goal_via_form', sourcePath: 'form.goals' }
+    ]
+  })
+  const profile = store.createProfile(user, { kind: 'client', firstName: 'Morgan', lastName: 'Prefix', stage: 'intake' })
+  const formTemplate = store.createFormTemplate(user, {
+    name: 'Prefix Form',
+    sections: [{ key: 'goals', label: 'Goals', type: 'text' }]
+  })
+  const submission = store.createFormSubmission(user, {
+    clientId: profile.id,
+    templateId: formTemplate.id,
+    status: 'submitted',
+    data: { goals: 'Build emergency fund' }
+  })
+
+  const preview = store.previewTemplateMappings(user, template.id, {
+    clientId: profile.id,
+    submissionId: submission.id
+  })
+
+  const valueByField = Object.fromEntries(preview.rows.map((row) => [row.pdfField, row.value]))
+  assert.equal(valueByField.first_name, 'Morgan')
+  assert.equal(valueByField.goal_via_submission, 'Build emergency fund')
+  assert.equal(valueByField.goal_via_form, 'Build emergency fund')
+})
