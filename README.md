@@ -194,4 +194,4 @@ See `DEPLOYMENT.md` for deployment details.
 
 ### PII key rotation utility
 
-Run `node scripts/reencrypt-pii.mjs` to re-encrypt stored PII fields using the active key configured by `PII_ACTIVE_KEY_ID` and `PII_KEYRING`.
+Run `node scripts/reencrypt-pii.mjs` to re-encrypt stored PII fields using the active key configured by `PII_ACTIVE_KEY_ID` and `PII_KEYRING`. Add `--validate` to assert that no legacy `*Ciphertext` values remain and all encrypted envelopes use the active key ID. The script returns one JSON object with rotation metrics (`rotatedProfiles`, `rotatedFields`, `activeKeyId`) and an optional `validation` block when requested.
