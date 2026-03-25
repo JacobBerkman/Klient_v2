@@ -2,13 +2,13 @@ export class AnalyticsRepository {
   getStageCounts(_firmId) {
     throw new Error('Not implemented')
   }
-  getSummary(_user) {
+  getSummary(_firmContext) {
     throw new Error('Not implemented')
   }
-  listAuditEvents(_user) {
+  listAuditEvents(_firmContext) {
     throw new Error('Not implemented')
   }
-  listExports(_user) {
+  listExports(_firmContext) {
     throw new Error('Not implemented')
   }
 }

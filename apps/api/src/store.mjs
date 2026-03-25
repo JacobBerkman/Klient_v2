@@ -11,6 +11,7 @@ import {
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
+import { requireFirmContext, validateEntityOwnership } from './modules/shared/tenancy.mjs'
 
 const APP_SECRET = createHash('sha256').update(runtime.appSecret).digest()
 const SESSION_TTL_MS = 1000 * 60 * 60 * 8
@@ -909,6 +910,7 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return profile
     },
     updateProfile(user, profileId, patch) {
+      const firmContext = requireFirmContext(user, { method: 'store.updateProfile' })
       requirePermission(user, 'profiles:write')
       if (patch.kind === 'client') {
         patch.stage = null
@@ -917,8 +919,11 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       if (patch.kind === 'prospect' && !patch.stage) {
         patch.stage = 'discovery'
       }
-      const profile = state.profiles.find((entry) => entry.id === profileId && entry.firmId === user.firmId)
-      if (!profile) throw new Error('Profile not found.')
+      const profile = validateEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === profileId),
+        { entityName: 'Profile' }
+      )
       const nextPatch = { ...patch }
       if ('ssn' in nextPatch) {
         profile.pii = {
@@ -1122,9 +1127,13 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return household
     },
     addHouseholdMember(user, householdId, input) {
+      const firmContext = requireFirmContext(user, { method: 'store.addHouseholdMember' })
       requirePermission(user, 'households:write')
-      const household = state.households.find((entry) => entry.id === householdId && entry.firmId === user.firmId)
-      if (!household) throw new Error('Household not found.')
+      const household = validateEntityOwnership(
+        firmContext,
+        state.households.find((entry) => entry.id === householdId),
+        { entityName: 'Household' }
+      )
       const member = { householdId, clientId: input.clientId, role: input.role, firmId: user.firmId, createdAt: now() }
       state.householdMembers.push(member)
       const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId)
@@ -1533,11 +1542,13 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return documentTemplateAdapter(template)
     },
     updateTemplateMappings(user, templateId, mappings) {
+      const firmContext = requireFirmContext(user, { method: 'store.updateTemplateMappings' })
       requirePermission(user, 'templates:write')
-      const template = state.templateAggregates.find(
-        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      const template = validateEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
       )
-      if (!template) throw new Error('Template not found.')
       template.mappings = mappings || []
       template.mappingRules = template.mappings
       template.versions.push(
@@ -1555,11 +1566,13 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return documentTemplateAdapter(template)
     },
     publishTemplate(user, templateId) {
+      const firmContext = requireFirmContext(user, { method: 'store.publishTemplate' })
       requirePermission(user, 'templates:write')
-      const template = state.templateAggregates.find(
-        (entry) => entry.id === templateId && entry.firmId === user.firmId && entry.kind !== 'form'
+      const template = validateEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
       )
-      if (!template) throw new Error('Template not found.')
       const previousState = template.publishState || 'draft'
       template.publishState = 'published'
       template.status = 'published'
@@ -1623,9 +1636,11 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return queued
     },
     retryExport(user, exportId) {
+      const firmContext = requireFirmContext(user, { method: 'store.retryExport' })
       requirePermission(user, 'exports:write')
-      const job = state.exportJobs.find((entry) => entry.id === exportId && entry.firmId === user.firmId)
-      if (!job) throw new Error('Export not found.')
+      validateEntityOwnership(firmContext, state.exportJobs.find((entry) => entry.id === exportId), {
+        entityName: 'Export'
+      })
       const updated = requeueExportJob(exportId)
       if (!updated) throw new Error('Export not found.')
       state.exportJobs = state.exportJobs.map((entry) => (entry.id === exportId ? updated : entry))
@@ -1719,7 +1734,14 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     objectStorage,
     removeHouseholdMember(user, householdId, clientId) {
+      const firmContext = requireFirmContext(user, { method: 'store.removeHouseholdMember' })
       requirePermission(user, 'households:write')
+      validateEntityOwnership(firmContext, state.households.find((entry) => entry.id === householdId), {
+        entityName: 'Household'
+      })
+      validateEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === clientId), {
+        entityName: 'Profile'
+      })
       state.householdMembers = state.householdMembers.filter(
         (entry) => !(entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId)
       )
@@ -1759,17 +1781,23 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
       return spouse
     },
     updateSubmission(user, submissionId, patch) {
+      const firmContext = requireFirmContext(user, { method: 'store.updateSubmission' })
       requirePermission(user, 'forms:write')
-      const submission = state.formSubmissions.find(
-        (entry) => entry.id === submissionId && entry.firmId === user.firmId
+      const submission = validateEntityOwnership(
+        firmContext,
+        state.formSubmissions.find((entry) => entry.id === submissionId),
+        { entityName: 'Submission' }
       )
-      if (!submission) throw new Error('Submission not found.')
       Object.assign(submission, patch, { updatedAt: now() })
       persist()
       return submission
     },
     deleteSubmission(user, submissionId) {
+      const firmContext = requireFirmContext(user, { method: 'store.deleteSubmission' })
       requirePermission(user, 'forms:write')
+      validateEntityOwnership(firmContext, state.formSubmissions.find((entry) => entry.id === submissionId), {
+        entityName: 'Submission'
+      })
       state.formSubmissions = state.formSubmissions.filter(
         (entry) => !(entry.id === submissionId && entry.firmId === user.firmId)
       )

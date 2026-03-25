@@ -1,11 +1,11 @@
 export class PipelineRepository {
-  getBoard(_user) {
+  getBoard(_firmContext) {
     throw new Error('Not implemented')
   }
-  reorderBoard(_user, _input) {
+  reorderBoard(_firmContext, _input) {
     throw new Error('Not implemented')
   }
-  normalizeBoardOrdering(_user) {
+  normalizeBoardOrdering(_firmContext) {
     throw new Error('Not implemented')
   }
 }
