@@ -17,6 +17,8 @@ import {
 } from './storage.mjs';
 import { createStore } from './store.mjs';
 import { createModules } from './modules/index.mjs';
+import { createKeyProvider } from './pii-crypto.mjs';
+import { createRuntimeKmsAdapter } from './kms-adapter.mjs';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 const publicDir = resolve(__dirname, '../../web/public');
@@ -440,8 +442,15 @@ export function createHttpServer({ modules }) {
   });
 }
 
-function startServer() {
-  const store = createStore();
+export function bootstrapPiiKeyProvider() {
+  if (runtime.piiKeyProvider !== 'kms') return null;
+  const kmsAdapter = createRuntimeKmsAdapter(runtime);
+  return createKeyProvider(runtime, { kmsAdapter });
+}
+
+export function startServer() {
+  const piiKeyProvider = bootstrapPiiKeyProvider();
+  const store = createStore({ piiKeyProvider });
   const reads = new SqliteReadRepository();
   const modules = createModules({ store, reads });
   const server = createHttpServer({ modules });

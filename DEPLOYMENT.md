@@ -19,6 +19,22 @@ LOG_LEVEL=info
 ```
 
 ### Production requirements
+
+### PII KMS key provider configuration
+If you set `PII_KEY_PROVIDER=kms`, configure the bootstrap key adapter values as well:
+
+```bash
+PII_KEY_PROVIDER=kms
+PII_KMS_KEY_ALIAS=pii-master
+PII_KMS_ACTIVE_KEY_ID=kms-key-v1
+PII_KMS_KEYRING={"kms-key-v1":"plain:base-key-material-v1"}
+```
+
+Required behavior and validation:
+- `PII_KMS_KEYRING` must be a JSON object keyed by key id.
+- `PII_KMS_ACTIVE_KEY_ID` must exist in `PII_KMS_KEYRING` at startup.
+- Key material values are decrypted by the KMS adapter before use; unreadable key material fails startup/initialization.
+- Rotation requires adding the next key id to `PII_KMS_KEYRING` before switching `PII_KMS_ACTIVE_KEY_ID`.
 - `APP_SECRET` must be set to a long random value.
 - Passwords accepted by registration, invite acceptance, and password reset must satisfy the runtime password policy.
 - Sessions expire after 8 hours.

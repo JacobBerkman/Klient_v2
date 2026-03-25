@@ -374,12 +374,13 @@ function seedState() {
   };
 }
 
-export function createStore({ objectStorage = defaultObjectStorage } = {}) {
+export function createStore({ objectStorage = defaultObjectStorage, piiKeyProvider = null } = {}) {
   const state = loadState(seedState);
   migrateTemplateSystems(state);
   saveState(state);
   state.pendingUploadIntents ||= [];
 
+  const configuredPiiKeyProvider = piiKeyProvider;
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
     return {
       bucket: metadata.bucket,
@@ -1582,6 +1583,9 @@ export function createStore({ objectStorage = defaultObjectStorage } = {}) {
     },
     __clearTestHooks() {
       testHooks = {};
+    },
+    __getPiiKeyProvider() {
+      return configuredPiiKeyProvider;
     }
   };
 }
