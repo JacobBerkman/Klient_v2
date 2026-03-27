@@ -12,7 +12,11 @@ const state = {
     login: null,
     enrollment: null
   },
-  templatePreviewByTemplateId: {}
+  templatePreviewByTemplateId: {},
+  inlineProfileUi: {
+    prospect: {},
+    client: {}
+  }
 }
 
 const viewEl = document.querySelector('#view')
@@ -246,6 +250,117 @@ async function ensureStageConfig(force = false) {
 
 function findBoardColumn(board, stage) {
   return board?.columns?.find((column) => column.stage === stage) || null
+}
+
+function editableProfileFieldsFromCard(card = {}) {
+  return {
+    firstName: card.firstName || '',
+    lastName: card.lastName || '',
+    email: card.email || '',
+    phone: card.phone || ''
+  }
+}
+
+function boardKeyForKind(kind) {
+  return kind === 'prospect' ? 'board' : 'clientBoard'
+}
+
+function ensureInlineProfileState(kind, profileId, card = null) {
+  if (!state.inlineProfileUi[kind]) state.inlineProfileUi[kind] = {}
+  if (!state.inlineProfileUi[kind][profileId]) {
+    const fields = editableProfileFieldsFromCard(card || {})
+    state.inlineProfileUi[kind][profileId] = {
+      draft: { ...fields },
+      latest: { ...fields },
+      expectedUpdatedAt: card?.updatedAt || '',
+      dirty: false,
+      saving: false,
+      conflictMessage: '',
+      isEditing: false
+    }
+  }
+  const entry = state.inlineProfileUi[kind][profileId]
+  if (card) {
+    const latest = editableProfileFieldsFromCard(card)
+    entry.latest = { ...latest }
+    entry.expectedUpdatedAt = card.updatedAt || ''
+    if (!entry.dirty && !entry.saving) {
+      entry.draft = { ...latest }
+    }
+  }
+  return entry
+}
+
+function updateInlineDirtyState(kind, profileId) {
+  const entry = ensureInlineProfileState(kind, profileId)
+  entry.dirty = Object.keys(entry.latest).some((key) => (entry.draft[key] || '') !== (entry.latest[key] || ''))
+  return entry
+}
+
+function setInlineDraftField(kind, profileId, field, value) {
+  const entry = ensureInlineProfileState(kind, profileId)
+  entry.draft[field] = typeof value === 'string' ? value : ''
+  entry.conflictMessage = ''
+  updateInlineDirtyState(kind, profileId)
+}
+
+function beginInlineSave(kind, profileId) {
+  const entry = ensureInlineProfileState(kind, profileId)
+  entry.saving = true
+  entry.conflictMessage = ''
+}
+
+function completeInlineSave(kind, profileId, card = null) {
+  const entry = ensureInlineProfileState(kind, profileId, card)
+  if (card) {
+    const fields = editableProfileFieldsFromCard(card)
+    entry.latest = { ...fields }
+    entry.draft = { ...fields }
+    entry.expectedUpdatedAt = card.updatedAt || ''
+  }
+  entry.dirty = false
+  entry.saving = false
+  entry.conflictMessage = ''
+  entry.isEditing = false
+}
+
+function failInlineSave(kind, profileId, conflictMessage = '') {
+  const entry = ensureInlineProfileState(kind, profileId)
+  entry.saving = false
+  entry.conflictMessage = conflictMessage || ''
+}
+
+function cancelInlineDraft(kind, profileId, card = null) {
+  const entry = ensureInlineProfileState(kind, profileId, card)
+  entry.draft = { ...entry.latest }
+  entry.dirty = false
+  entry.saving = false
+  entry.conflictMessage = ''
+  entry.isEditing = false
+}
+
+function inlineStatusMarkup(entry) {
+  const badges = []
+  if (entry.conflictMessage) {
+    badges.push('<span class="badge subtle inline-status-badge inline-status-conflict">Conflict</span>')
+  } else if (entry.saving) {
+    badges.push('<span class="badge subtle inline-status-badge inline-status-saving">Saving…</span>')
+  } else if (entry.dirty) {
+    badges.push('<span class="badge subtle inline-status-badge inline-status-dirty">Unsaved</span>')
+  }
+  const message = entry.conflictMessage
+    ? escapeHtml(entry.conflictMessage)
+    : entry.saving
+      ? 'Saving profile changes…'
+      : entry.dirty
+        ? 'Unsaved changes.'
+        : 'Synced'
+  return `
+    <div class="inline-status-row">
+      ${badges.join('')}
+      <span class="muted inline-status-text">${message}</span>
+    </div>
+  `
 }
 
 function buildBoardFromProfiles(profiles = []) {
@@ -482,6 +597,61 @@ function metricCard(label, value) {
   return `<div class="stat"><strong>${escapeHtml(value)}</strong><div class="muted">${escapeHtml(label)}</div></div>`
 }
 
+function setWorkflowContext({ clientId = '', submissionId = '' } = {}) {
+  if (clientId) state.selectedClientId = clientId
+  if (submissionId) state.selectedSubmissionId = submissionId
+}
+
+function byLatestTimestampDesc(a = {}, b = {}) {
+  const aTime = Date.parse(a.updatedAt || a.createdAt || 0) || 0
+  const bTime = Date.parse(b.updatedAt || b.createdAt || 0) || 0
+  return bTime - aTime
+}
+
+function buildClientWorkflowMap(drafts = [], submissions = []) {
+  const workflowByClientId = new Map()
+  const ensureEntry = (clientId) => {
+    if (!workflowByClientId.has(clientId)) {
+      workflowByClientId.set(clientId, {
+        latestSubmissionId: '',
+        latestDraftId: '',
+        submissionCount: 0,
+        draftCount: 0
+      })
+    }
+    return workflowByClientId.get(clientId)
+  }
+
+  const draftsByClient = new Map()
+  drafts.forEach((draft) => {
+    if (!draft?.clientId) return
+    const rows = draftsByClient.get(draft.clientId) || []
+    rows.push(draft)
+    draftsByClient.set(draft.clientId, rows)
+  })
+  draftsByClient.forEach((rows, clientId) => {
+    const sorted = rows.slice().sort(byLatestTimestampDesc)
+    const entry = ensureEntry(clientId)
+    entry.latestDraftId = sorted[0]?.id || ''
+    entry.draftCount = rows.length
+  })
+
+  const submissionsByClient = new Map()
+  submissions.forEach((submission) => {
+    if (!submission?.clientId) return
+    const rows = submissionsByClient.get(submission.clientId) || []
+    rows.push(submission)
+    submissionsByClient.set(submission.clientId, rows)
+  })
+  submissionsByClient.forEach((rows, clientId) => {
+    const sorted = rows.slice().sort(byLatestTimestampDesc)
+    const entry = ensureEntry(clientId)
+    entry.latestSubmissionId = sorted[0]?.id || ''
+    entry.submissionCount = rows.length
+  })
+  return workflowByClientId
+}
+
 async function renderDashboard() {
   const data = await request(routes.dashboard())
   viewEl.innerHTML = `
@@ -621,6 +791,7 @@ async function renderForms() {
     ${alertMarkup()}
     <h2>Forms + Collaboration</h2>
     <p class="muted">Draft editing now uses revision IDs, short leases, and conflict-aware save prompts.</p>
+    <div class="muted compact workflow-context">Context: client <code>${escapeHtml(state.selectedClientId || 'n/a')}</code> · submission <code>${escapeHtml(state.selectedSubmissionId || 'n/a')}</code></div>
     <div class="stat-grid compact-stats">
       ${metricCard('templates', templates.length)}
       ${metricCard('drafts', drafts.length)}
@@ -1052,10 +1223,16 @@ async function renderTemplates() {
         <h3>Mapping Preview</h3>
         <div class="row gap-sm wrap">
           <select id="preview-client">${clients
-            .map((profile) => `<option value="${profile.id}">${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</option>`)
+            .map(
+              (profile) =>
+                `<option value="${profile.id}" ${profile.id === state.selectedClientId ? 'selected' : ''}>${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</option>`
+            )
             .join('')}</select>
           <select id="preview-submission">${submissions
-            .map((entry) => `<option value="${entry.id}">${escapeHtml(entry.id)} · ${escapeHtml(entry.templateId)}</option>`)
+            .map(
+              (entry) =>
+                `<option value="${entry.id}" ${entry.id === state.selectedSubmissionId ? 'selected' : ''}>${escapeHtml(entry.id)} · ${escapeHtml(entry.templateId)}</option>`
+            )
             .join('')}</select>
           <button id="run-preview" class="tiny">Run Preview</button>
         </div>
@@ -1243,10 +1420,18 @@ async function renderTemplates() {
     await renderTemplates()
   })
 
+  document.querySelector('#preview-client')?.addEventListener('change', (event) => {
+    setWorkflowContext({ clientId: event.target.value })
+  })
+  document.querySelector('#preview-submission')?.addEventListener('change', (event) => {
+    setWorkflowContext({ submissionId: event.target.value })
+  })
+
   document.querySelector('#run-preview')?.addEventListener('click', async () => {
     try {
       const clientId = document.querySelector('#preview-client')?.value
       const submissionId = document.querySelector('#preview-submission')?.value
+      setWorkflowContext({ clientId, submissionId })
       const nextPreview = await request(routes.documentTemplateMappingsPreview(template.id), {
         method: 'POST',
         body: JSON.stringify({ clientId, submissionId })
@@ -1326,16 +1511,42 @@ async function renderTemplates() {
 }
 
 function boardCardMarkup(card, kind) {
+  const canEdit = canMutateProfiles()
+  const inlineState = ensureInlineProfileState(kind, card.id, card)
   const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
   const cardStage = card.stage || getStageDefinitions({ includeInactive: false })[0]?.id || 'discovery'
+  const workflow = card.workflowSummary || {}
+  const workflowActionsMarkup =
+    kind === 'client'
+      ? `
+      <div class="workflow-shortcuts" data-workflow-card="${card.id}">
+        <button type="button" class="secondary tiny workflow-shortcut" data-open-profile-detail="${card.id}">Profile detail</button>
+        ${
+          workflow.latestSubmissionId
+            ? `<a class="secondary tiny workflow-shortcut-link" href="#${appRoutes.clientFormSubmission(card.id, workflow.latestSubmissionId)}" data-workflow-client="${card.id}" data-workflow-submission="${workflow.latestSubmissionId}">Edit submission</a>`
+            : `<button type="button" class="secondary tiny workflow-shortcut" disabled>No submission</button>`
+        }
+        ${
+          workflow.latestDraftId
+            ? `<a class="secondary tiny workflow-shortcut-link" href="#${appRoutes.clientFormSubmission(card.id, workflow.latestDraftId)}" data-workflow-client="${card.id}" data-workflow-submission="${workflow.latestDraftId}">Edit draft</a>`
+            : `<button type="button" class="secondary tiny workflow-shortcut" disabled>No draft</button>`
+        }
+        <button type="button" class="secondary tiny workflow-shortcut" data-open-doc-actions="${card.id}" data-workflow-submission="${workflow.latestSubmissionId || workflow.latestDraftId || ''}">Document actions</button>
+      </div>
+      <div class="muted compact-meta">Forms: ${workflow.submissionCount || 0} submissions · ${workflow.draftCount || 0} drafts</div>
+      <div class="hidden card-detail muted compact-meta top-gap" data-profile-detail="${card.id}"></div>
+    `
+      : ''
   return `
     <article class="board-card" draggable="true" data-card-id="${card.id}" data-stage="${cardStage}">
       <header class="row between wrap">
         <strong>${escapeHtml(displayName)}</strong>
         <button type="button" class="secondary tiny" data-edit-profile="${card.id}" aria-expanded="false" ${canEdit ? '' : 'disabled'}>Edit</button>
       </header>
+      ${inlineStatusMarkup(inlineState)}
       <div class="muted compact-meta">${escapeHtml(card.email || 'No email')} · ${escapeHtml(card.phone || 'No phone')}</div>
       <div class="muted compact-meta">Stage: ${escapeHtml(stageLabel(cardStage))}</div>
+      ${workflowActionsMarkup}
       <div class="row gap-sm wrap top-gap">
         <label class="sr-only" for="stage-${card.id}">Move ${escapeHtml(displayName)} to stage</label>
         <select id="stage-${card.id}" data-stage-select="${card.id}">
@@ -1344,14 +1555,14 @@ function boardCardMarkup(card, kind) {
       </div>
       <form class="inline-edit hidden top-gap" data-edit-form="${card.id}" data-updated-at="${escapeHtml(card.updatedAt || '')}">
         <div class="grid two">
-          <input name="firstName" value="${escapeHtml(card.firstName || '')}" placeholder="First name" required />
-          <input name="lastName" value="${escapeHtml(card.lastName || '')}" placeholder="Last name" required />
+          <input name="firstName" value="${escapeHtml(inlineState.draft.firstName || '')}" placeholder="First name" required />
+          <input name="lastName" value="${escapeHtml(inlineState.draft.lastName || '')}" placeholder="Last name" required />
         </div>
-        <input name="email" type="email" value="${escapeHtml(card.email || '')}" placeholder="Email" />
-        <input name="phone" value="${escapeHtml(card.phone || '')}" placeholder="Phone" />
+        <input name="email" type="email" value="${escapeHtml(inlineState.draft.email || '')}" placeholder="Email" />
+        <input name="phone" value="${escapeHtml(inlineState.draft.phone || '')}" placeholder="Phone" />
         <div class="actions-row">
-          <button type="submit" class="tiny" ${canEdit ? '' : 'disabled'}>${pendingLabel(`profile-save-${card.id}`, 'Save', 'Saving…')}</button>
-          <button type="button" class="secondary tiny" data-cancel-edit="${card.id}" ${canEdit ? '' : 'disabled'}>Cancel</button>
+          <button type="submit" class="tiny" ${canEdit && inlineState.dirty && !inlineState.saving ? '' : 'disabled'}>${inlineState.saving ? 'Saving…' : 'Save'}</button>
+          <button type="button" class="secondary tiny" data-cancel-edit="${card.id}" ${canEdit && !inlineState.saving ? '' : 'disabled'}>Cancel</button>
         </div>
       </form>
       <div class="muted compact-meta">Type: ${escapeHtml(kind)}</div>
@@ -1415,22 +1626,38 @@ async function reorderCard(kind, move) {
 }
 
 async function saveInlineProfile(kind, profileId, patch, expectedUpdatedAt = '') {
-  const boardKey = kind === 'prospect' ? 'board' : 'clientBoard'
+  const boardKey = boardKeyForKind(kind)
   const previousBoard = state[boardKey] ? structuredClone(state[boardKey]) : null
+  beginInlineSave(kind, profileId)
   if (previousBoard) state[boardKey] = updateCardInBoard(previousBoard, profileId, patch)
   try {
-    const latest = await request(routes.profileDetail(profileId))
-    if (expectedUpdatedAt && latest?.profile?.updatedAt && latest.profile.updatedAt !== expectedUpdatedAt) {
-      throw new Error('Conflict detected: this profile was edited elsewhere. Review latest data and try again.')
-    }
-    await request(`/api/profiles/${profileId}`, {
+    const saved = await request(`/api/profiles/${profileId}`, {
       method: 'PATCH',
-      body: JSON.stringify(patch)
+      body: JSON.stringify({
+        ...patch,
+        expectedUpdatedAt: expectedUpdatedAt || undefined
+      })
     })
+    if (saved?.id) {
+      state[boardKey] = updateCardInBoard(state[boardKey], profileId, saved)
+      completeInlineSave(kind, profileId, saved)
+    } else {
+      completeInlineSave(kind, profileId)
+    }
   } catch (error) {
     state[boardKey] = previousBoard
+    failInlineSave(kind, profileId, isConflictError(error) ? normalizeConflictMessage(error) : '')
     throw error
   }
+}
+
+async function refreshInlineProfileFromLatestBoard(kind, profileId) {
+  const boardKey = boardKeyForKind(kind)
+  const latest = await request(routes.profileDetail(profileId))
+  const latestProfile = latest?.profile || latest
+  if (!latestProfile?.id) return
+  state[boardKey] = updateCardInBoard(state[boardKey], profileId, latestProfile)
+  cancelInlineDraft(kind, profileId, latestProfile)
 }
 
 function wireBoardInteractions(kind) {
@@ -1492,20 +1719,36 @@ function wireBoardInteractions(kind) {
       if (!canMutate) return
       const profileId = button.dataset.editProfile
       const form = document.querySelector(`[data-edit-form="${profileId}"]`)
+      const boardKey = boardKeyForKind(kind)
+      const card = state[boardKey]?.columns?.flatMap((column) => column.cards)?.find((entry) => entry.id === profileId)
+      const inlineState = ensureInlineProfileState(kind, profileId, card)
       form?.classList.toggle('hidden')
+      inlineState.isEditing = !form?.classList.contains('hidden')
       button.setAttribute('aria-expanded', String(!form?.classList.contains('hidden')))
     })
   })
   document.querySelectorAll('[data-cancel-edit]').forEach((button) => {
     button.addEventListener('click', async () => {
+      const profileId = button.dataset.cancelEdit
+      try {
+        await refreshInlineProfileFromLatestBoard(kind, profileId)
+      } catch (error) {
+        failInlineSave(kind, profileId, isConflictError(error) ? normalizeConflictMessage(error) : error?.message || '')
+      }
       await renderCurrentView()
     })
   })
   document.querySelectorAll('[data-edit-form]').forEach((form) => {
+    const profileId = form.dataset.editForm
+    form.querySelectorAll('input').forEach((input) => {
+      input.addEventListener('input', () => {
+        setInlineDraftField(kind, profileId, input.name, input.value)
+      })
+    })
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
-      const profileId = form.dataset.editForm
-      const payload = Object.fromEntries(new FormData(form).entries())
+      const inlineState = ensureInlineProfileState(kind, profileId)
+      const payload = { ...inlineState.draft }
       const submitButton = form.querySelector('button[type="submit"]')
       if (submitButton) {
         submitButton.disabled = true
@@ -1513,7 +1756,7 @@ function wireBoardInteractions(kind) {
       }
       setAlert('success', `Saving profile ${profileId} optimistically…`)
       try {
-        await saveInlineProfile(kind, profileId, payload, form.dataset.updatedAt || '')
+        await saveInlineProfile(kind, profileId, payload, inlineState.expectedUpdatedAt || form.dataset.updatedAt || '')
         clearAlert()
         reportActionSuccess('Profiles', 'Profile updated.')
       } catch (error) {
@@ -1523,7 +1766,7 @@ function wireBoardInteractions(kind) {
       } finally {
         if (submitButton) {
           submitButton.disabled = false
-          submitButton.textContent = 'Save'
+          submitButton.textContent = ensureInlineProfileState(kind, profileId).saving ? 'Saving…' : 'Save'
         }
       }
       await renderCurrentView()
@@ -1542,6 +1785,56 @@ function wireBoardInteractions(kind) {
       await renderCurrentView()
     })
   })
+
+  document.querySelectorAll('[data-workflow-client]').forEach((link) => {
+    link.addEventListener('click', () => {
+      setWorkflowContext({
+        clientId: link.dataset.workflowClient || '',
+        submissionId: link.dataset.workflowSubmission || ''
+      })
+    })
+  })
+
+  document.querySelectorAll('[data-open-doc-actions]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const clientId = button.dataset.openDocActions
+      const submissionId = button.dataset.workflowSubmission || ''
+      setWorkflowContext({ clientId, submissionId })
+      state.view = 'templates'
+      setFlash('success', `Document actions opened for client ${clientId}.`)
+      await renderCurrentView()
+    })
+  })
+
+  document.querySelectorAll('[data-open-profile-detail]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const profileId = button.dataset.openProfileDetail
+      const detailEl = document.querySelector(`[data-profile-detail="${profileId}"]`)
+      if (!detailEl) return
+      const isVisible = !detailEl.classList.contains('hidden')
+      if (isVisible) {
+        detailEl.classList.add('hidden')
+        return
+      }
+      try {
+        let detail = state.profileDetailById[profileId]
+        if (!detail) {
+          detail = await request(routes.profileDetail(profileId))
+          state.profileDetailById[profileId] = detail
+        }
+        const summary = detail?.profile || {}
+        const submissionsCount = Array.isArray(detail?.submissions) ? detail.submissions.length : 0
+        const notesCount = Array.isArray(detail?.notes) ? detail.notes.length : 0
+        detailEl.innerHTML = `Household: ${escapeHtml(detail?.household?.name || '—')} · Status: ${escapeHtml(
+          summary.status || '—'
+        )} · Submissions: ${submissionsCount} · Notes: ${notesCount}`
+        detailEl.classList.remove('hidden')
+      } catch (error) {
+        setFlash('error', `Failed to load profile detail: ${error.message}`)
+        await renderCurrentView()
+      }
+    })
+  })
 }
 
 async function renderBoard(kind) {
@@ -1555,8 +1848,17 @@ async function renderBoard(kind) {
     return
   }
   await ensureStageConfig()
-  const clients = await request(routes.profiles({ kind: 'client' }))
-  state.clientBoard = buildBoardFromProfiles(clients)
+  const [clients, drafts, submissions] = await Promise.all([
+    request(routes.profiles({ kind: 'client' })),
+    request(routes.formDrafts()),
+    request(routes.formSubmissions())
+  ])
+  const workflowByClientId = buildClientWorkflowMap(drafts, submissions)
+  const clientsWithWorkflow = clients.map((client) => ({
+    ...client,
+    workflowSummary: workflowByClientId.get(client.id) || { latestSubmissionId: '', latestDraftId: '', submissionCount: 0, draftCount: 0 }
+  }))
+  state.clientBoard = buildBoardFromProfiles(clientsWithWorkflow)
   viewEl.innerHTML = boardMarkup(kind, state.clientBoard)
   wireBoardInteractions(kind)
 }
@@ -1719,8 +2021,7 @@ function applyHashRoute() {
   const route = appRoutes.parseClientFormSubmission(hashPath)
   if (!route) return
   state.view = 'forms'
-  state.selectedClientId = route.clientId
-  state.selectedSubmissionId = route.submissionId
+  setWorkflowContext({ clientId: route.clientId, submissionId: route.submissionId })
   setFlash('success', `Editing submission ${route.submissionId} for client ${route.clientId}.`)
 }
 
