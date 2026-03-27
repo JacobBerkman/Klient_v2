@@ -6,6 +6,7 @@ const defaultEvidenceDir = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_D
 
 const gateSteps = [
   { name: 'Static syntax checks', command: 'npm', args: ['run', 'check:syntax'], evidenceFile: null },
+  { name: 'Conflict marker guard', command: 'npm', args: ['run', 'check:conflicts'], evidenceFile: null },
   {
     name: 'API contract tests',
     command: 'npm',
