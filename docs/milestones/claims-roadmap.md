@@ -16,6 +16,7 @@ This document defines planned delivery milestones for user-facing claims that ar
 
 ## Milestone M3: Export automation
 
+- **Status:** `implemented` (completed 2026-03-27).
 - **Claim status target:** move from `roadmap` to `implemented`.
 - **Feature flag indicator:** `FF_EXPORT_AUTOMATION`.
 - **Scope:**
@@ -23,5 +24,5 @@ This document defines planned delivery milestones for user-facing claims that ar
   - retry-safe worker lifecycle,
   - downloadable export artifact tracking in advisor UI.
 - **Exit criteria:**
-  - smoke coverage includes successful export completion,
-  - queue + worker telemetry included in release evidence.
+  - smoke coverage includes successful export completion ✅,
+  - queue + worker telemetry included in release evidence ✅.
