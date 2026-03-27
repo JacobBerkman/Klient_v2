@@ -1093,7 +1093,37 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
-      if (pathname.startsWith('/api/forms/submissions/') && req.method === 'PATCH') {
+      const submissionSectionItemMatch = pathname.match(
+        /^\/api\/forms\/submissions\/([^/]+)\/sections\/([^/]+)\/items\/([^/]+)$/
+      )
+      if (submissionSectionItemMatch && req.method === 'PATCH') {
+        const [, submissionId, sectionKey, itemKey] = submissionSectionItemMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteForms')
+        const result = modules.forms.updateSubmissionSectionItem(
+          user,
+          decodeURIComponent(submissionId),
+          decodeURIComponent(sectionKey),
+          decodeURIComponent(itemKey),
+          await parseBody(req)
+        )
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (submissionSectionItemMatch && req.method === 'DELETE') {
+        const [, submissionId, sectionKey, itemKey] = submissionSectionItemMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteForms')
+        const result = modules.forms.deleteSubmissionSectionItem(
+          user,
+          decodeURIComponent(submissionId),
+          decodeURIComponent(sectionKey),
+          decodeURIComponent(itemKey)
+        )
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (/^\/api\/forms\/submissions\/[^/]+$/.test(pathname) && req.method === 'PATCH') {
         const id = pathname.split('/')[4]
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
@@ -1101,7 +1131,7 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
-      if (pathname.startsWith('/api/forms/submissions/') && req.method === 'DELETE') {
+      if (/^\/api\/forms\/submissions\/[^/]+$/.test(pathname) && req.method === 'DELETE') {
         const id = pathname.split('/')[4]
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
