@@ -13,10 +13,8 @@ const state = {
     enrollment: null
   },
   templatePreviewByTemplateId: {},
-  inlineProfileUi: {
-    prospect: {},
-    client: {}
-  }
+  templatePublishPreflightByTemplateId: {},
+  templatePreviewSelectionByTemplateId: {}
 }
 
 const viewEl = document.querySelector('#view')
@@ -1004,13 +1002,26 @@ function collectTemplateSchemaPaths(fields = [], parentPath = '', output = new M
 
 function mappingLocalIssues(mapping, knownPaths) {
   const issues = []
+  const pdfField = String(mapping.pdfField || '').trim()
   const sourcePath = String(mapping.sourcePath || '').trim()
   const targetType = String(mapping.targetType || '').trim()
+  const transformType = String(mapping.transformType || '').trim()
+  const transformExpression = String(mapping.transformExpression || '').trim()
+  if (!pdfField) issues.push('Missing PDF field')
+  if (!sourcePath) issues.push('Missing source path')
   if (sourcePath && !knownPaths.has(sourcePath)) issues.push('Unknown source path')
   const sourceType = sourcePath ? knownPaths.get(sourcePath) : ''
-  if (sourceType && targetType && sourceType !== targetType)
-    issues.push(`Type mismatch (${sourceType} → ${targetType})`)
+  if (sourceType && targetType && sourceType !== targetType) issues.push(`Type mismatch (${sourceType} → ${targetType})`)
+  if (transformType === 'expression' && !transformExpression) issues.push('Missing transform expression')
   return issues
+}
+
+function formatSchemaIssue(issue = {}) {
+  const path = String(issue.path || issue.field || 'mapping')
+  const message = String(issue.message || issue.code || 'Validation issue')
+  const rowIndex = Number(issue.rowIndex)
+  const rowPrefix = Number.isFinite(rowIndex) ? `Row ${rowIndex + 1}: ` : ''
+  return `${rowPrefix}${path} — ${message}`
 }
 
 function previewWarningMarkup(warnings = []) {
@@ -1096,6 +1107,8 @@ async function renderTemplates() {
 
   const mappingIssuesByIndex = new Map(draftMappings.map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
+  const preflight = template ? state.templatePublishPreflightByTemplateId[template.id] : null
+  const preflightIssues = Array.isArray(preflight?.issues) ? preflight.issues : []
   const previewWarningRows = new Set(
     (preview?.rows || [])
       .filter((row) => Array.isArray(row.warnings) && row.warnings.length)
@@ -1106,7 +1119,7 @@ async function renderTemplates() {
   const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
   const hasBlockingPreviewWarnings =
     Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
-  const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings
+  const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings || preflightIssues.length > 0
 
   const selectedRowIndex = Number.isInteger(state.templateInspector?.[template?.id]?.rowIndex)
     ? state.templateInspector[template.id].rowIndex
@@ -1260,9 +1273,13 @@ async function renderTemplates() {
       </section>
       <section class="item">
         <h3>Publish</h3>
-        <button id="publish-template" class="tiny publish-action" ${publishDisabled ? 'disabled' : ''}>Publish</button>
+        <div class="row gap-sm wrap">
+          <button id="run-publish-preflight" class="tiny secondary">Run Publish Preflight</button>
+          <button id="publish-template" class="tiny publish-action" ${publishDisabled ? 'disabled' : ''}>Publish</button>
+        </div>
         ${hasLocalMappingErrors ? '<p class="publish-disabled-reason">Publish is blocked until local mapping errors are resolved.</p>' : ''}
         ${hasBlockingPreviewWarnings ? '<p class="publish-disabled-reason">Publish is blocked by preview validation issues. Resolve highlighted rows first.</p>' : ''}
+        ${preflightIssues.length ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s).</p><ul>${preflightIssues.map((issue) => `<li>${escapeHtml(formatSchemaIssue(issue))}</li>`).join('')}</ul>` : '<p class="muted">Run preflight to surface publish-time schema validation (unknown source paths, required mappings, and transform issues) before attempting publish.</p>'}
       </section>
       <section class="item">
         <h3>Version History</h3>
@@ -1444,6 +1461,33 @@ async function renderTemplates() {
     }
   })
 
+  document.querySelector('#run-publish-preflight')?.addEventListener('click', async () => {
+    try {
+      const clientId = document.querySelector('#preview-client')?.value
+      const submissionId = document.querySelector('#preview-submission')?.value
+      const nextPreview = await request(routes.documentTemplateMappingsPreview(template.id), {
+        method: 'POST',
+        body: JSON.stringify({ clientId, submissionId })
+      })
+      state.templatePreviewByTemplateId[template.id] = nextPreview
+      state.templatePublishPreflightByTemplateId[template.id] = {
+        checkedAt: new Date().toISOString(),
+        issues: nextPreview.issues || [],
+        warningsCount: nextPreview.warningsCount || 0,
+        blockingWarningsCount: nextPreview.blockingWarningsCount || 0
+      }
+      if ((nextPreview.issues || []).length) {
+        setFlash('error', `Publish preflight found ${(nextPreview.issues || []).length} schema issue(s).`)
+      } else {
+        setFlash('success', 'Publish preflight passed with no schema validation issues.')
+      }
+    } catch (error) {
+      state.templatePublishPreflightByTemplateId[template.id] = { issues: error?.details?.issues || [] }
+      reportActionError('Template publish preflight', error)
+    }
+    await renderTemplates()
+  })
+
   document.querySelectorAll('[data-jump-rowindex]').forEach((button) => {
     button.addEventListener('click', () => {
       const rowIndex = Number(button.dataset.jumpRowindex)
@@ -1459,16 +1503,35 @@ async function renderTemplates() {
 
   document.querySelector('#publish-template')?.addEventListener('click', async () => {
     try {
-      const latestPreview = state.templatePreviewByTemplateId[template.id] || null
+      const clientId = document.querySelector('#preview-client')?.value
+      const submissionId = document.querySelector('#preview-submission')?.value
+      const preflightPreview = await request(routes.documentTemplateMappingsPreview(template.id), {
+        method: 'POST',
+        body: JSON.stringify({ clientId, submissionId })
+      })
+      state.templatePreviewByTemplateId[template.id] = preflightPreview
+      state.templatePublishPreflightByTemplateId[template.id] = {
+        checkedAt: new Date().toISOString(),
+        issues: preflightPreview.issues || [],
+        warningsCount: preflightPreview.warningsCount || 0,
+        blockingWarningsCount: preflightPreview.blockingWarningsCount || 0
+      }
       const hasBlockingWarnings =
-        Number(latestPreview?.blockingWarningsCount || 0) > 0 || (latestPreview?.issues || []).some((issue) => issue.blocking)
+        Number(preflightPreview?.blockingWarningsCount || 0) > 0 || (preflightPreview?.issues || []).some((issue) => issue.blocking)
       if (hasBlockingWarnings) throw new Error('Publish blocked: preview contains blocking warnings/issues.')
       await request(routes.documentTemplatePublish(template.id), {
         method: 'POST',
-        body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Publish template mapping updates.' })
+        body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Publish template mapping updates.', enforceKnownSourcePaths: true })
       })
+      state.templatePublishPreflightByTemplateId[template.id] = { checkedAt: new Date().toISOString(), issues: [] }
       reportActionSuccess('Templates', 'Template published.')
     } catch (error) {
+      if (Array.isArray(error?.details?.issues)) {
+        state.templatePublishPreflightByTemplateId[template.id] = {
+          checkedAt: new Date().toISOString(),
+          issues: error.details.issues
+        }
+      }
       reportActionError('Templates', error)
     }
     await renderTemplates()
@@ -1486,6 +1549,8 @@ async function renderTemplates() {
     try {
       const baseVersion = Number(document.querySelector('#compare-base')?.value)
       const targetVersion = Number(document.querySelector('#compare-target')?.value)
+      if (!Number.isFinite(baseVersion) || !Number.isFinite(targetVersion)) throw new Error('Select two valid versions to compare.')
+      if (baseVersion === targetVersion) throw new Error('Choose different versions to compare changes.')
       const diff = await request(routes.documentTemplateCompare(template.id, { baseVersion, targetVersion }))
       document.querySelector('#compare-results').innerHTML = `<pre>${escapeHtml(JSON.stringify(diff, null, 2))}</pre>`
       reportActionSuccess('Templates', `Compared versions ${baseVersion} and ${targetVersion}.`)
@@ -1498,9 +1563,21 @@ async function renderTemplates() {
   document.querySelector('#revert-template-version')?.addEventListener('click', async () => {
     try {
       const targetVersion = Number(document.querySelector('#revert-version')?.value)
+      if (!Number.isFinite(targetVersion)) throw new Error('Select a valid version to revert to.')
+      const latestVersionNumber = Number(versions?.[0]?.version)
+      if (Number.isFinite(latestVersionNumber)) {
+        const previewDiff = await request(
+          routes.documentTemplateCompare(template.id, { baseVersion: targetVersion, targetVersion: latestVersionNumber })
+        )
+        if (!previewDiff.changed) {
+          reportActionSuccess('Templates', `Version ${targetVersion} already matches current state; no revert needed.`)
+          await renderTemplates()
+          return
+        }
+      }
       await request(routes.documentTemplateRevert(template.id), {
         method: 'POST',
-        body: JSON.stringify({ targetVersion, reason: `UI revert to version ${targetVersion}` })
+        body: JSON.stringify({ targetVersion, changelog: `UI revert to version ${targetVersion}` })
       })
       reportActionSuccess('Templates', `Reverted template to version ${targetVersion}.`)
     } catch (error) {
