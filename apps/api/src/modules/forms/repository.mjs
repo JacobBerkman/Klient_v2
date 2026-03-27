@@ -14,6 +14,15 @@ export class FormsRepository {
   createFormSubmission(_firmContext, _input) {
     throw new Error('Not implemented')
   }
+  acquireDraftLock(_firmContext, _submissionId, _input) {
+    throw new Error('Not implemented')
+  }
+  releaseDraftLock(_firmContext, _submissionId, _leaseId) {
+    throw new Error('Not implemented')
+  }
+  reviseDraftSubmission(_firmContext, _submissionId, _input) {
+    throw new Error('Not implemented')
+  }
   updateSubmission(_firmContext, _submissionId, _patch) {
     throw new Error('Not implemented')
   }

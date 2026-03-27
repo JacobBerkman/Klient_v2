@@ -4,15 +4,15 @@ This document defines planned delivery milestones for user-facing claims that ar
 
 ## Milestone M2: Draft collaboration hardening
 
-- **Claim status target:** move from `partial` to `implemented`.
-- **Feature flag indicator:** `FF_DRAFT_CONFLICT_GUARD`.
+- **Claim status target:** `implemented` ✅ (shipped on 2026-03-27).
+- **Feature flag indicator:** `FF_DRAFT_CONFLICT_GUARD` (retired after rollout).
 - **Scope:**
   - advisor/client concurrent edit conflict guardrails,
   - lock expiry recovery UX,
   - conflict resolution audit traces.
 - **Exit criteria:**
-  - integration coverage for concurrent edits,
-  - no unresolved SEV-1 defects in draft-save conflict handling.
+  - integration coverage for concurrent edits ✅,
+  - no unresolved SEV-1 defects in draft-save conflict handling ✅.
 
 ## Milestone M3: Export automation
 

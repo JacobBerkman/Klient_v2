@@ -20,6 +20,7 @@ async function jsonRequest(baseUrl, path, { token = '', method = 'GET', body } =
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     headers: {
+      'x-klient-auth-mode': 'bearer',
       ...(token ? { authorization: `Bearer ${token}` } : {}),
       ...(body ? { 'content-type': 'application/json' } : {})
     },
@@ -212,6 +213,170 @@ test('profile form flow edits repeater items via targeted endpoints and records 
     const auditEvents = await jsonRequest(baseUrl, '/api/audit', { token })
     assert.equal(auditEvents.response.status, 200)
     assert.ok(Array.isArray(auditEvents.payload), 'Expected audit endpoint to return an array payload.')
+  } finally {
+    await close(server)
+  }
+})
+
+test('draft conflict guard enforces lease recovery + revision checks and repeater stale preconditions', async () => {
+  const store = createStore()
+  const reads = {
+    listProfiles: () => [],
+    getProfileDetail: () => null,
+    readMaterializedSummary: () => null
+  }
+  const modules = createModules({ store, reads })
+  const server = createHttpServer({ modules })
+  const address = await listen(server)
+  const baseUrl = `http://${address.address}:${address.port}`
+
+  try {
+    const register = await jsonRequest(baseUrl, '/api/register', {
+      method: 'POST',
+      body: {
+        firmName: 'Conflict QA Firm',
+        firstName: 'Admin',
+        lastName: 'User',
+        email: `admin+draft-conflict-${randomUUID()}@qa.test`,
+        password: 'ChangeMe123!'
+      }
+    })
+    assert.equal(register.response.status, 201)
+    const token = register.payload.token
+
+    const createdProfile = await jsonRequest(baseUrl, '/api/profiles', {
+      token,
+      method: 'POST',
+      body: {
+        kind: 'client',
+        firstName: 'Robin',
+        lastName: 'Racer',
+        email: 'robin.racer@qa.test'
+      }
+    })
+    assert.equal(createdProfile.response.status, 201)
+
+    const createdSubmission = await jsonRequest(baseUrl, '/api/forms/submissions', {
+      token,
+      method: 'POST',
+      body: {
+        clientId: createdProfile.payload.id,
+        templateId: 'intake-form',
+        status: 'draft',
+        data: {
+          householdMembers: [{ id: 'member-1', fullName: 'Initial Name', relation: 'self' }]
+        }
+      }
+    })
+    assert.equal(createdSubmission.response.status, 201)
+    const draftId = createdSubmission.payload.id
+
+    const firstLock = await jsonRequest(baseUrl, `/api/forms/drafts/${draftId}/lock`, {
+      token,
+      method: 'POST',
+      body: { leaseMs: 30_000 }
+    })
+    assert.equal(firstLock.response.status, 200)
+    assert.equal(firstLock.payload.ok, true)
+    const originalLeaseId = firstLock.payload.lock.leaseId
+
+    const forcedExpired = await jsonRequest(baseUrl, `/api/forms/submissions/${draftId}`, {
+      token,
+      method: 'PATCH',
+      body: { lock: { ...firstLock.payload.lock, expiresAt: '2000-01-01T00:00:00.000Z' } }
+    })
+    assert.equal(forcedExpired.response.status, 200)
+
+    const expiredLeaseSave = await jsonRequest(baseUrl, `/api/forms/drafts/${draftId}`, {
+      token,
+      method: 'PATCH',
+      body: {
+        leaseId: originalLeaseId,
+        expectedRevisionId: 1,
+        data: { householdMembers: [{ id: 'member-1', fullName: 'Lease Expired', relation: 'self' }] }
+      }
+    })
+    assert.equal(expiredLeaseSave.response.status, 409)
+    assert.equal(expiredLeaseSave.payload.error.code, 'FORMS_DRAFT_REVISE_CONFLICT')
+    assert.equal(expiredLeaseSave.payload.error.details?.type, 'lease_conflict')
+    assert.equal(expiredLeaseSave.payload.error.details?.suggestedAction, 'refresh_then_reacquire_lock')
+
+    const secondLock = await jsonRequest(baseUrl, `/api/forms/drafts/${draftId}/lock`, {
+      token,
+      method: 'POST',
+      body: { leaseMs: 30_000 }
+    })
+    assert.equal(secondLock.response.status, 200)
+    assert.equal(secondLock.payload.ok, true)
+
+    const firstSave = await jsonRequest(baseUrl, `/api/forms/drafts/${draftId}`, {
+      token,
+      method: 'PATCH',
+      body: {
+        leaseId: secondLock.payload.lock.leaseId,
+        expectedRevisionId: secondLock.payload.revisionId,
+        data: { householdMembers: [{ id: 'member-1', fullName: 'First Save', relation: 'self' }] }
+      }
+    })
+    assert.equal(firstSave.response.status, 200)
+    assert.equal(firstSave.payload.ok, true)
+    assert.equal(firstSave.payload.submission.revisionId, 2)
+
+    const staleRevisionSave = await jsonRequest(baseUrl, `/api/forms/drafts/${draftId}`, {
+      token,
+      method: 'PATCH',
+      body: {
+        leaseId: firstSave.payload.submission.lock.leaseId,
+        expectedRevisionId: 1,
+        data: { householdMembers: [{ id: 'member-1', fullName: 'Stale Save', relation: 'self' }] }
+      }
+    })
+    assert.equal(staleRevisionSave.response.status, 409)
+    assert.equal(staleRevisionSave.payload.error.details?.type, 'revision_conflict')
+    assert.equal(staleRevisionSave.payload.error.details?.suggestedAction, 'refresh_then_merge_changes')
+    assert.equal(staleRevisionSave.payload.error.details?.serverRevisionId, 2)
+
+    const submissions = await jsonRequest(baseUrl, '/api/forms/submissions', { token })
+    assert.equal(submissions.response.status, 200)
+    const latest = submissions.payload.find((entry) => entry.id === draftId)
+    assert.ok(latest?.updatedAt)
+
+    const repeaterUpdate = await jsonRequest(
+      baseUrl,
+      `/api/forms/submissions/${draftId}/sections/householdMembers/items/member-1`,
+      {
+        token,
+        method: 'PATCH',
+        body: { fullName: 'Fresh Update', expectedUpdatedAt: latest.updatedAt }
+      }
+    )
+    assert.equal(repeaterUpdate.response.status, 200)
+
+    const staleRepeaterUpdate = await jsonRequest(
+      baseUrl,
+      `/api/forms/submissions/${draftId}/sections/householdMembers/items/member-1`,
+      {
+        token,
+        method: 'PATCH',
+        body: { relation: 'child', expectedUpdatedAt: latest.updatedAt }
+      }
+    )
+    assert.equal(staleRepeaterUpdate.response.status, 409)
+    assert.equal(staleRepeaterUpdate.payload.error.code, 'FORMS_SUBMISSION_STALE')
+    assert.equal(staleRepeaterUpdate.payload.error.details?.mergePrompt?.type, 'submission_stale')
+
+    const staleDelete = await jsonRequest(
+      baseUrl,
+      `/api/forms/submissions/${draftId}/sections/householdMembers/items/member-1?expectedUpdatedAt=${encodeURIComponent(
+        latest.updatedAt
+      )}`,
+      {
+        token,
+        method: 'DELETE'
+      }
+    )
+    assert.equal(staleDelete.response.status, 409)
+    assert.equal(staleDelete.payload.error.code, 'FORMS_SUBMISSION_STALE')
   } finally {
     await close(server)
   }
