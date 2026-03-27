@@ -8,11 +8,22 @@ function validationError(message, issues) {
   return error
 }
 
+function buildIssueMeta({ code, path, rowIndex, field, meta }) {
+  const issueRowIndex = Number.isInteger(rowIndex) ? rowIndex : null
+  const normalizedPath = String(path || '')
+  const normalizedField = String(field || '')
+  const issueId = [code, issueRowIndex ?? 'global', normalizedField || normalizedPath || 'mapping'].join(':')
+  return {
+    ...(meta && isObject(meta) ? meta : {}),
+    issueId,
+    fieldPath: normalizedPath,
+    fieldKey: normalizedField || normalizedPath || 'mapping'
+  }
+}
+
 function pushIssue(issues, { code, path, rowIndex = null, field, message, meta }) {
   const issue = { code, path, rowIndex, field, message }
-  if (meta && isObject(meta) && Object.keys(meta).length > 0) {
-    issue.meta = meta
-  }
+  issue.meta = buildIssueMeta({ code, path, rowIndex, field, meta })
   issues.push(issue)
 }
 
