@@ -62,6 +62,24 @@ try {
     headers: context.authHeaders(advisor.token),
     body: JSON.stringify({ email: `blocked+${Date.now()}@test.local`, role: 'client' })
   }, 403)
+  const advisorOpsDiagnosticsBlocked = await context.requestExpectError('/api/ops/diagnostics', {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${advisor.token}` }
+  }, 403)
+  const advisorOpsQueueBlocked = await context.requestExpectError('/api/ops/exports/queue', {
+    method: 'GET',
+    headers: { Authorization: `Bearer ${advisor.token}` }
+  }, 403)
+  const advisorOpsRetryFailedBlocked = await context.requestExpectError('/api/ops/exports/retry-failed', {
+    method: 'POST',
+    headers: context.authHeaders(advisor.token),
+    body: JSON.stringify({ dryRun: true })
+  }, 403)
+  const readonlyExportRetryBlocked = await context.requestExpectError('/api/exports/demo-export/retry', {
+    method: 'POST',
+    headers: context.authHeaders(readonly.token),
+    body: JSON.stringify({})
+  }, 403)
   const readonlyInviteBlocked = await context.requestExpectError('/api/invites', {
     method: 'POST',
     headers: context.authHeaders(readonly.token),
@@ -85,6 +103,10 @@ try {
   assert(/Missing permission/.test(blockedTemplatePublish.message), 'Readonly should not publish templates')
   assert(/Missing permission/.test(blockedPortalLink.message), 'Readonly should not create portal links')
   assert(/Missing permission/.test(advisorInviteBlocked.message), 'Non-admin should not invite users')
+  assert(/Missing permission/.test(advisorOpsDiagnosticsBlocked.message), 'Advisor should not access ops diagnostics')
+  assert(/Missing permission/.test(advisorOpsQueueBlocked.message), 'Advisor should not access ops export queue')
+  assert(/Missing permission/.test(advisorOpsRetryFailedBlocked.message), 'Advisor should not retry failed ops exports')
+  assert(/Missing permission/.test(readonlyExportRetryBlocked.message), 'Readonly should not retry exports')
   assert(/Missing permission/.test(readonlyInviteBlocked.message), 'Readonly should not invite users')
   assert(Array.isArray(readonlyProfilesAllowed), 'Readonly should still read profiles')
   assert(/Missing permission/.test(readonlyUsersBlocked.message), 'Readonly should not list users')

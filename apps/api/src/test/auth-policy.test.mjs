@@ -29,6 +29,13 @@ async function loadStoreWithIsolatedState() {
   }
 }
 
+function loadPolicy() {
+  const stamp = `${Date.now()}-${Math.random()}`
+  return import(pathToFileURL(resolve(repoRoot, 'apps/api/src/modules/shared/policy.mjs')).href + `?t=${stamp}`).then(
+    (module) => module.createPolicy()
+  )
+}
+
 test('invite lifecycle enforces role constraints, expiration, and single-use', async () => {
   const { store } = await loadStoreWithIsolatedState()
   const adminSession = store.login({ email: 'admin@demo.test', password: 'ChangeMe123!' })
@@ -185,4 +192,28 @@ test('session rotation invalidates prior session token during privilege transiti
   assert.notEqual(rotated.token, session.token)
   assert.throws(() => store.requireUser(session.token), /Authentication required/)
   assert.equal(store.requireUser(rotated.token).id, rotated.user.id)
+})
+
+test('ops and export policy guards enforce production privilege boundaries', async () => {
+  const policy = await loadPolicy()
+
+  assert.equal(policy.evaluateGuard({ role: 'admin' }, 'canReadDiagnostics').allowed, true)
+  assert.equal(policy.evaluateGuard({ role: 'advisor' }, 'canReadDiagnostics').allowed, false)
+
+  assert.equal(policy.evaluateGuard({ role: 'admin' }, 'canProcessExports').allowed, true)
+  assert.equal(policy.evaluateGuard({ role: 'advisor' }, 'canProcessExports').allowed, false)
+  assert.equal(policy.evaluateGuard({ role: 'readonly' }, 'canProcessExports').allowed, false)
+
+  assert.equal(policy.evaluateGuard({ role: 'advisor' }, 'canReadExports').allowed, true)
+  assert.equal(policy.evaluateGuard({ role: 'advisor' }, 'canWriteExports').allowed, true)
+  assert.equal(policy.evaluateGuard({ role: 'readonly' }, 'canReadExports').allowed, false)
+
+  assert.throws(
+    () => policy.requireGuard({ role: 'advisor' }, 'canProcessExports'),
+    /Missing permission: canProcessExports/
+  )
+  assert.throws(
+    () => policy.requireGuard({ role: 'advisor' }, 'canReadDiagnostics'),
+    /Missing permission: canReadDiagnostics/
+  )
 })
