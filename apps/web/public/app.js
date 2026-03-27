@@ -111,6 +111,35 @@ function clearFormFeedback(form) {
   setFormFeedback(form, '')
 }
 
+function setRepeaterRowBusy(control, busy) {
+  const row = control?.closest('tr')
+  if (!row) return
+  row.querySelectorAll('input, button').forEach((element) => {
+    element.disabled = busy
+  })
+}
+
+function setRepeaterRowFeedback(control, message = '', type = 'error') {
+  const row = control?.closest('tr')
+  if (!row) return
+  const feedbackEl = row.querySelector('[data-repeater-feedback]')
+  if (!feedbackEl) return
+  feedbackEl.textContent = message
+  feedbackEl.classList.remove('error-banner', 'success-banner')
+  if (message) feedbackEl.classList.add(type === 'success' ? 'success-banner' : 'error-banner')
+}
+
+function repeaterActionErrorMessage(error, { actionLabel = 'update', itemKey = '', sectionKey = '' } = {}) {
+  if (isConflictError(error)) {
+    return normalizeConflictMessage(error, `Could not ${actionLabel} item ${itemKey}. Reload and retry.`)
+  }
+  const lowered = String(error?.message || '').toLowerCase()
+  if (lowered.includes('not found')) {
+    return `Item ${itemKey} is stale or missing in section ${sectionKey}. Reload to sync latest data.`
+  }
+  return `Could not ${actionLabel} item ${itemKey}: ${error?.message || 'Request failed'}`
+}
+
 function withTrimmedFormData(form) {
   return Object.fromEntries(
     Array.from(new FormData(form).entries()).map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value])
@@ -879,6 +908,7 @@ async function renderForms() {
                                   </td>
                                   <td>
                                     <button class="tiny secondary" data-repeater-delete="${sectionActionKey}" data-submission-id="${escapeHtml(selectedSubmission.id)}" data-section-key="${escapeHtml(sectionKey)}" data-item-key="${escapeHtml(identity)}">${pendingLabel(`${sectionActionKey}-delete-${identity}`, 'Delete item', 'Deleting…')}</button>
+                                    <p class="compact muted" data-repeater-feedback></p>
                                   </td>
                                 </tr>`
                               })
@@ -971,19 +1001,25 @@ async function renderForms() {
       })
       const actionKey = `${form.dataset.repeaterUpdate}-update-${itemKey}`
       setActionPending(actionKey, 'pending')
-      await renderForms()
+      setRepeaterRowBusy(form, true)
+      setRepeaterRowFeedback(form, '')
       try {
         await request(routes.submissionSectionItem(submissionId, sectionKey, itemKey), {
           method: 'PATCH',
           body: JSON.stringify(patch)
         })
+        setRepeaterRowFeedback(form, `Item ${itemKey} updated.`, 'success')
         reportActionSuccess('Forms', `Updated repeater item ${itemKey}.`)
+        await renderForms()
       } catch (error) {
+        const message = repeaterActionErrorMessage(error, { actionLabel: 'update', itemKey, sectionKey })
+        setRepeaterRowFeedback(form, message)
         reportActionError('Forms', error)
+        setAlert('error', message)
       } finally {
+        setRepeaterRowBusy(form, false)
         clearActionPending(actionKey)
       }
-      await renderForms()
     })
   })
 
@@ -994,16 +1030,22 @@ async function renderForms() {
       const itemKey = button.dataset.itemKey
       const actionKey = `${button.dataset.repeaterDelete}-delete-${itemKey}`
       setActionPending(actionKey, 'pending')
-      await renderForms()
+      setRepeaterRowBusy(button, true)
+      setRepeaterRowFeedback(button, '')
       try {
         await request(routes.submissionSectionItem(submissionId, sectionKey, itemKey), { method: 'DELETE' })
+        setRepeaterRowFeedback(button, `Item ${itemKey} deleted.`, 'success')
         reportActionSuccess('Forms', `Deleted repeater item ${itemKey}.`)
+        await renderForms()
       } catch (error) {
+        const message = repeaterActionErrorMessage(error, { actionLabel: 'delete', itemKey, sectionKey })
+        setRepeaterRowFeedback(button, message)
         reportActionError('Forms', error)
+        setAlert('error', message)
       } finally {
+        setRepeaterRowBusy(button, false)
         clearActionPending(actionKey)
       }
-      await renderForms()
     })
   })
 }
