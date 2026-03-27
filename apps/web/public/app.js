@@ -1980,11 +1980,33 @@ function normalizeExportDateInput(value) {
 }
 
 function isRetryableExport(job) {
-  return String(job?.status || '').toLowerCase() !== 'completed'
+  return Boolean(job) && !['completed', 'running'].includes(String(job?.status || '').toLowerCase())
 }
 
 function isDownloadableExport(job) {
   return Boolean(job?.artifactAvailable)
+}
+
+function exportSelectionState(job, canMutate) {
+  const retryable = canMutate && isRetryableExport(job)
+  const downloadable = isDownloadableExport(job)
+  return {
+    retryable,
+    downloadable,
+    selectable: retryable || downloadable
+  }
+}
+
+function summarizeBulkResults(action, { succeeded = [], failed = [], skipped = [] } = {}) {
+  if (failed.length) {
+    setFlash(
+      'error',
+      `${action}: ${succeeded.length} succeeded, ${failed.length} failed, ${skipped.length} skipped.` +
+        `${failed.length ? ` Failed IDs: ${failed.slice(0, 5).join(', ')}${failed.length > 5 ? ', …' : ''}.` : ''}`
+    )
+    return
+  }
+  setFlash('success', `${action}: ${succeeded.length} succeeded${skipped.length ? `, ${skipped.length} skipped.` : '.'}`)
 }
 
 async function triggerExportDownload(exportId, { button = null } = {}) {
@@ -2044,8 +2066,10 @@ async function renderExports() {
   const canMutate = state.user?.role === 'admin' || state.user?.role === 'advisor'
   const queueState = queue?.queue || {}
   const queueCards = [
-    ['Queued', queueState.queued || 0],
-    ['Running', queueState.running || 0],
+    ['Pending', queueState.pending ?? queueState.queued ?? 0],
+    ['Queued (new)', queueState.queuedOnly ?? 0],
+    ['Retrying', queueState.retrying ?? 0],
+    ['Processing', queueState.processing ?? queueState.running ?? 0],
     ['Failed', queueState.failed || 0],
     ['Dead Letter', queueState.deadLetter || 0],
     ['Completed', queueState.completed || 0],
@@ -2055,8 +2079,10 @@ async function renderExports() {
   const visibleIds = new Set(jobs.map((job) => job.id))
   viewState.selectedIds = new Set([...viewState.selectedIds].filter((id) => visibleIds.has(id)))
   const selectedJobs = jobs.filter((job) => viewState.selectedIds.has(job.id))
-  const retryableSelected = selectedJobs.filter(isRetryableExport)
-  const downloadableSelected = selectedJobs.filter(isDownloadableExport)
+  const selectableJobs = jobs.filter((job) => exportSelectionState(job, canMutate).selectable)
+  const selectedRetryable = selectedJobs.filter((job) => exportSelectionState(job, canMutate).retryable)
+  const selectedDownloadable = selectedJobs.filter((job) => exportSelectionState(job, canMutate).downloadable)
+  const selectedIneligible = selectedJobs.filter((job) => !exportSelectionState(job, canMutate).selectable)
 
   viewEl.innerHTML = `
     ${flashMarkup()}
@@ -2087,9 +2113,9 @@ async function renderExports() {
         </div>
       </form>
       <div class="exports-bulk-actions">
-        <span class="muted">Selected ${selectedJobs.length} of ${jobs.length}</span>
-        <button id="bulk-retry-exports" class="tiny secondary" ${canMutate && retryableSelected.length && !viewState.bulkBusy ? '' : 'disabled'}>Retry selected (${retryableSelected.length})</button>
-        <button id="bulk-download-exports" class="tiny" ${downloadableSelected.length && !viewState.bulkBusy ? '' : 'disabled'}>Download selected (${downloadableSelected.length})</button>
+        <span class="muted">Selected ${selectedJobs.length} of ${jobs.length} · Retryable ${selectedRetryable.length} · Downloadable ${selectedDownloadable.length}${selectedIneligible.length ? ` · Ineligible ${selectedIneligible.length}` : ''}</span>
+        <button id="bulk-retry-exports" class="tiny secondary" ${canMutate && selectedRetryable.length && !viewState.bulkBusy ? '' : 'disabled'}>Retry selected (${selectedRetryable.length})</button>
+        <button id="bulk-download-exports" class="tiny" ${selectedDownloadable.length && !viewState.bulkBusy ? '' : 'disabled'}>Download selected (${selectedDownloadable.length})</button>
       </div>
     </section>
     <section class="item">
@@ -2102,14 +2128,14 @@ async function renderExports() {
     </section>
     <section class="item">
       <h3>Per-job Artifact Status</h3>
-      <table><thead><tr><th><input id="select-all-exports" type="checkbox" ${jobs.length && selectedJobs.length === jobs.length ? 'checked' : ''} /></th><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact Details</th><th>Actions</th></tr></thead><tbody>
+      <table><thead><tr><th><input id="select-all-exports" type="checkbox" ${selectableJobs.length && selectedJobs.length === selectableJobs.length ? 'checked' : ''} /></th><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact Details</th><th>Actions</th></tr></thead><tbody>
         ${
           jobs
             .map(
               (job) => `<tr>
-          <td><input data-select-export="${job.id}" type="checkbox" ${viewState.selectedIds.has(job.id) ? 'checked' : ''} /></td>
+          <td><input data-select-export="${job.id}" type="checkbox" ${viewState.selectedIds.has(job.id) ? 'checked' : ''} ${exportSelectionState(job, canMutate).selectable ? '' : 'disabled'} /></td>
           <td>${escapeHtml(job.id)}</td>
-          <td>${escapeHtml(job.status)}</td>
+          <td>${escapeHtml(job.statusLabel || job.status)}</td>
           <td>${job.attempts || 0}/${job.maxAttempts || 0}</td>
           <td>
             ${
@@ -2127,12 +2153,13 @@ async function renderExports() {
             }
           </td>
           <td>${
-            canMutate
-              ? `<div class="actions-row">
-                  <button data-retry-export="${job.id}" class="tiny secondary" ${isRetryableExport(job) ? '' : 'disabled'}>Retry</button>
-                  <button data-download-export="${job.id}" class="tiny" ${isDownloadableExport(job) ? '' : 'disabled'}>Download</button>
+            (() => {
+              const selection = exportSelectionState(job, canMutate)
+              return `<div class="actions-row">
+                  <button data-retry-export="${job.id}" class="tiny secondary" ${selection.retryable ? '' : 'disabled'}>Retry</button>
+                  <button data-download-export="${job.id}" class="tiny" ${selection.downloadable ? '' : 'disabled'}>Download</button>
                 </div>`
-              : '<span class="muted">N/A</span>'
+            })()
           }</td>
         </tr>`
             )
@@ -2171,12 +2198,17 @@ async function renderExports() {
 
   document.querySelector('#select-all-exports')?.addEventListener('change', (event) => {
     if (event.currentTarget.checked) {
-      jobs.forEach((job) => viewState.selectedIds.add(job.id))
+      selectableJobs.forEach((job) => viewState.selectedIds.add(job.id))
     } else {
-      viewState.selectedIds.clear()
+      selectableJobs.forEach((job) => viewState.selectedIds.delete(job.id))
     }
     renderExports()
   })
+  const selectAllEl = document.querySelector('#select-all-exports')
+  if (selectAllEl) {
+    const selectedSelectableCount = selectableJobs.filter((job) => viewState.selectedIds.has(job.id)).length
+    selectAllEl.indeterminate = selectedSelectableCount > 0 && selectedSelectableCount < selectableJobs.length
+  }
 
   document.querySelectorAll('[data-select-export]').forEach((input) => {
     input.addEventListener('change', (event) => {
@@ -2188,37 +2220,49 @@ async function renderExports() {
   })
 
   document.querySelector('#bulk-retry-exports')?.addEventListener('click', async () => {
+    if (!selectedRetryable.length) {
+      setFlash('error', 'Bulk retry: no selected exports are eligible for retry.')
+      await renderExports()
+      return
+    }
     viewState.bulkBusy = true
-    let succeeded = 0
-    let failed = 0
-    for (const job of retryableSelected) {
+    const succeeded = []
+    const failed = []
+    const skipped = selectedJobs.filter((job) => !exportSelectionState(job, canMutate).retryable).map((job) => job.id)
+    for (const job of selectedRetryable) {
       try {
         await request(routes.exportRetry(job.id), { method: 'POST', body: JSON.stringify({}) })
-        succeeded += 1
+        succeeded.push(job.id)
       } catch {
-        failed += 1
+        failed.push(job.id)
       }
     }
     viewState.bulkBusy = false
     viewState.selectedIds = new Set()
-    setFlash('success', `Bulk retry requested for ${succeeded} job(s)${failed ? `; ${failed} failed.` : '.'}`)
+    summarizeBulkResults('Bulk retry', { succeeded, failed, skipped })
     await renderExports()
   })
 
   document.querySelector('#bulk-download-exports')?.addEventListener('click', async () => {
+    if (!selectedDownloadable.length) {
+      setFlash('error', 'Bulk download: no selected exports are ready to download.')
+      await renderExports()
+      return
+    }
     viewState.bulkBusy = true
-    let succeeded = 0
-    let failed = 0
-    for (const job of downloadableSelected) {
+    const succeeded = []
+    const failed = []
+    const skipped = selectedJobs.filter((job) => !exportSelectionState(job, canMutate).downloadable).map((job) => job.id)
+    for (const job of selectedDownloadable) {
       try {
         await triggerExportDownload(job.id)
-        succeeded += 1
+        succeeded.push(job.id)
       } catch {
-        failed += 1
+        failed.push(job.id)
       }
     }
     viewState.bulkBusy = false
-    setFlash('success', `Bulk download completed for ${succeeded} job(s)${failed ? `; ${failed} failed.` : '.'}`)
+    summarizeBulkResults('Bulk download', { succeeded, failed, skipped })
     await renderExports()
   })
 

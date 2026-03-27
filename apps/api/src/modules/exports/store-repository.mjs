@@ -68,6 +68,40 @@ function createRenderContext({ firm, template, client, submission }) {
   }
 }
 
+function deriveStatusSemantics(status) {
+  const normalized = String(status || '').toLowerCase()
+  if (normalized === 'running') return { statusCategory: 'processing', statusLabel: 'Processing' }
+  if (normalized === 'retrying') return { statusCategory: 'queued', statusLabel: 'Retry Scheduled' }
+  if (normalized === 'dead-letter') return { statusCategory: 'dead-letter', statusLabel: 'Dead Letter' }
+  return {
+    statusCategory: normalized || 'queued',
+    statusLabel: normalized ? normalized.replace('-', ' ').replace(/\b\w/g, (token) => token.toUpperCase()) : 'Queued'
+  }
+}
+
+function normalizeQueueSemantics(queue = {}) {
+  const byStatus = queue.byStatus || {}
+  const queued = Number(byStatus.queued || 0)
+  const retrying = Number(byStatus.retrying || 0)
+  const running = Number(byStatus.running || 0)
+  const completed = Number(byStatus.completed || 0)
+  const failed = Number(byStatus.failed || 0)
+  const deadLetter = Number(byStatus['dead-letter'] || queue.deadLetter || 0)
+  return {
+    queuedOnly: queued,
+    retrying,
+    pending: queued + retrying,
+    processing: running,
+    running,
+    completed,
+    failed,
+    deadLetter,
+    readyNow: Number(queue.readyNow || 0),
+    stalled: Number(queue.stalled || 0),
+    total: Number(queue.total || queued + retrying + running + completed + failed + deadLetter)
+  }
+}
+
 export function createStoreExportsRepository({ state, persist, addAuditEvent, objectStorage, now = () => new Date().toISOString() }) {
   function parseIsoDate(value) {
     if (!value) return null
@@ -97,8 +131,10 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
 
   function withArtifactMetadata(job) {
     const artifact = job?.output?.artifact || null
+    const statusSemantics = deriveStatusSemantics(job?.status)
     return {
       ...job,
+      ...statusSemantics,
       artifact: artifact
         ? {
             ...artifact,
@@ -194,7 +230,10 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
       const queue = readExportWorkerStatus()
       return {
         generatedAt: now(),
-        queue
+        queue: {
+          ...queue,
+          ...normalizeQueueSemantics(queue)
+        }
       }
     },
     retryFailed(user, options = {}) {

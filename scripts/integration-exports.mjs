@@ -204,6 +204,10 @@ try {
   const afterBulkRetry = await context.request(`/api/exports?status=queued&sort=updatedAt_desc`, {
     headers: { Authorization: `Bearer ${admin.token}` }
   })
+  await processQueued(context, admin.token, 6)
+  const afterRetryProcessing = await context.request('/api/exports?sort=updatedAt_desc', {
+    headers: { Authorization: `Bearer ${admin.token}` }
+  })
   assert(
     ['queued', 'processing', 'completed'].includes(completed?.status),
     'Expected export job to remain actionable in queue lifecycle'
@@ -275,6 +279,10 @@ try {
   assert(typeof diagnostics?.data?.queue?.readyNow === 'number', 'Expected queue ready-now diagnostics')
   assert(typeof diagnostics?.data?.queue?.stalled === 'number', 'Expected queue stalled diagnostics')
   assert(typeof queueHealth?.queue?.running === 'number', 'Expected queue health running count')
+  assert(typeof queueHealth?.queue?.queuedOnly === 'number', 'Expected queue health queued-only count')
+  assert(typeof queueHealth?.queue?.retrying === 'number', 'Expected queue health retrying count')
+  assert(typeof queueHealth?.queue?.pending === 'number', 'Expected queue health pending count')
+  assert(queueHealth?.queue?.queued === queueHealth?.queue?.pending, 'Expected queued counter to match pending semantics')
   assert(Array.isArray(safeRetryDryRun?.ids), 'Expected safe retry dry-run candidate ids')
   assert(safeRetryDryRun?.dryRun === true, 'Expected dry-run response from safe retry endpoint')
   assert(authorizedDownload.status === 200, 'Analytics export download should succeed for authorized user')
@@ -284,6 +292,26 @@ try {
     'Analytics export should return attachment filename header'
   )
   assert(csvDownload.includes('funnel'), 'Analytics export should return CSV payload')
+  const completedAfterRetry = afterRetryProcessing.find((entry) => entry.id === completedJob.id)
+  if (completedAfterRetry?.status === 'completed') {
+    const completedDownload = await fetch(`http://127.0.0.1:${context.port}/api/exports/${completedAfterRetry.id}/download`, {
+      headers: { Authorization: `Bearer ${admin.token}` }
+    })
+    assert(completedDownload.status === 200, 'Expected completed export to be downloadable')
+    const completedDisposition = completedDownload.headers.get('content-disposition') || ''
+    assert(completedDisposition.includes('.pdf'), 'Expected completed export download filename metadata')
+  }
+  const retriedProcessed = afterRetryProcessing.find((entry) => entry.id === bulkRetryJob.id)
+  assert(
+    ['queued', 'retrying', 'running', 'completed', 'failed', 'dead-letter'].includes(retriedProcessed?.status),
+    'Expected retried export to stay in known queue statuses after additional processing'
+  )
+  if (retriedProcessed?.status === 'completed') {
+    const retriedDownload = await fetch(`http://127.0.0.1:${context.port}/api/exports/${retriedProcessed.id}/download`, {
+      headers: { Authorization: `Bearer ${admin.token}` }
+    })
+    assert(retriedDownload.status === 200, 'Expected retried completed export to download successfully')
+  }
 
   console.log(
     JSON.stringify(
@@ -301,7 +329,8 @@ try {
           completedOnly: completedOnly.length,
           profileOnly: profileOnly.length,
           futureWindow: futureWindow.length,
-          queuedAfterRetry: afterBulkRetry.length
+          queuedAfterRetry: afterBulkRetry.length,
+          jobsAfterRetryProcessing: afterRetryProcessing.length
         },
         queue: diagnostics?.data?.queue || null,
         queueHealth,
