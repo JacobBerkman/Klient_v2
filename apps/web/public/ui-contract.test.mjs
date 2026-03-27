@@ -44,3 +44,30 @@ test('styles provide visible focus indicators and empty-state affordances', () =
   assert.match(styles, /\.sidebar nav button\[aria-current='page'\]/)
   assert.match(styles, /\.empty-state \{/)
 })
+
+test('exports view contract exposes queue labels and operator guidance text', () => {
+  assert.match(appJs, /Pending \(queued \+ retrying\)/)
+  assert.match(appJs, /Retrying \(auto\)/)
+  assert.match(appJs, /Failed \(manual triage\)/)
+  assert.match(appJs, /Dead Letter \(needs root-cause\)/)
+  assert.match(appJs, /Retryable failures/)
+  assert.match(appJs, /Operator guidance: retrying jobs are automatic, failed jobs need manual retry, and dead-letter jobs require remediation before retrying\./)
+  assert.match(appJs, /retry-failed-jobs/)
+  assert.match(appJs, /Retry failed \+ dead-letter jobs/)
+})
+
+test('exports selection state and bulk action rules include retryability and role gating', () => {
+  assert.match(appJs, /function exportSelectionState\(job, canMutate\)/)
+  assert.match(appJs, /selectable: retryable \|\| downloadable/)
+  assert.match(appJs, /const selectedRetryable = selectedJobs\.filter\(\(job\) => exportSelectionState\(job, canMutate\)\.retryable\)/)
+  assert.match(appJs, /const selectedDownloadable = selectedJobs\.filter\(\(job\) => exportSelectionState\(job, canMutate\)\.downloadable\)/)
+  assert.match(appJs, /Bulk retry: no selected exports are eligible for retry\./)
+  assert.match(appJs, /Readonly role: retry actions hidden\./)
+})
+
+test('exports per-job table includes failure class and operator guidance column data', () => {
+  assert.match(appJs, /<th>Failure Class<\/th>/)
+  assert.match(appJs, /exportSelectionState\(job, canMutate\)\.failureClass/)
+  assert.match(appJs, /<div class=\"muted\">\$\{escapeHtml\(selection\.guidance\)\}<\/div>/)
+  assert.match(appJs, /No export jobs yet\. Run an export to populate queue activity and artifact status\./)
+})
