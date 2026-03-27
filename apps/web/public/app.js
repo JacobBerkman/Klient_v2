@@ -597,6 +597,61 @@ function metricCard(label, value) {
   return `<div class="stat"><strong>${escapeHtml(value)}</strong><div class="muted">${escapeHtml(label)}</div></div>`
 }
 
+function setWorkflowContext({ clientId = '', submissionId = '' } = {}) {
+  if (clientId) state.selectedClientId = clientId
+  if (submissionId) state.selectedSubmissionId = submissionId
+}
+
+function byLatestTimestampDesc(a = {}, b = {}) {
+  const aTime = Date.parse(a.updatedAt || a.createdAt || 0) || 0
+  const bTime = Date.parse(b.updatedAt || b.createdAt || 0) || 0
+  return bTime - aTime
+}
+
+function buildClientWorkflowMap(drafts = [], submissions = []) {
+  const workflowByClientId = new Map()
+  const ensureEntry = (clientId) => {
+    if (!workflowByClientId.has(clientId)) {
+      workflowByClientId.set(clientId, {
+        latestSubmissionId: '',
+        latestDraftId: '',
+        submissionCount: 0,
+        draftCount: 0
+      })
+    }
+    return workflowByClientId.get(clientId)
+  }
+
+  const draftsByClient = new Map()
+  drafts.forEach((draft) => {
+    if (!draft?.clientId) return
+    const rows = draftsByClient.get(draft.clientId) || []
+    rows.push(draft)
+    draftsByClient.set(draft.clientId, rows)
+  })
+  draftsByClient.forEach((rows, clientId) => {
+    const sorted = rows.slice().sort(byLatestTimestampDesc)
+    const entry = ensureEntry(clientId)
+    entry.latestDraftId = sorted[0]?.id || ''
+    entry.draftCount = rows.length
+  })
+
+  const submissionsByClient = new Map()
+  submissions.forEach((submission) => {
+    if (!submission?.clientId) return
+    const rows = submissionsByClient.get(submission.clientId) || []
+    rows.push(submission)
+    submissionsByClient.set(submission.clientId, rows)
+  })
+  submissionsByClient.forEach((rows, clientId) => {
+    const sorted = rows.slice().sort(byLatestTimestampDesc)
+    const entry = ensureEntry(clientId)
+    entry.latestSubmissionId = sorted[0]?.id || ''
+    entry.submissionCount = rows.length
+  })
+  return workflowByClientId
+}
+
 async function renderDashboard() {
   const data = await request(routes.dashboard())
   viewEl.innerHTML = `
@@ -698,6 +753,9 @@ async function renderAnalytics() {
 
 async function renderForms() {
   const [templates, drafts] = await Promise.all([request(routes.formTemplates()), request(routes.formDrafts())])
+  const activeClientId = state.selectedClientId || drafts[0]?.clientId || ''
+  const activeSubmissionId = state.selectedSubmissionId || drafts[0]?.id || ''
+  setWorkflowContext({ clientId: activeClientId, submissionId: activeSubmissionId })
   const rows = drafts
     .map(
       (draft) => `
@@ -721,6 +779,7 @@ async function renderForms() {
     ${alertMarkup()}
     <h2>Forms + Collaboration</h2>
     <p class="muted">Draft editing now uses revision IDs, short leases, and conflict-aware save prompts.</p>
+    <div class="muted compact workflow-context">Context: client <code>${escapeHtml(state.selectedClientId || 'n/a')}</code> · submission <code>${escapeHtml(state.selectedSubmissionId || 'n/a')}</code></div>
     <div class="stat-grid compact-stats">
       ${metricCard('templates', templates.length)}
       ${metricCard('drafts', drafts.length)}
@@ -1033,10 +1092,16 @@ async function renderTemplates() {
         <h3>Mapping Preview</h3>
         <div class="row gap-sm wrap">
           <select id="preview-client">${clients
-            .map((profile) => `<option value="${profile.id}">${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</option>`)
+            .map(
+              (profile) =>
+                `<option value="${profile.id}" ${profile.id === state.selectedClientId ? 'selected' : ''}>${escapeHtml(profile.firstName)} ${escapeHtml(profile.lastName)}</option>`
+            )
             .join('')}</select>
           <select id="preview-submission">${submissions
-            .map((entry) => `<option value="${entry.id}">${escapeHtml(entry.id)} · ${escapeHtml(entry.templateId)}</option>`)
+            .map(
+              (entry) =>
+                `<option value="${entry.id}" ${entry.id === state.selectedSubmissionId ? 'selected' : ''}>${escapeHtml(entry.id)} · ${escapeHtml(entry.templateId)}</option>`
+            )
             .join('')}</select>
           <button id="run-preview" class="tiny">Run Preview</button>
         </div>
@@ -1224,10 +1289,18 @@ async function renderTemplates() {
     await renderTemplates()
   })
 
+  document.querySelector('#preview-client')?.addEventListener('change', (event) => {
+    setWorkflowContext({ clientId: event.target.value })
+  })
+  document.querySelector('#preview-submission')?.addEventListener('change', (event) => {
+    setWorkflowContext({ submissionId: event.target.value })
+  })
+
   document.querySelector('#run-preview')?.addEventListener('click', async () => {
     try {
       const clientId = document.querySelector('#preview-client')?.value
       const submissionId = document.querySelector('#preview-submission')?.value
+      setWorkflowContext({ clientId, submissionId })
       const nextPreview = await request(routes.documentTemplateMappingsPreview(template.id), {
         method: 'POST',
         body: JSON.stringify({ clientId, submissionId })
@@ -1311,6 +1384,28 @@ function boardCardMarkup(card, kind) {
   const inlineState = ensureInlineProfileState(kind, card.id, card)
   const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
   const cardStage = card.stage || getStageDefinitions({ includeInactive: false })[0]?.id || 'discovery'
+  const workflow = card.workflowSummary || {}
+  const workflowActionsMarkup =
+    kind === 'client'
+      ? `
+      <div class="workflow-shortcuts" data-workflow-card="${card.id}">
+        <button type="button" class="secondary tiny workflow-shortcut" data-open-profile-detail="${card.id}">Profile detail</button>
+        ${
+          workflow.latestSubmissionId
+            ? `<a class="secondary tiny workflow-shortcut-link" href="#${appRoutes.clientFormSubmission(card.id, workflow.latestSubmissionId)}" data-workflow-client="${card.id}" data-workflow-submission="${workflow.latestSubmissionId}">Edit submission</a>`
+            : `<button type="button" class="secondary tiny workflow-shortcut" disabled>No submission</button>`
+        }
+        ${
+          workflow.latestDraftId
+            ? `<a class="secondary tiny workflow-shortcut-link" href="#${appRoutes.clientFormSubmission(card.id, workflow.latestDraftId)}" data-workflow-client="${card.id}" data-workflow-submission="${workflow.latestDraftId}">Edit draft</a>`
+            : `<button type="button" class="secondary tiny workflow-shortcut" disabled>No draft</button>`
+        }
+        <button type="button" class="secondary tiny workflow-shortcut" data-open-doc-actions="${card.id}" data-workflow-submission="${workflow.latestSubmissionId || workflow.latestDraftId || ''}">Document actions</button>
+      </div>
+      <div class="muted compact-meta">Forms: ${workflow.submissionCount || 0} submissions · ${workflow.draftCount || 0} drafts</div>
+      <div class="hidden card-detail muted compact-meta top-gap" data-profile-detail="${card.id}"></div>
+    `
+      : ''
   return `
     <article class="board-card" draggable="true" data-card-id="${card.id}" data-stage="${cardStage}">
       <header class="row between wrap">
@@ -1320,6 +1415,7 @@ function boardCardMarkup(card, kind) {
       ${inlineStatusMarkup(inlineState)}
       <div class="muted compact-meta">${escapeHtml(card.email || 'No email')} · ${escapeHtml(card.phone || 'No phone')}</div>
       <div class="muted compact-meta">Stage: ${escapeHtml(stageLabel(cardStage))}</div>
+      ${workflowActionsMarkup}
       <div class="row gap-sm wrap top-gap">
         <label class="sr-only" for="stage-${card.id}">Move ${escapeHtml(displayName)} to stage</label>
         <select id="stage-${card.id}" data-stage-select="${card.id}">
@@ -1558,6 +1654,56 @@ function wireBoardInteractions(kind) {
       await renderCurrentView()
     })
   })
+
+  document.querySelectorAll('[data-workflow-client]').forEach((link) => {
+    link.addEventListener('click', () => {
+      setWorkflowContext({
+        clientId: link.dataset.workflowClient || '',
+        submissionId: link.dataset.workflowSubmission || ''
+      })
+    })
+  })
+
+  document.querySelectorAll('[data-open-doc-actions]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const clientId = button.dataset.openDocActions
+      const submissionId = button.dataset.workflowSubmission || ''
+      setWorkflowContext({ clientId, submissionId })
+      state.view = 'templates'
+      setFlash('success', `Document actions opened for client ${clientId}.`)
+      await renderCurrentView()
+    })
+  })
+
+  document.querySelectorAll('[data-open-profile-detail]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const profileId = button.dataset.openProfileDetail
+      const detailEl = document.querySelector(`[data-profile-detail="${profileId}"]`)
+      if (!detailEl) return
+      const isVisible = !detailEl.classList.contains('hidden')
+      if (isVisible) {
+        detailEl.classList.add('hidden')
+        return
+      }
+      try {
+        let detail = state.profileDetailById[profileId]
+        if (!detail) {
+          detail = await request(routes.profileDetail(profileId))
+          state.profileDetailById[profileId] = detail
+        }
+        const summary = detail?.profile || {}
+        const submissionsCount = Array.isArray(detail?.submissions) ? detail.submissions.length : 0
+        const notesCount = Array.isArray(detail?.notes) ? detail.notes.length : 0
+        detailEl.innerHTML = `Household: ${escapeHtml(detail?.household?.name || '—')} · Status: ${escapeHtml(
+          summary.status || '—'
+        )} · Submissions: ${submissionsCount} · Notes: ${notesCount}`
+        detailEl.classList.remove('hidden')
+      } catch (error) {
+        setFlash('error', `Failed to load profile detail: ${error.message}`)
+        await renderCurrentView()
+      }
+    })
+  })
 }
 
 async function renderBoard(kind) {
@@ -1571,8 +1717,17 @@ async function renderBoard(kind) {
     return
   }
   await ensureStageConfig()
-  const clients = await request(routes.profiles({ kind: 'client' }))
-  state.clientBoard = buildBoardFromProfiles(clients)
+  const [clients, drafts, submissions] = await Promise.all([
+    request(routes.profiles({ kind: 'client' })),
+    request(routes.formDrafts()),
+    request(routes.formSubmissions())
+  ])
+  const workflowByClientId = buildClientWorkflowMap(drafts, submissions)
+  const clientsWithWorkflow = clients.map((client) => ({
+    ...client,
+    workflowSummary: workflowByClientId.get(client.id) || { latestSubmissionId: '', latestDraftId: '', submissionCount: 0, draftCount: 0 }
+  }))
+  state.clientBoard = buildBoardFromProfiles(clientsWithWorkflow)
   viewEl.innerHTML = boardMarkup(kind, state.clientBoard)
   wireBoardInteractions(kind)
 }
@@ -1735,8 +1890,7 @@ function applyHashRoute() {
   const route = appRoutes.parseClientFormSubmission(hashPath)
   if (!route) return
   state.view = 'forms'
-  state.selectedClientId = route.clientId
-  state.selectedSubmissionId = route.submissionId
+  setWorkflowContext({ clientId: route.clientId, submissionId: route.submissionId })
   setFlash('success', `Editing submission ${route.submissionId} for client ${route.clientId}.`)
 }
 
