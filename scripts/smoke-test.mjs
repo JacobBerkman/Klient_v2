@@ -47,19 +47,51 @@ try {
     headers,
     body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' })
   })
+  const flakyJob = await context.request('/api/exports', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      clientId: profile.id,
+      templateId: template.id,
+      type: 'pdf',
+      metadata: { simulateFailuresRemaining: 1 },
+      maxAttempts: 3
+    })
+  })
 
   await context.request('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } })
+  await context.request('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } })
+  await context.request(`/api/exports/${flakyJob.id}/retry`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify({})
+  })
+  await context.request('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } })
   const exportsList = await context.request('/api/exports', { headers: { Authorization: `Bearer ${login.token}` } })
+  const queueHealth = await context.request('/api/ops/exports/queue', { headers: { Authorization: `Bearer ${login.token}` } })
 
   assert(exportsList.some((entry) => entry.id === exportJob.id), 'Export job missing from export list.')
+  assert(exportsList.some((entry) => entry.id === flakyJob.id), 'Flaky export job missing from export list.')
   assert(publishResult.status === 'published', 'Template publish failed.')
+  assert(typeof queueHealth?.queue?.pending === 'number', 'Queue health pending counter missing.')
+
+  const completedDownloadTarget = exportsList.find((entry) => entry.id === exportJob.id && entry.status === 'completed')
+  if (completedDownloadTarget) {
+    const download = await fetch(`http://127.0.0.1:${context.port}/api/exports/${completedDownloadTarget.id}/download`, {
+      headers: { Authorization: `Bearer ${login.token}` }
+    })
+    assert(download.status === 200, 'Completed smoke export should be downloadable.')
+  }
 
   const summary = {
     ok: true,
     profileId: profile.id,
     templateId: template.id,
     exportJobId: exportJob.id,
-    exportStatus: exportsList.find((entry) => entry.id === exportJob.id)?.status
+    exportStatus: exportsList.find((entry) => entry.id === exportJob.id)?.status,
+    flakyJobId: flakyJob.id,
+    flakyStatus: exportsList.find((entry) => entry.id === flakyJob.id)?.status,
+    queuePending: queueHealth?.queue?.pending
   }
 
   evidence.finalize({ status: 'passed', details: summary })
