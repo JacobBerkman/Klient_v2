@@ -50,8 +50,27 @@ For local demonstrations only:
 - set `ENABLE_DEMO_MODE=true`
 - start with a clean `data/app.db` if you want a fresh seeded demo account (`admin@demo.test`)
 
-## Hard release gate (required before every deploy)
-Run this command and require a **zero-exit** outcome:
+## Primary release operator workflow (required)
+Run the operator command (fails fast, exact documented order):
+
+```bash
+export RELEASE_ID=<release-id>
+export KLIENT_BASE_URL=https://<env-host>
+export KLIENT_OPS_TOKEN=<ops-token>
+npm run release:go-no-go -- --release-id "$RELEASE_ID"
+```
+
+This command writes all artifacts under `artifacts/release-evidence/<release-id>` and executes:
+1. Flow A preflight: backup metadata -> merge/main parity -> `validate:master`
+2. Post-deploy validation: `/health` -> `/ready` -> `/api/ops/exports/queue` -> `/api/ops/diagnostics`
+
+Required environment variables:
+- `RELEASE_ID` (or pass `--release-id`) to scope evidence output.
+- `KLIENT_BASE_URL` for post-deploy `/health` and `/ready`.
+- `KLIENT_OPS_TOKEN` for authenticated post-deploy diagnostics.
+- `RESTORE_BACKUP_PATH` only when running `--phase restore`.
+
+Hard gate only (legacy/manual mode):
 
 ```bash
 npm run validate:master
@@ -60,15 +79,15 @@ npm run validate:master
 Evidence artifacts (machine-readable, emitted automatically):
 
 ```text
-artifacts/release-evidence/validate-master-summary.json
-artifacts/release-evidence/api-contract-summary.json
-artifacts/release-evidence/integration-summary.json
-artifacts/release-evidence/migration-summary.json
-artifacts/release-evidence/smoke-summary.json
-artifacts/release-evidence/security-summary.json
+artifacts/release-evidence/<release-id>/validate-master-summary.json
+artifacts/release-evidence/<release-id>/api-contract-summary.json
+artifacts/release-evidence/<release-id>/integration-summary.json
+artifacts/release-evidence/<release-id>/migration-summary.json
+artifacts/release-evidence/<release-id>/smoke-summary.json
+artifacts/release-evidence/<release-id>/security-summary.json
 ```
 
-Optional explicit destination controls:
+Optional explicit destination controls for manual hard-gate use:
 
 ```bash
 RELEASE_EVIDENCE_DIR=artifacts/release-evidence/<release-id> npm run validate:master
@@ -145,13 +164,13 @@ Mount `./data` into the container to persist changes across restarts.
 Create a backup:
 
 ```bash
-node scripts/backup-db.mjs | tee artifacts/release-evidence/backup.json
+node scripts/backup-db.mjs | tee artifacts/release-evidence/<release-id>/backup.json
 ```
 
 Restore from a backup file:
 
 ```bash
-node scripts/restore-db.mjs data/backup-<timestamp>.db | tee artifacts/release-evidence/restore.json
+node scripts/restore-db.mjs data/backup-<timestamp>.db | tee artifacts/release-evidence/<release-id>/restore.json
 ```
 
 Both scripts emit structured JSON metadata for release evidence automation:
@@ -164,13 +183,7 @@ Both scripts emit structured JSON metadata for release evidence automation:
 Run exactly one command before deployment:
 
 ```bash
-bash -euo pipefail -c '
-  mkdir -p artifacts/release-evidence &&
-  npm run backup | tee artifacts/release-evidence/backup.json &&
-  node -e "const fs=require(\"node:fs\");const r=JSON.parse(fs.readFileSync(\"artifacts/release-evidence/backup.json\",\"utf8\"));if(!(r&&r.ok&&r.status===\"succeeded\"&&r.artifact?.path&&r.artifact?.sizeBytes>0&&r.artifact?.sqliteQuickCheck===\"ok\")){process.exit(1)}" &&
-  npm run check:merge-main | tee artifacts/release-evidence/branch-parity.txt &&
-  npm run validate:master
-'
+npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight
 ```
 
 PASS criteria (all required):
@@ -183,40 +196,19 @@ PASS criteria (all required):
 Run this only for rollback/restore drills or real recovery:
 
 ```bash
-bash -euo pipefail -c '
-  test -n "${RESTORE_BACKUP_PATH:-}" &&
-  mkdir -p artifacts/release-evidence &&
-  npm run restore -- "$RESTORE_BACKUP_PATH" | tee artifacts/release-evidence/restore.json &&
-  node -e "const fs=require(\"node:fs\");const r=JSON.parse(fs.readFileSync(\"artifacts/release-evidence/restore.json\",\"utf8\"));if(!(r&&r.ok&&r.status===\"succeeded\"&&r.source?.sqliteQuickCheck===\"ok\"&&r.target?.sqliteQuickCheck===\"ok\"&&r.checks?.sizeMatch&&r.checks?.sha256Match)){process.exit(1)}"
-'
+RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
+  npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"
 ```
 
 ## Deployment playbook
 1. **Pre-flight**
-   - Execute **Flow A — deterministic preflight** exactly once and archive generated evidence artifacts.
+   - Execute `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` exactly once.
 2. **Deploy**
    - Build and launch (`docker compose --env-file .env up --build -d`).
 3. **Deterministic post-deploy validation** (run in exact order)
-   - **Step 1 — Health**
-     ```bash
-     curl -fsS "$KLIENT_BASE_URL/health" | tee artifacts/release-evidence/postdeploy-health.json
-     ```
-   - **Step 2 — Readiness**
-     ```bash
-     curl -fsS "$KLIENT_BASE_URL/ready" | tee artifacts/release-evidence/postdeploy-ready.json
-     ```
-     Machine-verifiable readiness keys: `status`, `checks.databaseReady`, `checks.storageReady`, `checks.exportQueueReachable`, `checks.startupConfigValid`.
-   - **Step 3 — Export queue diagnostics**
-     ```bash
-     curl -fsS -H "Authorization: Bearer $KLIENT_OPS_TOKEN" "$KLIENT_BASE_URL/api/ops/exports/queue" \
-       | tee artifacts/release-evidence/postdeploy-exports-queue.json
-     ```
-   - **Step 4 — Telemetry bundle**
-     ```bash
-     curl -fsS -H "Authorization: Bearer $KLIENT_OPS_TOKEN" "$KLIENT_BASE_URL/api/ops/diagnostics" \
-       | tee artifacts/release-evidence/postdeploy-telemetry-bundle.json
-     ```
-   - Optional: run smoke against deployed environment and archive output (`npm run test:smoke | tee artifacts/release-evidence/post-deploy-smoke.txt`).
+   - Execute `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy`.
+   - Machine-verifiable readiness keys: `status`, `checks.databaseReady`, `checks.storageReady`, `checks.exportQueueReachable`, `checks.startupConfigValid`.
+   - Optional: run smoke against deployed environment and archive output (`npm run test:smoke | tee artifacts/release-evidence/<release-id>/post-deploy-smoke.txt`).
 
 ## Rollback playbook
 Rollback is mandatory if health checks degrade, smoke fails, or security regressions are observed.
@@ -232,7 +224,7 @@ Rollback is mandatory if health checks degrade, smoke fails, or security regress
 2. Restore database only when data integrity is compromised:
    ```bash
    RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
-     bash -euo pipefail -c 'npm run restore -- "$RESTORE_BACKUP_PATH" | tee artifacts/release-evidence/restore.json'
+     npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"
    ```
 3. Re-run **Flow B — deterministic restore-validation** and then readiness/smoke checks.
 4. Record rollback timestamp, trigger reason, and backup artifact in release notes.
