@@ -129,6 +129,18 @@ test('profile form flow edits repeater items via targeted endpoints and records 
     assert.equal(missingItem.response.status, 404)
     assert.match(missingItem.payload.error.message, /not found/i)
 
+    const staleUpdate = await jsonRequest(
+      baseUrl,
+      `/api/forms/submissions/${createdSubmission.payload.id}/sections/householdMembers/items/member-1`,
+      {
+        token,
+        method: 'PATCH',
+        body: { relation: 'parent' }
+      }
+    )
+    assert.equal(staleUpdate.response.status, 404)
+    assert.match(staleUpdate.payload.error.message, /not found/i)
+
     const staleDelete = await jsonRequest(
       baseUrl,
       `/api/forms/submissions/${createdSubmission.payload.id}/sections/householdMembers/items/member-1`,
@@ -139,6 +151,55 @@ test('profile form flow edits repeater items via targeted endpoints and records 
     )
     assert.equal(staleDelete.response.status, 404)
     assert.match(staleDelete.payload.error.message, /not found/i)
+
+    const malformedPatchArray = await jsonRequest(
+      baseUrl,
+      `/api/forms/submissions/${createdSubmission.payload.id}/sections/householdMembers/items/member-2`,
+      {
+        token,
+        method: 'PATCH',
+        body: ['invalid']
+      }
+    )
+    assert.equal(malformedPatchArray.response.status, 400)
+    assert.match(malformedPatchArray.payload.error.message, /patch/i)
+
+    const malformedPatchEmpty = await jsonRequest(
+      baseUrl,
+      `/api/forms/submissions/${createdSubmission.payload.id}/sections/householdMembers/items/member-2`,
+      {
+        token,
+        method: 'PATCH',
+        body: {}
+      }
+    )
+    assert.equal(malformedPatchEmpty.response.status, 400)
+    assert.match(malformedPatchEmpty.payload.error.message, /invalid/i)
+    assert.ok(Array.isArray(malformedPatchEmpty.payload.error.details?.issues))
+
+    const invalidSectionSelector = await jsonRequest(
+      baseUrl,
+      `/api/forms/submissions/${createdSubmission.payload.id}/sections/%20%20/items/member-2`,
+      {
+        token,
+        method: 'PATCH',
+        body: { relation: 'spouse' }
+      }
+    )
+    assert.equal(invalidSectionSelector.response.status, 400)
+    assert.match(invalidSectionSelector.payload.error.message, /section key is required/i)
+
+    const invalidItemSelector = await jsonRequest(
+      baseUrl,
+      `/api/forms/submissions/${createdSubmission.payload.id}/sections/householdMembers/items/%20%20`,
+      {
+        token,
+        method: 'PATCH',
+        body: { relation: 'spouse' }
+      }
+    )
+    assert.equal(invalidItemSelector.response.status, 400)
+    assert.match(invalidItemSelector.payload.error.message, /item key is required/i)
 
     const submissions = await jsonRequest(baseUrl, '/api/forms/submissions', { token })
     assert.equal(submissions.response.status, 200)

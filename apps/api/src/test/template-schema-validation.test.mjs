@@ -51,7 +51,10 @@ test('rejects invalid transform registry type with descriptive error path', asyn
     (error) => {
       assert.equal(error.code, 'SCHEMA_VALIDATION_FAILED')
       assert.equal(error.statusCode, 400)
+      assert.equal(error.details.issues[0].code, 'unsupported_transform_type')
+      assert.equal(error.details.issues[0].field, 'transform.type')
       assert.equal(error.details.issues[0].path, '/mappings/0/transform/type')
+      assert.equal(error.details.issues[0].meta?.issueId, 'unsupported_transform_type:0:transform.type')
       return true
     }
   )
@@ -88,6 +91,8 @@ test('rejects repeater path mismatch when mapping source path leaves repeater bo
     },
     (error) => {
       assert.equal(error.code, 'SCHEMA_VALIDATION_FAILED')
+      assert.equal(error.details.issues[0].code, 'source_path_outside_repeater')
+      assert.equal(error.details.issues[0].field, 'sourcePath')
       assert.equal(error.details.issues[0].path, '/mappings/0/sourcePath')
       return true
     }
@@ -250,5 +255,8 @@ test('preview returns blocking schema issues for missing mapping paths before pu
 
   assert.ok(Array.isArray(preview.issues))
   assert.match(JSON.stringify(preview.issues), /known profile\/form schema path/i)
+  assert.equal(preview.issues[0].code, 'unknown_source_path')
+  assert.equal(preview.issues[0].field, 'sourcePath')
+  assert.ok(preview.issues[0].meta?.issueId)
   assert.equal(preview.issues[0].blocking, true)
 })

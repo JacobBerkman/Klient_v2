@@ -2532,13 +2532,26 @@ export function createStore({
         const rawIssues = Array.isArray(error?.details?.issues) ? error.details.issues : []
         issues = rawIssues.map((issue) => {
           const path = String(issue?.path || '')
-          const rowIndexMatch = path.match(/\/mappings\/(\d+)\//)
+          const rowIndexMatch = path.match(/\/mappings\/(\d+)(?:\/|$)/)
+          const field = String(issue?.field || '')
+          const code = String(issue?.code || 'schema_validation_issue')
+          const sourceMeta = issue?.meta && typeof issue.meta === 'object' ? issue.meta : {}
+          const rowIndex = rowIndexMatch ? Number(rowIndexMatch[1]) : null
+          const issueId = sourceMeta.issueId || [code, rowIndex ?? 'global', field || path || 'mapping'].join(':')
           return {
+            code,
             path,
+            field,
             message: String(issue?.message || 'Validation issue'),
             severity: 'error',
             blocking: true,
-            rowIndex: rowIndexMatch ? Number(rowIndexMatch[1]) : null
+            rowIndex,
+            meta: {
+              ...sourceMeta,
+              issueId,
+              fieldPath: sourceMeta.fieldPath || path,
+              fieldKey: sourceMeta.fieldKey || field || path || 'mapping'
+            }
           }
         })
       }

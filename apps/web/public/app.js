@@ -111,6 +111,35 @@ function clearFormFeedback(form) {
   setFormFeedback(form, '')
 }
 
+function setRepeaterRowBusy(control, busy) {
+  const row = control?.closest('tr')
+  if (!row) return
+  row.querySelectorAll('input, button').forEach((element) => {
+    element.disabled = busy
+  })
+}
+
+function setRepeaterRowFeedback(control, message = '', type = 'error') {
+  const row = control?.closest('tr')
+  if (!row) return
+  const feedbackEl = row.querySelector('[data-repeater-feedback]')
+  if (!feedbackEl) return
+  feedbackEl.textContent = message
+  feedbackEl.classList.remove('error-banner', 'success-banner')
+  if (message) feedbackEl.classList.add(type === 'success' ? 'success-banner' : 'error-banner')
+}
+
+function repeaterActionErrorMessage(error, { actionLabel = 'update', itemKey = '', sectionKey = '' } = {}) {
+  if (isConflictError(error)) {
+    return normalizeConflictMessage(error, `Could not ${actionLabel} item ${itemKey}. Reload and retry.`)
+  }
+  const lowered = String(error?.message || '').toLowerCase()
+  if (lowered.includes('not found')) {
+    return `Item ${itemKey} is stale or missing in section ${sectionKey}. Reload to sync latest data.`
+  }
+  return `Could not ${actionLabel} item ${itemKey}: ${error?.message || 'Request failed'}`
+}
+
 function withTrimmedFormData(form) {
   return Object.fromEntries(
     Array.from(new FormData(form).entries()).map(([key, value]) => [key, typeof value === 'string' ? value.trim() : value])
@@ -461,6 +490,15 @@ function alertMarkup() {
   return `<div class="item compact ${cls}">${escapeHtml(state.alert.message)}</div>`
 }
 
+function emptyStateMarkup(message = 'Nothing to show yet. Adjust filters or create a new record to get started.') {
+  return `<p class="muted empty-state" role="status">${escapeHtml(message)}</p>`
+}
+
+function viewErrorBanner(viewName, error) {
+  const detail = error?.message ? ` ${error.message}` : ''
+  return `<div class="item compact error-banner" role="alert">We couldn’t load ${escapeHtml(viewName)}.${escapeHtml(detail)}</div>`
+}
+
 async function request(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase()
   if (MUTATING_METHODS.has(method) && path.startsWith('/api/') && !csrfToken) {
@@ -580,6 +618,13 @@ function updateRoleVisibility() {
   })
 }
 
+function updateViewNavState() {
+  document.querySelectorAll('[data-view]').forEach((button) => {
+    const selected = button.dataset.view === state.view
+    button.setAttribute('aria-current', selected ? 'page' : 'false')
+  })
+}
+
 async function refreshSelects() {
   if (!state.user || state.user.role === 'client') return
   await ensureStageConfig()
@@ -660,17 +705,20 @@ function buildClientWorkflowMap(drafts = [], submissions = []) {
 }
 
 async function renderDashboard() {
-  const data = await request(routes.dashboard())
-  viewEl.innerHTML = `
-    ${flashMarkup()}
-    <div class="section-header"><h2>Dashboard</h2></div>
-    <div class="stat-grid">
-      ${Object.entries(data.stats)
-        .map(([key, value]) => metricCard(key, value))
-        .join('')}
-    </div>
-    <div class="item compact muted">Recent activity and profile management remain available in their dedicated tabs.</div>
-  `
+  try {
+    const data = await request(routes.dashboard())
+    const stats = Object.entries(data?.stats || {})
+    viewEl.innerHTML = `
+      ${flashMarkup()}
+      <div class="section-header"><h2>Dashboard</h2></div>
+      <div class="stat-grid">
+        ${stats.map(([key, value]) => metricCard(key, value)).join('') || emptyStateMarkup('No dashboard metrics are available yet.')}
+      </div>
+      <div class="item compact muted">Recent activity and profile management remain available in their dedicated tabs.</div>
+    `
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${viewErrorBanner('dashboard', error)}${emptyStateMarkup()}`
+  }
 }
 
 function analyticsPanel(title, body) {
@@ -759,7 +807,14 @@ async function renderAnalytics() {
 }
 
 async function renderForms() {
-  const [templates, drafts] = await Promise.all([request(routes.formTemplates()), request(routes.formDrafts())])
+  let templates = []
+  let drafts = []
+  try {
+    ;[templates, drafts] = await Promise.all([request(routes.formTemplates()), request(routes.formDrafts())])
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner('forms', error)}${emptyStateMarkup()}`
+    return
+  }
   let selectedProfile = null
   let selectedSubmission = null
   let selectedSubmissionError = ''
@@ -803,7 +858,7 @@ async function renderForms() {
       ${metricCard('templates', templates.length)}
       ${metricCard('drafts', drafts.length)}
     </div>
-    <table><thead><tr><th>Draft ID</th><th>Template</th><th>Revision</th><th>Lock</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No drafts</td></tr>'}</tbody></table>
+    <table><thead><tr><th>Draft ID</th><th>Template</th><th>Revision</th><th>Lock</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No drafts yet. Create or import a form draft to begin collaboration.</td></tr>'}</tbody></table>
     ${
       state.selectedSubmissionId
         ? `
@@ -853,6 +908,7 @@ async function renderForms() {
                                   </td>
                                   <td>
                                     <button class="tiny secondary" data-repeater-delete="${sectionActionKey}" data-submission-id="${escapeHtml(selectedSubmission.id)}" data-section-key="${escapeHtml(sectionKey)}" data-item-key="${escapeHtml(identity)}">${pendingLabel(`${sectionActionKey}-delete-${identity}`, 'Delete item', 'Deleting…')}</button>
+                                    <p class="compact muted" data-repeater-feedback></p>
                                   </td>
                                 </tr>`
                               })
@@ -945,19 +1001,25 @@ async function renderForms() {
       })
       const actionKey = `${form.dataset.repeaterUpdate}-update-${itemKey}`
       setActionPending(actionKey, 'pending')
-      await renderForms()
+      setRepeaterRowBusy(form, true)
+      setRepeaterRowFeedback(form, '')
       try {
         await request(routes.submissionSectionItem(submissionId, sectionKey, itemKey), {
           method: 'PATCH',
           body: JSON.stringify(patch)
         })
+        setRepeaterRowFeedback(form, `Item ${itemKey} updated.`, 'success')
         reportActionSuccess('Forms', `Updated repeater item ${itemKey}.`)
+        await renderForms()
       } catch (error) {
+        const message = repeaterActionErrorMessage(error, { actionLabel: 'update', itemKey, sectionKey })
+        setRepeaterRowFeedback(form, message)
         reportActionError('Forms', error)
+        setAlert('error', message)
       } finally {
+        setRepeaterRowBusy(form, false)
         clearActionPending(actionKey)
       }
-      await renderForms()
     })
   })
 
@@ -968,16 +1030,22 @@ async function renderForms() {
       const itemKey = button.dataset.itemKey
       const actionKey = `${button.dataset.repeaterDelete}-delete-${itemKey}`
       setActionPending(actionKey, 'pending')
-      await renderForms()
+      setRepeaterRowBusy(button, true)
+      setRepeaterRowFeedback(button, '')
       try {
         await request(routes.submissionSectionItem(submissionId, sectionKey, itemKey), { method: 'DELETE' })
+        setRepeaterRowFeedback(button, `Item ${itemKey} deleted.`, 'success')
         reportActionSuccess('Forms', `Deleted repeater item ${itemKey}.`)
+        await renderForms()
       } catch (error) {
+        const message = repeaterActionErrorMessage(error, { actionLabel: 'delete', itemKey, sectionKey })
+        setRepeaterRowFeedback(button, message)
         reportActionError('Forms', error)
+        setAlert('error', message)
       } finally {
+        setRepeaterRowBusy(button, false)
         clearActionPending(actionKey)
       }
-      await renderForms()
     })
   })
 }
@@ -1026,11 +1094,18 @@ function mappingLocalIssues(mapping, knownPaths) {
 }
 
 function formatSchemaIssue(issue = {}) {
-  const path = String(issue.path || issue.field || 'mapping')
+  const path = String(issue.field || issue.path || 'mapping')
   const message = String(issue.message || issue.code || 'Validation issue')
   const rowIndex = Number(issue.rowIndex)
   const rowPrefix = Number.isFinite(rowIndex) ? `Row ${rowIndex + 1}: ` : ''
   return `${rowPrefix}${path} — ${message}`
+}
+
+function mappingSaveStateLabel(saveState = {}) {
+  if (saveState.status === 'saving') return 'Saving…'
+  if (saveState.status === 'error') return `Error (${saveState.message || 'retry'})`
+  if (saveState.status === 'recovered') return 'Recovered'
+  return 'Saved'
 }
 
 function previewWarningMarkup(warnings = []) {
@@ -1044,11 +1119,19 @@ function previewWarningMarkup(warnings = []) {
 }
 
 async function renderTemplates() {
-  const [templates, clients, submissions] = await Promise.all([
-    request(routes.documentTemplates()),
-    request(routes.profiles({ kind: 'client' })),
-    request(routes.formSubmissions())
-  ])
+  let templates = []
+  let clients = []
+  let submissions = []
+  try {
+    ;[templates, clients, submissions] = await Promise.all([
+      request(routes.documentTemplates()),
+      request(routes.profiles({ kind: 'client' })),
+      request(routes.formSubmissions())
+    ])
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner('templates', error)}${emptyStateMarkup()}`
+    return
+  }
   if (!state.selectedTemplateId && templates[0]?.id) state.selectedTemplateId = templates[0].id
   const template = templates.find((entry) => entry.id === state.selectedTemplateId) || templates[0] || null
   const [versions, transitions] = template
@@ -1118,6 +1201,7 @@ async function renderTemplates() {
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
   const preflight = template ? state.templatePublishPreflightByTemplateId[template.id] : null
   const preflightIssues = Array.isArray(preflight?.issues) ? preflight.issues : []
+  const preflightIssueRows = new Set(preflightIssues.map((issue) => Number(issue.rowIndex)).filter((value) => Number.isFinite(value)))
   const previewWarningRows = new Set(
     (preview?.rows || [])
       .filter((row) => Array.isArray(row.warnings) && row.warnings.length)
@@ -1177,7 +1261,7 @@ async function renderTemplates() {
           <span class="badge">Mapped ${draftMappings.filter((entry) => entry.enabled !== false && String(entry.pdfField || '').trim()).length}</span>
           <span class="badge subtle">Unmapped ${Math.max(0, extractedFields.length - mappedExtractedCount)}</span>
           <span class="badge ${hasLocalMappingErrors ? 'error-badge' : 'warning-badge'}">Validation ${hasLocalMappingErrors ? 'Needs fixes' : 'Ready'}</span>
-          <span class="badge subtle">Save state: ${escapeHtml(saveState.status === 'saving' ? 'Saving…' : saveState.status === 'error' ? `Error (${saveState.message || 'retry'})` : 'Saved')}</span>
+          <span class="badge subtle">Save state: ${escapeHtml(mappingSaveStateLabel(saveState))}</span>
         </div>
       </section>
       <section class="item">
@@ -1202,22 +1286,25 @@ async function renderTemplates() {
       <section class="item">
         <h3>Mappings</h3>
         <div class="row gap-sm wrap"><button id="add-mapping-row" class="tiny">Add Mapping</button><button id="save-mappings" class="tiny">Save Now</button></div>
-        <table><thead><tr><th>#</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Status</th><th>Preview</th></tr></thead><tbody>
+        <table><thead><tr><th>#</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
           ${draftMappings
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
-              const hasWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
+              const hasPreviewWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
+              const serverPreflightIssues = preflightIssues.filter((issue) => Number(issue.rowIndex) === index)
               const sampleValue = resolveSampleValue(mapping.sourcePath)
               return `<tr id="mapping-row-${index}" data-select-row="${index}" style="cursor:pointer;${index === safeSelectedRowIndex ? 'outline:1px solid #60a5fa;' : ''}">
                 <td>${index + 1}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
                 <td>${escapeHtml(mapping.fieldLabel || '')}</td>
-                <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span>` : hasWarnings ? '<span class="warning-badge">Preview warning</span>' : '<span class="muted">OK</span>'}</td>
+                <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span>` : '<span class="muted">OK</span>'}</td>
+                <td>${serverPreflightIssues.length ? `<span class="error-badge">${escapeHtml(serverPreflightIssues.map((issue) => issue.code || issue.message || 'issue').join(', '))}</span>` : '<span class="muted">None</span>'}</td>
+                <td>${hasPreviewWarnings ? '<span class="warning-badge">Preview warning</span>' : '<span class="muted">OK</span>'}</td>
                 <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
               </tr>`
             })
-            .join('') || '<tr><td colspan="6" class="muted">No mappings configured.</td></tr>'}
+            .join('') || '<tr><td colspan="8" class="muted">No mappings configured.</td></tr>'}
         </tbody></table>
       </section>
       <section class="item">
@@ -1288,7 +1375,13 @@ async function renderTemplates() {
         </div>
         ${hasLocalMappingErrors ? '<p class="publish-disabled-reason">Publish is blocked until local mapping errors are resolved.</p>' : ''}
         ${hasBlockingPreviewWarnings ? '<p class="publish-disabled-reason">Publish is blocked by preview validation issues. Resolve highlighted rows first.</p>' : ''}
-        ${preflightIssues.length ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s).</p><ul>${preflightIssues.map((issue) => `<li>${escapeHtml(formatSchemaIssue(issue))}</li>`).join('')}</ul>` : '<p class="muted">Run preflight to surface publish-time schema validation (unknown source paths, required mappings, and transform issues) before attempting publish.</p>'}
+        ${
+          preflightIssues.length
+            ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s) across ${preflightIssueRows.size || 0} mapped row(s).</p><ul>${preflightIssues
+                .map((issue) => `<li><code>${escapeHtml(issue?.meta?.issueId || issue.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`)
+                .join('')}</ul>`
+            : '<p class="muted">Run preflight to surface publish-time schema validation (unknown source paths, required mappings, and transform issues) before attempting publish.</p>'
+        }
       </section>
       <section class="item">
         <h3>Version History</h3>
@@ -1326,12 +1419,13 @@ async function renderTemplates() {
             .join('') || '<tr><td colspan="4">No publish transitions yet.</td></tr>'}
         </tbody></table>
       </section>`
-        : '<p class="muted">No document templates found.</p>'
+        : emptyStateMarkup('No document templates found yet. Create one to configure mappings and publish versions.')
     }
   `
 
   const persistMappings = async ({ autosave = false } = {}) => {
     const actionKey = `template-map-save-${template.id}`
+    const previousSaveStatus = state.templateSaveStateByTemplateId[template.id]?.status || 'idle'
     if (autosave) setActionPending(actionKey, 'saving')
     state.templateSaveStateByTemplateId[template.id] = { status: 'saving' }
     const mappings = (state.templateMappingDrafts[template.id] || []).map((mapping) => normalizeMappingDraft(mapping))
@@ -1340,7 +1434,10 @@ async function renderTemplates() {
         method: 'POST',
         body: JSON.stringify({ mappings, requiredPdfFields: template.extractedFields || [] })
       })
-      state.templateSaveStateByTemplateId[template.id] = { status: 'saved', savedAt: new Date().toISOString() }
+      state.templateSaveStateByTemplateId[template.id] =
+        previousSaveStatus === 'error'
+          ? { status: 'recovered', savedAt: new Date().toISOString() }
+          : { status: 'saved', savedAt: new Date().toISOString() }
       state.templateMappingDrafts[template.id] = mappings.map((mapping) => mappingDraftFromServer(mapping))
       if (!autosave) setFlash('success', 'Mappings saved.')
     } catch (error) {
@@ -1606,7 +1703,7 @@ function boardCardMarkup(card, kind) {
     kind === 'client'
       ? `
       <div class="workflow-shortcuts" data-workflow-card="${card.id}">
-        <button type="button" class="secondary tiny workflow-shortcut" data-open-profile-detail="${card.id}">Profile detail</button>
+        <button type="button" class="secondary tiny workflow-shortcut" data-open-profile-detail="${card.id}" aria-expanded="false" aria-controls="profile-detail-${card.id}">Profile detail</button>
         ${
           workflow.latestSubmissionId
             ? `<a class="secondary tiny workflow-shortcut-link" href="#${appRoutes.clientFormSubmission(card.id, workflow.latestSubmissionId)}" data-workflow-client="${card.id}" data-workflow-submission="${workflow.latestSubmissionId}">Edit submission</a>`
@@ -1620,7 +1717,7 @@ function boardCardMarkup(card, kind) {
         <button type="button" class="secondary tiny workflow-shortcut" data-open-doc-actions="${card.id}" data-workflow-submission="${workflow.latestSubmissionId || workflow.latestDraftId || ''}">Document actions</button>
       </div>
       <div class="muted compact-meta">Forms: ${workflow.submissionCount || 0} submissions · ${workflow.draftCount || 0} drafts</div>
-      <div class="hidden card-detail muted compact-meta top-gap" data-profile-detail="${card.id}"></div>
+      <div id="profile-detail-${card.id}" class="hidden card-detail muted compact-meta top-gap" data-profile-detail="${card.id}"></div>
     `
       : ''
   return `
@@ -1679,7 +1776,7 @@ function boardMarkup(kind, board) {
           </div>
         </section>`
         )
-        .join('')}
+        .join('') || emptyStateMarkup('No active board columns are available. Confirm stage configuration and try again.')}
     </div>
   `
 }
@@ -1900,6 +1997,7 @@ function wireBoardInteractions(kind) {
       const isVisible = !detailEl.classList.contains('hidden')
       if (isVisible) {
         detailEl.classList.add('hidden')
+        button.setAttribute('aria-expanded', 'false')
         return
       }
       try {
@@ -1915,6 +2013,7 @@ function wireBoardInteractions(kind) {
           summary.status || '—'
         )} · Submissions: ${submissionsCount} · Notes: ${notesCount}`
         detailEl.classList.remove('hidden')
+        button.setAttribute('aria-expanded', 'true')
       } catch (error) {
         setFlash('error', `Failed to load profile detail: ${error.message}`)
         await renderCurrentView()
@@ -1924,29 +2023,34 @@ function wireBoardInteractions(kind) {
 }
 
 async function renderBoard(kind) {
-  if (kind === 'prospect') {
-    state.board = await request(routes.board())
-    const boardStageDefinitions = stageDefinitionsFromBoard(state.board)
-    hydrateStageConfig(boardStageDefinitions, { overwrite: true })
-    renderProfileStageSelect()
-    viewEl.innerHTML = boardMarkup(kind, state.board)
+  try {
+    if (kind === 'prospect') {
+      state.board = await request(routes.board())
+      const boardStageDefinitions = stageDefinitionsFromBoard(state.board)
+      hydrateStageConfig(boardStageDefinitions, { overwrite: true })
+      renderProfileStageSelect()
+      viewEl.innerHTML = boardMarkup(kind, state.board)
+      wireBoardInteractions(kind)
+      return
+    }
+    await ensureStageConfig()
+    const [clients, drafts, submissions] = await Promise.all([
+      request(routes.profiles({ kind: 'client' })),
+      request(routes.formDrafts()),
+      request(routes.formSubmissions())
+    ])
+    const workflowByClientId = buildClientWorkflowMap(drafts, submissions)
+    const clientsWithWorkflow = clients.map((client) => ({
+      ...client,
+      workflowSummary:
+        workflowByClientId.get(client.id) || { latestSubmissionId: '', latestDraftId: '', submissionCount: 0, draftCount: 0 }
+    }))
+    state.clientBoard = buildBoardFromProfiles(clientsWithWorkflow)
+    viewEl.innerHTML = boardMarkup(kind, state.clientBoard)
     wireBoardInteractions(kind)
-    return
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner(kind === 'prospect' ? 'prospect board' : 'client board', error)}${emptyStateMarkup()}`
   }
-  await ensureStageConfig()
-  const [clients, drafts, submissions] = await Promise.all([
-    request(routes.profiles({ kind: 'client' })),
-    request(routes.formDrafts()),
-    request(routes.formSubmissions())
-  ])
-  const workflowByClientId = buildClientWorkflowMap(drafts, submissions)
-  const clientsWithWorkflow = clients.map((client) => ({
-    ...client,
-    workflowSummary: workflowByClientId.get(client.id) || { latestSubmissionId: '', latestDraftId: '', submissionCount: 0, draftCount: 0 }
-  }))
-  state.clientBoard = buildBoardFromProfiles(clientsWithWorkflow)
-  viewEl.innerHTML = boardMarkup(kind, state.clientBoard)
-  wireBoardInteractions(kind)
 }
 
 function roleAccessMatrixMarkup() {
@@ -2057,10 +2161,12 @@ async function renderExports() {
 
   let jobs = []
   let queue = { queue: {} }
+  let exportsLoadError = null
   try {
     ;[jobs, queue] = await Promise.all([request(routes.exports(query)), request(routes.exportsQueueHealth())])
   } catch (error) {
     reportActionError('Exports', error)
+    exportsLoadError = error
   }
 
   const canMutate = state.user?.role === 'admin' || state.user?.role === 'advisor'
@@ -2087,6 +2193,7 @@ async function renderExports() {
   viewEl.innerHTML = `
     ${flashMarkup()}
     ${alertMarkup()}
+    ${exportsLoadError ? viewErrorBanner('exports', exportsLoadError) : ''}
     <div class="section-header"><div><h2>Exports Operations</h2><p class="muted">Queue health, retries, and artifact readiness by job.</p></div></div>
     <section class="item stack gap-md">
       <h3>Filters & Bulk Actions</h3>
@@ -2163,7 +2270,7 @@ async function renderExports() {
           }</td>
         </tr>`
             )
-            .join('') || '<tr><td colspan="6">No export jobs.</td></tr>'
+            .join('') || '<tr><td colspan="6">No export jobs yet. Run an export to populate queue activity and artifact status.</td></tr>'
         }
       </tbody></table>
     </section>
@@ -2316,6 +2423,7 @@ async function renderFallback(title) {
 }
 
 async function renderCurrentView() {
+  updateViewNavState()
   if (!state.user) {
     viewEl.innerHTML = `${flashMarkup()}<h2>Sign in to continue</h2>`
     return

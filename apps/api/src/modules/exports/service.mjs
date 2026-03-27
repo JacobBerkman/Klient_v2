@@ -47,7 +47,7 @@ export function createExportsService({ exportsRepository, policy, store }) {
       return exportsRepository.processQueued()
     },
     retry(user, exportId) {
-      policy.requireGuard(user, 'canWriteExports')
+      policy.requireGuard(user, 'canProcessExports')
       return runAuditedMutation(store, () => exportsRepository.retry(createFirmContext(user), exportId))
     },
     getQueueHealth(user) {
@@ -55,7 +55,7 @@ export function createExportsService({ exportsRepository, policy, store }) {
       return normalizeQueueHealthPayload(exportsRepository.getQueueHealth(createFirmContext(user)))
     },
     retryFailed(user, options = {}) {
-      policy.requireGuard(user, 'canWriteExports')
+      policy.requireGuard(user, 'canProcessExports')
       return exportsRepository.retryFailed(createFirmContext(user), options)
     },
     getDownload(user, exportId) {
