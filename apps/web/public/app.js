@@ -99,10 +99,21 @@ function setAuthStatus(message, { assertive = false } = {}) {
 }
 
 function normalizeConflictMessage(error, fallbackMessage = 'Conflict detected. Reload and try again.') {
-  if (error?.details?.mergePrompt?.suggestion) return error.details.mergePrompt.suggestion
+  const conflictType = error?.details?.type || error?.details?.mergePrompt?.type || ''
+  const promptSuggestion = String(error?.details?.mergePrompt?.suggestion || '').trim()
+  if (conflictType === 'lease_conflict') {
+    return 'Your lock lease expired or moved. Reload the draft, reacquire lock, then save again.'
+  }
+  if (conflictType === 'revision_conflict') {
+    return 'Another advisor saved first. Reload latest draft revision, merge your edits, then retry save.'
+  }
+  if (conflictType === 'submission_stale') {
+    return 'This submission changed on the server. Reload the section, review latest values, and retry.'
+  }
+  if (promptSuggestion) return promptSuggestion
   const rawMessage = String(error?.message || '').toLowerCase()
   if (rawMessage.includes('conflict') || rawMessage.includes('stale') || rawMessage.includes('version')) {
-    return 'Conflict detected: another change was saved first. Review latest data and retry.'
+    return 'Conflict detected: reload latest server data, review differences, then retry your update.'
   }
   return fallbackMessage
 }
@@ -421,7 +432,7 @@ function completeInlineSave(kind, profileId, card = null) {
 function failInlineSave(kind, profileId, conflictMessage = '') {
   const entry = ensureInlineProfileState(kind, profileId)
   entry.saving = false
-  entry.conflictMessage = conflictMessage || ''
+  entry.conflictMessage = conflictMessage || 'Unable to save right now. Retry after reloading latest profile data.'
 }
 
 function cancelInlineDraft(kind, profileId, card = null) {
@@ -452,7 +463,9 @@ function inlineStatusMarkup(entry) {
   return `
     <div class="inline-status-row" aria-live="polite">
       ${badges.join('')}
-      <span class="muted inline-status-text" role="${entry.conflictMessage ? 'alert' : 'status'}">${message}</span>
+      <span class="muted inline-status-text" role="${entry.conflictMessage ? 'alert' : 'status'}" aria-live="${
+        entry.conflictMessage ? 'assertive' : 'polite'
+      }">${message}</span>
     </div>
   `
 }
@@ -1029,19 +1042,13 @@ async function renderForms() {
             data: { ...(draft?.data || {}), uiSavedAt: new Date().toISOString() }
           })
         })
-        if (!response.ok) {
-          setAlert('error', response.mergePrompt?.suggestion || 'Draft conflict.')
-          reportActionError('Forms', new Error(response.mergePrompt?.suggestion || 'Draft conflict.'))
-        } else {
-          clearAlert()
-          setWorkflowStatus(`Draft ${draftId} saved at revision ${response.submission.revisionId}.`)
-          reportActionSuccess('Forms', `Draft saved at revision ${response.submission.revisionId}.`)
-        }
+        clearAlert()
+        setWorkflowStatus(`Draft ${draftId} saved at revision ${response.submission.revisionId}.`)
+        reportActionSuccess('Forms', `Draft saved at revision ${response.submission.revisionId}.`)
       } catch (error) {
-        if (error?.details?.mergePrompt?.suggestion) {
-          setAlert('error', error.details.mergePrompt.suggestion)
-        }
-        setWorkflowStatus(normalizeApiError(error, 'save this draft'))
+        const normalizedMessage = normalizeApiError(error, 'save this draft')
+        setAlert('error', normalizedMessage)
+        setWorkflowStatus(normalizedMessage)
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -1056,6 +1063,7 @@ async function renderForms() {
       const submissionId = form.dataset.submissionId
       const sectionKey = form.dataset.sectionKey
       const itemKey = form.dataset.itemKey
+      const expectedUpdatedAt = selectedSubmission?.updatedAt || ''
       const patch = {}
       form.querySelectorAll('[data-item-field]').forEach((input) => {
         const fieldName = String(input.name || '').replace(/^field:/, '')
@@ -1071,7 +1079,7 @@ async function renderForms() {
       try {
         await request(routes.submissionSectionItem(submissionId, sectionKey, itemKey), {
           method: 'PATCH',
-          body: JSON.stringify(patch)
+          body: JSON.stringify({ ...patch, expectedUpdatedAt })
         })
         setRepeaterRowFeedback(form, `Item ${itemKey} updated.`, 'success')
         reportActionSuccess('Forms', `Updated repeater item ${itemKey}.`)
@@ -1094,12 +1102,16 @@ async function renderForms() {
       const submissionId = button.dataset.submissionId
       const sectionKey = button.dataset.sectionKey
       const itemKey = button.dataset.itemKey
+      const expectedUpdatedAt = selectedSubmission?.updatedAt || ''
       const actionKey = `${button.dataset.repeaterDelete}-delete-${itemKey}`
       setActionPending(actionKey, 'pending')
       setRepeaterRowBusy(button, true)
       setRepeaterRowFeedback(button, '')
       try {
-        await request(routes.submissionSectionItem(submissionId, sectionKey, itemKey), { method: 'DELETE' })
+        const deletePath = `${routes.submissionSectionItem(submissionId, sectionKey, itemKey)}?${new URLSearchParams({
+          expectedUpdatedAt
+        }).toString()}`
+        await request(deletePath, { method: 'DELETE' })
         setRepeaterRowFeedback(button, `Item ${itemKey} deleted.`, 'success')
         reportActionSuccess('Forms', `Deleted repeater item ${itemKey}.`)
         await renderForms()
@@ -2180,20 +2192,46 @@ function normalizeExportDateInput(value) {
 }
 
 function isRetryableExport(job) {
-  return Boolean(job) && !['completed', 'running'].includes(String(job?.status || '').toLowerCase())
+  if (!job) return false
+  if (typeof job?.retryEligible === 'boolean') return job.retryEligible
+  if (typeof job?.retryState?.eligible === 'boolean') return job.retryState.eligible
+  return !['completed', 'running'].includes(String(job?.status || '').toLowerCase())
 }
 
 function isDownloadableExport(job) {
   return Boolean(job?.artifactAvailable)
 }
 
+function normalizeFailureClassLabel(failureClass) {
+  const normalized = String(failureClass || '').toLowerCase()
+  if (normalized === 'transient') return 'Transient'
+  if (normalized === 'permanent') return 'Permanent'
+  if (normalized === 'manual') return 'Manual'
+  if (normalized === 'dead-letter') return 'Dead Letter'
+  return 'n/a'
+}
+
+function exportActionGuidance(job, { canMutate, retryable, downloadable }) {
+  if (!canMutate) return 'Readonly role: retry actions hidden.'
+  if (retryable && downloadable) return 'Ready now: you can retry or download.'
+  if (retryable) return job?.deadLettered ? 'Dead-letter retry: validate root cause before retrying.' : 'Retry eligible.'
+  if (downloadable) return 'Download ready.'
+  if (String(job?.status || '').toLowerCase() === 'running') return 'In progress: wait for completion.'
+  if (String(job?.status || '').toLowerCase() === 'completed') return 'Completed without artifact metadata.'
+  return 'Action unavailable: inspect failure details.'
+}
+
 function exportSelectionState(job, canMutate) {
   const retryable = canMutate && isRetryableExport(job)
   const downloadable = isDownloadableExport(job)
+  const failureClass = normalizeFailureClassLabel(job?.failureClass || job?.failure?.classification || job?.retryState?.class)
+  const guidance = exportActionGuidance(job, { canMutate, retryable, downloadable })
   return {
     retryable,
     downloadable,
-    selectable: retryable || downloadable
+    selectable: retryable || downloadable,
+    failureClass,
+    guidance
   }
 }
 
@@ -2202,11 +2240,16 @@ function summarizeBulkResults(action, { succeeded = [], failed = [], skipped = [
     setFlash(
       'error',
       `${action}: ${succeeded.length} succeeded, ${failed.length} failed, ${skipped.length} skipped.` +
-        `${failed.length ? ` Failed IDs: ${failed.slice(0, 5).join(', ')}${failed.length > 5 ? ', …' : ''}.` : ''}`
+        `${failed.length ? ` Failed IDs: ${failed.slice(0, 5).join(', ')}${failed.length > 5 ? ', …' : ''}.` : ''}` +
+        ' Operator guidance: inspect failed rows for failure class and retry hint.'
     )
     return
   }
-  setFlash('success', `${action}: ${succeeded.length} succeeded${skipped.length ? `, ${skipped.length} skipped.` : '.'}`)
+  setFlash(
+    'success',
+    `${action}: ${succeeded.length} succeeded${skipped.length ? `, ${skipped.length} skipped.` : '.'}` +
+      `${skipped.length ? ' Skipped rows were not retry/download eligible.' : ''}`
+  )
 }
 
 async function triggerExportDownload(exportId, { button = null } = {}) {
@@ -2268,14 +2311,14 @@ async function renderExports() {
   const canMutate = state.user?.role === 'admin' || state.user?.role === 'advisor'
   const queueState = queue?.queue || {}
   const queueCards = [
-    ['Pending', queueState.pending ?? queueState.queued ?? 0],
+    ['Pending (queued + retrying)', queueState.pending ?? queueState.queued ?? 0],
     ['Queued (new)', queueState.queuedOnly ?? 0],
-    ['Retrying', queueState.retrying ?? 0],
+    ['Retrying (auto)', queueState.retrying ?? 0],
     ['Processing', queueState.processing ?? queueState.running ?? 0],
-    ['Failed', queueState.failed || 0],
-    ['Dead Letter', queueState.deadLetter || 0],
-    ['Completed', queueState.completed || 0],
-    ['Ready Now', queueState.readyNow || 0]
+    ['Failed (manual triage)', queueState.failed || 0],
+    ['Dead Letter (needs root-cause)', queueState.deadLetter || 0],
+    ['Retryable failures', queueState.failedRetryable ?? (queueState.failed || 0) + (queueState.deadLetter || 0)],
+    ['Completed', queueState.completed || 0]
   ]
 
   const visibleIds = new Set(jobs.map((job) => job.id))
@@ -2329,8 +2372,13 @@ async function renderExports() {
       <div class="stat-grid">
         ${queueCards.map(([label, value]) => metricCard(label, value)).join('')}
       </div>
+      <p class="muted">Operator guidance: retrying jobs are automatic, failed jobs need manual retry, and dead-letter jobs require remediation before retrying.</p>
       <pre>${escapeHtml(JSON.stringify(queueState, null, 2))}</pre>
-      ${canMutate ? '<button id="retry-failed-jobs" class="tiny secondary">Retry failed jobs</button>' : '<p class="muted">Readonly role cannot trigger retries.</p>'}
+      ${
+        canMutate
+          ? '<button id="retry-failed-jobs" class="tiny secondary">Retry failed + dead-letter jobs</button>'
+          : '<p class="muted">Readonly role cannot trigger retries.</p>'
+      }
     </section>
     <section class="item">
       <h3>Per-job Artifact Status</h3>
@@ -2342,6 +2390,7 @@ async function renderExports() {
           <td><input data-select-export="${job.id}" type="checkbox" aria-label="Select export ${escapeHtml(job.id)}" ${viewState.selectedIds.has(job.id) ? 'checked' : ''} ${exportSelectionState(job, canMutate).selectable ? '' : 'disabled'} /></td>
           <td>${escapeHtml(job.id)}</td>
           <td>${escapeHtml(job.statusLabel || job.status)}</td>
+          <td>${escapeHtml(exportSelectionState(job, canMutate).failureClass)}</td>
           <td>${job.attempts || 0}/${job.maxAttempts || 0}</td>
           <td>
             ${
@@ -2369,7 +2418,7 @@ async function renderExports() {
           }</td>
         </tr>`
             )
-            .join('') || '<tr><td colspan="6">No export jobs yet. Run an export to populate queue activity and artifact status.</td></tr>'
+            .join('') || '<tr><td colspan="7">No export jobs yet. Run an export to populate queue activity and artifact status.</td></tr>'
         }
       </tbody></table>
     </section>
