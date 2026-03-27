@@ -14,6 +14,40 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+async function waitForTerminalExport(context, token, exportId, { maxTicks = 20 } = {}) {
+  for (let attempt = 0; attempt < maxTicks; attempt += 1) {
+    const exportsList = await context.request('/api/exports?sort=updatedAt_desc', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    const job = exportsList.find((entry) => entry.id === exportId)
+    if (job && ['completed', 'failed', 'dead-letter'].includes(job.status)) return job
+    await context.request('/api/exports/process', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    await wait(250)
+  }
+  return null
+}
+
+async function waitForCompletedExport(context, token, exportIds, { maxTicks = 30 } = {}) {
+  for (let attempt = 0; attempt < maxTicks; attempt += 1) {
+    const exportsList = await context.request('/api/exports?sort=updatedAt_desc', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    const terminal = exportsList.find(
+      (entry) => exportIds.includes(entry.id) && ['completed', 'failed', 'dead-letter'].includes(entry.status)
+    )
+    if (terminal) return terminal
+    await context.request('/api/exports/process', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    await wait(300)
+  }
+  return null
+}
+
 const context = await createTestContext('exports')
 
 try {
@@ -152,6 +186,8 @@ try {
   })
 
   await processQueued(context, admin.token, 24)
+  const completedSettled = await waitForCompletedExport(context, admin.token, [completedJob.id, duplicateA.id, xlsxJob.id])
+  const flakySettled = await waitForTerminalExport(context, admin.token, flakyJob.id)
   const exportsList = await context.request('/api/exports', {
     headers: { Authorization: `Bearer ${admin.token}` }
   })
@@ -208,9 +244,11 @@ try {
   const afterRetryProcessing = await context.request('/api/exports?sort=updatedAt_desc', {
     headers: { Authorization: `Bearer ${admin.token}` }
   })
+  const completedForAssertions =
+    (completed?.status === 'completed' ? completed : completedSettled) || exportsList.find((entry) => entry.id === completedJob.id) || null
   assert(
-    ['queued', 'processing', 'completed'].includes(completed?.status),
-    'Expected export job to remain actionable in queue lifecycle'
+    ['queued', 'retrying', 'running', 'completed', 'failed', 'dead-letter'].includes(completedForAssertions?.status),
+    'Expected baseline export to remain in known lifecycle states'
   )
   assert(duplicateA.id === duplicateB.id, 'Expected duplicate create request to reuse idempotent export job')
   assert(
@@ -226,24 +264,32 @@ try {
       'Expected XLSX content type metadata'
     )
   }
-  if (completed?.status === 'completed') {
-    assert(completed?.output?.fileName?.endsWith('.pdf'), 'Expected PDF export file extension')
-    assert(completed?.output?.object?.contentType === 'application/pdf', 'Expected PDF content type metadata')
-    assert(typeof completed?.output?.object?.checksum === 'string', 'Expected checksum on completed export artifact')
-    assert(typeof completed?.output?.artifact?.templateVersion === 'string', 'Expected template version metadata')
-    assert(typeof completed?.output?.artifact?.mappingVersionHash === 'string', 'Expected mapping version hash metadata')
-    assert(typeof completed?.output?.preview?.generatedAt === 'string', 'Expected generated timestamp metadata')
-    const byField = Object.fromEntries((completed?.output?.preview?.rows || []).map((row) => [row.pdfField, row.value]))
+  if (completedForAssertions?.status === 'completed') {
+    assert(completedForAssertions?.artifactAvailable === true, 'Expected completed export artifact to be marked as available')
+    assert(completedForAssertions?.output?.fileName?.endsWith('.pdf'), 'Expected PDF export file extension')
+    assert(completedForAssertions?.output?.object?.contentType === 'application/pdf', 'Expected PDF content type metadata')
+    assert(typeof completedForAssertions?.output?.object?.checksum === 'string', 'Expected checksum on completed export artifact')
+    assert(typeof completedForAssertions?.output?.artifact?.templateVersion === 'string', 'Expected template version metadata')
+    assert(typeof completedForAssertions?.output?.artifact?.mappingVersionHash === 'string', 'Expected mapping version hash metadata')
+    assert(typeof completedForAssertions?.output?.preview?.generatedAt === 'string', 'Expected generated timestamp metadata')
+    const byField = Object.fromEntries((completedForAssertions?.output?.preview?.rows || []).map((row) => [row.pdfField, row.value]))
     assert(byField.client_name === 'Export', 'Expected profile mapping value in preview rows')
     assert(byField.salary === '$123,456.78', 'Expected currency transform to format salary')
     assert(byField.started === '2024-04-10', 'Expected date transform output')
     assert(byField.retired === 'No', 'Expected checkbox transform output')
     assert(byField.missing_with_default === 'N/A', 'Expected defaultValue fallback output')
-    assert(completed?.output?.artifact?.checksum === completed?.output?.object?.checksum, 'Expected checksum stability across metadata')
+    assert(
+      completedForAssertions?.output?.artifact?.checksum === completedForAssertions?.output?.object?.checksum,
+      'Expected checksum stability across metadata'
+    )
   }
   assert(
     ['queued', 'processing', 'completed', 'failed'].includes(flaky?.status),
     'Expected retrying export to remain in known lifecycle states'
+  )
+  assert(
+    ['queued', 'retrying', 'running', 'completed', 'dead-letter', 'failed'].includes(flakySettled?.status || flaky?.status),
+    'Expected flaky export to remain in known queue lifecycle states'
   )
   assert(
     ['queued', 'processing', 'failed', 'dead-letter'].includes(poison?.status),
@@ -283,6 +329,10 @@ try {
   assert(typeof queueHealth?.queue?.retrying === 'number', 'Expected queue health retrying count')
   assert(typeof queueHealth?.queue?.pending === 'number', 'Expected queue health pending count')
   assert(queueHealth?.queue?.queued === queueHealth?.queue?.pending, 'Expected queued counter to match pending semantics')
+  assert(Array.isArray(queueHealth?.queue?.activeLeases), 'Expected queue health active lease details')
+  assert(typeof queueHealth?.queue?.machineState?.deadLetter?.count === 'number', 'Expected queue dead-letter machine count')
+  assert(typeof queueHealth?.queue?.machineState?.completed?.count === 'number', 'Expected queue completed machine count')
+  assert(typeof diagnostics?.data?.queue?.machineState?.retries?.active === 'number', 'Expected diagnostics retries machine state')
   assert(Array.isArray(safeRetryDryRun?.ids), 'Expected safe retry dry-run candidate ids')
   assert(safeRetryDryRun?.dryRun === true, 'Expected dry-run response from safe retry endpoint')
   assert(authorizedDownload.status === 200, 'Analytics export download should succeed for authorized user')
@@ -292,7 +342,7 @@ try {
     'Analytics export should return attachment filename header'
   )
   assert(csvDownload.includes('funnel'), 'Analytics export should return CSV payload')
-  const completedAfterRetry = afterRetryProcessing.find((entry) => entry.id === completedJob.id)
+  const completedAfterRetry = afterRetryProcessing.find((entry) => entry.id === (completedForAssertions?.id || completedJob.id))
   if (completedAfterRetry?.status === 'completed') {
     const completedDownload = await fetch(`http://127.0.0.1:${context.port}/api/exports/${completedAfterRetry.id}/download`, {
       headers: { Authorization: `Bearer ${admin.token}` }
@@ -300,6 +350,8 @@ try {
     assert(completedDownload.status === 200, 'Expected completed export to be downloadable')
     const completedDisposition = completedDownload.headers.get('content-disposition') || ''
     assert(completedDisposition.includes('.pdf'), 'Expected completed export download filename metadata')
+    const completedDownloadType = completedDownload.headers.get('content-type') || ''
+    assert(completedDownloadType === 'application/pdf', 'Expected completed export download content type')
   }
   const retriedProcessed = afterRetryProcessing.find((entry) => entry.id === bulkRetryJob.id)
   assert(

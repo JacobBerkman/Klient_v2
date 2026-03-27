@@ -102,6 +102,59 @@ function normalizeQueueSemantics(queue = {}) {
   }
 }
 
+function summarizeQueueMachineState(jobs = [], generatedAt) {
+  const running = jobs.filter((entry) => entry.status === 'running')
+  const retrying = jobs.filter((entry) => entry.status === 'retrying')
+  const failed = jobs.filter((entry) => entry.status === 'failed')
+  const deadLetter = jobs.filter((entry) => entry.status === 'dead-letter')
+  const completed = jobs.filter((entry) => entry.status === 'completed')
+
+  const activeLeaseDetails = running
+    .filter((entry) => entry.leaseExpiresAt)
+    .map((entry) => ({
+      id: entry.id,
+      leasedBy: entry.leasedBy || null,
+      leaseExpiresAt: entry.leaseExpiresAt || null,
+      leaseExpired: Number(new Date(entry.leaseExpiresAt || 0)) <= Number(new Date(generatedAt))
+    }))
+    .sort((a, b) => String(a.leaseExpiresAt || '').localeCompare(String(b.leaseExpiresAt || '')))
+
+  const retryReadyNow = retrying.filter(
+    (entry) => !entry.nextAttemptAt || Number(new Date(entry.nextAttemptAt)) <= Number(new Date(generatedAt))
+  )
+  const retryScheduledLater = retrying.filter(
+    (entry) => entry.nextAttemptAt && Number(new Date(entry.nextAttemptAt)) > Number(new Date(generatedAt))
+  )
+  const retryCountsByAttempt = retrying.reduce((acc, entry) => {
+    const attempt = Number(entry.attempts || 0)
+    acc[attempt] = (acc[attempt] || 0) + 1
+    return acc
+  }, {})
+
+  const recentIds = (items) => items.slice(0, 25).map((entry) => entry.id)
+  return {
+    activeLeaseDetails,
+    retries: {
+      active: retrying.length,
+      readyNow: retryReadyNow.length,
+      scheduledLater: retryScheduledLater.length,
+      countsByAttempt: Object.entries(retryCountsByAttempt).map(([attempt, count]) => ({ attempt: Number(attempt), count }))
+    },
+    failed: {
+      count: failed.length,
+      ids: recentIds(failed)
+    },
+    deadLetter: {
+      count: deadLetter.length,
+      ids: recentIds(deadLetter)
+    },
+    completed: {
+      count: completed.length,
+      ids: recentIds(completed)
+    }
+  }
+}
+
 export function createStoreExportsRepository({ state, persist, addAuditEvent, objectStorage, now = () => new Date().toISOString() }) {
   function parseIsoDate(value) {
     if (!value) return null
@@ -228,11 +281,24 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
     },
     getQueueHealth() {
       const queue = readExportWorkerStatus()
+      const jobs = listExportQueueJobs()
+      const generatedAt = now()
+      const machineState = summarizeQueueMachineState(jobs, generatedAt)
       return {
-        generatedAt: now(),
+        generatedAt,
         queue: {
           ...queue,
-          ...normalizeQueueSemantics(queue)
+          ...normalizeQueueSemantics(queue),
+          activeLeasesCount: machineState.activeLeaseDetails.length,
+          activeLeaseDetails: machineState.activeLeaseDetails,
+          retries: machineState.retries,
+          machineState: {
+            activeLeases: machineState.activeLeaseDetails,
+            retries: machineState.retries,
+            failed: machineState.failed,
+            deadLetter: machineState.deadLetter,
+            completed: machineState.completed
+          }
         }
       }
     },
@@ -266,6 +332,7 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
       return { dryRun: false, limit, includeDeadLetter, retriedCount: retried.length, ids: retried }
     },
     async processQueued() {
+      const before = readExportWorkerStatus()
       const result = processExportQueueTick({
         workerId: 'api-process-endpoint',
         limit: 10,
@@ -273,7 +340,6 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
         processor(job) {
           const failCount = Number(job?.metadata?.simulateFailuresRemaining || 0)
           if (failCount > 0) {
-            job.metadata.simulateFailuresRemaining = failCount - 1
             throw new Error(`Simulated export failure for ${job.id}`)
           }
           const artifact = buildExportArtifact(job)
@@ -292,7 +358,10 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
           }
         }
       })
-      return { processed: result.processed, leased: result.leased, failed: result.failed }
+      const after = readExportWorkerStatus()
+      const deadLettered = Math.max(0, Number(after.deadLetter || 0) - Number(before.deadLetter || 0))
+      const retried = Math.max(0, Number(after.byStatus?.retrying || 0) - Number(before.byStatus?.retrying || 0))
+      return { processed: result.processed, leased: result.leased, failed: result.failed, deadLettered, retried }
     },
     getDownload(user, exportId) {
       const firmContext = createFirmContext(user, { method: 'exports.download' })

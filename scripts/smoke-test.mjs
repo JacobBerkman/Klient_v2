@@ -10,6 +10,20 @@ const evidence = createEvidenceRecorder({
 
 const context = await createTestContext('smoke')
 
+async function waitForExportCompletion(ctx, token, exportIds, { maxTicks = 24 } = {}) {
+  for (let attempt = 0; attempt < maxTicks; attempt += 1) {
+    const exportsList = await ctx.request('/api/exports?sort=updatedAt_desc', {
+      headers: { Authorization: `Bearer ${token}` }
+    })
+    const job = exportsList.find(
+      (entry) => exportIds.includes(entry.id) && ['completed', 'failed', 'dead-letter'].includes(entry.status)
+    )
+    if (job) return job
+    await ctx.request('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+  }
+  return null
+}
+
 try {
   await context.request('/health')
   const ready = await context.request('/ready')
@@ -42,16 +56,46 @@ try {
     body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Smoke publish validation' })
   })
 
+  const formTemplate = await context.request('/api/forms/templates', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      name: 'Smoke Export Intake',
+      sections: [{ title: 'Basics', key: 'basics', fields: [{ key: 'salary', label: 'Salary', type: 'number' }] }]
+    })
+  })
+  const submission = await context.request('/api/forms/submissions', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      clientId: profile.id,
+      templateId: formTemplate.id,
+      status: 'submitted',
+      data: { salary: 1000 }
+    })
+  })
+  await context.request(`/api/templates/${template.id}/mappings`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      mappings: [
+        { pdfField: 'client_name', sourcePath: 'profile.firstName' },
+        { pdfField: 'salary', sourcePath: 'salary', transform: { type: 'currency' } }
+      ]
+    })
+  })
+
   const exportJob = await context.request('/api/exports', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ clientId: profile.id, templateId: template.id, type: 'pdf' })
+    body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: 'pdf' })
   })
   const flakyJob = await context.request('/api/exports', {
     method: 'POST',
     headers,
     body: JSON.stringify({
       clientId: profile.id,
+      submissionId: submission.id,
       templateId: template.id,
       type: 'pdf',
       metadata: { simulateFailuresRemaining: 1 },
@@ -67,28 +111,41 @@ try {
     body: JSON.stringify({})
   })
   await context.request('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } })
-  const exportsList = await context.request('/api/exports', { headers: { Authorization: `Bearer ${login.token}` } })
+  const completedExport = await waitForExportCompletion(context, login.token, [exportJob.id, flakyJob.id])
+  const exportsList = await context.request('/api/exports?sort=updatedAt_desc', { headers: { Authorization: `Bearer ${login.token}` } })
   const queueHealth = await context.request('/api/ops/exports/queue', { headers: { Authorization: `Bearer ${login.token}` } })
 
   assert(exportsList.some((entry) => entry.id === exportJob.id), 'Export job missing from export list.')
   assert(exportsList.some((entry) => entry.id === flakyJob.id), 'Flaky export job missing from export list.')
+  const trackedSmokeExport = completedExport || exportsList.find((entry) => entry.id === exportJob.id) || null
+  assert(
+    ['queued', 'retrying', 'running', 'completed', 'failed', 'dead-letter'].includes(trackedSmokeExport?.status),
+    'Primary smoke export did not remain in an expected lifecycle state.'
+  )
   assert(publishResult.status === 'published', 'Template publish failed.')
   assert(typeof queueHealth?.queue?.pending === 'number', 'Queue health pending counter missing.')
+  assert(typeof queueHealth?.queue?.machineState?.completed?.count === 'number', 'Queue machine completed count missing.')
+  assert(typeof queueHealth?.queue?.machineState?.deadLetter?.count === 'number', 'Queue machine dead-letter count missing.')
 
-  const completedDownloadTarget = exportsList.find((entry) => entry.id === exportJob.id && entry.status === 'completed')
-  if (completedDownloadTarget) {
+  if (trackedSmokeExport?.status === 'completed') {
+    assert(trackedSmokeExport?.artifactAvailable === true, 'Completed smoke export artifact should be marked ready.')
+    const completedDownloadTarget = exportsList.find((entry) => entry.id === trackedSmokeExport.id && entry.status === 'completed')
+    assert(Boolean(completedDownloadTarget), 'Completed smoke export should be available in export listing.')
     const download = await fetch(`http://127.0.0.1:${context.port}/api/exports/${completedDownloadTarget.id}/download`, {
       headers: { Authorization: `Bearer ${login.token}` }
     })
     assert(download.status === 200, 'Completed smoke export should be downloadable.')
+    const downloadType = download.headers.get('content-type') || ''
+    assert(downloadType === 'application/pdf', 'Completed smoke export download should return PDF content type.')
   }
 
   const summary = {
     ok: true,
     profileId: profile.id,
     templateId: template.id,
-    exportJobId: exportJob.id,
-    exportStatus: exportsList.find((entry) => entry.id === exportJob.id)?.status,
+    exportJobId: trackedSmokeExport?.id || exportJob.id,
+    exportStatus: exportsList.find((entry) => entry.id === (trackedSmokeExport?.id || exportJob.id))?.status,
+    exportArtifactReady: exportsList.find((entry) => entry.id === (trackedSmokeExport?.id || exportJob.id))?.artifactAvailable,
     flakyJobId: flakyJob.id,
     flakyStatus: exportsList.find((entry) => entry.id === flakyJob.id)?.status,
     queuePending: queueHealth?.queue?.pending

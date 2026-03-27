@@ -11,6 +11,9 @@ function normalizeQueueHealthPayload(payload = {}) {
   const failed = Number(queue.failed ?? byStatus.failed ?? 0)
   const deadLetter = Number(queue.deadLetter ?? byStatus['dead-letter'] ?? 0)
   const pending = Number(queue.pending ?? queuedOnly + retrying)
+  const activeLeases = Array.isArray(queue.activeLeaseDetails) ? queue.activeLeaseDetails : []
+  const retryState = queue.retries && typeof queue.retries === 'object' ? queue.retries : {}
+  const machineState = queue.machineState && typeof queue.machineState === 'object' ? queue.machineState : {}
 
   return {
     ...payload,
@@ -27,7 +30,30 @@ function normalizeQueueHealthPayload(payload = {}) {
       deadLetter,
       readyNow: Number(queue.readyNow || 0),
       stalled: Number(queue.stalled || 0),
-      total: Number(queue.total || pending + running + completed + failed + deadLetter)
+      total: Number(queue.total || pending + running + completed + failed + deadLetter),
+      activeLeases,
+      activeLeasesCount: Number(queue.activeLeasesCount ?? queue.activeLeases ?? activeLeases.length),
+      retries: {
+        ...retryState,
+        active: Number(retryState.active ?? retrying),
+        readyNow: Number(retryState.readyNow ?? queue.readyNow ?? 0),
+        scheduledLater: Number(retryState.scheduledLater ?? 0),
+        countsByAttempt: Array.isArray(retryState.countsByAttempt) ? retryState.countsByAttempt : []
+      },
+      machineState: {
+        ...machineState,
+        activeLeases,
+        retries: {
+          ...retryState,
+          active: Number(retryState.active ?? retrying),
+          readyNow: Number(retryState.readyNow ?? queue.readyNow ?? 0),
+          scheduledLater: Number(retryState.scheduledLater ?? 0),
+          countsByAttempt: Array.isArray(retryState.countsByAttempt) ? retryState.countsByAttempt : []
+        },
+        failed: machineState.failed || { count: failed, ids: [] },
+        deadLetter: machineState.deadLetter || { count: deadLetter, ids: [] },
+        completed: machineState.completed || { count: completed, ids: [] }
+      }
     }
   }
 }

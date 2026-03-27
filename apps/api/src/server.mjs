@@ -641,7 +641,8 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/ops/diagnostics' && req.method === 'GET') {
         const user = authorize('canReadDiagnostics')
         const { auditEvents, exports } = modules.analytics.getDiagnosticsContext(user)
-        const queue = readExportWorkerStatus()
+        const queueHealth = modules.exports.getQueueHealth(user)
+        const queue = queueHealth?.queue || readExportWorkerStatus()
         const byStatus = exports.reduce((acc, job) => {
           acc[job.status] = (acc[job.status] || 0) + 1
           return acc
