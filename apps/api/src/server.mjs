@@ -1076,6 +1076,33 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      const draftLockMatch = pathname.match(/^\/api\/forms\/drafts\/([^/]+)\/lock$/)
+      if (draftLockMatch && req.method === 'POST') {
+        const [, draftId] = draftLockMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteForms')
+        const result = modules.forms.acquireDraftLock(user, decodeURIComponent(draftId), await parseBody(req))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (draftLockMatch && req.method === 'DELETE') {
+        const [, draftId] = draftLockMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteForms')
+        const body = await parseBody(req)
+        const result = modules.forms.releaseDraftLock(user, decodeURIComponent(draftId), body?.leaseId || '')
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      const draftMatch = pathname.match(/^\/api\/forms\/drafts\/([^/]+)$/)
+      if (draftMatch && req.method === 'PATCH') {
+        const [, draftId] = draftMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteForms')
+        const result = modules.forms.reviseDraftSubmission(user, decodeURIComponent(draftId), await parseBody(req))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname === '/api/forms/submissions' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
@@ -1132,11 +1159,13 @@ export function createHttpServer({ modules }) {
         const [, submissionId, sectionKey, itemKey] = submissionSectionItemMatch
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
+        const expectedUpdatedAt = url.searchParams.get('expectedUpdatedAt') || ''
         const result = modules.forms.deleteSubmissionSectionItem(
           user,
           decodeURIComponent(submissionId),
           decodeURIComponent(sectionKey),
-          decodeURIComponent(itemKey)
+          decodeURIComponent(itemKey),
+          { expectedUpdatedAt }
         )
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })

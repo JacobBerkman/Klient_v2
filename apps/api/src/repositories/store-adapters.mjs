@@ -178,6 +178,15 @@ export class StoreFormsRepository extends FormsRepository {
   createFormSubmission(user, input) {
     return this.store.createFormSubmission(user, input)
   }
+  acquireDraftLock(user, submissionId, input) {
+    return this.store.acquireDraftLock(user, submissionId, input)
+  }
+  releaseDraftLock(user, submissionId, leaseId) {
+    return this.store.releaseDraftLock(user, submissionId, leaseId)
+  }
+  reviseDraftSubmission(user, submissionId, input) {
+    return this.store.reviseDraftSubmission(user, submissionId, input)
+  }
   updateSubmission(user, submissionId, patch) {
     return this.store.updateSubmission(user, submissionId, patch)
   }

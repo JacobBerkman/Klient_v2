@@ -83,10 +83,21 @@ function setWorkflowStatus(message = '') {
 }
 
 function normalizeConflictMessage(error, fallbackMessage = 'Conflict detected. Reload and try again.') {
-  if (error?.details?.mergePrompt?.suggestion) return error.details.mergePrompt.suggestion
+  const conflictType = error?.details?.type || error?.details?.mergePrompt?.type || ''
+  const promptSuggestion = String(error?.details?.mergePrompt?.suggestion || '').trim()
+  if (conflictType === 'lease_conflict') {
+    return 'Your lock lease expired or moved. Reload the draft, reacquire lock, then save again.'
+  }
+  if (conflictType === 'revision_conflict') {
+    return 'Another advisor saved first. Reload latest draft revision, merge your edits, then retry save.'
+  }
+  if (conflictType === 'submission_stale') {
+    return 'This submission changed on the server. Reload the section, review latest values, and retry.'
+  }
+  if (promptSuggestion) return promptSuggestion
   const rawMessage = String(error?.message || '').toLowerCase()
   if (rawMessage.includes('conflict') || rawMessage.includes('stale') || rawMessage.includes('version')) {
-    return 'Conflict detected: another change was saved first. Review latest data and retry.'
+    return 'Conflict detected: reload latest server data, review differences, then retry your update.'
   }
   return fallbackMessage
 }
@@ -396,7 +407,7 @@ function completeInlineSave(kind, profileId, card = null) {
 function failInlineSave(kind, profileId, conflictMessage = '') {
   const entry = ensureInlineProfileState(kind, profileId)
   entry.saving = false
-  entry.conflictMessage = conflictMessage || ''
+  entry.conflictMessage = conflictMessage || 'Unable to save right now. Retry after reloading latest profile data.'
 }
 
 function cancelInlineDraft(kind, profileId, card = null) {
@@ -427,7 +438,9 @@ function inlineStatusMarkup(entry) {
   return `
     <div class="inline-status-row" aria-live="polite">
       ${badges.join('')}
-      <span class="muted inline-status-text" role="${entry.conflictMessage ? 'alert' : 'status'}">${message}</span>
+      <span class="muted inline-status-text" role="${entry.conflictMessage ? 'alert' : 'status'}" aria-live="${
+        entry.conflictMessage ? 'assertive' : 'polite'
+      }">${message}</span>
     </div>
   `
 }
@@ -1004,19 +1017,13 @@ async function renderForms() {
             data: { ...(draft?.data || {}), uiSavedAt: new Date().toISOString() }
           })
         })
-        if (!response.ok) {
-          setAlert('error', response.mergePrompt?.suggestion || 'Draft conflict.')
-          reportActionError('Forms', new Error(response.mergePrompt?.suggestion || 'Draft conflict.'))
-        } else {
-          clearAlert()
-          setWorkflowStatus(`Draft ${draftId} saved at revision ${response.submission.revisionId}.`)
-          reportActionSuccess('Forms', `Draft saved at revision ${response.submission.revisionId}.`)
-        }
+        clearAlert()
+        setWorkflowStatus(`Draft ${draftId} saved at revision ${response.submission.revisionId}.`)
+        reportActionSuccess('Forms', `Draft saved at revision ${response.submission.revisionId}.`)
       } catch (error) {
-        if (error?.details?.mergePrompt?.suggestion) {
-          setAlert('error', error.details.mergePrompt.suggestion)
-        }
-        setWorkflowStatus(normalizeApiError(error, 'save this draft'))
+        const normalizedMessage = normalizeApiError(error, 'save this draft')
+        setAlert('error', normalizedMessage)
+        setWorkflowStatus(normalizedMessage)
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -1031,6 +1038,7 @@ async function renderForms() {
       const submissionId = form.dataset.submissionId
       const sectionKey = form.dataset.sectionKey
       const itemKey = form.dataset.itemKey
+      const expectedUpdatedAt = selectedSubmission?.updatedAt || ''
       const patch = {}
       form.querySelectorAll('[data-item-field]').forEach((input) => {
         const fieldName = String(input.name || '').replace(/^field:/, '')
@@ -1046,7 +1054,7 @@ async function renderForms() {
       try {
         await request(routes.submissionSectionItem(submissionId, sectionKey, itemKey), {
           method: 'PATCH',
-          body: JSON.stringify(patch)
+          body: JSON.stringify({ ...patch, expectedUpdatedAt })
         })
         setRepeaterRowFeedback(form, `Item ${itemKey} updated.`, 'success')
         reportActionSuccess('Forms', `Updated repeater item ${itemKey}.`)
@@ -1069,12 +1077,16 @@ async function renderForms() {
       const submissionId = button.dataset.submissionId
       const sectionKey = button.dataset.sectionKey
       const itemKey = button.dataset.itemKey
+      const expectedUpdatedAt = selectedSubmission?.updatedAt || ''
       const actionKey = `${button.dataset.repeaterDelete}-delete-${itemKey}`
       setActionPending(actionKey, 'pending')
       setRepeaterRowBusy(button, true)
       setRepeaterRowFeedback(button, '')
       try {
-        await request(routes.submissionSectionItem(submissionId, sectionKey, itemKey), { method: 'DELETE' })
+        const deletePath = `${routes.submissionSectionItem(submissionId, sectionKey, itemKey)}?${new URLSearchParams({
+          expectedUpdatedAt
+        }).toString()}`
+        await request(deletePath, { method: 'DELETE' })
         setRepeaterRowFeedback(button, `Item ${itemKey} deleted.`, 'success')
         reportActionSuccess('Forms', `Deleted repeater item ${itemKey}.`)
         await renderForms()

@@ -37,6 +37,65 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
     return submission
   }
 
+  function buildDraftConflictDetails(result = {}, draftId, fallbackSuggestion) {
+    const mergePrompt = result?.mergePrompt || {}
+    const type = mergePrompt.type || 'draft_conflict'
+    const suggestedAction =
+      type === 'lease_conflict'
+        ? 'refresh_then_reacquire_lock'
+        : type === 'revision_conflict'
+          ? 'refresh_then_merge_changes'
+          : 'refresh_then_retry'
+    return {
+      draftId,
+      conflict: true,
+      reason: result?.reason || 'Draft conflict detected.',
+      type,
+      localRevisionId: Number(mergePrompt.localRevisionId || 0) || null,
+      serverRevisionId: Number(mergePrompt.serverRevisionId || 0) || null,
+      suggestedAction,
+      mergePrompt: {
+        type,
+        localRevisionId: Number(mergePrompt.localRevisionId || 0) || null,
+        serverRevisionId: Number(mergePrompt.serverRevisionId || 0) || null,
+        suggestion: mergePrompt.suggestion || fallbackSuggestion
+      },
+      lock: result?.lock || result?.serverDraft?.lock || null,
+      serverDraft: result?.serverDraft || null
+    }
+  }
+
+  function throwDraftConflict(result, draftId, { code = 'FORMS_DRAFT_CONFLICT', fallbackSuggestion } = {}) {
+    throw createFormsError(result?.reason || 'Draft conflict detected.', {
+      statusCode: 409,
+      code,
+      details: buildDraftConflictDetails(result, draftId, fallbackSuggestion)
+    })
+  }
+
+  function assertSubmissionFreshness({ submission, expectedUpdatedAt, sectionKey = null, itemKey = null }) {
+    const normalizedExpected = typeof expectedUpdatedAt === 'string' ? expectedUpdatedAt.trim() : ''
+    if (!normalizedExpected) return
+    const currentUpdatedAt = String(submission?.updatedAt || '')
+    if (!currentUpdatedAt || currentUpdatedAt === normalizedExpected) return
+    throw createFormsError('Submission update conflict: stale updatedAt precondition.', {
+      statusCode: 409,
+      code: 'FORMS_SUBMISSION_STALE',
+      details: {
+        conflict: true,
+        submissionId: submission.id,
+        expectedUpdatedAt: normalizedExpected,
+        currentUpdatedAt,
+        ...(sectionKey ? { sectionKey } : {}),
+        ...(itemKey ? { itemKey } : {}),
+        mergePrompt: {
+          type: 'submission_stale',
+          suggestion: 'Conflict detected: reload this draft section, review latest data, then retry your change.'
+        }
+      }
+    })
+  }
+
   function resolveSectionItems(submission, sectionKey) {
     const data = submission?.data
     if (!data || typeof data !== 'object' || Array.isArray(data)) {
@@ -126,6 +185,32 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
       policy.requireGuard(user, 'canWriteForms')
       return store.createFormSubmission(createFirmContext(user), input)
     },
+    acquireDraftLock(user, draftId, input = {}) {
+      policy.requireGuard(user, 'canWriteForms')
+      const result = store.acquireDraftLock(createFirmContext(user), draftId, input)
+      if (!result?.ok && result?.conflict) {
+        throwDraftConflict(result, draftId, {
+          code: 'FORMS_DRAFT_LOCK_CONFLICT',
+          fallbackSuggestion: 'Draft is locked by another advisor. Refresh, then retry lock when it expires or force takeover.'
+        })
+      }
+      return result
+    },
+    releaseDraftLock(user, draftId, leaseId = '') {
+      policy.requireGuard(user, 'canWriteForms')
+      return store.releaseDraftLock(createFirmContext(user), draftId, leaseId)
+    },
+    reviseDraftSubmission(user, draftId, input = {}) {
+      policy.requireGuard(user, 'canWriteForms')
+      const result = store.reviseDraftSubmission(createFirmContext(user), draftId, input)
+      if (!result?.ok && result?.conflict) {
+        throwDraftConflict(result, draftId, {
+          code: 'FORMS_DRAFT_REVISE_CONFLICT',
+          fallbackSuggestion: 'Another editor saved first. Refresh draft state, reconcile differences, and retry save.'
+        })
+      }
+      return result
+    },
     updateSubmission(user, submissionId, patch) {
       policy.requireGuard(user, 'canWriteForms')
       return store.updateSubmission(createFirmContext(user), submissionId, patch)
@@ -136,6 +221,13 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
       const normalizedItemKey = normalizeSelectorKey(itemKey, 'Item key')
       const normalizedPatch = normalizePatch(patch)
       const submission = getSubmissionOrThrow(user, submissionId)
+      assertSubmissionFreshness({
+        submission,
+        expectedUpdatedAt: normalizedPatch.expectedUpdatedAt,
+        sectionKey: normalizedSectionKey,
+        itemKey: normalizedItemKey
+      })
+      const { expectedUpdatedAt: _ignoredExpectedUpdatedAt, ...itemPatch } = normalizedPatch
       const items = resolveSectionItems(submission, normalizedSectionKey)
       const itemIndex = resolveItemIndex(items, normalizedItemKey)
       const currentItem = items[itemIndex]
@@ -145,13 +237,13 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
           details: { sectionKey: normalizedSectionKey, itemKey: normalizedItemKey }
         })
       }
-      if ('id' in normalizedPatch || 'key' in normalizedPatch) {
+      if ('id' in itemPatch || 'key' in itemPatch) {
         throw createFormsError('Item identity fields (id/key) cannot be updated.', {
           code: 'FORMS_REPEATER_IDENTITY_IMMUTABLE',
           details: { immutableFields: ['id', 'key'] }
         })
       }
-      const nextItem = { ...currentItem, ...normalizedPatch }
+      const nextItem = { ...currentItem, ...itemPatch }
       const nextItems = items.map((entry, index) => (index === itemIndex ? nextItem : entry))
       const nextData = { ...submission.data, [normalizedSectionKey]: nextItems }
       return store.updateSubmission(user, submissionId, {
@@ -163,11 +255,17 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
         }
       })
     },
-    deleteSubmissionSectionItem(user, submissionId, sectionKey, itemKey) {
+    deleteSubmissionSectionItem(user, submissionId, sectionKey, itemKey, options = {}) {
       policy.requireGuard(user, 'canWriteForms')
       const normalizedSectionKey = normalizeSelectorKey(sectionKey, 'Section key')
       const normalizedItemKey = normalizeSelectorKey(itemKey, 'Item key')
       const submission = getSubmissionOrThrow(user, submissionId)
+      assertSubmissionFreshness({
+        submission,
+        expectedUpdatedAt: options?.expectedUpdatedAt,
+        sectionKey: normalizedSectionKey,
+        itemKey: normalizedItemKey
+      })
       const items = resolveSectionItems(submission, normalizedSectionKey)
       const itemIndex = resolveItemIndex(items, normalizedItemKey)
       const nextItems = items.filter((_entry, index) => index !== itemIndex)
