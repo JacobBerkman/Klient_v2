@@ -606,17 +606,34 @@ export function createHttpServer({ modules }) {
         const database = ensureDatabaseReady()
         const storageHealth = readStorageHealth()
         const queue = readExportWorkerStatus()
+        const querySummary = readQuerySummary()
+        const auditEvents = readAuditEventSummary()
         finalizeLog(200)
         return replyJson(
           200,
           {
             status: 'ready',
-            querySummary: readQuerySummary(),
+            querySummary,
             database,
             storageHealth,
             exportWorker: queue,
-            auditEvents: readAuditEventSummary(),
-            startupDiagnostics
+            auditEvents,
+            startupDiagnostics,
+            checks: {
+              databaseReady: Boolean(database?.ok),
+              storageReady: Boolean(storageHealth?.ok),
+              exportQueueReachable: Boolean(queue && typeof queue === 'object'),
+              startupConfigValid: Boolean(startupDiagnostics?.ok)
+            },
+            diagnostics: {
+              generatedAt: new Date().toISOString(),
+              endpoints: {
+                health: '/health',
+                ready: '/ready',
+                exportsQueue: '/api/ops/exports/queue',
+                telemetry: '/api/ops/diagnostics'
+              }
+            }
           },
           { 'X-Request-Id': requestId }
         )

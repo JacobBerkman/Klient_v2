@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import { access } from 'node:fs/promises'
+import { createEvidenceRecorder } from './release-evidence.mjs'
 
 const integrationSuites = [
   {
@@ -43,6 +44,13 @@ const integrationSuites = [
     invariant: 'Required canonical audit events and payload fields are emitted for sensitive actions.'
   }
 ]
+
+const evidence = createEvidenceRecorder({
+  gate: 'integration',
+  defaultFile: 'integration-summary.json',
+  envVarName: 'RELEASE_EVIDENCE_INTEGRATION_FILE',
+  command: 'npm run test:integration'
+})
 
 async function ensureScriptExists(script) {
   await access(new URL(`./${script}`, import.meta.url))
@@ -95,11 +103,16 @@ async function main() {
   }
 
   const totalDurationMs = executed.reduce((sum, run) => sum + run.durationMs, 0)
+  evidence.finalize({
+    status: 'passed',
+    details: { totalDurationMs, executed }
+  })
   console.log('\n✅ All integration scripts passed.')
   console.log(`Executed ${executed.length} suites in ${totalDurationMs}ms.`)
 }
 
 main().catch((error) => {
+  evidence.finalize({ status: 'failed', error })
   console.error(`\n❌ Integration suite failed: ${error.message}`)
   process.exit(1)
 })

@@ -4,6 +4,25 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { spawn } from 'node:child_process'
+import { createEvidenceRecorder } from './release-evidence.mjs'
+
+const evidence = createEvidenceRecorder({
+  gate: 'contract',
+  defaultFile: 'api-contract-summary.json',
+  envVarName: 'RELEASE_EVIDENCE_CONTRACT_FILE',
+  command: 'npm run test:contract'
+})
+
+process.on('exit', () => {
+  if (process.exitCode && process.exitCode !== 0) {
+    evidence.finalize({
+      status: 'failed',
+      error: new Error(`Process exited with code ${process.exitCode}.`)
+    })
+    return
+  }
+  evidence.finalize({ status: 'passed' })
+})
 
 const repoRoot = resolve(new URL('..', import.meta.url).pathname)
 const serverEntrypoint = resolve(repoRoot, 'apps/api/src/server.mjs')

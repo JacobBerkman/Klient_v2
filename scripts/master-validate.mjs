@@ -2,31 +2,73 @@ import { spawn } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 
+const defaultEvidenceDir = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_DIR || 'artifacts/release-evidence')
+
 const gateSteps = [
-  { name: 'Static syntax checks', command: 'npm', args: ['run', 'check:syntax'] },
-  { name: 'API contract tests', command: 'npm', args: ['run', 'test:contract'] },
-  { name: 'Negative-path RBAC checks', command: 'node', args: ['scripts/integration-rbac.mjs'] },
-  { name: 'Negative-path tenancy checks', command: 'node', args: ['scripts/integration-tenancy.mjs'] },
-  { name: 'Integration suites', command: 'npm', args: ['run', 'test:integration'] },
-  { name: 'Migration order checks', command: 'npm', args: ['run', 'check:migrations'] },
-  { name: 'Smoke test', command: 'npm', args: ['run', 'test:smoke'] },
-  { name: 'Security checks', command: 'npm', args: ['run', 'test:security'] },
-  { name: 'Merge/main parity check', command: 'npm', args: ['run', 'check:merge-main'] }
+  { name: 'Static syntax checks', command: 'npm', args: ['run', 'check:syntax'], evidenceFile: null },
+  {
+    name: 'API contract tests',
+    command: 'npm',
+    args: ['run', 'test:contract'],
+    evidenceFile: resolve(defaultEvidenceDir, 'api-contract-summary.json')
+  },
+  { name: 'Negative-path RBAC checks', command: 'node', args: ['scripts/integration-rbac.mjs'], evidenceFile: null },
+  {
+    name: 'Negative-path tenancy checks',
+    command: 'node',
+    args: ['scripts/integration-tenancy.mjs'],
+    evidenceFile: null
+  },
+  {
+    name: 'Integration suites',
+    command: 'npm',
+    args: ['run', 'test:integration'],
+    evidenceFile: resolve(defaultEvidenceDir, 'integration-summary.json')
+  },
+  {
+    name: 'Migration order checks',
+    command: 'npm',
+    args: ['run', 'check:migrations'],
+    evidenceFile: resolve(defaultEvidenceDir, 'migration-summary.json')
+  },
+  {
+    name: 'Smoke test',
+    command: 'npm',
+    args: ['run', 'test:smoke'],
+    evidenceFile: resolve(defaultEvidenceDir, 'smoke-summary.json')
+  },
+  {
+    name: 'Security checks',
+    command: 'npm',
+    args: ['run', 'test:security'],
+    evidenceFile: resolve(defaultEvidenceDir, 'security-summary.json')
+  },
+  { name: 'Merge/main parity check', command: 'npm', args: ['run', 'check:merge-main'], evidenceFile: null }
 ]
 
 function formatCommand(step) {
   return `${step.command} ${step.args.join(' ')}`
 }
 
+function envForStep(step) {
+  const env = { ...process.env, RELEASE_EVIDENCE_DIR: defaultEvidenceDir }
+  if (step.evidenceFile && step.name === 'API contract tests') env.RELEASE_EVIDENCE_CONTRACT_FILE = step.evidenceFile
+  if (step.evidenceFile && step.name === 'Integration suites') env.RELEASE_EVIDENCE_INTEGRATION_FILE = step.evidenceFile
+  if (step.evidenceFile && step.name === 'Migration order checks') env.RELEASE_EVIDENCE_MIGRATION_FILE = step.evidenceFile
+  if (step.evidenceFile && step.name === 'Smoke test') env.RELEASE_EVIDENCE_SMOKE_FILE = step.evidenceFile
+  if (step.evidenceFile && step.name === 'Security checks') env.RELEASE_EVIDENCE_SECURITY_FILE = step.evidenceFile
+  return env
+}
+
 function runStep(step, index, total) {
-  return new Promise((resolve, reject) => {
+  return new Promise((resolveRun, reject) => {
     const start = Date.now()
     process.stdout.write(`\n▶ [${index + 1}/${total}] ${step.name}\n$ ${formatCommand(step)}\n\n`)
 
     const child = spawn(step.command, step.args, {
       stdio: 'inherit',
       shell: process.platform === 'win32',
-      env: process.env
+      env: envForStep(step)
     })
 
     child.on('error', (error) => {
@@ -49,7 +91,7 @@ function runStep(step, index, total) {
         reject(error)
         return
       }
-      resolve({ durationMs })
+      resolveRun({ durationMs })
     })
   })
 }
@@ -97,6 +139,9 @@ for (const result of results) {
   } else {
     process.stdout.write(`  ✗ ${result.name} (${formatCommand(result)})\n`)
   }
+  if (result.evidenceFile) {
+    process.stdout.write(`    evidence: ${result.evidenceFile}\n`)
+  }
 }
 
 if (skipped.length > 0) {
@@ -114,9 +159,10 @@ if (failure) {
 }
 
 const summary = {
-  schemaVersion: '1.0.0',
+  schemaVersion: '1.1.0',
   generatedAt: toIsoTimestamp(Date.now()),
   nodeEnv: process.env.NODE_ENV || null,
+  evidenceDir: defaultEvidenceDir,
   status: failure ? 'failed' : 'passed',
   startedAt: toIsoTimestamp(startedAt),
   finishedAt: toIsoTimestamp(Date.now()),
@@ -127,6 +173,7 @@ const summary = {
       return {
         name: step.name,
         command: formatCommand(step),
+        evidenceFile: step.evidenceFile,
         status: 'skipped',
         durationMs: null,
         startedAt: null,
@@ -136,6 +183,7 @@ const summary = {
     return {
       name: executed.name,
       command: formatCommand(executed),
+      evidenceFile: step.evidenceFile,
       status: executed.status,
       durationMs: Number.isFinite(executed.durationMs) ? executed.durationMs : null,
       startedAt: executed.startedAt,
@@ -144,7 +192,7 @@ const summary = {
   })
 }
 
-const defaultEvidenceFile = 'artifacts/release-evidence/validate-master-summary.json'
+const defaultEvidenceFile = resolve(defaultEvidenceDir, 'validate-master-summary.json')
 const evidenceFile = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_FILE || defaultEvidenceFile)
 mkdirSync(dirname(evidenceFile), { recursive: true })
 writeFileSync(evidenceFile, JSON.stringify(summary, null, 2))

@@ -1,4 +1,12 @@
 import { assert, createTestContext } from './test-harness.mjs'
+import { createEvidenceRecorder } from './release-evidence.mjs'
+
+const evidence = createEvidenceRecorder({
+  gate: 'smoke',
+  defaultFile: 'smoke-summary.json',
+  envVarName: 'RELEASE_EVIDENCE_SMOKE_FILE',
+  command: 'npm run test:smoke'
+})
 
 const context = await createTestContext('smoke')
 
@@ -43,25 +51,22 @@ try {
   await context.request('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } })
   const exportsList = await context.request('/api/exports', { headers: { Authorization: `Bearer ${login.token}` } })
 
-  assert(
-    exportsList.some((entry) => entry.id === exportJob.id),
-    'Export job missing from export list.'
-  )
+  assert(exportsList.some((entry) => entry.id === exportJob.id), 'Export job missing from export list.')
   assert(publishResult.status === 'published', 'Template publish failed.')
 
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        profileId: profile.id,
-        templateId: template.id,
-        exportJobId: exportJob.id,
-        exportStatus: exportsList.find((entry) => entry.id === exportJob.id)?.status
-      },
-      null,
-      2
-    )
-  )
+  const summary = {
+    ok: true,
+    profileId: profile.id,
+    templateId: template.id,
+    exportJobId: exportJob.id,
+    exportStatus: exportsList.find((entry) => entry.id === exportJob.id)?.status
+  }
+
+  evidence.finalize({ status: 'passed', details: summary })
+  console.log(JSON.stringify(summary, null, 2))
+} catch (error) {
+  evidence.finalize({ status: 'failed', error })
+  throw error
 } finally {
   await context.shutdown()
 }

@@ -2,6 +2,7 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { createEvidenceRecorder } from './release-evidence.mjs'
 
 const repoRoot = resolve(new URL('..', import.meta.url).pathname)
 
@@ -40,6 +41,13 @@ function runNode(scriptPath, cwd, args = []) {
     })
   })
 }
+
+const evidence = createEvidenceRecorder({
+  gate: 'migration',
+  defaultFile: 'migration-summary.json',
+  envVarName: 'RELEASE_EVIDENCE_MIGRATION_FILE',
+  command: 'npm run check:migrations'
+})
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'klient-migration-check-'))
 try {
@@ -86,24 +94,23 @@ try {
     throw new Error('Template aggregate data missing after migration flow.')
   }
 
-  console.log(
-    JSON.stringify(
-      {
-        ok: true,
-        checks: {
-          templateMigration: 'pass',
-          templateMigrationIdempotent: 'pass',
-          templateMigrationVerify: 'pass',
-          piiReencryptionPath: 'pass'
-        },
-        templateAggregateCount: postState.templateAggregates.length,
-        rotatedProfiles: rotation.rotatedProfiles,
-        rotatedFields: rotation.rotatedFields
-      },
-      null,
-      2
-    )
-  )
+  const summary = {
+    ok: true,
+    checks: {
+      templateMigration: 'pass',
+      templateMigrationIdempotent: 'pass',
+      templateMigrationVerify: 'pass',
+      piiReencryptionPath: 'pass'
+    },
+    templateAggregateCount: postState.templateAggregates.length,
+    rotatedProfiles: rotation.rotatedProfiles,
+    rotatedFields: rotation.rotatedFields
+  }
+  evidence.finalize({ status: 'passed', details: summary })
+  console.log(JSON.stringify(summary, null, 2))
+} catch (error) {
+  evidence.finalize({ status: 'failed', error })
+  throw error
 } finally {
   await rm(tempRoot, { recursive: true, force: true })
 }
