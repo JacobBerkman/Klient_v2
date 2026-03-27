@@ -21,9 +21,14 @@ const state = {
     login: null,
     enrollment: null
   },
+  inlineProfileUi: {},
+  profileDetailById: {},
+  selectedClientId: '',
+  selectedSubmissionId: '',
   templatePreviewByTemplateId: {},
   templatePublishPreflightByTemplateId: {},
-  templatePreviewSelectionByTemplateId: {}
+  templatePreviewSelectionByTemplateId: {},
+  workflowStatusMessage: ''
 }
 
 const viewEl = document.querySelector('#view')
@@ -39,6 +44,7 @@ const profileStageEl = document.querySelector('#profile-stage-select')
 const householdPrimaryEl = document.querySelector('select[name="primaryClientId"]')
 const portalProfileEl = document.querySelector('select[name="profileId"]')
 const profileCreateFormEl = document.querySelector('#profile-form')
+const householdFormEl = document.querySelector('#household-form')
 const formTemplateFormEl = document.querySelector('#form-template-form')
 const docTemplateFormEl = document.querySelector('#doc-template-form')
 const inviteFormEl = document.querySelector('#invite-form')
@@ -72,6 +78,10 @@ function clearAlert() {
   state.alert = null
 }
 
+function setWorkflowStatus(message = '') {
+  state.workflowStatusMessage = message
+}
+
 function normalizeConflictMessage(error, fallbackMessage = 'Conflict detected. Reload and try again.') {
   if (error?.details?.mergePrompt?.suggestion) return error.details.mergePrompt.suggestion
   const rawMessage = String(error?.message || '').toLowerCase()
@@ -85,6 +95,25 @@ function isConflictError(error) {
   if (error?.details?.mergePrompt?.suggestion) return true
   const rawMessage = String(error?.message || '').toLowerCase()
   return rawMessage.includes('conflict') || rawMessage.includes('stale') || rawMessage.includes('version')
+}
+
+function isPermissionError(error) {
+  return Number(error?.status) === 403 || Number(error?.status) === 401
+}
+
+function isNotFoundError(error) {
+  return Number(error?.status) === 404
+}
+
+function normalizeApiError(error, action = 'complete this action') {
+  if (isConflictError(error)) return normalizeConflictMessage(error)
+  if (isPermissionError(error)) return `Permission denied: you do not have access to ${action}.`
+  if (isNotFoundError(error)) return `The requested record no longer exists. Reload before trying to ${action}.`
+  if (Number(error?.status) === 422 || Number(error?.status) === 400) {
+    return `Validation failed while trying to ${action}. Review the input and retry.`
+  }
+  const raw = String(error?.message || '').trim()
+  return raw || `Unable to ${action} right now.`
 }
 
 function setActionPending(actionKey, status) {
@@ -102,6 +131,8 @@ function pendingLabel(actionKey, defaultLabel, pendingLabel = 'Saving…') {
 function setFormFeedback(form, message = '', type = 'error') {
   const feedbackEl = form?.querySelector('[data-form-feedback]')
   if (!feedbackEl) return
+  feedbackEl.setAttribute('role', type === 'error' ? 'alert' : 'status')
+  feedbackEl.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite')
   feedbackEl.textContent = message
   feedbackEl.classList.remove('error-banner', 'success-banner')
   if (message) feedbackEl.classList.add(type === 'success' ? 'success-banner' : 'error-banner')
@@ -124,6 +155,8 @@ function setRepeaterRowFeedback(control, message = '', type = 'error') {
   if (!row) return
   const feedbackEl = row.querySelector('[data-repeater-feedback]')
   if (!feedbackEl) return
+  feedbackEl.setAttribute('role', type === 'error' ? 'alert' : 'status')
+  feedbackEl.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite')
   feedbackEl.textContent = message
   feedbackEl.classList.remove('error-banner', 'success-banner')
   if (message) feedbackEl.classList.add(type === 'success' ? 'success-banner' : 'error-banner')
@@ -392,9 +425,9 @@ function inlineStatusMarkup(entry) {
         ? 'Unsaved changes.'
         : 'Synced'
   return `
-    <div class="inline-status-row">
+    <div class="inline-status-row" aria-live="polite">
       ${badges.join('')}
-      <span class="muted inline-status-text">${message}</span>
+      <span class="muted inline-status-text" role="${entry.conflictMessage ? 'alert' : 'status'}">${message}</span>
     </div>
   `
 }
@@ -521,6 +554,8 @@ async function request(path, options = {}) {
   if (!response.ok) {
     const error = new Error(data?.error?.message || data?.message || 'Request failed')
     error.details = data?.error?.details || null
+    error.status = response.status
+    error.code = data?.error?.code || data?.code || ''
     throw error
   }
   return data
@@ -851,6 +886,7 @@ async function renderForms() {
   viewEl.innerHTML = `
     ${flashMarkup()}
     ${alertMarkup()}
+    <p class="muted compact" role="status" aria-live="polite">${escapeHtml(state.workflowStatusMessage || '')}</p>
     <h2>Forms + Collaboration</h2>
     <p class="muted">Draft editing now uses revision IDs, short leases, and conflict-aware save prompts.</p>
     <div class="muted compact workflow-context">Context: client <code>${escapeHtml(state.selectedClientId || 'n/a')}</code> · submission <code>${escapeHtml(state.selectedSubmissionId || 'n/a')}</code></div>
@@ -939,8 +975,10 @@ async function renderForms() {
           method: 'POST',
           body: JSON.stringify({ leaseMs: 30000 })
         })
+        setWorkflowStatus(`Lock acquired for draft ${button.dataset.lock}.`)
         reportActionSuccess('Forms', `Lock acquired. Lease ${result.lock.leaseId.slice(0, 8)}…`)
       } catch (error) {
+        setWorkflowStatus(normalizeApiError(error, 'acquire a draft lock'))
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -971,12 +1009,14 @@ async function renderForms() {
           reportActionError('Forms', new Error(response.mergePrompt?.suggestion || 'Draft conflict.'))
         } else {
           clearAlert()
+          setWorkflowStatus(`Draft ${draftId} saved at revision ${response.submission.revisionId}.`)
           reportActionSuccess('Forms', `Draft saved at revision ${response.submission.revisionId}.`)
         }
       } catch (error) {
         if (error?.details?.mergePrompt?.suggestion) {
           setAlert('error', error.details.mergePrompt.suggestion)
         }
+        setWorkflowStatus(normalizeApiError(error, 'save this draft'))
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -1014,6 +1054,7 @@ async function renderForms() {
       } catch (error) {
         const message = repeaterActionErrorMessage(error, { actionLabel: 'update', itemKey, sectionKey })
         setRepeaterRowFeedback(form, message)
+        setWorkflowStatus(message)
         reportActionError('Forms', error)
         setAlert('error', message)
       } finally {
@@ -1040,6 +1081,7 @@ async function renderForms() {
       } catch (error) {
         const message = repeaterActionErrorMessage(error, { actionLabel: 'delete', itemKey, sectionKey })
         setRepeaterRowFeedback(button, message)
+        setWorkflowStatus(message)
         reportActionError('Forms', error)
         setAlert('error', message)
       } finally {
@@ -1717,14 +1759,14 @@ function boardCardMarkup(card, kind) {
         <button type="button" class="secondary tiny workflow-shortcut" data-open-doc-actions="${card.id}" data-workflow-submission="${workflow.latestSubmissionId || workflow.latestDraftId || ''}">Document actions</button>
       </div>
       <div class="muted compact-meta">Forms: ${workflow.submissionCount || 0} submissions · ${workflow.draftCount || 0} drafts</div>
-      <div id="profile-detail-${card.id}" class="hidden card-detail muted compact-meta top-gap" data-profile-detail="${card.id}"></div>
+      <div id="profile-detail-${card.id}" class="hidden card-detail muted compact-meta top-gap" data-profile-detail="${card.id}" role="status" aria-live="polite"></div>
     `
       : ''
   return `
     <article class="board-card" draggable="true" data-card-id="${card.id}" data-stage="${cardStage}">
       <header class="row between wrap">
         <strong>${escapeHtml(displayName)}</strong>
-        <button type="button" class="secondary tiny" data-edit-profile="${card.id}" aria-expanded="false" ${canEdit ? '' : 'disabled'}>Edit</button>
+        <button type="button" class="secondary tiny" data-edit-profile="${card.id}" aria-expanded="false" aria-controls="profile-edit-${card.id}" ${canEdit ? '' : 'disabled'}>Edit</button>
       </header>
       ${inlineStatusMarkup(inlineState)}
       <div class="muted compact-meta">${escapeHtml(card.email || 'No email')} · ${escapeHtml(card.phone || 'No phone')}</div>
@@ -1736,7 +1778,7 @@ function boardCardMarkup(card, kind) {
           ${stageSelectOptionsMarkup(cardStage)}
         </select>
       </div>
-      <form class="inline-edit hidden top-gap" data-edit-form="${card.id}" data-updated-at="${escapeHtml(card.updatedAt || '')}">
+      <form id="profile-edit-${card.id}" class="inline-edit hidden top-gap" data-edit-form="${card.id}" data-updated-at="${escapeHtml(card.updatedAt || '')}" aria-live="polite">
         <div class="grid two">
           <input name="firstName" value="${escapeHtml(inlineState.draft.firstName || '')}" placeholder="First name" required />
           <input name="lastName" value="${escapeHtml(inlineState.draft.lastName || '')}" placeholder="Last name" required />
@@ -1747,6 +1789,7 @@ function boardCardMarkup(card, kind) {
           <button type="submit" class="tiny" ${canEdit && inlineState.dirty && !inlineState.saving ? '' : 'disabled'}>${inlineState.saving ? 'Saving…' : 'Save'}</button>
           <button type="button" class="secondary tiny" data-cancel-edit="${card.id}" ${canEdit && !inlineState.saving ? '' : 'disabled'}>Cancel</button>
         </div>
+        <p class="muted compact" data-inline-feedback="${card.id}" aria-live="polite"></p>
       </form>
       <div class="muted compact-meta">Type: ${escapeHtml(kind)}</div>
     </article>
@@ -1759,6 +1802,7 @@ function boardMarkup(kind, board) {
   return `
     ${flashMarkup()}
     ${alertMarkup()}
+    <p class="muted compact" role="status" aria-live="polite">${escapeHtml(state.workflowStatusMessage || '')}</p>
     <div class="section-header">
       <div>
         <h2>${escapeHtml(kind === 'prospect' ? 'Prospects' : 'Clients')} Board</h2>
@@ -1908,6 +1952,13 @@ function wireBoardInteractions(kind) {
       form?.classList.toggle('hidden')
       inlineState.isEditing = !form?.classList.contains('hidden')
       button.setAttribute('aria-expanded', String(!form?.classList.contains('hidden')))
+      if (inlineState.isEditing) {
+        form?.querySelector('input[name="firstName"]')?.focus()
+        setWorkflowStatus(`Editing profile ${profileId}.`)
+      } else {
+        button.focus()
+        setWorkflowStatus(`Closed edit mode for profile ${profileId}.`)
+      }
     })
   })
   document.querySelectorAll('[data-cancel-edit]').forEach((button) => {
@@ -1933,18 +1984,24 @@ function wireBoardInteractions(kind) {
       const inlineState = ensureInlineProfileState(kind, profileId)
       const payload = { ...inlineState.draft }
       const submitButton = form.querySelector('button[type="submit"]')
+      const feedbackEl = form.querySelector('[data-inline-feedback]')
       if (submitButton) {
         submitButton.disabled = true
         submitButton.textContent = 'Saving…'
       }
       setAlert('success', `Saving profile ${profileId} optimistically…`)
+      if (feedbackEl) feedbackEl.textContent = 'Saving profile changes…'
       try {
         await saveInlineProfile(kind, profileId, payload, inlineState.expectedUpdatedAt || form.dataset.updatedAt || '')
         clearAlert()
+        if (feedbackEl) feedbackEl.textContent = 'Profile saved.'
+        setWorkflowStatus(`Profile ${profileId} updated.`)
         reportActionSuccess('Profiles', 'Profile updated.')
       } catch (error) {
-        const message = isConflictError(error) ? normalizeConflictMessage(error) : error.message
+        const message = normalizeApiError(error, 'save this profile')
         setAlert('error', message)
+        if (feedbackEl) feedbackEl.textContent = message
+        setWorkflowStatus(message)
         reportActionError('Profiles', error)
       } finally {
         if (submitButton) {
@@ -1984,6 +2041,7 @@ function wireBoardInteractions(kind) {
       const submissionId = button.dataset.workflowSubmission || ''
       setWorkflowContext({ clientId, submissionId })
       state.view = 'templates'
+      setWorkflowStatus(`Opened document actions for profile ${clientId}.`)
       setFlash('success', `Document actions opened for client ${clientId}.`)
       await renderCurrentView()
     })
@@ -1998,9 +2056,15 @@ function wireBoardInteractions(kind) {
       if (isVisible) {
         detailEl.classList.add('hidden')
         button.setAttribute('aria-expanded', 'false')
+        button.focus()
+        setWorkflowStatus(`Closed profile detail for ${profileId}.`)
         return
       }
       try {
+        button.disabled = true
+        button.setAttribute('aria-busy', 'true')
+        detailEl.innerHTML = '<span class="muted">Loading profile detail…</span>'
+        detailEl.classList.remove('hidden')
         let detail = state.profileDetailById[profileId]
         if (!detail) {
           detail = await request(routes.profileDetail(profileId))
@@ -2014,9 +2078,16 @@ function wireBoardInteractions(kind) {
         )} · Submissions: ${submissionsCount} · Notes: ${notesCount}`
         detailEl.classList.remove('hidden')
         button.setAttribute('aria-expanded', 'true')
+        setWorkflowStatus(`Profile detail loaded for ${profileId}.`)
       } catch (error) {
-        setFlash('error', `Failed to load profile detail: ${error.message}`)
+        const message = normalizeApiError(error, 'open profile detail')
+        detailEl.innerHTML = `<span class="error-banner">${escapeHtml(message)}</span>`
+        setWorkflowStatus(message)
+        setFlash('error', `Failed to load profile detail: ${message}`)
         await renderCurrentView()
+      } finally {
+        button.disabled = false
+        button.setAttribute('aria-busy', 'false')
       }
     })
   })
@@ -2558,7 +2629,8 @@ profileCreateFormEl.addEventListener('submit', async (event) => {
     await refreshSelects()
     await renderCurrentView()
   } catch (error) {
-    setFormFeedback(formEl, isConflictError(error) ? normalizeConflictMessage(error) : error.message)
+    setFormFeedback(formEl, normalizeApiError(error, 'create this profile'))
+    setWorkflowStatus(normalizeApiError(error, 'create this profile'))
     reportActionError('Profiles', error)
     await renderCurrentView()
   } finally {
@@ -2570,17 +2642,38 @@ profileCreateFormEl.addEventListener('submit', async (event) => {
   }
 })
 
-document.querySelector('#household-form').addEventListener('submit', async (event) => {
+householdFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  const formEl = event.target
+  const actionKey = 'create-household'
+  if (!canMutateSection(formEl.closest('[data-requires-role]'))) return
+  clearFormFeedback(formEl)
+  const submitButton = formEl.querySelector('button[type="submit"]')
+  setActionPending(actionKey, 'pending')
+  if (submitButton) {
+    submitButton.disabled = true
+    submitButton.textContent = pendingLabel(actionKey, 'Create Household', 'Creating…')
+  }
   try {
-    const payload = Object.fromEntries(new FormData(event.target).entries())
+    const payload = validateRequiredFields(formEl, ['name', 'primaryClientId'])
     await request(routes.households(), { method: 'POST', body: JSON.stringify(payload) })
-    event.target.reset()
+    formEl.reset()
+    setFormFeedback(formEl, 'Household created.', 'success')
+    setWorkflowStatus('Household created successfully.')
     reportActionSuccess('Households', 'Household created.')
     await renderCurrentView()
   } catch (error) {
+    const message = normalizeApiError(error, 'create this household')
+    setFormFeedback(formEl, message)
+    setWorkflowStatus(message)
     reportActionError('Households', error)
     await renderCurrentView()
+  } finally {
+    clearActionPending(actionKey)
+    if (submitButton) {
+      submitButton.disabled = false
+      submitButton.textContent = 'Create Household'
+    }
   }
 })
 

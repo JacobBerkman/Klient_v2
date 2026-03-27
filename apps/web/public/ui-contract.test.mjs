@@ -6,7 +6,7 @@ const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8')
 const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8')
 
 test('targeted forms expose inline feedback regions for validation and error rendering', () => {
-  for (const formId of ['profile-form', 'form-template-form', 'doc-template-form', 'invite-form', 'portal-form']) {
+  for (const formId of ['profile-form', 'household-form', 'form-template-form', 'doc-template-form', 'invite-form', 'portal-form']) {
     const formRegex = new RegExp(`<form[^>]*id=["']${formId}["'][\\s\\S]*?data-form-feedback`, 'm')
     assert.match(html, formRegex, `${formId} should contain a data-form-feedback region`)
   }
@@ -20,10 +20,11 @@ test('role-aware gating keeps invite admin-only while portal link remains adviso
 
 test('app wiring includes conflict normalization and form-level validation helpers', () => {
   assert.match(appJs, /function normalizeConflictMessage\(/)
+  assert.match(appJs, /function normalizeApiError\(/)
   assert.match(appJs, /function validateRequiredFields\(/)
   assert.match(appJs, /function setFormFeedback\(/)
   assert.match(appJs, /function viewErrorBanner\(/)
-  assert.match(appJs, /isConflictError\(error\) \? normalizeConflictMessage\(error\) : error\.message/)
+  assert.match(appJs, /setWorkflowStatus\(/)
 })
 
 test('navigation and board controls include accessibility-critical semantics', () => {
@@ -32,6 +33,7 @@ test('navigation and board controls include accessibility-critical semantics', (
   assert.match(appJs, /function updateViewNavState\(/)
   assert.match(appJs, /button\.setAttribute\('aria-current', selected \? 'page' : 'false'\)/)
   assert.match(appJs, /data-open-profile-detail="\$\{card\.id\}" aria-expanded="false" aria-controls="profile-detail-\$\{card\.id\}"/)
+  assert.match(appJs, /data-edit-profile="\$\{card\.id\}" aria-expanded="false" aria-controls="profile-edit-\$\{card\.id\}"/)
   assert.match(appJs, /button\.setAttribute\('aria-expanded', 'true'\)/)
   assert.match(appJs, /button\.setAttribute\('aria-expanded', 'false'\)/)
 })
