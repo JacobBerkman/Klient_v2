@@ -61,6 +61,10 @@ try {
 
   assert(mapped.mappings.length === 1, 'Template mappings update failed')
   assert(guardedPublishError.error?.code === 'SCHEMA_VALIDATION_FAILED', 'Publish guard should reject unknown mapping path')
+  assert(Array.isArray(guardedPublishError.error?.details?.issues), 'Publish guard should return detailed issues array')
+  assert(guardedPublishError.error?.details?.issues?.[0]?.code === 'unknown_source_path', 'Publish guard issue code mismatch')
+  assert(guardedPublishError.error?.details?.issues?.[0]?.field === 'sourcePath', 'Publish guard issue field mismatch')
+  assert(guardedPublishError.error?.details?.issues?.[0]?.meta?.issueId, 'Publish guard issue metadata missing stable issueId')
   assert(published.status === 'published', 'Template publish failed')
   assert(templates.some((entry) => entry.id === template.id && entry.status === 'draft'), 'Reverted template missing')
   assert(Array.isArray(versions) && versions.length >= 3, 'Template versions history missing')

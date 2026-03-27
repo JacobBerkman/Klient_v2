@@ -1094,11 +1094,18 @@ function mappingLocalIssues(mapping, knownPaths) {
 }
 
 function formatSchemaIssue(issue = {}) {
-  const path = String(issue.path || issue.field || 'mapping')
+  const path = String(issue.field || issue.path || 'mapping')
   const message = String(issue.message || issue.code || 'Validation issue')
   const rowIndex = Number(issue.rowIndex)
   const rowPrefix = Number.isFinite(rowIndex) ? `Row ${rowIndex + 1}: ` : ''
   return `${rowPrefix}${path} — ${message}`
+}
+
+function mappingSaveStateLabel(saveState = {}) {
+  if (saveState.status === 'saving') return 'Saving…'
+  if (saveState.status === 'error') return `Error (${saveState.message || 'retry'})`
+  if (saveState.status === 'recovered') return 'Recovered'
+  return 'Saved'
 }
 
 function previewWarningMarkup(warnings = []) {
@@ -1194,6 +1201,7 @@ async function renderTemplates() {
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
   const preflight = template ? state.templatePublishPreflightByTemplateId[template.id] : null
   const preflightIssues = Array.isArray(preflight?.issues) ? preflight.issues : []
+  const preflightIssueRows = new Set(preflightIssues.map((issue) => Number(issue.rowIndex)).filter((value) => Number.isFinite(value)))
   const previewWarningRows = new Set(
     (preview?.rows || [])
       .filter((row) => Array.isArray(row.warnings) && row.warnings.length)
@@ -1253,7 +1261,7 @@ async function renderTemplates() {
           <span class="badge">Mapped ${draftMappings.filter((entry) => entry.enabled !== false && String(entry.pdfField || '').trim()).length}</span>
           <span class="badge subtle">Unmapped ${Math.max(0, extractedFields.length - mappedExtractedCount)}</span>
           <span class="badge ${hasLocalMappingErrors ? 'error-badge' : 'warning-badge'}">Validation ${hasLocalMappingErrors ? 'Needs fixes' : 'Ready'}</span>
-          <span class="badge subtle">Save state: ${escapeHtml(saveState.status === 'saving' ? 'Saving…' : saveState.status === 'error' ? `Error (${saveState.message || 'retry'})` : 'Saved')}</span>
+          <span class="badge subtle">Save state: ${escapeHtml(mappingSaveStateLabel(saveState))}</span>
         </div>
       </section>
       <section class="item">
@@ -1278,22 +1286,25 @@ async function renderTemplates() {
       <section class="item">
         <h3>Mappings</h3>
         <div class="row gap-sm wrap"><button id="add-mapping-row" class="tiny">Add Mapping</button><button id="save-mappings" class="tiny">Save Now</button></div>
-        <table><thead><tr><th>#</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Status</th><th>Preview</th></tr></thead><tbody>
+        <table><thead><tr><th>#</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
           ${draftMappings
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
-              const hasWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
+              const hasPreviewWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
+              const serverPreflightIssues = preflightIssues.filter((issue) => Number(issue.rowIndex) === index)
               const sampleValue = resolveSampleValue(mapping.sourcePath)
               return `<tr id="mapping-row-${index}" data-select-row="${index}" style="cursor:pointer;${index === safeSelectedRowIndex ? 'outline:1px solid #60a5fa;' : ''}">
                 <td>${index + 1}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
                 <td>${escapeHtml(mapping.fieldLabel || '')}</td>
-                <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span>` : hasWarnings ? '<span class="warning-badge">Preview warning</span>' : '<span class="muted">OK</span>'}</td>
+                <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span>` : '<span class="muted">OK</span>'}</td>
+                <td>${serverPreflightIssues.length ? `<span class="error-badge">${escapeHtml(serverPreflightIssues.map((issue) => issue.code || issue.message || 'issue').join(', '))}</span>` : '<span class="muted">None</span>'}</td>
+                <td>${hasPreviewWarnings ? '<span class="warning-badge">Preview warning</span>' : '<span class="muted">OK</span>'}</td>
                 <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
               </tr>`
             })
-            .join('') || '<tr><td colspan="6" class="muted">No mappings configured.</td></tr>'}
+            .join('') || '<tr><td colspan="8" class="muted">No mappings configured.</td></tr>'}
         </tbody></table>
       </section>
       <section class="item">
@@ -1364,7 +1375,13 @@ async function renderTemplates() {
         </div>
         ${hasLocalMappingErrors ? '<p class="publish-disabled-reason">Publish is blocked until local mapping errors are resolved.</p>' : ''}
         ${hasBlockingPreviewWarnings ? '<p class="publish-disabled-reason">Publish is blocked by preview validation issues. Resolve highlighted rows first.</p>' : ''}
-        ${preflightIssues.length ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s).</p><ul>${preflightIssues.map((issue) => `<li>${escapeHtml(formatSchemaIssue(issue))}</li>`).join('')}</ul>` : '<p class="muted">Run preflight to surface publish-time schema validation (unknown source paths, required mappings, and transform issues) before attempting publish.</p>'}
+        ${
+          preflightIssues.length
+            ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s) across ${preflightIssueRows.size || 0} mapped row(s).</p><ul>${preflightIssues
+                .map((issue) => `<li><code>${escapeHtml(issue?.meta?.issueId || issue.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`)
+                .join('')}</ul>`
+            : '<p class="muted">Run preflight to surface publish-time schema validation (unknown source paths, required mappings, and transform issues) before attempting publish.</p>'
+        }
       </section>
       <section class="item">
         <h3>Version History</h3>
@@ -1408,6 +1425,7 @@ async function renderTemplates() {
 
   const persistMappings = async ({ autosave = false } = {}) => {
     const actionKey = `template-map-save-${template.id}`
+    const previousSaveStatus = state.templateSaveStateByTemplateId[template.id]?.status || 'idle'
     if (autosave) setActionPending(actionKey, 'saving')
     state.templateSaveStateByTemplateId[template.id] = { status: 'saving' }
     const mappings = (state.templateMappingDrafts[template.id] || []).map((mapping) => normalizeMappingDraft(mapping))
@@ -1416,7 +1434,10 @@ async function renderTemplates() {
         method: 'POST',
         body: JSON.stringify({ mappings, requiredPdfFields: template.extractedFields || [] })
       })
-      state.templateSaveStateByTemplateId[template.id] = { status: 'saved', savedAt: new Date().toISOString() }
+      state.templateSaveStateByTemplateId[template.id] =
+        previousSaveStatus === 'error'
+          ? { status: 'recovered', savedAt: new Date().toISOString() }
+          : { status: 'saved', savedAt: new Date().toISOString() }
       state.templateMappingDrafts[template.id] = mappings.map((mapping) => mappingDraftFromServer(mapping))
       if (!autosave) setFlash('success', 'Mappings saved.')
     } catch (error) {

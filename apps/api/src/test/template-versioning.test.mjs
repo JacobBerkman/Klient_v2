@@ -104,6 +104,9 @@ test('publish enforces known source-path validation when requested', () => {
     (error) => {
       assert.equal(error.code, 'SCHEMA_VALIDATION_FAILED')
       assert.equal(error.statusCode, 400)
+      assert.equal(error.details?.issues?.[0]?.code, 'unknown_source_path')
+      assert.equal(error.details?.issues?.[0]?.field, 'sourcePath')
+      assert.ok(error.details?.issues?.[0]?.meta?.issueId)
       assert.equal(error.details?.issues?.[0]?.path, '/mappings/0/sourcePath')
       return true
     }
@@ -139,6 +142,9 @@ test('preview preflight exposes schema issues before publish attempts', () => {
   })
   assert.ok(Array.isArray(preflight.issues))
   assert.match(JSON.stringify(preflight.issues), /known profile\/form schema path/i)
+  assert.equal(preflight.issues[0].code, 'unknown_source_path')
+  assert.equal(preflight.issues[0].field, 'sourcePath')
+  assert.ok(preflight.issues[0].meta?.issueId)
   assert.equal(preflight.issues[0].blocking, true)
 
   assert.throws(
@@ -152,6 +158,9 @@ test('preview preflight exposes schema issues before publish attempts', () => {
     (error) => {
       assert.equal(error.code, 'SCHEMA_VALIDATION_FAILED')
       assert.ok(Array.isArray(error.details?.issues))
+      assert.equal(error.details?.issues?.[0]?.code, 'unknown_source_path')
+      assert.equal(error.details?.issues?.[0]?.field, 'sourcePath')
+      assert.ok(error.details?.issues?.[0]?.meta?.issueId)
       return true
     }
   )
