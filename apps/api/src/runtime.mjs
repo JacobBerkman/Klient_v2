@@ -91,6 +91,15 @@ function providerRuntimeDiagnostics(authProvider, { strict = false } = {}) {
     if (!clientId) pushMissing('OIDC provider requires OIDC_CLIENT_ID.')
     if (!clientSecret) pushMissing('OIDC provider requires OIDC_CLIENT_SECRET.')
     if (!redirectUri) pushMissing('OIDC provider requires OIDC_REDIRECT_URI.')
+    if (strict && issuerUrl && !/^https:\/\//i.test(issuerUrl)) {
+      issues.push('OIDC_ISSUER_URL must use https:// in production.')
+    }
+    if (strict && redirectUri && !/^https:\/\//i.test(redirectUri)) {
+      issues.push('OIDC_REDIRECT_URI must use https:// in production.')
+    }
+    if (strict && clientSecret && clientSecret.length < 16) {
+      issues.push('OIDC_CLIENT_SECRET must be at least 16 characters in production.')
+    }
 
     const allowedAlgs = readList('OIDC_ALLOWED_ALGS')
     if (allowedAlgs.length === 0) warnings.push('OIDC_ALLOWED_ALGS is unset; provider defaults will be used.')
@@ -105,6 +114,12 @@ function providerRuntimeDiagnostics(authProvider, { strict = false } = {}) {
     if (!entryPoint) pushMissing('SAML provider requires SAML_ENTRY_POINT.')
     if (!issuer) pushMissing('SAML provider requires SAML_ISSUER.')
     if (!cert) pushMissing('SAML provider requires SAML_CERT.')
+    if (strict && entryPoint && !/^https:\/\//i.test(entryPoint)) {
+      issues.push('SAML_ENTRY_POINT must use https:// in production.')
+    }
+    if (strict && cert && !cert.includes('BEGIN CERTIFICATE')) {
+      issues.push('SAML_CERT must contain a PEM certificate block in production.')
+    }
 
     const clockSkewSeconds = Number(process.env.SAML_CLOCK_SKEW_SECONDS || 0)
     if (!Number.isFinite(clockSkewSeconds) || clockSkewSeconds < 0) {
@@ -122,6 +137,20 @@ function readPiiKeyProvider(value) {
     throw new Error(`Invalid PII_KEY_PROVIDER: ${normalized}.`)
   }
   return normalized
+}
+
+function parseJsonObjectEnv(name) {
+  const raw = readNonEmptyString(name)
+  if (!raw) return { raw, parsed: null, parseError: null }
+  try {
+    const parsed = JSON.parse(raw)
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { raw, parsed: null, parseError: `${name} must be a JSON object.` }
+    }
+    return { raw, parsed, parseError: null }
+  } catch {
+    return { raw, parsed: null, parseError: `${name} must contain valid JSON.` }
+  }
 }
 
 function estimateAppSecretEntropyBits(secret) {
@@ -142,6 +171,9 @@ const allowUnsafeAppSecret = readBoolean('UNSAFE_ALLOW_WEAK_APP_SECRET', false)
 const enableTestCsrfBypass = readBoolean('ENABLE_TEST_CSRF_BYPASS', false)
 const enableBearerAuthCompat = readBoolean('ENABLE_BEARER_AUTH_COMPAT', true)
 const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
+const authProviderRaw = readNonEmptyString('AUTH_PROVIDER')
+const authProvider = readAuthProvider(authProviderRaw || undefined)
+const piiKeyProvider = readPiiKeyProvider(process.env.PII_KEY_PROVIDER)
 
 if (nodeEnv === 'production' && enableTestCsrfBypass) {
   throw new Error('ENABLE_TEST_CSRF_BYPASS cannot be enabled in production.')
@@ -193,11 +225,11 @@ export const runtime = {
   allowUnsafeAppSecret,
   enableTestCsrfBypass: nodeEnv === 'test' && enableTestCsrfBypass,
   enableBearerAuthCompat,
-  authProvider: readAuthProvider(process.env.AUTH_PROVIDER),
-  authStartupDiagnostics: providerRuntimeDiagnostics(readAuthProvider(process.env.AUTH_PROVIDER), {
+  authProvider,
+  authStartupDiagnostics: providerRuntimeDiagnostics(authProvider, {
     strict: nodeEnv === 'production'
   }),
-  piiKeyProvider: readPiiKeyProvider(process.env.PII_KEY_PROVIDER),
+  piiKeyProvider,
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',
   instanceId: process.env.INSTANCE_ID || hostname(),
@@ -246,6 +278,16 @@ export function validateRuntimeConfig() {
   if (runtime.authStartupDiagnostics.warnings.length) {
     warnings.push(...runtime.authStartupDiagnostics.warnings)
   }
+  if (runtime.nodeEnv === 'production' && !authProviderRaw) {
+    issues.push(
+      'AUTH_PROVIDER must be explicitly set in production (local, oidc, or saml); implicit local fallback is blocked.'
+    )
+  }
+  if (runtime.nodeEnv === 'production' && runtime.authProvider === 'local') {
+    warnings.push(
+      'AUTH_PROVIDER=local in production enables password-based local auth; verify this is intentional for your threat model.'
+    )
+  }
 
   if (runtime.piiKeyProvider === 'kms') {
     if (!process.env.PII_KMS_KEYRING) {
@@ -258,6 +300,41 @@ export function validateRuntimeConfig() {
       } else {
         warnings.push('KMS PII key provider requires PII_KMS_ACTIVE_KEY_ID (or PII_ACTIVE_KEY_ID).')
       }
+    }
+    const keyringMeta = parseJsonObjectEnv('PII_KMS_KEYRING')
+    if (keyringMeta.parseError) {
+      if (runtime.nodeEnv === 'production') issues.push(keyringMeta.parseError)
+      else warnings.push(keyringMeta.parseError)
+    }
+  }
+
+  if (runtime.piiKeyProvider === 'env') {
+    const activeKeyId = readNonEmptyString('PII_ACTIVE_KEY_ID')
+    const keyringMeta = parseJsonObjectEnv('PII_KEYRING')
+
+    if (!activeKeyId) {
+      if (runtime.nodeEnv === 'production') {
+        issues.push('PII_ACTIVE_KEY_ID must be set when PII_KEY_PROVIDER=env in production.')
+      } else {
+        warnings.push('PII_ACTIVE_KEY_ID is unset; env key provider falls back to app-secret-v1.')
+      }
+    }
+
+    if (!keyringMeta.raw) {
+      if (runtime.nodeEnv === 'production') {
+        issues.push(
+          'PII_KEYRING must be set when PII_KEY_PROVIDER=env in production; APP_SECRET fallback key material is not allowed.'
+        )
+      } else {
+        warnings.push('PII_KEYRING is unset; env key provider derives key material from APP_SECRET.')
+      }
+    } else if (keyringMeta.parseError) {
+      if (runtime.nodeEnv === 'production') issues.push(keyringMeta.parseError)
+      else warnings.push(keyringMeta.parseError)
+    } else if (activeKeyId && !keyringMeta.parsed[activeKeyId]) {
+      const message = `PII_KEYRING must include active key "${activeKeyId}".`
+      if (runtime.nodeEnv === 'production') issues.push(message)
+      else warnings.push(message)
     }
   }
 

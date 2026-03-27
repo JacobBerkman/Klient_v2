@@ -145,21 +145,55 @@ Mount `./data` into the container to persist changes across restarts.
 Create a backup:
 
 ```bash
-node scripts/backup-db.mjs
+node scripts/backup-db.mjs | tee artifacts/release-evidence/backup.json
 ```
 
 Restore from a backup file:
 
 ```bash
-node scripts/restore-db.mjs data/backup-<timestamp>.db
+node scripts/restore-db.mjs data/backup-<timestamp>.db | tee artifacts/release-evidence/restore.json
+```
+
+Both scripts emit structured JSON metadata for release evidence automation:
+- backup: `operation`, `status`, `artifact.path`, `artifact.sizeBytes`, `artifact.sha256`, `artifact.sqliteQuickCheck`, `startedAt`, `finishedAt`
+- restore: `operation`, `status`, `source.*`, `target.*`, `checks.sizeMatch`, `checks.sha256Match`, timestamps
+
+## Deterministic operations flows
+
+### Flow A — deterministic preflight (single command)
+Run exactly one command before deployment:
+
+```bash
+bash -euo pipefail -c '
+  mkdir -p artifacts/release-evidence &&
+  npm run backup | tee artifacts/release-evidence/backup.json &&
+  node -e "const fs=require(\"node:fs\");const r=JSON.parse(fs.readFileSync(\"artifacts/release-evidence/backup.json\",\"utf8\"));if(!(r&&r.ok&&r.status===\"succeeded\"&&r.artifact?.path&&r.artifact?.sizeBytes>0&&r.artifact?.sqliteQuickCheck===\"ok\")){process.exit(1)}" &&
+  npm run check:merge-main | tee artifacts/release-evidence/branch-parity.txt &&
+  npm run validate:master
+'
+```
+
+PASS criteria (all required):
+- command exits `0`
+- backup evidence JSON reports `ok=true`, `status=succeeded`, positive `artifact.sizeBytes`, `artifact.sqliteQuickCheck=ok`
+- branch parity command exits `0`
+- hard gate command exits `0` with `validate-master-summary.json` status `passed`
+
+### Flow B — deterministic restore-validation (single command)
+Run this only for rollback/restore drills or real recovery:
+
+```bash
+bash -euo pipefail -c '
+  test -n "${RESTORE_BACKUP_PATH:-}" &&
+  mkdir -p artifacts/release-evidence &&
+  npm run restore -- "$RESTORE_BACKUP_PATH" | tee artifacts/release-evidence/restore.json &&
+  node -e "const fs=require(\"node:fs\");const r=JSON.parse(fs.readFileSync(\"artifacts/release-evidence/restore.json\",\"utf8\"));if(!(r&&r.ok&&r.status===\"succeeded\"&&r.source?.sqliteQuickCheck===\"ok\"&&r.target?.sqliteQuickCheck===\"ok\"&&r.checks?.sizeMatch&&r.checks?.sha256Match)){process.exit(1)}"
+'
 ```
 
 ## Deployment playbook
 1. **Pre-flight**
-   - Ensure backup created (`npm run backup`).
-   - Capture backup evidence (`ls -l data/backup-*.db | tail -n 1 | tee artifacts/release-evidence/backup-latest.txt`).
-   - Confirm branch parity (`npm run check:merge-main | tee artifacts/release-evidence/branch-parity.txt`).
-   - Run full release gate (`npm run validate:master`).
+   - Execute **Flow A — deterministic preflight** exactly once and archive generated evidence artifacts.
 2. **Deploy**
    - Build and launch (`docker compose --env-file .env up --build -d`).
 3. **Deterministic post-deploy validation** (run in exact order)
@@ -197,9 +231,10 @@ Rollback is mandatory if health checks degrade, smoke fails, or security regress
 1. Stop unhealthy revision and redeploy the previous known-good image/tag.
 2. Restore database only when data integrity is compromised:
    ```bash
-   npm run restore -- data/backup-<timestamp>.db
+   RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
+     bash -euo pipefail -c 'npm run restore -- "$RESTORE_BACKUP_PATH" | tee artifacts/release-evidence/restore.json'
    ```
-3. Re-run readiness and smoke checks.
+3. Re-run **Flow B — deterministic restore-validation** and then readiness/smoke checks.
 4. Record rollback timestamp, trigger reason, and backup artifact in release notes.
 
 ## Background export processing
