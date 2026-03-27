@@ -8,13 +8,8 @@ This repository contains a **single-command runnable advisory onboarding app** w
 |---|---|---|
 | Advisory onboarding dashboard + prospects/clients/households/forms | `implemented` | Fully available in current runtime. |
 | Advisor analytics panels (funnel, stage aging, completion, productivity) | `implemented` | Available in advisor UI and analytics endpoints. |
-<<<<<<< codex/implement-conflict-handling-in-forms-module
 | Collaborative draft editing safeguards | `implemented` | Conflict guard + lease recovery are now enforced across API + UI draft flows with integration coverage. See [Milestone M2](docs/milestones/claims-roadmap.md#milestone-m2-draft-collaboration-hardening). |
-| Queue-backed export/document automation | `roadmap` | Foundation exists, end-to-end orchestration is planned behind `FF_EXPORT_AUTOMATION`. See [Milestone M3](docs/milestones/claims-roadmap.md#milestone-m3-export-automation). |
-=======
-| Collaborative draft editing safeguards | `partial` | Core flows exist; conflict hardening remains gated behind `FF_DRAFT_CONFLICT_GUARD`. See [Milestone M2](docs/milestones/claims-roadmap.md#milestone-m2-draft-collaboration-hardening). |
-| Queue-backed export/document automation | `implemented` | Queue orchestration now includes retry-safe processing, dead-letter handling, machine-usable queue diagnostics, and verified artifact readiness/download flows. |
->>>>>>> main
+| Queue-backed export/document automation | `implemented` | Queue orchestration now includes retry-safe processing, dead-letter handling, machine-usable queue diagnostics, and verified artifact readiness/download flows. See [Milestone M3](docs/milestones/claims-roadmap.md#milestone-m3-export-automation). |
 
 ## What is included
 - admin firm bootstrap and sign-in
