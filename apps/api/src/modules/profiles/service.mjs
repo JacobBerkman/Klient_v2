@@ -1,6 +1,30 @@
 import { createFirmContext } from '../shared/tenancy.mjs'
 
 export function createProfilesService({ profileRepository, policy }) {
+  async function assertUpdatePreconditions(user, profileId, patch) {
+    if (!patch || typeof patch !== 'object') return patch
+    const expectedUpdatedAt =
+      typeof patch.expectedUpdatedAt === 'string' ? patch.expectedUpdatedAt.trim() : patch.expectedUpdatedAt
+    if (!expectedUpdatedAt) return patch
+    const latest = await profileRepository.getProfileDetail(createFirmContext(user), profileId)
+    const currentUpdatedAt = latest?.updatedAt || latest?.profile?.updatedAt || null
+    if (currentUpdatedAt && String(currentUpdatedAt) !== String(expectedUpdatedAt)) {
+      const error = new Error('Profile update conflict: updatedAt precondition failed.')
+      error.statusCode = 409
+      error.code = 'PROFILE_UPDATE_CONFLICT'
+      error.details = {
+        expectedUpdatedAt,
+        currentUpdatedAt,
+        mergePrompt: {
+          suggestion: 'Conflict detected: another change was saved first. Review latest data and retry.'
+        }
+      }
+      throw error
+    }
+    const { expectedUpdatedAt: _ignoredExpectedUpdatedAt, ...nextPatch } = patch
+    return nextPatch
+  }
+
   return {
     getDashboard(user) {
       policy.requireGuard(user, 'canViewDashboard')
@@ -18,9 +42,10 @@ export function createProfilesService({ profileRepository, policy }) {
       policy.requireGuard(user, 'canWriteProfiles')
       return profileRepository.createProfile(createFirmContext(user), input)
     },
-    updateProfile(user, profileId, patch) {
+    async updateProfile(user, profileId, patch) {
       policy.requireGuard(user, 'canWriteProfiles')
-      return profileRepository.updateProfile(createFirmContext(user), profileId, patch)
+      const patchWithPreconditions = await assertUpdatePreconditions(user, profileId, patch)
+      return profileRepository.updateProfile(createFirmContext(user), profileId, patchWithPreconditions)
     },
     listStageHistory(user, profileId) {
       policy.requireGuard(user, 'canReadProfiles')
