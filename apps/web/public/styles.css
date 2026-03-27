@@ -406,3 +406,20 @@ li button {
   clip: rect(0, 0, 0, 0);
   border: 0;
 }
+
+.exports-filter-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+}
+
+.exports-filter-actions {
+  align-items: end;
+}
+
+.exports-bulk-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  align-items: center;
+}

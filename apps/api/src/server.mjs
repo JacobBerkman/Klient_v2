@@ -1199,7 +1199,14 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/exports' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadExports')
-        const result = modules.exports.list(user)
+        const result = modules.exports.list(user, {
+          status: url.searchParams.get('status') || undefined,
+          profileId: url.searchParams.get('profileId') || undefined,
+          clientId: url.searchParams.get('clientId') || undefined,
+          fromDate: url.searchParams.get('fromDate') || undefined,
+          toDate: url.searchParams.get('toDate') || undefined,
+          sort: url.searchParams.get('sort') || undefined
+        })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }

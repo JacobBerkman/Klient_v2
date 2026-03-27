@@ -3,9 +3,9 @@ import { createFirmContext } from '../shared/tenancy.mjs'
 
 export function createExportsService({ exportsRepository, policy, store }) {
   return {
-    list(user) {
+    list(user, options = {}) {
       policy.requireGuard(user, 'canReadExports')
-      return exportsRepository.list(createFirmContext(user))
+      return exportsRepository.list(createFirmContext(user), options)
     },
     create(user, input) {
       policy.requireGuard(user, 'canWriteExports')

@@ -224,8 +224,8 @@ export class StoreExportsRepository extends ExportsRepository {
     super()
     this.store = store
   }
-  list(firmContext) {
-    return this.store.listExports(firmContext.user || firmContext)
+  list(firmContext, options = {}) {
+    return this.store.listExports(firmContext.user || firmContext, options)
   }
   create(firmContext, input) {
     return this.store.createExport(firmContext.user || firmContext, input)

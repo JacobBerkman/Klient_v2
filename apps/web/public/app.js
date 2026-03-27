@@ -8,6 +8,15 @@ const state = {
   board: null,
   clientBoard: null,
   pendingActions: {},
+  exportsFilters: {
+    status: '',
+    profileId: '',
+    fromDate: '',
+    toDate: '',
+    sort: 'createdAt_desc',
+    selectedIds: [],
+    bulkBusy: false
+  },
   mfa: {
     login: null,
     enrollment: null
@@ -1450,14 +1459,75 @@ function formatBytes(bytes) {
   return `${(amount / (1024 * 1024)).toFixed(2)} MB`
 }
 
+function normalizeExportDateInput(value) {
+  const trimmed = String(value || '').trim()
+  if (!trimmed) return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(trimmed)) return `${trimmed}T00:00:00.000Z`
+  return trimmed
+}
+
+function isRetryableExport(job) {
+  return String(job?.status || '').toLowerCase() !== 'completed'
+}
+
+function isDownloadableExport(job) {
+  return Boolean(job?.artifactAvailable)
+}
+
+async function triggerExportDownload(exportId, { button = null } = {}) {
+  if (button) button.disabled = true
+  try {
+    const response = await fetch(routes.exportDownload(exportId), { credentials: 'same-origin' })
+    if (!response.ok) {
+      const text = await response.text()
+      throw new Error(text || 'Download failed')
+    }
+    const blob = await response.blob()
+    const disposition = response.headers.get('content-disposition') || ''
+    const matched = disposition.match(/filename="?([^";]+)"?/)
+    const fileName = matched?.[1] || `export-${exportId}`
+    const url = URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = fileName
+    document.body.appendChild(a)
+    a.click()
+    a.remove()
+    URL.revokeObjectURL(url)
+    return fileName
+  } finally {
+    if (button) button.disabled = false
+  }
+}
+
 async function renderExports() {
+  const viewState = {
+    status: state.exportsFilters?.status || '',
+    profileId: state.exportsFilters?.profileId || '',
+    fromDate: state.exportsFilters?.fromDate || '',
+    toDate: state.exportsFilters?.toDate || '',
+    sort: state.exportsFilters?.sort || 'createdAt_desc',
+    selectedIds: new Set(state.exportsFilters?.selectedIds || []),
+    bulkBusy: state.exportsFilters?.bulkBusy === true
+  }
+  state.exportsFilters = viewState
+
+  const query = {
+    status: viewState.status || undefined,
+    profileId: viewState.profileId || undefined,
+    fromDate: normalizeExportDateInput(viewState.fromDate) || undefined,
+    toDate: normalizeExportDateInput(viewState.toDate) || undefined,
+    sort: viewState.sort || undefined
+  }
+
   let jobs = []
   let queue = { queue: {} }
   try {
-    ;[jobs, queue] = await Promise.all([request(routes.exports()), request(routes.exportsQueueHealth())])
+    ;[jobs, queue] = await Promise.all([request(routes.exports(query)), request(routes.exportsQueueHealth())])
   } catch (error) {
     reportActionError('Exports', error)
   }
+
   const canMutate = state.user?.role === 'admin' || state.user?.role === 'advisor'
   const queueState = queue?.queue || {}
   const queueCards = [
@@ -1468,10 +1538,47 @@ async function renderExports() {
     ['Completed', queueState.completed || 0],
     ['Ready Now', queueState.readyNow || 0]
   ]
+
+  const visibleIds = new Set(jobs.map((job) => job.id))
+  viewState.selectedIds = new Set([...viewState.selectedIds].filter((id) => visibleIds.has(id)))
+  const selectedJobs = jobs.filter((job) => viewState.selectedIds.has(job.id))
+  const retryableSelected = selectedJobs.filter(isRetryableExport)
+  const downloadableSelected = selectedJobs.filter(isDownloadableExport)
+
   viewEl.innerHTML = `
     ${flashMarkup()}
     ${alertMarkup()}
     <div class="section-header"><div><h2>Exports Operations</h2><p class="muted">Queue health, retries, and artifact readiness by job.</p></div></div>
+    <section class="item stack gap-md">
+      <h3>Filters & Bulk Actions</h3>
+      <form id="exports-filter-form" class="exports-filter-grid">
+        <label>Status<input name="status" placeholder="completed" value="${escapeHtml(viewState.status)}" /></label>
+        <label>Profile ID<input name="profileId" placeholder="profile-123" value="${escapeHtml(viewState.profileId)}" /></label>
+        <label>From date<input name="fromDate" type="date" value="${escapeHtml(viewState.fromDate)}" /></label>
+        <label>To date<input name="toDate" type="date" value="${escapeHtml(viewState.toDate)}" /></label>
+        <label>Sort
+          <select name="sort">
+            <option value="createdAt_desc" ${viewState.sort === 'createdAt_desc' ? 'selected' : ''}>Created newest</option>
+            <option value="createdAt_asc" ${viewState.sort === 'createdAt_asc' ? 'selected' : ''}>Created oldest</option>
+            <option value="updatedAt_desc" ${viewState.sort === 'updatedAt_desc' ? 'selected' : ''}>Updated newest</option>
+            <option value="updatedAt_asc" ${viewState.sort === 'updatedAt_asc' ? 'selected' : ''}>Updated oldest</option>
+            <option value="attempts_desc" ${viewState.sort === 'attempts_desc' ? 'selected' : ''}>Attempts high-low</option>
+            <option value="attempts_asc" ${viewState.sort === 'attempts_asc' ? 'selected' : ''}>Attempts low-high</option>
+            <option value="status_asc" ${viewState.sort === 'status_asc' ? 'selected' : ''}>Status A-Z</option>
+            <option value="status_desc" ${viewState.sort === 'status_desc' ? 'selected' : ''}>Status Z-A</option>
+          </select>
+        </label>
+        <div class="actions-row exports-filter-actions">
+          <button type="submit" class="tiny">Apply filters</button>
+          <button type="button" class="tiny secondary" id="clear-export-filters">Clear</button>
+        </div>
+      </form>
+      <div class="exports-bulk-actions">
+        <span class="muted">Selected ${selectedJobs.length} of ${jobs.length}</span>
+        <button id="bulk-retry-exports" class="tiny secondary" ${canMutate && retryableSelected.length && !viewState.bulkBusy ? '' : 'disabled'}>Retry selected (${retryableSelected.length})</button>
+        <button id="bulk-download-exports" class="tiny" ${downloadableSelected.length && !viewState.bulkBusy ? '' : 'disabled'}>Download selected (${downloadableSelected.length})</button>
+      </div>
+    </section>
     <section class="item">
       <h3>Queue State</h3>
       <div class="stat-grid">
@@ -1482,11 +1589,12 @@ async function renderExports() {
     </section>
     <section class="item">
       <h3>Per-job Artifact Status</h3>
-      <table><thead><tr><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact Details</th><th>Actions</th></tr></thead><tbody>
+      <table><thead><tr><th><input id="select-all-exports" type="checkbox" ${jobs.length && selectedJobs.length === jobs.length ? 'checked' : ''} /></th><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact Details</th><th>Actions</th></tr></thead><tbody>
         ${
           jobs
             .map(
               (job) => `<tr>
+          <td><input data-select-export="${job.id}" type="checkbox" ${viewState.selectedIds.has(job.id) ? 'checked' : ''} /></td>
           <td>${escapeHtml(job.id)}</td>
           <td>${escapeHtml(job.status)}</td>
           <td>${job.attempts || 0}/${job.maxAttempts || 0}</td>
@@ -1508,14 +1616,14 @@ async function renderExports() {
           <td>${
             canMutate
               ? `<div class="actions-row">
-                  <button data-retry-export="${job.id}" class="tiny secondary" ${job.status === 'completed' ? 'disabled' : ''}>Retry</button>
-                  <button data-download-export="${job.id}" class="tiny" ${job.artifactAvailable ? '' : 'disabled'}>Download</button>
+                  <button data-retry-export="${job.id}" class="tiny secondary" ${isRetryableExport(job) ? '' : 'disabled'}>Retry</button>
+                  <button data-download-export="${job.id}" class="tiny" ${isDownloadableExport(job) ? '' : 'disabled'}>Download</button>
                 </div>`
               : '<span class="muted">N/A</span>'
           }</td>
         </tr>`
             )
-            .join('') || '<tr><td colspan="5">No export jobs.</td></tr>'
+            .join('') || '<tr><td colspan="6">No export jobs.</td></tr>'
         }
       </tbody></table>
     </section>
@@ -1525,6 +1633,82 @@ async function renderExports() {
       ${roleAccessMatrixMarkup()}
     </section>
   `
+
+  document.querySelector('#exports-filter-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    const formData = withTrimmedFormData(event.currentTarget)
+    viewState.status = formData.status || ''
+    viewState.profileId = formData.profileId || ''
+    viewState.fromDate = formData.fromDate || ''
+    viewState.toDate = formData.toDate || ''
+    viewState.sort = formData.sort || 'createdAt_desc'
+    viewState.selectedIds = new Set()
+    await renderExports()
+  })
+
+  document.querySelector('#clear-export-filters')?.addEventListener('click', async () => {
+    viewState.status = ''
+    viewState.profileId = ''
+    viewState.fromDate = ''
+    viewState.toDate = ''
+    viewState.sort = 'createdAt_desc'
+    viewState.selectedIds = new Set()
+    await renderExports()
+  })
+
+  document.querySelector('#select-all-exports')?.addEventListener('change', (event) => {
+    if (event.currentTarget.checked) {
+      jobs.forEach((job) => viewState.selectedIds.add(job.id))
+    } else {
+      viewState.selectedIds.clear()
+    }
+    renderExports()
+  })
+
+  document.querySelectorAll('[data-select-export]').forEach((input) => {
+    input.addEventListener('change', (event) => {
+      const id = event.currentTarget.dataset.selectExport
+      if (event.currentTarget.checked) viewState.selectedIds.add(id)
+      else viewState.selectedIds.delete(id)
+      renderExports()
+    })
+  })
+
+  document.querySelector('#bulk-retry-exports')?.addEventListener('click', async () => {
+    viewState.bulkBusy = true
+    let succeeded = 0
+    let failed = 0
+    for (const job of retryableSelected) {
+      try {
+        await request(routes.exportRetry(job.id), { method: 'POST', body: JSON.stringify({}) })
+        succeeded += 1
+      } catch {
+        failed += 1
+      }
+    }
+    viewState.bulkBusy = false
+    viewState.selectedIds = new Set()
+    setFlash('success', `Bulk retry requested for ${succeeded} job(s)${failed ? `; ${failed} failed.` : '.'}`)
+    await renderExports()
+  })
+
+  document.querySelector('#bulk-download-exports')?.addEventListener('click', async () => {
+    viewState.bulkBusy = true
+    let succeeded = 0
+    let failed = 0
+    for (const job of downloadableSelected) {
+      try {
+        await triggerExportDownload(job.id)
+        succeeded += 1
+      } catch {
+        failed += 1
+      }
+    }
+    viewState.bulkBusy = false
+    setFlash('success', `Bulk download completed for ${succeeded} job(s)${failed ? `; ${failed} failed.` : '.'}`)
+    await renderExports()
+  })
+
   document.querySelector('#retry-failed-jobs')?.addEventListener('click', async () => {
     try {
       const result = await request(routes.exportsRetryFailed(), {
@@ -1552,29 +1736,10 @@ async function renderExports() {
     button.addEventListener('click', async () => {
       const exportId = button.dataset.downloadExport
       try {
-        button.disabled = true
-        const response = await fetch(routes.exportDownload(exportId), { credentials: 'same-origin' })
-        if (!response.ok) {
-          const text = await response.text()
-          throw new Error(text || 'Download failed')
-        }
-        const blob = await response.blob()
-        const disposition = response.headers.get('content-disposition') || ''
-        const matched = disposition.match(/filename=\"?([^\";]+)\"?/)
-        const fileName = matched?.[1] || `export-${exportId}`
-        const url = URL.createObjectURL(blob)
-        const a = document.createElement('a')
-        a.href = url
-        a.download = fileName
-        document.body.appendChild(a)
-        a.click()
-        a.remove()
-        URL.revokeObjectURL(url)
+        const fileName = await triggerExportDownload(exportId, { button })
         reportActionSuccess('Exports', `Downloaded ${fileName}.`)
       } catch (error) {
         reportActionError('Exports', error)
-      } finally {
-        button.disabled = false
       }
     })
   })

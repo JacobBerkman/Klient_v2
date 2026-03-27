@@ -10,7 +10,7 @@ export const EXPORT_JOB_LIFECYCLE_STATES = Object.freeze({
 export class ExportsRepository {
   static lifecycleStates = EXPORT_JOB_LIFECYCLE_STATES
 
-  list(_firmContext) {
+  list(_firmContext, _options = {}) {
     throw new Error('Not implemented')
   }
   create(_firmContext, _input) {
