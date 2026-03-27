@@ -690,14 +690,14 @@ export function createHttpServer({ modules }) {
       }
       if (pathname === '/api/ops/exports/queue' && req.method === 'GET') {
         const user = requireUser()
-        modules.policy.requireGuard(user, 'canReadExports')
+        modules.policy.requireGuard(user, 'canProcessExports')
         const result = modules.exports.getQueueHealth(user)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/ops/exports/retry-failed' && req.method === 'POST') {
         const user = requireUser()
-        modules.policy.requireGuard(user, 'canWriteExports')
+        modules.policy.requireGuard(user, 'canProcessExports')
         const body = await parseBody(req)
         const result = modules.exports.retryFailed(user, body || {})
         finalizeLog(200)
