@@ -989,7 +989,7 @@ export function createHttpServer({ modules }) {
         const id = pathname.split('/')[3]
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteProfiles')
-        const result = modules.profiles.updateProfile(user, id, await parseBody(req))
+        const result = await modules.profiles.updateProfile(user, id, await parseBody(req))
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
