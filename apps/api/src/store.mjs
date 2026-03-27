@@ -2690,9 +2690,9 @@ export function createStore({
       )
       return template.publishTransitions || []
     },
-    listExports(user) {
+    listExports(user, options = {}) {
       requirePermission(user, 'exports:read')
-      return exportsRepository.list(user)
+      return exportsRepository.list(user, options)
     },
     createExport(user, input) {
       requirePermission(user, 'exports:write')

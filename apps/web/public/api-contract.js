@@ -56,7 +56,7 @@ export const routes = {
   documentTemplateRevert: (templateId) => joinPath(API_PREFIX, 'templates', templateId, 'revert'),
   invites: () => joinPath(API_PREFIX, 'invites'),
   portalLinks: () => joinPath(API_PREFIX, 'portal-links'),
-  exports: () => joinPath(API_PREFIX, 'exports'),
+  exports: (query = {}) => withQuery(joinPath(API_PREFIX, 'exports'), query),
   exportRetry: (exportId) => joinPath(API_PREFIX, 'exports', exportId, 'retry'),
   exportDownload: (exportId) => joinPath(API_PREFIX, 'exports', exportId, 'download'),
   exportsQueueHealth: () => joinPath(API_PREFIX, 'ops', 'exports', 'queue'),

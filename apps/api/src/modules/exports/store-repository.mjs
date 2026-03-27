@@ -69,6 +69,32 @@ function createRenderContext({ firm, template, client, submission }) {
 }
 
 export function createStoreExportsRepository({ state, persist, addAuditEvent, objectStorage, now = () => new Date().toISOString() }) {
+  function parseIsoDate(value) {
+    if (!value) return null
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? null : parsed
+  }
+
+  function sortJobs(jobs, sortKey = 'createdAt_desc') {
+    const sorted = jobs.slice()
+    const byDate = (entry, key) => Number(new Date(entry?.[key] || 0))
+    const byAttempts = (entry) => Number(entry?.attempts || 0)
+    const byStatus = (entry) => String(entry?.status || '')
+
+    const sorters = {
+      createdAt_asc: (a, b) => byDate(a, 'createdAt') - byDate(b, 'createdAt'),
+      createdAt_desc: (a, b) => byDate(b, 'createdAt') - byDate(a, 'createdAt'),
+      updatedAt_asc: (a, b) => byDate(a, 'updatedAt') - byDate(b, 'updatedAt'),
+      updatedAt_desc: (a, b) => byDate(b, 'updatedAt') - byDate(a, 'updatedAt'),
+      attempts_asc: (a, b) => byAttempts(a) - byAttempts(b),
+      attempts_desc: (a, b) => byAttempts(b) - byAttempts(a),
+      status_asc: (a, b) => byStatus(a).localeCompare(byStatus(b)),
+      status_desc: (a, b) => byStatus(b).localeCompare(byStatus(a))
+    }
+    const sorter = sorters[sortKey] || sorters.createdAt_desc
+    return sorted.sort((a, b) => sorter(a, b) || String(a.id).localeCompare(String(b.id)))
+  }
+
   function withArtifactMetadata(job) {
     const artifact = job?.output?.artifact || null
     return {
@@ -86,9 +112,22 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
   }
 
   return {
-    list(user) {
+    list(user, options = {}) {
       state.exportJobs = listExportQueueJobs()
-      return state.exportJobs.filter((entry) => entry.firmId === user.firmId).map(withArtifactMetadata)
+      const status = String(options.status || '').trim().toLowerCase()
+      const profileId = String(options.profileId || options.clientId || '').trim()
+      const fromDate = parseIsoDate(options.fromDate)
+      const toDate = parseIsoDate(options.toDate)
+      const sort = String(options.sort || 'createdAt_desc').trim()
+
+      const filtered = state.exportJobs
+        .filter((entry) => entry.firmId === user.firmId)
+        .filter((entry) => !status || String(entry.status || '').toLowerCase() === status)
+        .filter((entry) => !profileId || entry.clientId === profileId)
+        .filter((entry) => !fromDate || Number(new Date(entry.createdAt || 0)) >= fromDate.getTime())
+        .filter((entry) => !toDate || Number(new Date(entry.createdAt || 0)) <= toDate.getTime())
+
+      return sortJobs(filtered, sort).map(withArtifactMetadata)
     },
     create(user, input = {}) {
       const template = state.templateAggregates.find(

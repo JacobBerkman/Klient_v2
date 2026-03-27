@@ -138,9 +138,30 @@ try {
       maxAttempts: 8
     })
   })
+  const bulkRetryJob = await context.request('/api/exports', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      clientId: profile.id,
+      submissionId: submission.id,
+      templateId: template.id,
+      type: 'pdf',
+      metadata: { simulateFailuresRemaining: 1 },
+      maxAttempts: 1
+    })
+  })
 
   await processQueued(context, admin.token, 24)
   const exportsList = await context.request('/api/exports', {
+    headers: { Authorization: `Bearer ${admin.token}` }
+  })
+  const completedOnly = await context.request(`/api/exports?status=completed&sort=createdAt_desc`, {
+    headers: { Authorization: `Bearer ${admin.token}` }
+  })
+  const profileOnly = await context.request(`/api/exports?profileId=${encodeURIComponent(profile.id)}&sort=createdAt_asc`, {
+    headers: { Authorization: `Bearer ${admin.token}` }
+  })
+  const futureWindow = await context.request(`/api/exports?fromDate=2099-01-01T00:00:00.000Z`, {
     headers: { Authorization: `Bearer ${admin.token}` }
   })
   const diagnostics = await context.request('/api/ops/diagnostics', {
@@ -169,6 +190,20 @@ try {
   const xlsx = exportsList.find((entry) => entry.id === xlsxJob.id)
   const flaky = exportsList.find((entry) => entry.id === flakyJob.id)
   const poison = exportsList.find((entry) => entry.id === poisonJob.id)
+  const bulkRetryCandidate = exportsList.find((entry) => entry.id === bulkRetryJob.id)
+  const retryCandidates = exportsList.filter((entry) => entry.status !== 'completed').slice(0, 3)
+  const bulkRetryResults = []
+  for (const candidate of retryCandidates) {
+    const retried = await context.request(`/api/exports/${candidate.id}/retry`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${admin.token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({})
+    })
+    bulkRetryResults.push(retried)
+  }
+  const afterBulkRetry = await context.request(`/api/exports?status=queued&sort=updatedAt_desc`, {
+    headers: { Authorization: `Bearer ${admin.token}` }
+  })
   assert(
     ['queued', 'processing', 'completed'].includes(completed?.status),
     'Expected export job to remain actionable in queue lifecycle'
@@ -210,6 +245,32 @@ try {
     ['queued', 'processing', 'failed', 'dead-letter'].includes(poison?.status),
     'Expected poison job to remain in known lifecycle states'
   )
+  assert(
+    ['failed', 'dead-letter', 'queued', 'processing'].includes(bulkRetryCandidate?.status),
+    'Expected explicit bulk retry candidate to enter retry lifecycle'
+  )
+  assert(completedOnly.every((entry) => entry.status === 'completed'), 'Expected status filter to only return completed jobs')
+  assert(
+    profileOnly.every((entry) => entry.clientId === profile.id),
+    'Expected profile filter to only return jobs for requested profile'
+  )
+  assert(futureWindow.length === 0, 'Expected future fromDate filter to return no jobs')
+  assert(bulkRetryResults.length >= 1, 'Expected at least one non-completed job to be retried in bulk flow')
+  assert(
+    bulkRetryResults.every((entry) => ['queued', 'retrying', 'running'].includes(entry.status)),
+    'Expected bulk retried jobs to be re-queued'
+  )
+  assert(
+    bulkRetryResults.every((entry) => afterBulkRetry.some((job) => job.id === entry.id)),
+    'Expected bulk retried jobs to be discoverable in queued filtered list'
+  )
+  if (completedOnly.length) {
+    const completedWithArtifact = completedOnly.filter((entry) => entry.artifactAvailable)
+    assert(
+      completedWithArtifact.every((entry) => typeof entry?.artifact?.mappingVersionHash === 'string'),
+      'Expected completed filtered jobs with artifacts to include artifact metadata'
+    )
+  }
   assert(diagnostics?.data?.queue?.activeLeases >= 0, 'Expected queue lease diagnostics')
   assert(typeof diagnostics?.data?.queue?.readyNow === 'number', 'Expected queue ready-now diagnostics')
   assert(typeof diagnostics?.data?.queue?.stalled === 'number', 'Expected queue stalled diagnostics')
@@ -234,6 +295,14 @@ try {
         flakyId: flakyJob.id,
         flakyAttempts: flaky.attempts,
         poisonStatus: poison?.status,
+        bulkRetryCandidate: bulkRetryJob.id,
+        bulkRetriedIds: bulkRetryResults.map((entry) => entry.id),
+        filtered: {
+          completedOnly: completedOnly.length,
+          profileOnly: profileOnly.length,
+          futureWindow: futureWindow.length,
+          queuedAfterRetry: afterBulkRetry.length
+        },
         queue: diagnostics?.data?.queue || null,
         queueHealth,
         safeRetryDryRun
