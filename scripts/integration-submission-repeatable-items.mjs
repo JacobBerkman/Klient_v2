@@ -98,6 +98,80 @@ try {
     'Expected stale delete conflict/error for already removed repeater item.'
   )
 
+  const staleUpdateError = await context.requestExpectError(
+    `/api/forms/submissions/${submission.id}/sections/assets/items/${createdItem.id}`,
+    {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ accountName: 'Stale Update Attempt' })
+    },
+    404
+  )
+  assert(
+    String(staleUpdateError?.error?.message || staleUpdateError?.message || '').includes('not found'),
+    'Expected stale update error for already removed repeater item.'
+  )
+
+  const malformedPatchArrayError = await context.requestExpectError(
+    `/api/forms/submissions/${submission.id}/sections/assets/items/0`,
+    {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify([1, 2, 3])
+    },
+    400
+  )
+  assert(
+    String(malformedPatchArrayError?.error?.message || malformedPatchArrayError?.message || '').includes('Patch'),
+    'Expected invalid patch payload error when patch body is an array.'
+  )
+
+  const malformedPatchEmptyError = await context.requestExpectError(
+    `/api/forms/submissions/${submission.id}/sections/assets/items/0`,
+    {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({})
+    },
+    400
+  )
+  assert(
+    Array.isArray(malformedPatchEmptyError?.error?.details?.issues),
+    'Expected issues array for empty patch payload validation.'
+  )
+
+  const invalidSectionSelectorError = await context.requestExpectError(
+    `/api/forms/submissions/${submission.id}/sections/%20%20/items/0`,
+    {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ value: 1 })
+    },
+    400
+  )
+  assert(
+    String(invalidSectionSelectorError?.error?.message || invalidSectionSelectorError?.message || '').includes(
+      'Section key is required'
+    ),
+    'Expected section key selector validation error.'
+  )
+
+  const invalidItemSelectorError = await context.requestExpectError(
+    `/api/forms/submissions/${submission.id}/sections/assets/items/%20%20`,
+    {
+      method: 'PATCH',
+      headers,
+      body: JSON.stringify({ value: 1 })
+    },
+    400
+  )
+  assert(
+    String(invalidItemSelectorError?.error?.message || invalidItemSelectorError?.message || '').includes(
+      'Item key is required'
+    ),
+    'Expected item key selector validation error.'
+  )
+
   const nonRepeaterError = await context.requestExpectError(
     `/api/forms/submissions/${submission.id}/sections/nonRepeater/items/0`,
     {
