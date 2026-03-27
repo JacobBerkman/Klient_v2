@@ -18,18 +18,18 @@
           + draft collaboration controls
           <span class="badge claim-status partial">partial</span>
         </p>
-        <button id="demo-login" hidden>Use Demo Login</button>
-        <nav>
-          <button data-view="dashboard" data-roles="admin,advisor,readonly">Dashboard</button>
-          <button data-view="prospects" data-roles="admin,advisor">Prospects</button>
-          <button data-view="clients" data-roles="admin,advisor,readonly">Clients</button>
-          <button data-view="households" data-roles="admin,advisor">Households</button>
-          <button data-view="forms" data-roles="admin,advisor,readonly">Forms</button>
-          <button data-view="templates" data-roles="admin,advisor">Templates</button>
-          <button data-view="exports" data-roles="admin,advisor">Exports</button>
-          <button data-view="analytics" data-roles="admin,advisor,readonly">Analytics</button>
-          <button data-view="audit" data-roles="admin,advisor">Audit</button>
-          <button data-view="client-workspace" data-roles="client">My Portal</button>
+        <button id="demo-login" type="button" hidden>Use Demo Login</button>
+        <nav aria-label="Primary">
+          <button type="button" data-view="dashboard" data-roles="admin,advisor,readonly" aria-controls="view">Dashboard</button>
+          <button type="button" data-view="prospects" data-roles="admin,advisor" aria-controls="view">Prospects</button>
+          <button type="button" data-view="clients" data-roles="admin,advisor,readonly" aria-controls="view">Clients</button>
+          <button type="button" data-view="households" data-roles="admin,advisor" aria-controls="view">Households</button>
+          <button type="button" data-view="forms" data-roles="admin,advisor,readonly" aria-controls="view">Forms</button>
+          <button type="button" data-view="templates" data-roles="admin,advisor" aria-controls="view">Templates</button>
+          <button type="button" data-view="exports" data-roles="admin,advisor" aria-controls="view">Exports</button>
+          <button type="button" data-view="analytics" data-roles="admin,advisor,readonly" aria-controls="view">Analytics</button>
+          <button type="button" data-view="audit" data-roles="admin,advisor" aria-controls="view">Audit</button>
+          <button type="button" data-view="client-workspace" data-roles="client" aria-controls="view">My Portal</button>
         </nav>
       </aside>
       <main class="content">
@@ -177,11 +177,11 @@
           </form>
         </section>
 
-        <section id="view" class="card"></section>
-        <p id="board-shortcuts-hint" class="muted compact" aria-live="polite">
+        <section id="view" class="card" aria-live="polite"></section>
+        <p id="board-shortcuts-hint" class="muted compact empty-state" role="status" aria-live="polite">
           Client cards include compact workflow shortcuts for profile details, form editing, and document actions.
         </p>
-        <p class="muted" aria-live="polite">
+        <p class="muted empty-state" role="status" aria-live="polite">
           Use drag-and-drop in Prospects/Clients to reorder cards and move stage transitions.
         </p>
       </main>
