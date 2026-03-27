@@ -461,6 +461,15 @@ function alertMarkup() {
   return `<div class="item compact ${cls}">${escapeHtml(state.alert.message)}</div>`
 }
 
+function emptyStateMarkup(message = 'Nothing to show yet. Adjust filters or create a new record to get started.') {
+  return `<p class="muted empty-state" role="status">${escapeHtml(message)}</p>`
+}
+
+function viewErrorBanner(viewName, error) {
+  const detail = error?.message ? ` ${error.message}` : ''
+  return `<div class="item compact error-banner" role="alert">We couldn’t load ${escapeHtml(viewName)}.${escapeHtml(detail)}</div>`
+}
+
 async function request(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase()
   if (MUTATING_METHODS.has(method) && path.startsWith('/api/') && !csrfToken) {
@@ -580,6 +589,13 @@ function updateRoleVisibility() {
   })
 }
 
+function updateViewNavState() {
+  document.querySelectorAll('[data-view]').forEach((button) => {
+    const selected = button.dataset.view === state.view
+    button.setAttribute('aria-current', selected ? 'page' : 'false')
+  })
+}
+
 async function refreshSelects() {
   if (!state.user || state.user.role === 'client') return
   await ensureStageConfig()
@@ -660,17 +676,20 @@ function buildClientWorkflowMap(drafts = [], submissions = []) {
 }
 
 async function renderDashboard() {
-  const data = await request(routes.dashboard())
-  viewEl.innerHTML = `
-    ${flashMarkup()}
-    <div class="section-header"><h2>Dashboard</h2></div>
-    <div class="stat-grid">
-      ${Object.entries(data.stats)
-        .map(([key, value]) => metricCard(key, value))
-        .join('')}
-    </div>
-    <div class="item compact muted">Recent activity and profile management remain available in their dedicated tabs.</div>
-  `
+  try {
+    const data = await request(routes.dashboard())
+    const stats = Object.entries(data?.stats || {})
+    viewEl.innerHTML = `
+      ${flashMarkup()}
+      <div class="section-header"><h2>Dashboard</h2></div>
+      <div class="stat-grid">
+        ${stats.map(([key, value]) => metricCard(key, value)).join('') || emptyStateMarkup('No dashboard metrics are available yet.')}
+      </div>
+      <div class="item compact muted">Recent activity and profile management remain available in their dedicated tabs.</div>
+    `
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${viewErrorBanner('dashboard', error)}${emptyStateMarkup()}`
+  }
 }
 
 function analyticsPanel(title, body) {
@@ -759,7 +778,14 @@ async function renderAnalytics() {
 }
 
 async function renderForms() {
-  const [templates, drafts] = await Promise.all([request(routes.formTemplates()), request(routes.formDrafts())])
+  let templates = []
+  let drafts = []
+  try {
+    ;[templates, drafts] = await Promise.all([request(routes.formTemplates()), request(routes.formDrafts())])
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner('forms', error)}${emptyStateMarkup()}`
+    return
+  }
   let selectedProfile = null
   let selectedSubmission = null
   let selectedSubmissionError = ''
@@ -803,7 +829,7 @@ async function renderForms() {
       ${metricCard('templates', templates.length)}
       ${metricCard('drafts', drafts.length)}
     </div>
-    <table><thead><tr><th>Draft ID</th><th>Template</th><th>Revision</th><th>Lock</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No drafts</td></tr>'}</tbody></table>
+    <table><thead><tr><th>Draft ID</th><th>Template</th><th>Revision</th><th>Lock</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No drafts yet. Create or import a form draft to begin collaboration.</td></tr>'}</tbody></table>
     ${
       state.selectedSubmissionId
         ? `
@@ -1044,11 +1070,19 @@ function previewWarningMarkup(warnings = []) {
 }
 
 async function renderTemplates() {
-  const [templates, clients, submissions] = await Promise.all([
-    request(routes.documentTemplates()),
-    request(routes.profiles({ kind: 'client' })),
-    request(routes.formSubmissions())
-  ])
+  let templates = []
+  let clients = []
+  let submissions = []
+  try {
+    ;[templates, clients, submissions] = await Promise.all([
+      request(routes.documentTemplates()),
+      request(routes.profiles({ kind: 'client' })),
+      request(routes.formSubmissions())
+    ])
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner('templates', error)}${emptyStateMarkup()}`
+    return
+  }
   if (!state.selectedTemplateId && templates[0]?.id) state.selectedTemplateId = templates[0].id
   const template = templates.find((entry) => entry.id === state.selectedTemplateId) || templates[0] || null
   const [versions, transitions] = template
@@ -1326,7 +1360,7 @@ async function renderTemplates() {
             .join('') || '<tr><td colspan="4">No publish transitions yet.</td></tr>'}
         </tbody></table>
       </section>`
-        : '<p class="muted">No document templates found.</p>'
+        : emptyStateMarkup('No document templates found yet. Create one to configure mappings and publish versions.')
     }
   `
 
@@ -1606,7 +1640,7 @@ function boardCardMarkup(card, kind) {
     kind === 'client'
       ? `
       <div class="workflow-shortcuts" data-workflow-card="${card.id}">
-        <button type="button" class="secondary tiny workflow-shortcut" data-open-profile-detail="${card.id}">Profile detail</button>
+        <button type="button" class="secondary tiny workflow-shortcut" data-open-profile-detail="${card.id}" aria-expanded="false" aria-controls="profile-detail-${card.id}">Profile detail</button>
         ${
           workflow.latestSubmissionId
             ? `<a class="secondary tiny workflow-shortcut-link" href="#${appRoutes.clientFormSubmission(card.id, workflow.latestSubmissionId)}" data-workflow-client="${card.id}" data-workflow-submission="${workflow.latestSubmissionId}">Edit submission</a>`
@@ -1620,7 +1654,7 @@ function boardCardMarkup(card, kind) {
         <button type="button" class="secondary tiny workflow-shortcut" data-open-doc-actions="${card.id}" data-workflow-submission="${workflow.latestSubmissionId || workflow.latestDraftId || ''}">Document actions</button>
       </div>
       <div class="muted compact-meta">Forms: ${workflow.submissionCount || 0} submissions · ${workflow.draftCount || 0} drafts</div>
-      <div class="hidden card-detail muted compact-meta top-gap" data-profile-detail="${card.id}"></div>
+      <div id="profile-detail-${card.id}" class="hidden card-detail muted compact-meta top-gap" data-profile-detail="${card.id}"></div>
     `
       : ''
   return `
@@ -1679,7 +1713,7 @@ function boardMarkup(kind, board) {
           </div>
         </section>`
         )
-        .join('')}
+        .join('') || emptyStateMarkup('No active board columns are available. Confirm stage configuration and try again.')}
     </div>
   `
 }
@@ -1900,6 +1934,7 @@ function wireBoardInteractions(kind) {
       const isVisible = !detailEl.classList.contains('hidden')
       if (isVisible) {
         detailEl.classList.add('hidden')
+        button.setAttribute('aria-expanded', 'false')
         return
       }
       try {
@@ -1915,6 +1950,7 @@ function wireBoardInteractions(kind) {
           summary.status || '—'
         )} · Submissions: ${submissionsCount} · Notes: ${notesCount}`
         detailEl.classList.remove('hidden')
+        button.setAttribute('aria-expanded', 'true')
       } catch (error) {
         setFlash('error', `Failed to load profile detail: ${error.message}`)
         await renderCurrentView()
@@ -1924,29 +1960,34 @@ function wireBoardInteractions(kind) {
 }
 
 async function renderBoard(kind) {
-  if (kind === 'prospect') {
-    state.board = await request(routes.board())
-    const boardStageDefinitions = stageDefinitionsFromBoard(state.board)
-    hydrateStageConfig(boardStageDefinitions, { overwrite: true })
-    renderProfileStageSelect()
-    viewEl.innerHTML = boardMarkup(kind, state.board)
+  try {
+    if (kind === 'prospect') {
+      state.board = await request(routes.board())
+      const boardStageDefinitions = stageDefinitionsFromBoard(state.board)
+      hydrateStageConfig(boardStageDefinitions, { overwrite: true })
+      renderProfileStageSelect()
+      viewEl.innerHTML = boardMarkup(kind, state.board)
+      wireBoardInteractions(kind)
+      return
+    }
+    await ensureStageConfig()
+    const [clients, drafts, submissions] = await Promise.all([
+      request(routes.profiles({ kind: 'client' })),
+      request(routes.formDrafts()),
+      request(routes.formSubmissions())
+    ])
+    const workflowByClientId = buildClientWorkflowMap(drafts, submissions)
+    const clientsWithWorkflow = clients.map((client) => ({
+      ...client,
+      workflowSummary:
+        workflowByClientId.get(client.id) || { latestSubmissionId: '', latestDraftId: '', submissionCount: 0, draftCount: 0 }
+    }))
+    state.clientBoard = buildBoardFromProfiles(clientsWithWorkflow)
+    viewEl.innerHTML = boardMarkup(kind, state.clientBoard)
     wireBoardInteractions(kind)
-    return
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner(kind === 'prospect' ? 'prospect board' : 'client board', error)}${emptyStateMarkup()}`
   }
-  await ensureStageConfig()
-  const [clients, drafts, submissions] = await Promise.all([
-    request(routes.profiles({ kind: 'client' })),
-    request(routes.formDrafts()),
-    request(routes.formSubmissions())
-  ])
-  const workflowByClientId = buildClientWorkflowMap(drafts, submissions)
-  const clientsWithWorkflow = clients.map((client) => ({
-    ...client,
-    workflowSummary: workflowByClientId.get(client.id) || { latestSubmissionId: '', latestDraftId: '', submissionCount: 0, draftCount: 0 }
-  }))
-  state.clientBoard = buildBoardFromProfiles(clientsWithWorkflow)
-  viewEl.innerHTML = boardMarkup(kind, state.clientBoard)
-  wireBoardInteractions(kind)
 }
 
 function roleAccessMatrixMarkup() {
@@ -2035,10 +2076,12 @@ async function renderExports() {
 
   let jobs = []
   let queue = { queue: {} }
+  let exportsLoadError = null
   try {
     ;[jobs, queue] = await Promise.all([request(routes.exports(query)), request(routes.exportsQueueHealth())])
   } catch (error) {
     reportActionError('Exports', error)
+    exportsLoadError = error
   }
 
   const canMutate = state.user?.role === 'admin' || state.user?.role === 'advisor'
@@ -2061,6 +2104,7 @@ async function renderExports() {
   viewEl.innerHTML = `
     ${flashMarkup()}
     ${alertMarkup()}
+    ${exportsLoadError ? viewErrorBanner('exports', exportsLoadError) : ''}
     <div class="section-header"><div><h2>Exports Operations</h2><p class="muted">Queue health, retries, and artifact readiness by job.</p></div></div>
     <section class="item stack gap-md">
       <h3>Filters & Bulk Actions</h3>
@@ -2136,7 +2180,7 @@ async function renderExports() {
           }</td>
         </tr>`
             )
-            .join('') || '<tr><td colspan="6">No export jobs.</td></tr>'
+            .join('') || '<tr><td colspan="6">No export jobs yet. Run an export to populate queue activity and artifact status.</td></tr>'
         }
       </tbody></table>
     </section>
@@ -2272,6 +2316,7 @@ async function renderFallback(title) {
 }
 
 async function renderCurrentView() {
+  updateViewNavState()
   if (!state.user) {
     viewEl.innerHTML = `${flashMarkup()}<h2>Sign in to continue</h2>`
     return
