@@ -753,9 +753,21 @@ async function renderAnalytics() {
 
 async function renderForms() {
   const [templates, drafts] = await Promise.all([request(routes.formTemplates()), request(routes.formDrafts())])
-  const activeClientId = state.selectedClientId || drafts[0]?.clientId || ''
-  const activeSubmissionId = state.selectedSubmissionId || drafts[0]?.id || ''
-  setWorkflowContext({ clientId: activeClientId, submissionId: activeSubmissionId })
+  let selectedProfile = null
+  let selectedSubmission = null
+  let selectedSubmissionError = ''
+  if (state.selectedClientId && state.selectedSubmissionId) {
+    try {
+      const detail = await request(routes.profileDetail(state.selectedClientId))
+      selectedProfile = detail?.profile || null
+      selectedSubmission = (detail?.submissions || []).find((entry) => entry.id === state.selectedSubmissionId) || null
+      if (!selectedSubmission) selectedSubmissionError = 'Submission not found in selected profile.'
+    } catch (error) {
+      selectedSubmissionError = error.message || 'Failed to load profile submission context.'
+    }
+  }
+
+  const repeaterSections = Object.entries(selectedSubmission?.data || {}).filter(([, value]) => Array.isArray(value))
   const rows = drafts
     .map(
       (draft) => `
@@ -785,6 +797,73 @@ async function renderForms() {
       ${metricCard('drafts', drafts.length)}
     </div>
     <table><thead><tr><th>Draft ID</th><th>Template</th><th>Revision</th><th>Lock</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No drafts</td></tr>'}</tbody></table>
+    ${
+      state.selectedSubmissionId
+        ? `
+      <section class="item">
+        <h3>Profile-driven Submission Editor</h3>
+        <p class="muted">
+          Profile: <strong>${escapeHtml(selectedProfile?.firstName || '')} ${escapeHtml(selectedProfile?.lastName || '')}</strong>
+          · Submission: <code>${escapeHtml(state.selectedSubmissionId)}</code>
+        </p>
+        ${
+          selectedSubmissionError
+            ? `<p class="error-banner">${escapeHtml(selectedSubmissionError)}</p>`
+            : !selectedSubmission
+              ? '<p class="muted">No submission selected.</p>'
+              : repeaterSections.length
+                ? repeaterSections
+                    .map(([sectionKey, items]) => {
+                      const sectionActionKey = `repeater-${selectedSubmission.id}-${sectionKey}`
+                      return `
+                  <div class="item compact">
+                    <h4>${escapeHtml(sectionKey)} <span class="badge subtle">${items.length} item(s)</span></h4>
+                    ${
+                      items.length
+                        ? `<table>
+                          <thead><tr><th>Item</th><th>Fields</th><th>Actions</th></tr></thead>
+                          <tbody>
+                            ${items
+                              .map((item, index) => {
+                                const identity = String(item?.id || item?.key || index)
+                                const editableEntries = Object.entries(item || {}).filter(([key]) => key !== 'id' && key !== 'key')
+                                return `<tr>
+                                  <td><code>${escapeHtml(identity)}</code></td>
+                                  <td>
+                                    <form data-repeater-update="${sectionActionKey}" data-submission-id="${escapeHtml(selectedSubmission.id)}" data-section-key="${escapeHtml(sectionKey)}" data-item-key="${escapeHtml(identity)}">
+                                      <div class="grid two">
+                                        ${editableEntries
+                                          .map(([key, value]) => {
+                                            const isNumber = typeof value === 'number'
+                                            return `<label>${escapeHtml(key)}
+                                              <input name="field:${escapeHtml(key)}" value="${escapeHtml(value ?? '')}" data-item-field data-value-type="${isNumber ? 'number' : 'text'}" ${isNumber ? 'type="number"' : ''} />
+                                            </label>`
+                                          })
+                                          .join('')}
+                                      </div>
+                                      <button type="submit" class="tiny">${pendingLabel(`${sectionActionKey}-update-${identity}`, 'Update item', 'Updating…')}</button>
+                                    </form>
+                                  </td>
+                                  <td>
+                                    <button class="tiny secondary" data-repeater-delete="${sectionActionKey}" data-submission-id="${escapeHtml(selectedSubmission.id)}" data-section-key="${escapeHtml(sectionKey)}" data-item-key="${escapeHtml(identity)}">${pendingLabel(`${sectionActionKey}-delete-${identity}`, 'Delete item', 'Deleting…')}</button>
+                                  </td>
+                                </tr>`
+                              })
+                              .join('')}
+                          </tbody>
+                        </table>`
+                        : '<p class="muted">No items in this section.</p>'
+                    }
+                  </div>
+                `
+                    })
+                    .join('')
+                : '<p class="muted">Selected submission has no repeatable sections.</p>'
+        }
+      </section>
+    `
+        : ''
+    }
   `
 
   document.querySelectorAll('[data-lock]').forEach((button) => {
@@ -835,6 +914,58 @@ async function renderForms() {
         if (error?.details?.mergePrompt?.suggestion) {
           setAlert('error', error.details.mergePrompt.suggestion)
         }
+        reportActionError('Forms', error)
+      } finally {
+        clearActionPending(actionKey)
+      }
+      await renderForms()
+    })
+  })
+
+  document.querySelectorAll('form[data-repeater-update]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const submissionId = form.dataset.submissionId
+      const sectionKey = form.dataset.sectionKey
+      const itemKey = form.dataset.itemKey
+      const patch = {}
+      form.querySelectorAll('[data-item-field]').forEach((input) => {
+        const fieldName = String(input.name || '').replace(/^field:/, '')
+        if (!fieldName) return
+        const valueType = input.dataset.valueType || 'text'
+        const rawValue = input.value
+        patch[fieldName] = valueType === 'number' && rawValue !== '' ? Number(rawValue) : rawValue
+      })
+      const actionKey = `${form.dataset.repeaterUpdate}-update-${itemKey}`
+      setActionPending(actionKey, 'pending')
+      await renderForms()
+      try {
+        await request(routes.submissionSectionItem(submissionId, sectionKey, itemKey), {
+          method: 'PATCH',
+          body: JSON.stringify(patch)
+        })
+        reportActionSuccess('Forms', `Updated repeater item ${itemKey}.`)
+      } catch (error) {
+        reportActionError('Forms', error)
+      } finally {
+        clearActionPending(actionKey)
+      }
+      await renderForms()
+    })
+  })
+
+  document.querySelectorAll('[data-repeater-delete]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const submissionId = button.dataset.submissionId
+      const sectionKey = button.dataset.sectionKey
+      const itemKey = button.dataset.itemKey
+      const actionKey = `${button.dataset.repeaterDelete}-delete-${itemKey}`
+      setActionPending(actionKey, 'pending')
+      await renderForms()
+      try {
+        await request(routes.submissionSectionItem(submissionId, sectionKey, itemKey), { method: 'DELETE' })
+        reportActionSuccess('Forms', `Deleted repeater item ${itemKey}.`)
+      } catch (error) {
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
