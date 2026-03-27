@@ -3,6 +3,11 @@ set -euo pipefail
 
 TARGET_BRANCH="${1:-main}"
 
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  echo "INFO: Git metadata unavailable; skipping merge/main parity check in non-Git workspace."
+  exit 0
+fi
+
 current_branch="$(git rev-parse --abbrev-ref HEAD)"
 
 if ! git show-ref --verify --quiet "refs/heads/${TARGET_BRANCH}"; then

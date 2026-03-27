@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const MARKER_PATTERN = /^(<<<<<<<|=======|>>>>>>>)\b/m
@@ -27,6 +27,26 @@ const TRACKED_TEXT_EXTENSIONS = new Set([
   '.xml'
 ])
 
+const SKIP_DIRECTORIES = new Set([
+  '.git',
+  '.hg',
+  '.svn',
+  'node_modules',
+  'artifacts',
+  'coverage',
+  'data',
+  'dist',
+  'build',
+  'out',
+  'tmp',
+  'temp',
+  'logs',
+  '.next',
+  '.nuxt',
+  '.cache',
+  '.turbo'
+])
+
 function isTrackedTextFile(pathname) {
   const lowered = pathname.toLowerCase()
   for (const extension of TRACKED_TEXT_EXTENSIONS) {
@@ -35,8 +55,21 @@ function isTrackedTextFile(pathname) {
   return pathname === 'Dockerfile'
 }
 
-function listTrackedFiles() {
-  const output = execFileSync('git', ['ls-files'], { encoding: 'utf8' })
+function canUseGit(rootDir) {
+  try {
+    execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+      cwd: rootDir,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore']
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
+function listTrackedFilesFromGit(rootDir) {
+  const output = execFileSync('git', ['ls-files'], { cwd: rootDir, encoding: 'utf8' })
   return output
     .split('\n')
     .map((line) => line.trim())
@@ -44,9 +77,47 @@ function listTrackedFiles() {
     .filter(isTrackedTextFile)
 }
 
+function listTrackedFilesFromFilesystem(rootDir) {
+  const files = []
+  const stack = ['']
+
+  while (stack.length > 0) {
+    const relativeDir = stack.pop()
+    const absoluteDir = resolve(rootDir, relativeDir)
+    const entries = readdirSync(absoluteDir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name))
+
+    for (const entry of entries) {
+      const relativePath = relativeDir ? `${relativeDir}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        if (!SKIP_DIRECTORIES.has(entry.name)) stack.push(relativePath)
+        continue
+      }
+
+      if (!entry.isFile() && !entry.isSymbolicLink()) continue
+      if (!isTrackedTextFile(relativePath)) continue
+
+      try {
+        const fileStats = statSync(resolve(rootDir, relativePath))
+        if (!fileStats.isFile()) continue
+        files.push(relativePath)
+      } catch {
+        // Ignore broken symlinks and transient filesystem races.
+      }
+    }
+  }
+
+  return files.sort((a, b) => a.localeCompare(b))
+}
+
+function listTrackedFiles(rootDir) {
+  if (canUseGit(rootDir)) return listTrackedFilesFromGit(rootDir)
+  return listTrackedFilesFromFilesystem(rootDir)
+}
+
+const rootDir = process.cwd()
 const offenders = []
-for (const file of listTrackedFiles()) {
-  const absolute = resolve(process.cwd(), file)
+for (const file of listTrackedFiles(rootDir)) {
+  const absolute = resolve(rootDir, file)
   const contents = readFileSync(absolute, 'utf8')
   if (!MARKER_PATTERN.test(contents)) continue
 
