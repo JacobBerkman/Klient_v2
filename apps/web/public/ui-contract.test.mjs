@@ -6,7 +6,16 @@ const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8')
 const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8')
 
 test('targeted forms expose inline feedback regions for validation and error rendering', () => {
-  for (const formId of ['profile-form', 'household-form', 'form-template-form', 'doc-template-form', 'invite-form', 'portal-form']) {
+  for (const formId of [
+    'register-form',
+    'login-form',
+    'profile-form',
+    'household-form',
+    'form-template-form',
+    'doc-template-form',
+    'invite-form',
+    'portal-form'
+  ]) {
     const formRegex = new RegExp(`<form[^>]*id=["']${formId}["'][\\s\\S]*?data-form-feedback`, 'm')
     assert.match(html, formRegex, `${formId} should contain a data-form-feedback region`)
   }
@@ -30,12 +39,30 @@ test('app wiring includes conflict normalization and form-level validation helpe
 test('navigation and board controls include accessibility-critical semantics', () => {
   assert.match(html, /<nav aria-label="Primary">/)
   assert.match(html, /<button type="button" data-view="dashboard"[^>]*aria-controls="view"/)
+  assert.match(html, /<pre id="auth-status"[^>]*role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/)
+  assert.match(html, /<p id="mfa-hint"[^>]*role="status"[^>]*aria-live="polite"/)
   assert.match(appJs, /function updateViewNavState\(/)
   assert.match(appJs, /button\.setAttribute\('aria-current', selected \? 'page' : 'false'\)/)
+  assert.match(appJs, /function focusLiveRegion\(/)
+  assert.match(appJs, /function setAuthStatus\(/)
+  assert.match(appJs, /feedbackEl\.setAttribute\('aria-atomic', 'true'\)/)
+  assert.match(appJs, /missingField\.setAttribute\('aria-invalid', 'true'\)/)
+  assert.match(appJs, /missingField\.focus\(\)/)
   assert.match(appJs, /data-open-profile-detail="\$\{card\.id\}" aria-expanded="false" aria-controls="profile-detail-\$\{card\.id\}"/)
   assert.match(appJs, /data-edit-profile="\$\{card\.id\}" aria-expanded="false" aria-controls="profile-edit-\$\{card\.id\}"/)
   assert.match(appJs, /button\.setAttribute\('aria-expanded', 'true'\)/)
   assert.match(appJs, /button\.setAttribute\('aria-expanded', 'false'\)/)
+})
+
+test('exports workflow includes keyboard-friendly selection labels and live-region updates', () => {
+  assert.match(appJs, /id="exports-live-region"[\s\S]*role="status"[\s\S]*aria-live="polite"/)
+  assert.match(appJs, /<table aria-describedby="exports-live-region">/)
+  assert.match(appJs, /id="select-all-exports" type="checkbox" aria-label="Select all eligible exports"/)
+  assert.match(appJs, /data-select-export="\$\{job\.id\}" type="checkbox" aria-label="Select export \$\{escapeHtml\(job\.id\)\}"/)
+  assert.match(appJs, /data-retry-export="\$\{job\.id\}" class="tiny secondary" aria-label="Retry export \$\{escapeHtml\(job\.id\)\}"/)
+  assert.match(appJs, /data-download-export="\$\{job\.id\}" class="tiny" aria-label="Download export \$\{escapeHtml\(job\.id\)\}"/)
+  assert.match(appJs, /setWorkflowStatus\('Exports filters applied\.'/)
+  assert.match(appJs, /setWorkflowStatus\('Exports filters cleared\.'/)
 })
 
 test('styles provide visible focus indicators and empty-state affordances', () => {

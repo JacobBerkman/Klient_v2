@@ -49,6 +49,8 @@ const formTemplateFormEl = document.querySelector('#form-template-form')
 const docTemplateFormEl = document.querySelector('#doc-template-form')
 const inviteFormEl = document.querySelector('#invite-form')
 const portalFormEl = document.querySelector('#portal-form')
+const registerFormEl = document.querySelector('#register-form')
+const loginFormEl = document.querySelector('#login-form')
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
 let csrfToken = ''
@@ -80,6 +82,20 @@ function clearAlert() {
 
 function setWorkflowStatus(message = '') {
   state.workflowStatusMessage = message
+}
+
+function focusLiveRegion(element) {
+  if (!element) return
+  if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1')
+  element.focus()
+}
+
+function setAuthStatus(message, { assertive = false } = {}) {
+  if (!authStatusEl) return
+  authStatusEl.setAttribute('role', assertive ? 'alert' : 'status')
+  authStatusEl.setAttribute('aria-live', assertive ? 'assertive' : 'polite')
+  authStatusEl.textContent = message
+  if (assertive) focusLiveRegion(authStatusEl)
 }
 
 function normalizeConflictMessage(error, fallbackMessage = 'Conflict detected. Reload and try again.') {
@@ -133,9 +149,11 @@ function setFormFeedback(form, message = '', type = 'error') {
   if (!feedbackEl) return
   feedbackEl.setAttribute('role', type === 'error' ? 'alert' : 'status')
   feedbackEl.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite')
+  feedbackEl.setAttribute('aria-atomic', 'true')
   feedbackEl.textContent = message
   feedbackEl.classList.remove('error-banner', 'success-banner')
   if (message) feedbackEl.classList.add(type === 'success' ? 'success-banner' : 'error-banner')
+  if (type === 'error' && message) focusLiveRegion(feedbackEl)
 }
 
 function clearFormFeedback(form) {
@@ -181,8 +199,15 @@ function withTrimmedFormData(form) {
 
 function validateRequiredFields(form, requiredKeys = []) {
   const payload = withTrimmedFormData(form)
+  requiredKeys.forEach((key) => {
+    const field = form?.elements?.namedItem?.(key)
+    if (field?.setAttribute) field.setAttribute('aria-invalid', 'false')
+  })
   const missingLabel = requiredKeys.find((key) => !payload[key])
   if (missingLabel) {
+    const missingField = form?.elements?.namedItem?.(missingLabel)
+    if (missingField?.setAttribute) missingField.setAttribute('aria-invalid', 'true')
+    if (missingField?.focus) missingField.focus()
     throw new Error(`${missingLabel} is required.`)
   }
   return payload
@@ -2266,6 +2291,9 @@ async function renderExports() {
     ${alertMarkup()}
     ${exportsLoadError ? viewErrorBanner('exports', exportsLoadError) : ''}
     <div class="section-header"><div><h2>Exports Operations</h2><p class="muted">Queue health, retries, and artifact readiness by job.</p></div></div>
+    <p id="exports-live-region" class="muted compact" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(
+      state.workflowStatusMessage || ''
+    )}</p>
     <section class="item stack gap-md">
       <h3>Filters & Bulk Actions</h3>
       <form id="exports-filter-form" class="exports-filter-grid">
@@ -2306,12 +2334,12 @@ async function renderExports() {
     </section>
     <section class="item">
       <h3>Per-job Artifact Status</h3>
-      <table><thead><tr><th><input id="select-all-exports" type="checkbox" ${selectableJobs.length && selectedJobs.length === selectableJobs.length ? 'checked' : ''} /></th><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact Details</th><th>Actions</th></tr></thead><tbody>
+      <table aria-describedby="exports-live-region"><thead><tr><th><input id="select-all-exports" type="checkbox" aria-label="Select all eligible exports" ${selectableJobs.length && selectedJobs.length === selectableJobs.length ? 'checked' : ''} /></th><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact Details</th><th>Actions</th></tr></thead><tbody>
         ${
           jobs
             .map(
               (job) => `<tr>
-          <td><input data-select-export="${job.id}" type="checkbox" ${viewState.selectedIds.has(job.id) ? 'checked' : ''} ${exportSelectionState(job, canMutate).selectable ? '' : 'disabled'} /></td>
+          <td><input data-select-export="${job.id}" type="checkbox" aria-label="Select export ${escapeHtml(job.id)}" ${viewState.selectedIds.has(job.id) ? 'checked' : ''} ${exportSelectionState(job, canMutate).selectable ? '' : 'disabled'} /></td>
           <td>${escapeHtml(job.id)}</td>
           <td>${escapeHtml(job.statusLabel || job.status)}</td>
           <td>${job.attempts || 0}/${job.maxAttempts || 0}</td>
@@ -2334,8 +2362,8 @@ async function renderExports() {
             (() => {
               const selection = exportSelectionState(job, canMutate)
               return `<div class="actions-row">
-                  <button data-retry-export="${job.id}" class="tiny secondary" ${selection.retryable ? '' : 'disabled'}>Retry</button>
-                  <button data-download-export="${job.id}" class="tiny" ${selection.downloadable ? '' : 'disabled'}>Download</button>
+                  <button data-retry-export="${job.id}" class="tiny secondary" aria-label="Retry export ${escapeHtml(job.id)}" ${selection.retryable ? '' : 'disabled'}>Retry</button>
+                  <button data-download-export="${job.id}" class="tiny" aria-label="Download export ${escapeHtml(job.id)}" ${selection.downloadable ? '' : 'disabled'}>Download</button>
                 </div>`
             })()
           }</td>
@@ -2361,6 +2389,7 @@ async function renderExports() {
     viewState.toDate = formData.toDate || ''
     viewState.sort = formData.sort || 'createdAt_desc'
     viewState.selectedIds = new Set()
+    setWorkflowStatus('Exports filters applied.')
     await renderExports()
   })
 
@@ -2371,6 +2400,7 @@ async function renderExports() {
     viewState.toDate = ''
     viewState.sort = 'createdAt_desc'
     viewState.selectedIds = new Set()
+    setWorkflowStatus('Exports filters cleared.')
     await renderExports()
   })
 
@@ -2400,6 +2430,7 @@ async function renderExports() {
   document.querySelector('#bulk-retry-exports')?.addEventListener('click', async () => {
     if (!selectedRetryable.length) {
       setFlash('error', 'Bulk retry: no selected exports are eligible for retry.')
+      setWorkflowStatus('Bulk retry skipped. No eligible exports selected.')
       await renderExports()
       return
     }
@@ -2418,12 +2449,14 @@ async function renderExports() {
     viewState.bulkBusy = false
     viewState.selectedIds = new Set()
     summarizeBulkResults('Bulk retry', { succeeded, failed, skipped })
+    setWorkflowStatus('Bulk retry finished. Review flash summary for details.')
     await renderExports()
   })
 
   document.querySelector('#bulk-download-exports')?.addEventListener('click', async () => {
     if (!selectedDownloadable.length) {
       setFlash('error', 'Bulk download: no selected exports are ready to download.')
+      setWorkflowStatus('Bulk download skipped. No ready exports selected.')
       await renderExports()
       return
     }
@@ -2441,6 +2474,7 @@ async function renderExports() {
     }
     viewState.bulkBusy = false
     summarizeBulkResults('Bulk download', { succeeded, failed, skipped })
+    setWorkflowStatus('Bulk download finished. Review flash summary for details.')
     await renderExports()
   })
 
@@ -2451,8 +2485,10 @@ async function renderExports() {
         body: JSON.stringify({ includeDeadLetter: true, limit: 50 })
       })
       reportActionSuccess('Exports', `Retried ${result.retriedCount || 0} failed jobs.`)
+      setWorkflowStatus(`Retry failed jobs completed for ${result.retriedCount || 0} jobs.`)
     } catch (error) {
       reportActionError('Exports', error)
+      setWorkflowStatus('Retry failed jobs did not complete. See error details.')
     }
     await renderExports()
   })
@@ -2513,13 +2549,13 @@ async function hydrateSession() {
   try {
     const session = await request(routes.session())
     state.user = session.user
-    authStatusEl.textContent = JSON.stringify(session.user, null, 2)
+    setAuthStatus(JSON.stringify(session.user, null, 2))
     updateRoleVisibility()
     await refreshSelects()
     updateMfaUi()
   } catch {
     state.user = null
-    authStatusEl.textContent = 'Not signed in'
+    setAuthStatus('Not signed in')
     updateRoleVisibility()
     updateMfaUi()
   }
@@ -2527,7 +2563,7 @@ async function hydrateSession() {
 
 async function finishAuth(session, message) {
   state.user = session.user
-  authStatusEl.textContent = JSON.stringify(session.user, null, 2)
+  setAuthStatus(JSON.stringify(session.user, null, 2))
   state.view = session.user.role === 'client' ? 'forms' : 'dashboard'
   updateRoleVisibility()
   await refreshSelects()
@@ -2564,32 +2600,41 @@ demoLoginButton.addEventListener('click', async () => {
   }
 })
 
-document.querySelector('#register-form').addEventListener('submit', async (event) => {
+registerFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  clearFormFeedback(registerFormEl)
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
     const session = await request(routes.register(), { method: 'POST', body: JSON.stringify(payload) })
     event.target.reset()
+    setFormFeedback(registerFormEl, 'Registration successful.', 'success')
     await finishAuth(session, 'Firm admin account created.')
   } catch (error) {
+    setFormFeedback(registerFormEl, normalizeApiError(error, 'register this account'))
+    setAuthStatus(`Registration failed: ${error.message}`, { assertive: true })
     setFlash('error', error.message)
     await renderCurrentView()
   }
 })
 
-document.querySelector('#login-form').addEventListener('submit', async (event) => {
+loginFormEl.addEventListener('submit', async (event) => {
   event.preventDefault()
+  clearFormFeedback(loginFormEl)
   try {
     const payload = Object.fromEntries(new FormData(event.target).entries())
     const session = await request(routes.login(), { method: 'POST', body: JSON.stringify(payload) })
     if (session.mfaRequired) {
       setPendingMfaLogin(session, payload)
+      setFormFeedback(loginFormEl, 'MFA challenge required. Continue below.', 'success')
       await renderCurrentView()
       return
     }
     event.target.reset()
+    setFormFeedback(loginFormEl, 'Sign-in successful.', 'success')
     await finishAuth(session, 'Signed in successfully.')
   } catch (error) {
+    setFormFeedback(loginFormEl, normalizeApiError(error, 'sign in'))
+    setAuthStatus(`Sign-in failed: ${error.message}`, { assertive: true })
     setFlash('error', error.message)
     await renderCurrentView()
   }

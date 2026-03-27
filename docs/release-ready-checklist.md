@@ -2,6 +2,7 @@
 
 Use this checklist as a strict go/no-go control for production releases.
 A release is **ready** only when every check is an objective **PASS** with captured evidence artifacts.
+Capture the release package with the standard handoff template at `docs/release-handoff-template.md`.
 
 ## Gate command
 Run the hard gate:

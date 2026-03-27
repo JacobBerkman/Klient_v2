@@ -83,6 +83,9 @@ The gate is objective and fails if any required suite fails:
 4. Smoke test (`npm run test:smoke`)
 5. Security checks (`npm run test:security`)
 
+Before approving GO/NO-GO, complete and archive the standardized handoff package in
+`docs/release-handoff-template.md`.
+
 ## Deterministic test environment behavior
 - Use isolated test state by default (ephemeral test directories).
 - Deterministic port assignment is based on `TEST_SEED` and suite name.

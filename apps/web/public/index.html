@@ -36,27 +36,29 @@
         <section class="auth-panel card">
           <h2>Authenticate</h2>
           <div class="grid two">
-            <form id="register-form" class="card inner">
-              <h3>Register Firm Admin</h3>
+            <form id="register-form" class="card inner" aria-describedby="register-feedback">
+              <h3 id="register-heading">Register Firm Admin</h3>
               <input name="firmName" placeholder="Firm name" required />
               <input name="firstName" placeholder="First name" required />
               <input name="lastName" placeholder="Last name" required />
               <input name="email" type="email" placeholder="Email" required />
               <input name="password" type="password" placeholder="Password" required />
               <button type="submit">Register</button>
+              <p id="register-feedback" class="muted compact" data-form-feedback role="status" aria-live="polite"></p>
             </form>
-            <form id="login-form" class="card inner">
-              <h3>Sign In</h3>
+            <form id="login-form" class="card inner" aria-describedby="login-feedback demo-credentials">
+              <h3 id="login-heading">Sign In</h3>
               <input name="email" type="email" placeholder="Email" required />
               <input name="password" type="password" placeholder="Password" required />
               <button type="submit">Sign In</button>
+              <p id="login-feedback" class="muted compact" data-form-feedback role="status" aria-live="polite"></p>
               <p id="demo-credentials" class="muted" hidden>Demo login: admin@demo.test / ChangeMe123!</p>
             </form>
           </div>
-          <pre id="auth-status"></pre>
+          <pre id="auth-status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></pre>
           <section id="mfa-panel" class="card inner">
             <h3>Multi-Factor Authentication</h3>
-            <p id="mfa-hint" class="muted">Sign in to enroll MFA, or complete an MFA challenge during login.</p>
+            <p id="mfa-hint" class="muted" role="status" aria-live="polite">Sign in to enroll MFA, or complete an MFA challenge during login.</p>
             <form id="mfa-login-form" hidden>
               <input name="totpCode" placeholder="Authenticator code" />
               <input name="backupCode" placeholder="Backup code" />
