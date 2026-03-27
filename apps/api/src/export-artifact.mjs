@@ -7,6 +7,14 @@ const FORMAT_MAP = {
   xlsx: { extension: 'xlsx', contentType: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }
 }
 
+const PDF_PAGE = {
+  width: 612,
+  height: 792,
+  marginTop: 48,
+  marginBottom: 44,
+  marginX: 46
+}
+
 function sanitizeCell(value) {
   return String(value ?? '')
     .replaceAll('&', '&amp;')
@@ -19,8 +27,12 @@ function pdfEscape(value) {
   return String(value ?? '').replaceAll('\\', '\\\\').replaceAll('(', '\\(').replaceAll(')', '\\)')
 }
 
+function cleanText(value) {
+  return String(value ?? '').replaceAll(/\s+/g, ' ').trim()
+}
+
 function wrapPdfText(line, maxChars = 90) {
-  const text = String(line ?? '').trim()
+  const text = cleanText(line)
   if (!text) return ['']
   const chunks = []
   let remaining = text
@@ -34,70 +46,152 @@ function wrapPdfText(line, maxChars = 90) {
   return chunks
 }
 
-function createPdfArtifact({ job, metadata, resolvedRows = [] }) {
-  const metadataLines = [
-    ['Export Job', job.id],
-    ['Firm', job.firmId],
-    ['Client', job.clientId],
-    ['Template', job.templateId],
-    ['Generated', metadata.generatedAt],
-    ['Template Version', metadata.templateVersion],
-    ['Mapping Hash', metadata.mappingVersionHash]
-  ]
+function summarizeRowValue(rowValue) {
+  if (rowValue == null) return ''
+  if (Array.isArray(rowValue)) {
+    if (!rowValue.length) return ''
+    return rowValue
+      .map((entry) => (entry && typeof entry === 'object' ? JSON.stringify(entry) : String(entry)))
+      .join('; ')
+  }
+  if (rowValue && typeof rowValue === 'object') return JSON.stringify(rowValue)
+  return String(rowValue)
+}
 
-  const bodyLines = resolvedRows.length
-    ? resolvedRows.flatMap((row, index) => {
-        const label = row.fieldLabel || row.pdfField || `Field ${index + 1}`
-        const value = row.value == null ? '' : String(row.value)
-        return wrapPdfText(`${index + 1}. ${label}: ${value}`, 86)
-      })
-    : ['No mapping rows resolved for this export.']
+function classifySection(row) {
+  const path = String(row?.sourcePath || '').trim()
+  if (path.startsWith('profile.')) return 'Client Profile'
+  if (path.startsWith('submission.') || path.startsWith('form.')) return 'Form Submission'
+  if (!path) return 'Mapped Values'
+  const root = path.split('.')[0]
+  if (root === 'profile') return 'Client Profile'
+  if (root === 'submission' || root === 'form') return 'Form Submission'
+  return 'Mapped Values'
+}
 
-  const pageHeight = 792
-  const topY = 760
-  const bottomY = 56
-  const lineHeight = 16
-  const maxLinesPerPage = Math.max(1, Math.floor((topY - bottomY) / lineHeight))
+function buildSectionGroups(rows = []) {
+  const groups = new Map()
+  for (const row of rows) {
+    const section = classifySection(row)
+    if (!groups.has(section)) groups.set(section, [])
+    groups.get(section).push(row)
+  }
+  return Array.from(groups.entries()).map(([name, entries]) => ({ name, entries }))
+}
 
-  const buildPageTokens = (startIndex = 0) => {
-    const tokens = []
-    if (startIndex === 0) {
-      tokens.push({ text: 'Klient Export Artifact', style: 'title' })
-      tokens.push({ text: '', style: 'meta' })
-      for (const [key, value] of metadataLines) {
-        tokens.push({ text: `${key}: ${value || ''}`, style: 'meta' })
-      }
-      tokens.push({ text: '', style: 'meta' })
-      tokens.push({ text: 'Resolved Mapping Values', style: 'section' })
+function formatRowForPdf(row, index) {
+  const label = row.fieldLabel || row.pdfField || `Field ${index + 1}`
+  const value = row.value
+  const source = row.sourcePath || 'n/a'
+  const warningSummary = row.warnings?.length ? row.warnings.map((warning) => warning.code || 'warning').join(', ') : 'OK'
+  const lines = [`${index + 1}. ${label}`]
+  lines.push(`Source: ${source}`)
+  lines.push(`Status: ${warningSummary}`)
+  if (Array.isArray(value)) {
+    if (!value.length) {
+      lines.push('Value: (empty list)')
     } else {
-      tokens.push({ text: 'Klient Export Artifact (continued)', style: 'section' })
+      const objectRows = value.filter((entry) => entry && typeof entry === 'object')
+      if (objectRows.length === value.length) {
+        const columns = Array.from(new Set(objectRows.flatMap((entry) => Object.keys(entry)))).slice(0, 6)
+        lines.push(`Columns: ${columns.join(' | ') || 'n/a'}`)
+        value.forEach((entry, rowIndex) => {
+          const tuple = columns.map((column) => cleanText(entry[column] ?? '')).join(' | ')
+          lines.push(`- Row ${rowIndex + 1}: ${tuple}`)
+        })
+      } else {
+        value.forEach((entry, rowIndex) => lines.push(`- ${rowIndex + 1}: ${cleanText(entry)}`))
+      }
     }
+  } else if (value && typeof value === 'object') {
+    Object.entries(value).forEach(([key, entry]) => lines.push(`${key}: ${cleanText(entry)}`))
+  } else {
+    lines.push(`Value: ${summarizeRowValue(value)}`)
+  }
+  return lines
+}
 
-    let index = startIndex
-    while (index < bodyLines.length && tokens.length < maxLinesPerPage) {
-      tokens.push({ text: bodyLines[index], style: 'body' })
-      index += 1
+function createPdfArtifact({ job, metadata, resolvedRows = [] }) {
+  const branding = metadata.branding || {}
+  const title = cleanText(metadata.documentTitle || `${branding.firmName || 'Klient'} Export Packet`)
+  const subtitle = cleanText(metadata.documentSubtitle || `${metadata.templateLabel || 'Template Export'} · ${job.clientId}`)
+  const headerText = cleanText(branding.headerText || `${branding.firmName || 'Klient'} • Confidential`)
+  const footerText = cleanText(branding.footerText || 'For advisor use only')
+
+  const grouped = buildSectionGroups(resolvedRows)
+  const metadataLines = [
+    `Export Job: ${job.id}`,
+    `Firm: ${job.firmId}`,
+    `Client: ${job.clientId}`,
+    `Template: ${metadata.templateLabel || job.templateId}`,
+    `Generated: ${metadata.generatedAt}`,
+    `Template Version: ${metadata.templateVersion}`,
+    `Mapping Hash: ${metadata.mappingVersionHash}`
+  ]
+  const bodyTokens = []
+  if (!grouped.length) {
+    bodyTokens.push({ text: 'No mapping rows resolved for this export.', style: 'body' })
+  } else {
+    let globalIndex = 0
+    for (const group of grouped) {
+      bodyTokens.push({ text: group.name, style: 'section' })
+      for (const row of group.entries) {
+        const lines = formatRowForPdf(row, globalIndex)
+        lines.forEach((line, lineIndex) => bodyTokens.push({ text: line, style: lineIndex === 0 ? 'bodyStrong' : 'body' }))
+        bodyTokens.push({ text: '', style: 'body' })
+        globalIndex += 1
+      }
     }
-    return { tokens, nextIndex: index }
   }
 
-  const pages = []
+  const lineHeightByStyle = {
+    header: 12,
+    footer: 10,
+    title: 20,
+    subtitle: 13,
+    meta: 11,
+    section: 14,
+    bodyStrong: 12,
+    body: 11
+  }
+  const topY = PDF_PAGE.height - PDF_PAGE.marginTop
+  const bodyStartY = topY - 86
+  const bodyBottomY = PDF_PAGE.marginBottom + 30
+  const continuationHeader = { text: 'Continued', style: 'section' }
+  const pageBodies = []
   let cursor = 0
-  do {
-    const page = buildPageTokens(cursor)
-    pages.push(page.tokens)
-    cursor = page.nextIndex
-  } while (cursor < bodyLines.length)
+  while (cursor < bodyTokens.length || pageBodies.length === 0) {
+    const pageTokens = []
+    let y = pageBodies.length === 0 ? bodyStartY : bodyStartY + 18
+    if (pageBodies.length > 0) {
+      pageTokens.push(continuationHeader)
+      y -= lineHeightByStyle.section
+    }
+    while (cursor < bodyTokens.length) {
+      const token = bodyTokens[cursor]
+      const wrapped = wrapPdfText(token.text, token.style === 'section' ? 74 : 92)
+      const styleHeight = lineHeightByStyle[token.style] || 11
+      const needed = wrapped.length * styleHeight
+      if (y - needed < bodyBottomY) break
+      wrapped.forEach((line) => {
+        pageTokens.push({ text: line, style: token.style })
+        y -= styleHeight
+      })
+      cursor += 1
+    }
+    pageBodies.push(pageTokens)
+    if (cursor >= bodyTokens.length) break
+  }
 
   const objects = []
   objects.push('<< /Type /Catalog /Pages 2 0 R >>')
 
   const pageObjectIds = []
   const contentObjectIds = []
-  const fontBodyId = 3 + pages.length * 2
+  const fontBodyId = 3 + pageBodies.length * 2
   const fontBoldId = fontBodyId + 1
 
-  for (let index = 0; index < pages.length; index += 1) {
+  for (let index = 0; index < pageBodies.length; index += 1) {
     const pageObjectId = 3 + index * 2
     const contentObjectId = pageObjectId + 1
     pageObjectIds.push(pageObjectId)
@@ -106,19 +200,46 @@ function createPdfArtifact({ job, metadata, resolvedRows = [] }) {
 
   objects.push(`<< /Type /Pages /Count ${pageObjectIds.length} /Kids [${pageObjectIds.map((id) => `${id} 0 R`).join(' ')}] >>`)
 
-  for (let pageIndex = 0; pageIndex < pages.length; pageIndex += 1) {
+  for (let pageIndex = 0; pageIndex < pageBodies.length; pageIndex += 1) {
     const pageId = pageObjectIds[pageIndex]
     const contentId = contentObjectIds[pageIndex]
-    const tokens = pages[pageIndex]
+    const tokens = pageBodies[pageIndex]
 
-    objects[pageId - 1] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 ${pageHeight}] /Resources << /Font << /F1 ${fontBodyId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>`
+    objects[pageId - 1] = `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${PDF_PAGE.width} ${PDF_PAGE.height}] /Resources << /Font << /F1 ${fontBodyId} 0 R /F2 ${fontBoldId} 0 R >> >> /Contents ${contentId} 0 R >>`
 
-    const textOps = ['BT', `50 ${topY} Td`]
-    tokens.forEach((token, i) => {
-      if (i > 0) textOps.push(`0 -${lineHeight} Td`)
-      const style = token.style === 'title' ? '/F2 16 Tf' : token.style === 'section' ? '/F2 12 Tf' : '/F1 10 Tf'
-      textOps.push(style)
+    const textOps = ['BT']
+    textOps.push('/F2 10 Tf')
+    textOps.push(`1 0 0 1 ${PDF_PAGE.marginX} ${topY} Tm`)
+    textOps.push(`(${pdfEscape(headerText)}) Tj`)
+    textOps.push(`/F2 18 Tf`)
+    textOps.push(`1 0 0 1 ${PDF_PAGE.marginX} ${topY - 28} Tm`)
+    textOps.push(`(${pdfEscape(title)}) Tj`)
+    textOps.push(`/F1 11 Tf`)
+    textOps.push(`1 0 0 1 ${PDF_PAGE.marginX} ${topY - 48} Tm`)
+    textOps.push(`(${pdfEscape(subtitle)}) Tj`)
+    metadataLines.forEach((line, idx) => {
+      textOps.push(`/F1 9 Tf`)
+      textOps.push(`1 0 0 1 ${PDF_PAGE.marginX} ${topY - 66 - idx * 11} Tm`)
+      textOps.push(`(${pdfEscape(line)}) Tj`)
+    })
+    const pageNumberText = `Page ${pageIndex + 1} of ${pageBodies.length}`
+    textOps.push('/F1 9 Tf')
+    textOps.push(`1 0 0 1 ${PDF_PAGE.marginX} ${PDF_PAGE.marginBottom} Tm`)
+    textOps.push(`(${pdfEscape(footerText)}) Tj`)
+    textOps.push(`1 0 0 1 ${PDF_PAGE.width - 170} ${PDF_PAGE.marginBottom} Tm`)
+    textOps.push(`(${pdfEscape(pageNumberText)}) Tj`)
+
+    let y = pageIndex === 0 ? bodyStartY : bodyStartY + 18
+    tokens.forEach((token) => {
+      const style = token.style
+      const fontOp =
+        style === 'title' || style === 'section' || style === 'bodyStrong' || style === 'header' ? '/F2' : '/F1'
+      const size =
+        style === 'title' ? 18 : style === 'section' ? 12 : style === 'subtitle' ? 11 : style === 'meta' ? 9 : 10
+      textOps.push(`${fontOp} ${size} Tf`)
+      textOps.push(`1 0 0 1 ${PDF_PAGE.marginX} ${y} Tm`)
       textOps.push(`(${pdfEscape(token.text)}) Tj`)
+      y -= lineHeightByStyle[style] || 11
     })
     textOps.push('ET')
     const stream = `${textOps.join('\n')}\n`
@@ -225,8 +346,9 @@ function zipEntries(entries) {
 }
 
 function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
-  const rows = [
-    ['Klient Export Artifact', '', '', ''],
+  const grouped = buildSectionGroups(resolvedRows)
+  const overviewRows = [
+    ['Klient Export Workbook', '', '', ''],
     ['Export Job', job.id, '', ''],
     ['Firm ID', job.firmId, '', ''],
     ['Client ID', job.clientId, '', ''],
@@ -234,14 +356,29 @@ function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
     ['Generated At', metadata.generatedAt, '', ''],
     ['Template Version', metadata.templateVersion, '', ''],
     ['Mapping Hash', metadata.mappingVersionHash, '', ''],
+    ['Rows Exported', resolvedRows.length, '', ''],
     ['', '', '', ''],
     ['Field', 'Value', 'Source Path', 'Status'],
     ...resolvedRows.map((row) => [
-      row.fieldLabel || row.pdfField,
-      row.value == null ? '' : String(row.value),
+      row.fieldLabel || row.pdfField || '',
+      summarizeRowValue(row.value),
       row.sourcePath || '',
       row.warnings?.length ? row.warnings.map((warning) => warning.code || 'warning').join(', ') : 'OK'
     ])
+  ]
+
+  const detailRows = [
+    ['Section', 'Field', 'Value', 'Source Path', 'Raw Value', 'Status'],
+    ...grouped.flatMap((group) =>
+      group.entries.map((row) => [
+        group.name,
+        row.fieldLabel || row.pdfField || '',
+        summarizeRowValue(row.value),
+        row.sourcePath || '',
+        summarizeRowValue(row.rawValue),
+        row.warnings?.length ? row.warnings.map((warning) => warning.code || 'warning').join(', ') : 'OK'
+      ])
+    )
   ]
 
   const sharedStrings = []
@@ -255,7 +392,7 @@ function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
     return id
   }
 
-  const sheetRows = rows
+  const sheetRows = overviewRows
     .map((row, idx) => {
       const rowIndex = idx + 1
       const rowCells = row
@@ -263,8 +400,23 @@ function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
           const col = String.fromCharCode(65 + colIndex)
           const id = sharedStringId(value)
           const isTitle = rowIndex === 1
-          const isHeader = rowIndex === 10
+          const isHeader = rowIndex === 11
           const style = isTitle ? ' s="2"' : isHeader ? ' s="1"' : ''
+          return `<c r="${col}${rowIndex}" t="s"${style}><v>${id}</v></c>`
+        })
+        .join('')
+      return `<row r="${rowIndex}">${rowCells}</row>`
+    })
+    .join('')
+  const detailSheetRows = detailRows
+    .map((row, idx) => {
+      const rowIndex = idx + 1
+      const rowCells = row
+        .map((value, colIndex) => {
+          const col = String.fromCharCode(65 + colIndex)
+          const id = sharedStringId(value)
+          const isHeader = rowIndex === 1
+          const style = isHeader ? ' s="1"' : ''
           return `<c r="${col}${rowIndex}" t="s"${style}><v>${id}</v></c>`
         })
         .join('')
@@ -288,6 +440,7 @@ function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
         '<Default Extension="xml" ContentType="application/xml"/>' +
         '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
         '<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
+        '<Override PartName="/xl/worksheets/sheet2.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
         '<Override PartName="/xl/sharedStrings.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sharedStrings+xml"/>' +
         '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
         '<Override PartName="/docProps/core.xml" ContentType="application/vnd.openxmlformats-package.core-properties+xml"/>' +
@@ -309,22 +462,22 @@ function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
       content:
         '<?xml version="1.0" encoding="UTF-8"?>' +
         '<cp:coreProperties xmlns:cp="http://schemas.openxmlformats.org/package/2006/metadata/core-properties" xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:dcterms="http://purl.org/dc/terms/" xmlns:dcmitype="http://purl.org/dc/dcmitype/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">' +
-        '<dc:title>Klient Export</dc:title><dc:creator>Klient</dc:creator><cp:lastModifiedBy>Klient</cp:lastModifiedBy>' +
-        '<dcterms:created xsi:type="dcterms:W3CDTF">2026-01-01T00:00:00Z</dcterms:created>' +
-        '<dcterms:modified xsi:type="dcterms:W3CDTF">2026-01-01T00:00:00Z</dcterms:modified>' +
+        `<dc:title>${sanitizeCell(`${metadata.templateLabel || 'Template'} Export`)}</dc:title><dc:creator>Klient</dc:creator><cp:lastModifiedBy>Klient</cp:lastModifiedBy>` +
+        `<dcterms:created xsi:type="dcterms:W3CDTF">${sanitizeCell(metadata.generatedAt)}</dcterms:created>` +
+        `<dcterms:modified xsi:type="dcterms:W3CDTF">${sanitizeCell(metadata.generatedAt)}</dcterms:modified>` +
         '</cp:coreProperties>'
     },
     {
       name: 'docProps/app.xml',
       content:
         '<?xml version="1.0" encoding="UTF-8"?>' +
-        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Klient</Application></Properties>'
+        '<Properties xmlns="http://schemas.openxmlformats.org/officeDocument/2006/extended-properties" xmlns:vt="http://schemas.openxmlformats.org/officeDocument/2006/docPropsVTypes"><Application>Klient</Application><Company>Klient</Company></Properties>'
     },
     {
       name: 'xl/workbook.xml',
       content:
         '<?xml version="1.0" encoding="UTF-8"?>' +
-        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Export" sheetId="1" r:id="rId1"/></sheets></workbook>'
+        '<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets><sheet name="Overview" sheetId="1" r:id="rId1"/><sheet name="Resolved Values" sheetId="2" r:id="rId4"/></sheets></workbook>'
     },
     {
       name: 'xl/_rels/workbook.xml.rels',
@@ -334,6 +487,7 @@ function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
         '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>' +
         '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' +
         '<Relationship Id="rId3" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/sharedStrings" Target="sharedStrings.xml"/>' +
+        '<Relationship Id="rId4" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>' +
         '</Relationships>'
     },
     {
@@ -353,7 +507,13 @@ function createXlsxArtifact({ job, metadata, resolvedRows = [] }) {
       name: 'xl/worksheets/sheet1.xml',
       content:
         '<?xml version="1.0" encoding="UTF-8"?>' +
-        `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:D${rows.length}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="10" topLeftCell="A11" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="1" width="30" customWidth="1"/><col min="2" max="2" width="60" customWidth="1"/><col min="3" max="3" width="45" customWidth="1"/><col min="4" max="4" width="28" customWidth="1"/></cols><mergeCells count="1"><mergeCell ref="A1:D1"/></mergeCells><sheetData>${sheetRows}</sheetData><autoFilter ref="A10:D10"/></worksheet>`
+        `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:D${overviewRows.length}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="11" topLeftCell="A12" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="1" width="30" customWidth="1"/><col min="2" max="2" width="60" customWidth="1"/><col min="3" max="3" width="45" customWidth="1"/><col min="4" max="4" width="28" customWidth="1"/></cols><mergeCells count="1"><mergeCell ref="A1:D1"/></mergeCells><sheetData>${sheetRows}</sheetData><autoFilter ref="A11:D11"/></worksheet>`
+    },
+    {
+      name: 'xl/worksheets/sheet2.xml',
+      content:
+        '<?xml version="1.0" encoding="UTF-8"?>' +
+        `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"><dimension ref="A1:F${detailRows.length}"/><sheetViews><sheetView workbookViewId="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews><sheetFormatPr defaultRowHeight="15"/><cols><col min="1" max="1" width="24" customWidth="1"/><col min="2" max="2" width="28" customWidth="1"/><col min="3" max="3" width="55" customWidth="1"/><col min="4" max="4" width="38" customWidth="1"/><col min="5" max="5" width="40" customWidth="1"/><col min="6" max="6" width="28" customWidth="1"/></cols><sheetData>${detailSheetRows}</sheetData><autoFilter ref="A1:F1"/></worksheet>`
     }
   ]
 
@@ -370,8 +530,10 @@ function resolveArtifactParts(job) {
     job?.updatedAt ||
     job?.createdAt ||
     new Date().toISOString()
-  const safeJobId = String(job?.id || 'export').replace(/[^a-zA-Z0-9_-]/g, '')
-  const fileName = `export-${safeJobId}.${spec.extension}`
+  const safeFirm = String(job?.firmId || 'firm').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase()
+  const safeClient = String(job?.clientId || 'client').replace(/[^a-zA-Z0-9_-]/g, '-').toLowerCase()
+  const timestampSegment = generatedAt.replaceAll(/[-:TZ.]/g, '').slice(0, 14) || '00000000000000'
+  const fileName = `export-${safeFirm}-${safeClient}-${timestampSegment}.${spec.extension}`
 
   const renderContext = job?.renderContext || {}
   const template = renderContext.template || {}
@@ -390,7 +552,15 @@ function resolveArtifactParts(job) {
       resolved.mappingVersionHash ||
       job?.output?.artifact?.mappingVersionHash ||
       computeMappingVersionHash(templateMappings),
-    generatedAt
+    generatedAt,
+    templateLabel: template.name || template.id || job.templateId || 'Template',
+    documentTitle: job?.metadata?.documentTitle || null,
+    documentSubtitle: job?.metadata?.documentSubtitle || null,
+    branding: {
+      firmName: job?.renderContext?.firm?.name || job?.metadata?.firmName || 'Klient',
+      headerText: job?.metadata?.headerText || job?.renderContext?.firm?.branding?.pdfHeader || null,
+      footerText: job?.metadata?.footerText || job?.renderContext?.firm?.branding?.pdfFooter || null
+    }
   }
 
   const body =

@@ -1442,6 +1442,14 @@ function roleAccessMatrixMarkup() {
   </tbody></table>`
 }
 
+function formatBytes(bytes) {
+  const amount = Number(bytes || 0)
+  if (!Number.isFinite(amount) || amount <= 0) return '0 B'
+  if (amount < 1024) return `${amount} B`
+  if (amount < 1024 * 1024) return `${(amount / 1024).toFixed(1)} KB`
+  return `${(amount / (1024 * 1024)).toFixed(2)} MB`
+}
+
 async function renderExports() {
   let jobs = []
   let queue = { queue: {} }
@@ -1474,7 +1482,7 @@ async function renderExports() {
     </section>
     <section class="item">
       <h3>Per-job Artifact Status</h3>
-      <table><thead><tr><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact</th><th>Actions</th></tr></thead><tbody>
+      <table><thead><tr><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact Details</th><th>Actions</th></tr></thead><tbody>
         ${
           jobs
             .map(
@@ -1482,8 +1490,29 @@ async function renderExports() {
           <td>${escapeHtml(job.id)}</td>
           <td>${escapeHtml(job.status)}</td>
           <td>${job.attempts || 0}/${job.maxAttempts || 0}</td>
-          <td>${job.output?.object?.key ? `<code>${escapeHtml(job.output.object.key)}</code>` : '<span class="muted">Not ready</span>'}</td>
-          <td>${canMutate ? `<button data-retry-export="${job.id}" class="tiny secondary" ${job.status === 'completed' ? 'disabled' : ''}>Retry</button>` : '<span class="muted">N/A</span>'}</td>
+          <td>
+            ${
+              job.output?.object?.key
+                ? `<div class="stack gap-sm">
+                    <div><strong>${escapeHtml(job.artifact?.fileName || job.output?.fileName || 'artifact')}</strong></div>
+                    <div class="muted">Format: ${escapeHtml(job.artifact?.format || job.type || 'n/a')} · Size: ${escapeHtml(formatBytes(job.artifact?.sizeBytes || 0))}</div>
+                    <div class="muted">Generated: ${escapeHtml(job.artifact?.generatedAt || 'n/a')}</div>
+                    <div class="muted">Version: ${escapeHtml(job.artifact?.templateVersion || 'n/a')}</div>
+                    <div class="muted">Mapping: <code>${escapeHtml(job.artifact?.mappingVersionHash || 'n/a')}</code></div>
+                    <div class="muted">Checksum: <code>${escapeHtml(job.artifact?.checksum || 'n/a')}</code></div>
+                    <div><code>${escapeHtml(job.output.object.key)}</code></div>
+                  </div>`
+                : '<span class="muted">Not ready</span>'
+            }
+          </td>
+          <td>${
+            canMutate
+              ? `<div class="actions-row">
+                  <button data-retry-export="${job.id}" class="tiny secondary" ${job.status === 'completed' ? 'disabled' : ''}>Retry</button>
+                  <button data-download-export="${job.id}" class="tiny" ${job.artifactAvailable ? '' : 'disabled'}>Download</button>
+                </div>`
+              : '<span class="muted">N/A</span>'
+          }</td>
         </tr>`
             )
             .join('') || '<tr><td colspan="5">No export jobs.</td></tr>'

@@ -26,7 +26,7 @@ function resolveSubmission(state, firmId, submissionId, clientId) {
   return candidates[0] || null
 }
 
-function createRenderContext({ template, client, submission }) {
+function createRenderContext({ firm, template, client, submission }) {
   const mappings = template?.mappings || []
   const resolved = resolveExportData({ mappings, profile: client, submission })
   return {
@@ -38,6 +38,14 @@ function createRenderContext({ template, client, submission }) {
       mappingVersionHash: resolved.mappingVersionHash || computeMappingVersionHash(mappings),
       mappings
     },
+    firm: firm
+      ? {
+          id: firm.id,
+          name: firm.name || null,
+          slug: firm.slug || null,
+          branding: firm.branding || null
+        }
+      : null,
     client: client ? {
       id: client.id,
       firstName: client.firstName || null,
@@ -88,9 +96,10 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
       )
       if (!template) throw new Error('Template not found.')
 
+      const firm = state.firms.find((entry) => entry.id === user.firmId) || null
       const client = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId) || null
       const submission = resolveSubmission(state, user.firmId, String(input.submissionId || '').trim(), input.clientId)
-      const renderContext = createRenderContext({ template, client, submission })
+      const renderContext = createRenderContext({ firm, template, client, submission })
 
       const queued = enqueueExportJob({
         id: randomUUID(),

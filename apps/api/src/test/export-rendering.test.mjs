@@ -28,6 +28,22 @@ function unzipEntries(buffer) {
   return entries
 }
 
+function readPdfStreams(buffer) {
+  const source = buffer.toString('binary')
+  const matches = source.matchAll(/stream\r?\n([\s\S]*?)\r?\nendstream/g)
+  const decoded = []
+  for (const match of matches) {
+    const binary = match[1]
+    try {
+      const inflated = inflateRawSync(Buffer.from(binary, 'binary')).toString('utf8')
+      decoded.push(inflated)
+    } catch {
+      // ignore non-deflated stream fragments
+    }
+  }
+  return decoded.join('\n')
+}
+
 test('resolveExportData deterministically applies source evaluation + defaults + formatting', () => {
   const mappings = [
     { pdfField: 'client_name', sourcePath: 'profile.firstName' },
@@ -76,6 +92,7 @@ test('buildExportArtifact emits stable metadata and checksum', () => {
   assert.equal(artifact.artifact.mappingVersionHash, artifact.preview.mappingVersionHash)
   assert.equal(artifact.artifact.checksum, artifact.object.checksum)
   assert.equal(artifact.preview.rows[0].value, 'Alex')
+  assert.match(artifact.fileName, /^export-firm-1-client-1-20260325120000\.pdf$/)
 })
 
 
@@ -104,8 +121,45 @@ test('buildExportArtifact generates polished xlsx worksheet metadata', () => {
   assert.ok(artifact.artifact.sizeBytes > 0)
   const files = unzipEntries(artifact.body)
   assert.ok(files.has('xl/worksheets/sheet1.xml'))
-  assert.match(files.get('xl/worksheets/sheet1.xml') || '', /autoFilter ref="A10:D10"/)
-  assert.match(files.get('xl/worksheets/sheet1.xml') || '', /pane ySplit="10"/)
+  assert.ok(files.has('xl/worksheets/sheet2.xml'))
+  assert.match(files.get('xl/worksheets/sheet1.xml') || '', /autoFilter ref="A11:D11"/)
+  assert.match(files.get('xl/worksheets/sheet1.xml') || '', /pane ySplit="11"/)
+  assert.match(files.get('xl/workbook.xml') || '', /sheet name="Resolved Values"/)
+  assert.match(files.get('docProps\/core.xml') || '', /tpl-hash-xyz|template-2|Template/)
+})
+
+test('buildExportArtifact renders branded PDF headers and grouped mapping sections', () => {
+  const artifact = buildExportArtifactPayload({
+    id: 'job-brand-1',
+    firmId: 'firm-brand',
+    clientId: 'client-brand',
+    templateId: 'template-brand',
+    type: 'pdf',
+    execution: { leasedAt: '2026-03-25T12:00:00.000Z' },
+    metadata: {
+      headerText: 'Northstar Wealth | Advisor Copy',
+      footerText: 'Confidential – Internal Distribution'
+    },
+    renderContext: {
+      firm: { name: 'Northstar Wealth' },
+      template: {
+        name: 'Retirement Intake',
+        versionHash: 'tpl-brand',
+        mappings: [
+          { pdfField: 'name', sourcePath: 'profile.firstName' },
+          { pdfField: 'goals', sourcePath: 'submission.goals' }
+        ]
+      },
+      client: { firstName: 'Sam' },
+      submission: { data: { goals: [{ type: 'Retirement', amount: 300000 }] } }
+    }
+  })
+
+  const bodyText = readPdfStreams(artifact.body)
+  assert.match(bodyText, /Northstar Wealth \| Advisor Copy/)
+  assert.match(bodyText, /Confidential – Internal Distribution/)
+  assert.match(bodyText, /Client Profile/)
+  assert.match(bodyText, /Form Submission/)
 })
 
 test('resolveExportData supports explicit submission/form prefixes and legacy bare paths', () => {
