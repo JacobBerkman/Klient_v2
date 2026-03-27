@@ -222,3 +222,33 @@ test('mapping preview resolves profile and submission explicit path prefixes', a
   assert.equal(valueByField.goal_via_submission, 'Build emergency fund')
   assert.equal(valueByField.goal_via_form, 'Build emergency fund')
 })
+
+test('preview returns blocking schema issues for missing mapping paths before publish', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const template = store.createDocumentTemplate(user, {
+    name: 'Preview preflight guard',
+    mappings: [{ pdfField: 'client_name', sourcePath: 'profile.unknownPathForPreflight' }]
+  })
+  const profile = store.createProfile(user, { kind: 'client', firstName: 'Taylor', lastName: 'Guard', stage: 'intake' })
+  const formTemplate = store.createFormTemplate(user, {
+    name: 'Guard Form',
+    sections: [{ key: 'goal', label: 'Goal', type: 'text' }]
+  })
+  const submission = store.createFormSubmission(user, {
+    clientId: profile.id,
+    templateId: formTemplate.id,
+    status: 'submitted',
+    data: { goal: 'Validate early' }
+  })
+
+  const preview = store.previewTemplateMappings(user, template.id, {
+    clientId: profile.id,
+    submissionId: submission.id
+  })
+
+  assert.ok(Array.isArray(preview.issues))
+  assert.match(JSON.stringify(preview.issues), /known profile\/form schema path/i)
+  assert.equal(preview.issues[0].blocking, true)
+})

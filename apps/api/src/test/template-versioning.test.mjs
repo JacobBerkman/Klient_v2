@@ -110,6 +110,77 @@ test('publish enforces known source-path validation when requested', () => {
   )
 })
 
+test('preview preflight exposes schema issues before publish attempts', () => {
+  const admin = loginAdmin()
+  const created = store.createDocumentTemplate(admin, {
+    name: 'Template Preflight Visibility',
+    mappings: [{ pdfField: 'client_phone', sourcePath: 'profile.pathThatDoesNotExist' }]
+  })
+  const profile = store.createProfile(admin, {
+    kind: 'client',
+    firstName: 'Pre',
+    lastName: 'Flight',
+    stage: 'intake'
+  })
+  const formTemplate = store.createFormTemplate(admin, {
+    name: 'Preflight Form',
+    sections: [{ key: 'goals', label: 'Goals', type: 'text' }]
+  })
+  const submission = store.createFormSubmission(admin, {
+    clientId: profile.id,
+    templateId: formTemplate.id,
+    status: 'submitted',
+    data: { goals: 'Visible issues before publish' }
+  })
+
+  const preflight = store.previewTemplateMappings(admin, created.id, {
+    clientId: profile.id,
+    submissionId: submission.id
+  })
+  assert.ok(Array.isArray(preflight.issues))
+  assert.match(JSON.stringify(preflight.issues), /known profile\/form schema path/i)
+  assert.equal(preflight.issues[0].blocking, true)
+
+  assert.throws(
+    () => {
+      store.publishTemplate(admin, created.id, {
+        versionBump: '3.0.0',
+        changelog: 'Attempt publish with preflight failure',
+        enforceKnownSourcePaths: true
+      })
+    },
+    (error) => {
+      assert.equal(error.code, 'SCHEMA_VALIDATION_FAILED')
+      assert.ok(Array.isArray(error.details?.issues))
+      return true
+    }
+  )
+})
+
+test('compare is read-only and revert updates only when versions differ', () => {
+  const admin = loginAdmin()
+  const created = store.createDocumentTemplate(admin, {
+    name: 'Template Compare Safe',
+    mappings: [{ pdfField: 'first_name', sourcePath: 'profile.firstName' }]
+  })
+  const afterUpdate = store.updateTemplateMappings(
+    admin,
+    created.id,
+    [{ pdfField: 'last_name', sourcePath: 'profile.lastName' }],
+    { expectedVersionHash: created.versionHash }
+  )
+  const beforeCompareVersions = afterUpdate.versions.length
+  const diff = store.compareTemplateVersions(admin, created.id, 1, 2)
+  assert.equal(diff.changed, true)
+  const afterCompare = store.listTemplateVersions(admin, created.id)
+  assert.equal(afterCompare.length, beforeCompareVersions)
+
+  const rollback = store.revertTemplateVersion(admin, created.id, 1, { changelog: 'Safe rollback to v1' })
+  assert.equal(rollback.revertedToVersion, 1)
+  const latest = store.listTemplateVersions(admin, created.id)
+  assert.equal(latest.length, beforeCompareVersions + 1)
+})
+
 process.chdir(previousCwd)
 
 
