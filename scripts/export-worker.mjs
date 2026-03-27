@@ -60,6 +60,19 @@ function runTick() {
   })
 }
 
+function toQueueMachineState(queue = {}) {
+  return {
+    activeLeases: Array.isArray(queue.activeLeaseDetails) ? queue.activeLeaseDetails : [],
+    retries: {
+      active: Number(queue?.byStatus?.retrying || 0),
+      countsByAttempt: Array.isArray(queue.retryCounts) ? queue.retryCounts : []
+    },
+    failed: Number(queue.failed || queue?.byStatus?.failed || 0),
+    deadLetter: Number(queue.deadLetter || queue?.byStatus?.['dead-letter'] || 0),
+    completed: Number(queue.completed || queue?.byStatus?.completed || 0)
+  }
+}
+
 if (runOnce) {
   const before = readExportWorkerStatus()
   const result = runTick()
@@ -114,7 +127,8 @@ while (!stopping) {
       failed: queue.failed,
       readyNow: queue.readyNow,
       stalled: queue.stalled,
-      activeLeases: queue.activeLeases
+      activeLeases: queue.activeLeases,
+      machineState: toQueueMachineState(queue)
     }
   }
   if (result.leased > 0 || result.failed > 0 || queue.stalled > 0) {
