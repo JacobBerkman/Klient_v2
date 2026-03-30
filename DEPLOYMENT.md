@@ -4,24 +4,36 @@
 Deploy the application by running the single Node server at `apps/api/src/server.mjs`.
 
 Node runtime policy: production containers track the active Node.js **LTS major** (currently 22) and pin an immutable base-image digest for reproducible builds.
-That process serves:
-- the JSON API,
-- the advisor SPA from `apps/web/public`,
-- and the portal UI from `/portal`.
+This deployment remains a single-process **Node + SQLite + static web** architecture:
+- the Node process serves the JSON API,
+- SQLite persists runtime data in `data/app.db`,
+- static advisor assets are served from `apps/web/public`,
+- and the portal UI is served from `/portal`.
 
 ## Environment contract
 Copy `.env.example` to `.env` and set at least:
 
 ```bash
 APP_SECRET=replace-with-a-long-random-secret
+AUTH_PROVIDER=local
 NODE_ENV=production
 PORT=3000
 HOST=0.0.0.0
 LOG_LEVEL=info
 ENABLE_DEMO_MODE=false
+PII_KEY_PROVIDER=env
+PII_ACTIVE_KEY_ID=app-key-v1
+PII_KEYRING={"app-key-v1":"plain:replace-with-32-byte-base64-or-hex-key"}
 ```
 
 ### Production requirements
+- `APP_SECRET` must be explicitly injected (no default fallback in Compose/runtime).
+- `AUTH_PROVIDER` must be explicitly set (`local`, `oidc`, or `saml`) in production.
+- When `AUTH_PROVIDER=oidc`, set `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_REDIRECT_URI` (HTTPS URLs required in production).
+- When `AUTH_PROVIDER=saml`, set `SAML_ENTRY_POINT`, `SAML_ISSUER`, and `SAML_CERT` (HTTPS entry point + PEM certificate required in production).
+- When `PII_KEY_PROVIDER=env`, set both `PII_ACTIVE_KEY_ID` and `PII_KEYRING`; APP_SECRET-derived fallback key material is blocked in production.
+- When `PII_KEY_PROVIDER=kms`, set both `PII_KMS_ACTIVE_KEY_ID` and `PII_KMS_KEYRING`.
+- Runtime now fails fast in production before `server.listen(...)` when `validateRuntimeConfig()` reports any issue.
 
 ### PII KMS key provider configuration
 If you set `PII_KEY_PROVIDER=kms`, configure the bootstrap key adapter values as well:
@@ -38,7 +50,6 @@ Required behavior and validation:
 - `PII_KMS_ACTIVE_KEY_ID` must exist in `PII_KMS_KEYRING` at startup.
 - Key material values are decrypted by the KMS adapter before use; unreadable key material fails startup/initialization.
 - Rotation requires adding the next key id to `PII_KMS_KEYRING` before switching `PII_KMS_ACTIVE_KEY_ID`.
-- `APP_SECRET` must be set to a long random value.
 - Passwords accepted by registration, invite acceptance, and password reset must satisfy the runtime password policy.
 - Sessions expire after 8 hours.
 - Failed login attempts are rate limited per email over a 15-minute window.
@@ -265,7 +276,7 @@ The API emits structured JSON logs to stdout/stderr.
 Use your container/runtime log collector to ship them to your observability stack.
 The server also handles `SIGTERM`/`SIGINT` for graceful shutdown.
 
-On startup, the app emits a `server.started` log event with an embedded diagnostics snapshot. If configuration warnings exist, a `runtime.config.warnings` event is emitted; configuration errors produce `runtime.config.invalid`.
+On startup, the app emits a `server.started` log event with an embedded diagnostics snapshot. If configuration warnings exist, a `runtime.config.warnings` event is emitted. In production, configuration errors block startup before bind/listen and emit `server.startup.blocked` with `startupDiagnostics.issues`; in non-production, the server still starts and logs `runtime.config.invalid`.
 
 ### Operational acceptance criteria (release validation)
 Release validation is incomplete unless all three telemetry domains pass:
