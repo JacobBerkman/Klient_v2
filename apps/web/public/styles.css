@@ -395,6 +395,28 @@ textarea {
   box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.25);
 }
 
+.mapping-row-item {
+  cursor: pointer;
+}
+
+.mapping-row-item.is-selected {
+  outline: 1px solid #60a5fa;
+  outline-offset: -1px;
+}
+
+.mapping-row-item.is-jumped {
+  outline: 2px solid #f59e0b;
+  outline-offset: -2px;
+}
+
+.mapping-row-item.is-selected:focus-visible,
+.mapping-row-item.is-jumped:focus-visible,
+.mapping-row-item:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 2px rgba(30, 64, 175, 0.45);
+}
+
 .field-error-text {
   margin-top: 4px;
   color: #fca5a5;
