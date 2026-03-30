@@ -258,6 +258,55 @@ textarea {
   display: grid;
   gap: 12px;
 }
+
+.ops-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.ops-actions a {
+  color: #93c5fd;
+  font-size: 13px;
+}
+.ops-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+}
+.ops-card {
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 10px;
+  background: #0b1220;
+}
+.ops-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: 12px;
+  font-weight: 700;
+  border-radius: 999px;
+  padding: 2px 8px;
+}
+.ops-badge.pass {
+  background: #166534;
+}
+.ops-badge.warn {
+  background: #b45309;
+}
+.ops-badge.fail {
+  background: #991b1b;
+}
+.ops-diagnostics-block {
+  max-height: 280px;
+  overflow: auto;
+  background: #020617;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 10px;
+  font-size: 12px;
+  line-height: 1.4;
+}
 .repeat-block {
   display: grid;
   gap: 8px;

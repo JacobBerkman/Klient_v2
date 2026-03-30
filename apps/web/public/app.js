@@ -28,7 +28,12 @@ const state = {
   templatePreviewByTemplateId: {},
   templatePublishPreflightByTemplateId: {},
   templatePreviewSelectionByTemplateId: {},
-  workflowStatusMessage: ''
+  workflowStatusMessage: '',
+  operations: {
+    busy: false,
+    lastUpdatedAt: '',
+    snapshot: null
+  }
 }
 
 const viewEl = document.querySelector('#view')
@@ -720,6 +725,113 @@ async function refreshSelects() {
 
 function metricCard(label, value) {
   return `<div class="stat"><strong>${escapeHtml(value)}</strong><div class="muted">${escapeHtml(label)}</div></div>`
+}
+
+function normalizeOpsSignal(payload, preferredKeys = []) {
+  if (payload == null) return null
+  if (typeof payload === 'boolean') return payload
+  if (typeof payload === 'string') {
+    const lowered = payload.trim().toLowerCase()
+    if (!lowered) return null
+    if (['ok', 'pass', 'ready', 'healthy', 'up', 'true'].includes(lowered)) return true
+    if (['fail', 'failed', 'error', 'down', 'false', 'unhealthy'].includes(lowered)) return false
+    return null
+  }
+  if (typeof payload !== 'object') return null
+
+  for (const key of preferredKeys) {
+    if (key in payload) return normalizeOpsSignal(payload[key], preferredKeys)
+  }
+  const fallbackKeys = ['ok', 'ready', 'healthy', 'status', 'state']
+  for (const key of fallbackKeys) {
+    if (key in payload) return normalizeOpsSignal(payload[key], preferredKeys)
+  }
+  return null
+}
+
+function flattenHealthChecks(payload) {
+  if (!payload || typeof payload !== 'object') return []
+  const checks = payload.checks || payload.results || payload.components || null
+  if (!checks || typeof checks !== 'object') return []
+  return Object.entries(checks).map(([name, value]) => ({ name, signal: normalizeOpsSignal(value) }))
+}
+
+function deriveOpsCardStatus(key, endpoint) {
+  if (!endpoint || endpoint.ok === false) return { level: 'FAIL', note: 'Endpoint request failed.' }
+  const payload = endpoint.payload
+  const explicitSignal = normalizeOpsSignal(
+    payload,
+    key === 'health' ? ['healthy', 'ok', 'status'] : key === 'ready' ? ['ready', 'ok', 'status'] : []
+  )
+
+  if (key === 'health' || key === 'ready') {
+    const checks = flattenHealthChecks(payload)
+    const hasChecks = checks.length > 0
+    const failedChecks = checks.filter((entry) => entry.signal === false)
+    const unknownChecks = checks.filter((entry) => entry.signal == null)
+    if (explicitSignal === false || failedChecks.length > 0) {
+      return { level: 'FAIL', note: `${failedChecks.length || 1} failing check(s).` }
+    }
+    if (!hasChecks || unknownChecks.length > 0 || explicitSignal == null) {
+      return { level: 'WARN', note: hasChecks ? 'Some checks are missing/ambiguous.' : 'Checks unavailable in payload.' }
+    }
+    return { level: 'PASS', note: 'All checks healthy/ready.' }
+  }
+
+  const degraded = Boolean(payload && typeof payload === 'object' && (payload.degraded || payload.warn))
+  if (explicitSignal === false) return { level: 'FAIL', note: 'Diagnostic signal reports failure.' }
+  if (degraded || explicitSignal == null) return { level: 'WARN', note: degraded ? 'Degraded mode signaled.' : 'No explicit pass signal.' }
+  return { level: 'PASS', note: 'Endpoint returned healthy response.' }
+}
+
+async function fetchOpsEndpoint(path) {
+  const response = await fetch(path, { credentials: 'same-origin' })
+  const text = await response.text()
+  let payload = null
+  try {
+    payload = text ? JSON.parse(text) : null
+  } catch {
+    payload = text || null
+  }
+  if (!response.ok) {
+    const error = new Error((payload && payload.message) || response.statusText || 'Request failed')
+    error.status = response.status
+    throw error
+  }
+  return payload
+}
+
+async function loadOperationsSnapshot() {
+  state.operations.busy = true
+  try {
+    const results = await Promise.allSettled([
+      fetchOpsEndpoint('/health'),
+      fetchOpsEndpoint('/ready'),
+      fetchOpsEndpoint(routes.exportsQueueHealth()),
+      fetchOpsEndpoint('/api/ops/diagnostics')
+    ])
+    state.operations.snapshot = {
+      health:
+        results[0].status === 'fulfilled'
+          ? { ok: true, payload: results[0].value }
+          : { ok: false, error: results[0].reason?.message || 'Failed to load /health.' },
+      ready:
+        results[1].status === 'fulfilled'
+          ? { ok: true, payload: results[1].value }
+          : { ok: false, error: results[1].reason?.message || 'Failed to load /ready.' },
+      queue:
+        results[2].status === 'fulfilled'
+          ? { ok: true, payload: results[2].value }
+          : { ok: false, error: results[2].reason?.message || 'Failed to load exports queue diagnostics.' },
+      diagnostics:
+        results[3].status === 'fulfilled'
+          ? { ok: true, payload: results[3].value }
+          : { ok: false, error: results[3].reason?.message || 'Failed to load diagnostics.' }
+    }
+    state.operations.lastUpdatedAt = new Date().toISOString()
+  } finally {
+    state.operations.busy = false
+  }
 }
 
 function setWorkflowContext({ clientId = '', submissionId = '' } = {}) {
@@ -2565,6 +2677,87 @@ async function renderExports() {
   })
 }
 
+function operationsPayloadJson() {
+  return JSON.stringify(
+    {
+      capturedAt: state.operations.lastUpdatedAt,
+      snapshot: state.operations.snapshot
+    },
+    null,
+    2
+  )
+}
+
+async function renderOperations() {
+  if (!state.operations.snapshot) {
+    await loadOperationsSnapshot()
+  }
+
+  const snapshot = state.operations.snapshot || {}
+  const cards = [
+    { key: 'health', title: '/health', data: snapshot.health },
+    { key: 'ready', title: '/ready', data: snapshot.ready },
+    { key: 'queue', title: '/api/ops/exports/queue', data: snapshot.queue },
+    { key: 'diagnostics', title: '/api/ops/diagnostics', data: snapshot.diagnostics }
+  ]
+
+  const statusCards = cards
+    .map(({ key, title, data }) => {
+      const status = deriveOpsCardStatus(key, data)
+      const detail = data?.ok ? status.note : data?.error || 'Request failed.'
+      return `<article class="ops-card">
+        <div class="row between">
+          <strong>${escapeHtml(title)}</strong>
+          <span class="ops-badge ${status.level.toLowerCase()}">${status.level}</span>
+        </div>
+        <p class="muted compact">${escapeHtml(detail)}</p>
+      </article>`
+    })
+    .join('')
+
+  const payloadPreview = escapeHtml(operationsPayloadJson())
+  viewEl.innerHTML = `
+    ${flashMarkup()}
+    <section class="section-card">
+      <div class="row between">
+        <div>
+          <h2>Operations</h2>
+          <p class="muted compact">Operator snapshot of readiness, health, exports queue, and diagnostics.</p>
+        </div>
+        <span class="badge subtle">${state.operations.lastUpdatedAt ? `Updated ${new Date(state.operations.lastUpdatedAt).toLocaleString()}` : 'Not yet updated'}</span>
+      </div>
+      <div class="ops-actions">
+        <button type="button" data-ops-refresh>${state.operations.busy ? 'Refreshing…' : 'Refresh'}</button>
+        <button type="button" data-ops-copy-json>Copy JSON</button>
+        <a href="/docs/release-ready-checklist.md#deterministic-command-flows-operator-runbook">Runbook: deterministic checks</a>
+        <a href="/docs/release-ready-checklist.md#go-no-go-sign-off-grid">Runbook: go/no-go grid</a>
+      </div>
+      <div class="ops-grid">${statusCards}</div>
+      <details open>
+        <summary>Diagnostics payload</summary>
+        <pre class="ops-diagnostics-block">${payloadPreview}</pre>
+      </details>
+    </section>
+  `
+
+  const refreshButton = viewEl.querySelector('[data-ops-refresh]')
+  refreshButton?.addEventListener('click', async () => {
+    await loadOperationsSnapshot()
+    await renderOperations()
+  })
+
+  const copyButton = viewEl.querySelector('[data-ops-copy-json]')
+  copyButton?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(operationsPayloadJson())
+      setFlash('success', 'Operations payload copied to clipboard.')
+    } catch {
+      setFlash('error', 'Clipboard copy failed. Copy from the diagnostics block instead.')
+    }
+    await renderOperations()
+  })
+}
+
 function applyHashRoute() {
   const hashPath = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : ''
   const route = appRoutes.parseClientFormSubmission(hashPath)
@@ -2589,6 +2782,7 @@ async function renderCurrentView() {
   if (state.view === 'forms') return renderForms()
   if (state.view === 'templates') return renderTemplates()
   if (state.view === 'exports') return renderExports()
+  if (state.view === 'operations') return renderOperations()
   if (state.view === 'prospects') return renderBoard('prospect')
   if (state.view === 'clients') return renderBoard('client')
   return renderFallback(state.view)
