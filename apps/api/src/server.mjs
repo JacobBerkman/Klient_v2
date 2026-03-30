@@ -1481,6 +1481,15 @@ function startServer() {
     log('error', 'process.unhandledRejection', { error: error?.message || String(error) })
   })
 
+  if (runtime.isProduction && !startupDiagnostics.ok) {
+    log('error', 'server.startup.blocked', {
+      reason: 'Runtime configuration validation failed in production.',
+      issues: startupDiagnostics.issues
+    })
+    closeDatabase()
+    throw new Error('Startup blocked: runtime configuration is invalid in production.')
+  }
+
   server.listen(runtime.port, runtime.host, () => {
     const ready = ensureDatabaseReady()
     const diag = {
