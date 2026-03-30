@@ -146,6 +146,23 @@ function getBearerToken(req) {
   return req.headers.authorization?.replace('Bearer ', '').trim()
 }
 
+function readOpsBearerToken(req) {
+  return getBearerToken(req)
+}
+
+function currentOpsToken() {
+  return String(runtime.klientOpsToken || process.env.KLIENT_OPS_TOKEN || '').trim()
+}
+
+function isValidOpsToken(candidate) {
+  const configured = currentOpsToken()
+  if (!configured) return false
+  const expected = Buffer.from(configured)
+  const provided = Buffer.from(String(candidate || ''))
+  if (expected.length === 0 || expected.length !== provided.length) return false
+  return timingSafeEqual(expected, provided)
+}
+
 function shouldIssueCompatibilityBearer(req) {
   if (!runtime.enableBearerAuthCompat) return false
   if (runtime.nodeEnv === 'test') return true
@@ -554,6 +571,18 @@ export function createHttpServer({ modules }) {
         throw error
       }
     }
+    const authorizeOpsRequest = () => {
+      if (currentOpsToken()) {
+        const opsToken = readOpsBearerToken(req)
+        if (!isValidOpsToken(opsToken)) {
+          const error = new Error('Ops token authentication required.')
+          error.statusCode = 401
+          throw error
+        }
+        return { id: 'ops-token', role: 'admin', authMode: 'ops-token' }
+      }
+      return null
+    }
     const authorize = (guard, { allowAnonymous = false } = {}) => {
       const token = resolveSessionToken(req)
       if (allowAnonymous) {
@@ -639,7 +668,7 @@ export function createHttpServer({ modules }) {
         )
       }
       if (pathname === '/api/ops/diagnostics' && req.method === 'GET') {
-        const user = authorize('canReadDiagnostics')
+        const user = authorizeOpsRequest() || authorize('canReadDiagnostics')
         const { auditEvents, exports } = modules.analytics.getDiagnosticsContext(user)
         const queueHealth = modules.exports.getQueueHealth(user)
         const queue = queueHealth?.queue || readExportWorkerStatus()
@@ -690,8 +719,8 @@ export function createHttpServer({ modules }) {
         )
       }
       if (pathname === '/api/ops/exports/queue' && req.method === 'GET') {
-        const user = requireUser()
-        modules.policy.requireGuard(user, 'canProcessExports')
+        const user = authorizeOpsRequest() || requireUser()
+        if (user?.authMode !== 'ops-token') modules.policy.requireGuard(user, 'canProcessExports')
         const result = modules.exports.getQueueHealth(user)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })

@@ -1,7 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-
 import { createHttpServer } from '../server.mjs'
 
 function listen(server) {
@@ -13,6 +12,7 @@ function listen(server) {
 function close(server) {
   return new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
 }
+
 
 test('GET /api/dashboard routes through policy + profiles service', async () => {
   const calls = []
@@ -284,11 +284,11 @@ test('stage config routes are wired through policy + pipeline service', async (t
   const modules = {
     auth: { requireUser: () => (calls.push('auth.requireUser'), fakeUser) },
     policy: { requireGuard: (user, guard) => calls.push(`policy:${user.id}:${guard}`) },
-    pipeline: {
-      listPipelineStages: (user) => (calls.push(`pipeline.listPipelineStages:${user.id}`), [{ key: 'discovery' }]),
-      createPipelineStage: (user, payload) => (calls.push({ route: 'create', user: user.id, payload }), { key: payload.key }),
-      reorderPipelineStages: (user, payload) => (calls.push({ route: 'reorder', user: user.id, payload }), { stages: payload.stageOrder }),
-      deactivatePipelineStage: (user, stageKey) => (calls.push({ route: 'deactivate', user: user.id, stageKey }), { key: stageKey, active: false })
+    pipelineStages: {
+      listStages: (user) => (calls.push(`pipeline.listPipelineStages:${user.id}`), [{ key: 'discovery' }]),
+      createStage: (user, payload) => (calls.push({ route: 'create', user: user.id, payload }), { key: payload.key }),
+      reorderStages: (user, payload) => (calls.push({ route: 'reorder', user: user.id, payload }), { stages: payload.stageOrder }),
+      deactivateStage: (user, stageKey) => (calls.push({ route: 'deactivate', user: user.id, stageKey }), { key: stageKey, active: false })
     }
   }
 
@@ -314,7 +314,7 @@ test('stage config routes are wired through policy + pipeline service', async (t
   assert.equal(reorderRes.status, 200)
 
   const deactivateRes = await fetch(`${base}/api/pipeline/stages/estate_planning/deactivate`, {
-    method: 'PATCH',
+    method: 'POST',
     headers: { authorization: 'Bearer token' }
   })
   assert.equal(deactivateRes.status, 200)
@@ -325,4 +325,103 @@ test('stage config routes are wired through policy + pipeline service', async (t
   assert.ok(calls.find((entry) => entry?.route === 'deactivate'))
 
   await close(server)
+})
+
+
+test('ops token auth grants access for diagnostics and exports queue endpoints', async () => {
+  const calls = []
+  const previousOpsToken = process.env.KLIENT_OPS_TOKEN
+  process.env.KLIENT_OPS_TOKEN = 'ops-token-abcdefghijklmnopqrstuvwxyz'
+  const modules = {
+    auth: { requireUser: () => (calls.push('auth.requireUser'), { id: 'u1', role: 'admin' }) },
+    policy: { requireGuard: () => calls.push('policy.requireGuard') },
+    analytics: {
+      getDiagnosticsContext: () => ({ auditEvents: [], exports: [] })
+    },
+    exports: {
+      getQueueHealth: () => ({ queue: { pending: 0, active: 0 } })
+    }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+
+  const diagnostics = await fetch(`${base}/api/ops/diagnostics`, {
+    headers: { authorization: 'Bearer ops-token-abcdefghijklmnopqrstuvwxyz' }
+  })
+  assert.equal(diagnostics.status, 200)
+
+  const queue = await fetch(`${base}/api/ops/exports/queue`, {
+    headers: { authorization: 'Bearer ops-token-abcdefghijklmnopqrstuvwxyz' }
+  })
+  assert.equal(queue.status, 200)
+  assert.deepEqual(calls, [])
+
+  await close(server)
+  if (previousOpsToken === undefined) delete process.env.KLIENT_OPS_TOKEN
+  else process.env.KLIENT_OPS_TOKEN = previousOpsToken
+})
+
+test('ops token auth rejects missing or invalid token', async () => {
+  const previousOpsToken = process.env.KLIENT_OPS_TOKEN
+  process.env.KLIENT_OPS_TOKEN = 'ops-token-abcdefghijklmnopqrstuvwxyz'
+  const modules = {
+    auth: { requireUser: () => ({ id: 'u1', role: 'admin' }) },
+    policy: { requireGuard: () => true },
+    analytics: { getDiagnosticsContext: () => ({ auditEvents: [], exports: [] }) },
+    exports: { getQueueHealth: () => ({ queue: { pending: 0, active: 0 } }) }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+
+  const missing = await fetch(`${base}/api/ops/diagnostics`)
+  assert.equal(missing.status, 401)
+
+  const invalid = await fetch(`${base}/api/ops/exports/queue`, {
+    headers: { authorization: 'Bearer wrong-token' }
+  })
+  assert.equal(invalid.status, 401)
+
+  await close(server)
+  if (previousOpsToken === undefined) delete process.env.KLIENT_OPS_TOKEN
+  else process.env.KLIENT_OPS_TOKEN = previousOpsToken
+})
+
+test('ops endpoints preserve session + role authorization flow when ops token mode is disabled', async () => {
+  const previousOpsToken = process.env.KLIENT_OPS_TOKEN
+  delete process.env.KLIENT_OPS_TOKEN
+  const calls = []
+  const fakeUser = { id: 'u1', role: 'admin' }
+  const modules = {
+    auth: { requireUser: () => (calls.push('auth.requireUser'), fakeUser) },
+    policy: { requireGuard: (user, guard) => calls.push(`policy:${user.id}:${guard}`) },
+    analytics: { getDiagnosticsContext: () => ({ auditEvents: [], exports: [] }) },
+    exports: { getQueueHealth: () => ({ queue: { pending: 0, active: 0 } }) }
+  }
+
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+
+  const diagnostics = await fetch(`${base}/api/ops/diagnostics`, {
+    headers: { authorization: 'Bearer session-token' }
+  })
+  assert.equal(diagnostics.status, 200)
+
+  const queue = await fetch(`${base}/api/ops/exports/queue`, {
+    headers: { authorization: 'Bearer session-token' }
+  })
+  assert.equal(queue.status, 200)
+
+  assert.deepEqual(calls, [
+    'auth.requireUser',
+    'policy:u1:canReadDiagnostics',
+    'auth.requireUser',
+    'policy:u1:canProcessExports'
+  ])
+
+  await close(server)
+  if (previousOpsToken === undefined) delete process.env.KLIENT_OPS_TOKEN
+  else process.env.KLIENT_OPS_TOKEN = previousOpsToken
 })
