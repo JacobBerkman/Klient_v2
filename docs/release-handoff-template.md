@@ -47,20 +47,26 @@ Confirm that startup fails before bind/listen when runtime config is invalid, an
 ## 3) Evidence artifact links
 Attach links or paths to the objective release evidence.
 
-| Gate / Check | Artifact link or path |
+Use one canonical manifest link for approvers; include optional direct links only when a reviewer asks for a specific file.
+
+| Evidence package | Artifact link or path |
 |---|---|
-| `validate:master` summary | `artifacts/release-evidence/<release-id>/validate-master-summary.json` |
-| API contract summary | `artifacts/release-evidence/<release-id>/api-contract-summary.json` |
-| Integration summary | `artifacts/release-evidence/<release-id>/integration-summary.json` |
-| Migration summary | `artifacts/release-evidence/<release-id>/migration-summary.json` |
-| Smoke summary | `artifacts/release-evidence/<release-id>/smoke-summary.json` |
-| Security summary | `artifacts/release-evidence/<release-id>/security-summary.json` |
-| Branch parity output | `artifacts/release-evidence/<release-id>/branch-parity.txt` |
-| Backup metadata | `artifacts/release-evidence/<release-id>/backup.json` |
-| Post-deploy health | `artifacts/release-evidence/<release-id>/postdeploy-health.json` |
-| Post-deploy readiness | `artifacts/release-evidence/<release-id>/postdeploy-ready.json` |
-| Post-deploy exports queue | `artifacts/release-evidence/<release-id>/postdeploy-exports-queue.json` |
-| Post-deploy telemetry bundle | `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json` |
+| Release evidence manifest (required) | `artifacts/release-evidence/<release-id>/manifest.json` |
+
+Optional per-file links (if needed for review):
+- `artifacts/release-evidence/<release-id>/validate-master-summary.json`
+- `artifacts/release-evidence/<release-id>/api-contract-summary.json`
+- `artifacts/release-evidence/<release-id>/integration-summary.json`
+- `artifacts/release-evidence/<release-id>/migration-summary.json`
+- `artifacts/release-evidence/<release-id>/smoke-summary.json`
+- `artifacts/release-evidence/<release-id>/security-summary.json`
+- `artifacts/release-evidence/<release-id>/branch-parity.txt`
+- `artifacts/release-evidence/<release-id>/backup.json`
+- `artifacts/release-evidence/<release-id>/restore.json`
+- `artifacts/release-evidence/<release-id>/postdeploy-health.json`
+- `artifacts/release-evidence/<release-id>/postdeploy-ready.json`
+- `artifacts/release-evidence/<release-id>/postdeploy-exports-queue.json`
+- `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json`
 
 ## 4) Rollback readiness
 - **Pre-release backup artifact ID**:  

@@ -1,4 +1,5 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, resolve } from 'node:path'
 
 const DEFAULT_DIR = 'artifacts/release-evidence'
@@ -13,6 +14,26 @@ function resolveEvidenceFile(defaultFile, envVarName) {
     return resolve(process.cwd(), explicitFile)
   }
   return resolve(process.cwd(), DEFAULT_DIR, defaultFile)
+}
+
+export function computeFileSha256(filePath) {
+  const hash = createHash('sha256')
+  hash.update(readFileSync(filePath))
+  return hash.digest('hex')
+}
+
+export function collectArtifactMetadata(filePaths = []) {
+  return [...new Set(filePaths)]
+    .sort((left, right) => left.localeCompare(right))
+    .map((filePath) => {
+      const stats = statSync(filePath)
+      return {
+        path: filePath,
+        sha256: computeFileSha256(filePath),
+        sizeBytes: stats.size,
+        modifiedAt: stats.mtime.toISOString()
+      }
+    })
 }
 
 export function createEvidenceRecorder({

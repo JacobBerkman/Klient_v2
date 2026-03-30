@@ -16,6 +16,7 @@ npm run release:go-no-go -- --release-id "$RELEASE_ID"
 
 This command runs, in exact order: Flow A (backup -> parity -> hard gate) and deterministic post-deploy checks (health -> ready -> exports queue -> diagnostics).
 All evidence is written under `artifacts/release-evidence/<release-id>`.
+The GO/NO-GO evidence package is complete only when `artifacts/release-evidence/<release-id>/manifest.json` is present and includes phase statuses plus SHA-256 metadata for produced artifacts.
 
 Required environment variables:
 - `RELEASE_ID` (or pass `--release-id`) for artifact scoping.
@@ -82,6 +83,7 @@ RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
 | Post-deploy health + readiness | SRE / On-call | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-health.json`, `artifacts/release-evidence/<release-id>/postdeploy-ready.json` | Both return HTTP `200`; readiness has `status=ready` and `checks.*=true`. | **SEV-1** | Roll back if health/readiness are non-200 for **>5 minutes** or if readiness remains degraded after one remediation attempt. |
 | Export queue diagnostics | SRE / On-call | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-exports-queue.json` | Endpoint returns HTTP `200` and queue counters are machine-parseable. | **SEV-1** | Roll back if queue processing is stalled and no successful processing occurs within **10 minutes**. |
 | Telemetry bundle | Observability Owner | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json` | Endpoint returns HTTP `200`; bundle includes startup/runtime diagnostics and export/audit/security sections. | **SEV-1** | Roll back if telemetry indicates sustained SLO breach for **>10 minutes** or unresolved critical/high alerts. |
+| Evidence manifest | Release Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID"` | `artifacts/release-evidence/<release-id>/manifest.json` | Manifest exists and includes release id, per-phase status, generation timestamp, and SHA-256 metadata for produced artifact files. | **SEV-1** | Block GO/NO-GO decision until manifest is generated and attached to release handoff. |
 
 ## Deterministic post-deploy validation sequence
 Execute in this exact order and stop on first failure:
@@ -92,5 +94,5 @@ Execute in this exact order and stop on first failure:
 4. telemetry bundle (executed fourth inside the command)
 
 ## Release decision rubric
-- **GO**: `npm run release:go-no-go -- --release-id "$RELEASE_ID"` passes and every required row above is PASS with captured command output and evidence files.
+- **GO**: `npm run release:go-no-go -- --release-id "$RELEASE_ID"` passes and every required row above is PASS with captured command output, evidence files, and `manifest.json`.
 - **NO-GO**: Any row FAILS, is skipped, or has inconclusive evidence.
