@@ -93,10 +93,24 @@ function setWorkflowStatus(message = '') {
   state.workflowStatusMessage = message
 }
 
+let pendingViewFocusSelector = ''
+
+function queueViewFocus(selector = '') {
+  pendingViewFocusSelector = String(selector || '').trim()
+}
+
 function focusLiveRegion(element) {
   if (!element) return
   if (!element.hasAttribute('tabindex')) element.setAttribute('tabindex', '-1')
   element.focus()
+}
+
+function focusWithinView(defaultSelector = '') {
+  const selector = pendingViewFocusSelector || defaultSelector
+  pendingViewFocusSelector = ''
+  if (!selector) return
+  const focusTarget = viewEl?.querySelector(selector)
+  if (focusTarget) focusLiveRegion(focusTarget)
 }
 
 function setAuthStatus(message, { assertive = false } = {}) {
@@ -195,9 +209,11 @@ function setRepeaterRowFeedback(control, message = '', type = 'error') {
   if (!feedbackEl) return
   feedbackEl.setAttribute('role', type === 'error' ? 'alert' : 'status')
   feedbackEl.setAttribute('aria-live', type === 'error' ? 'assertive' : 'polite')
+  feedbackEl.setAttribute('aria-atomic', 'true')
   feedbackEl.textContent = message
   feedbackEl.classList.remove('error-banner', 'success-banner')
   if (message) feedbackEl.classList.add(type === 'success' ? 'success-banner' : 'error-banner')
+  if (type === 'error' && message) focusLiveRegion(feedbackEl)
 }
 
 function repeaterActionErrorMessage(error, { actionLabel = 'update', itemKey = '', sectionKey = '' } = {}) {
@@ -906,7 +922,7 @@ async function renderDashboard() {
     const stats = Object.entries(data?.stats || {})
     viewEl.innerHTML = `
       ${flashMarkup()}
-      <div class="section-header"><h2>Dashboard</h2></div>
+      <div class="section-header"><h2 id="dashboard-heading">Dashboard</h2></div>
       <div class="stat-grid">
         ${stats.map(([key, value]) => metricCard(key, value)).join('') || emptyStateMarkup('No dashboard metrics are available yet.')}
       </div>
@@ -969,7 +985,7 @@ async function renderAnalytics() {
 
   viewEl.innerHTML = `
     ${flashMarkup()}
-    <div class="section-header"><div><h2>Analytics</h2><p class="muted">Advisor-facing panels powered by live and materialized summaries.</p></div></div>
+    <div class="section-header"><div><h2 id="analytics-heading">Analytics</h2><p class="muted">Advisor-facing panels powered by live and materialized summaries.</p></div></div>
     <div class="stat-grid compact-stats">
       ${metricCard('profiles', summary.profileCount || 0)}
       ${metricCard('households', summary.householdCount || 0)}
@@ -985,6 +1001,7 @@ async function renderAnalytics() {
     ${analyticsPanel('Export Usage', `<table><thead><tr><th>Advisor</th><th>Exports</th></tr></thead><tbody>${exportRows || '<tr><td colspan="2">No exports yet</td></tr>'}</tbody></table><button id="download-analytics-csv">Download CSV</button>`)}
     ${analyticsPanel('Materialized Summary Health', `<div class="muted">${mat ? `Refreshed ${new Date(mat.updatedAt).toLocaleString()} for firm ${escapeHtml(mat.firmId)}` : 'Materialized summary unavailable.'}</div>`)}
   `
+
   document.querySelector('#download-analytics-csv')?.addEventListener('click', async () => {
     try {
       const csvText = await requestText(routes.analyticsExport(analyticsQuery))
@@ -1048,7 +1065,7 @@ async function renderForms() {
     ${flashMarkup()}
     ${alertMarkup()}
     <p class="muted compact" role="status" aria-live="polite">${escapeHtml(state.workflowStatusMessage || '')}</p>
-    <h2>Forms + Collaboration</h2>
+    <h2 id="forms-heading">Forms + Collaboration</h2>
     <p class="muted">Draft editing now uses revision IDs, short leases, and conflict-aware save prompts.</p>
     <div class="muted compact workflow-context">Context: client <code>${escapeHtml(state.selectedClientId || 'n/a')}</code> · submission <code>${escapeHtml(state.selectedSubmissionId || 'n/a')}</code></div>
     <div class="stat-grid compact-stats">
@@ -1130,6 +1147,7 @@ async function renderForms() {
     button.addEventListener('click', async () => {
       const actionKey = `lock-${button.dataset.lock}`
       setActionPending(actionKey, 'pending')
+      queueViewFocus(`[data-lock="${button.dataset.lock}"]`)
       await renderForms()
       try {
         const result = await request(routes.formDraftLock(button.dataset.lock), {
@@ -1144,6 +1162,7 @@ async function renderForms() {
       } finally {
         clearActionPending(actionKey)
       }
+      queueViewFocus(`[data-lock="${button.dataset.lock}"]`)
       await renderForms()
     })
   })
@@ -1155,6 +1174,7 @@ async function renderForms() {
       const actionKey = `draft-save-${draftId}`
       setActionPending(actionKey, 'pending')
       setAlert('success', `Saving draft ${draftId} optimistically…`)
+      queueViewFocus(`[data-save="${draftId}"]`)
       await renderForms()
       try {
         const response = await request(routes.formDraft(draftId), {
@@ -1176,6 +1196,7 @@ async function renderForms() {
       } finally {
         clearActionPending(actionKey)
       }
+      queueViewFocus(`[data-save="${draftId}"]`)
       await renderForms()
     })
   })
@@ -1206,6 +1227,7 @@ async function renderForms() {
         })
         setRepeaterRowFeedback(form, `Item ${itemKey} updated.`, 'success')
         reportActionSuccess('Forms', `Updated repeater item ${itemKey}.`)
+        queueViewFocus(`form[data-repeater-update="${form.dataset.repeaterUpdate}"][data-item-key="${itemKey}"]`)
         await renderForms()
       } catch (error) {
         const message = repeaterActionErrorMessage(error, { actionLabel: 'update', itemKey, sectionKey })
@@ -1237,6 +1259,7 @@ async function renderForms() {
         await request(deletePath, { method: 'DELETE' })
         setRepeaterRowFeedback(button, `Item ${itemKey} deleted.`, 'success')
         reportActionSuccess('Forms', `Deleted repeater item ${itemKey}.`)
+        queueViewFocus(`[data-repeater-delete="${button.dataset.repeaterDelete}"][data-item-key="${itemKey}"]`)
         await renderForms()
       } catch (error) {
         const message = repeaterActionErrorMessage(error, { actionLabel: 'delete', itemKey, sectionKey })
@@ -1250,6 +1273,7 @@ async function renderForms() {
       }
     })
   })
+  focusWithinView('#forms-heading')
 }
 
 function knownProfileSourcePaths() {
@@ -1456,7 +1480,7 @@ async function renderTemplates() {
   viewEl.innerHTML = `
     ${flashMarkup()}
     ${alertMarkup()}
-    <div class="section-header"><h2>Template Builder</h2></div>
+    <div class="section-header"><h2 id="templates-heading">Template Builder</h2></div>
     <label>Template
       <select id="template-select">${templates
         .map((entry) => `<option value="${entry.id}" ${entry.id === template?.id ? 'selected' : ''}>${escapeHtml(entry.name)}</option>`)
@@ -1668,6 +1692,11 @@ async function renderTemplates() {
     }
   `
 
+  const rerenderTemplates = async (selector = '#templates-heading') => {
+    queueViewFocus(selector)
+    await renderTemplates()
+  }
+
   const persistMappings = async ({ autosave = false } = {}) => {
     const actionKey = `template-map-save-${template.id}`
     const previousSaveStatus = state.templateSaveStateByTemplateId[template.id]?.status || 'idle'
@@ -1696,7 +1725,7 @@ async function renderTemplates() {
 
   document.querySelector('#template-select')?.addEventListener('change', async (event) => {
     state.selectedTemplateId = event.target.value
-    await renderTemplates()
+    await rerenderTemplates()
   })
   document.querySelectorAll('[data-remove-extracted]').forEach((button) => {
     button.addEventListener('click', async () => {
@@ -1707,7 +1736,7 @@ async function renderTemplates() {
         body: JSON.stringify({ mappings: (state.templateMappingDrafts[template.id] || []).map((entry) => normalizeMappingDraft(entry)), requiredPdfFields: next })
       })
       setFlash('success', 'Extracted field removed.')
-      await renderTemplates()
+      await rerenderTemplates()
     })
   })
   document.querySelector('#add-extracted-field')?.addEventListener('click', async () => {
@@ -1720,7 +1749,7 @@ async function renderTemplates() {
       body: JSON.stringify({ mappings: (state.templateMappingDrafts[template.id] || []).map((entry) => normalizeMappingDraft(entry)), requiredPdfFields: next })
     })
     setFlash('success', 'Extracted field added.')
-    await renderTemplates()
+    await rerenderTemplates()
   })
 
   const selectTemplateRow = async (rowIndex, { focusInspector = false, focusField = 'sourcePath', highlightRow = false } = {}) => {
@@ -1744,8 +1773,8 @@ async function renderTemplates() {
   document.querySelectorAll('[data-mapping-filter]').forEach((button) => {
     button.addEventListener('click', async () => {
       if (!template) return
-      state.templateMappingFilterByTemplateId[template.id] = button.dataset.mappingFilter || 'all'
-      await renderTemplates()
+      state.templateInspector[template.id] = { rowIndex: Number(row.dataset.selectRow) }
+      await rerenderTemplates()
     })
   })
 
@@ -1773,7 +1802,7 @@ async function renderTemplates() {
       } catch {
         // handled via save state
       }
-      await renderTemplates()
+      await rerenderTemplates()
     }, 700)
   }
 
@@ -1798,12 +1827,12 @@ async function renderTemplates() {
     nextDraft.push(mappingDraftFromServer({ targetType: 'text', enabled: true }))
     state.templateMappingDrafts[template.id] = nextDraft
     state.templateInspector[template.id] = { rowIndex: nextDraft.length - 1 }
-    await renderTemplates()
+    await rerenderTemplates()
   })
 
   document.querySelector('#save-mappings')?.addEventListener('click', async () => {
     await persistMappings({ autosave: false })
-    await renderTemplates()
+    await rerenderTemplates()
   })
 
   document.querySelector('#preview-client')?.addEventListener('change', (event) => {
@@ -1823,10 +1852,10 @@ async function renderTemplates() {
         body: JSON.stringify({ clientId, submissionId })
       })
       state.templatePreviewByTemplateId[template.id] = nextPreview
-      await renderTemplates()
+      await rerenderTemplates()
     } catch (error) {
       setFlash('error', error.message)
-      await renderTemplates()
+      await rerenderTemplates()
     }
   })
 
@@ -1854,7 +1883,7 @@ async function renderTemplates() {
       state.templatePublishPreflightByTemplateId[template.id] = { issues: error?.details?.issues || [] }
       reportActionError('Template publish preflight', error)
     }
-    await renderTemplates()
+    await rerenderTemplates()
   })
 
   document.querySelectorAll('[data-jump-rowindex]').forEach((button) => {
@@ -1920,7 +1949,7 @@ async function renderTemplates() {
       }
       reportActionError('Templates', error)
     }
-    await renderTemplates()
+    await rerenderTemplates()
   })
 
   document.querySelector('#compare-base')?.addEventListener('change', (event) => {
@@ -1942,7 +1971,7 @@ async function renderTemplates() {
       reportActionSuccess('Templates', `Compared versions ${baseVersion} and ${targetVersion}.`)
     } catch (error) {
       reportActionError('Templates', error)
-      await renderTemplates()
+      await rerenderTemplates()
     }
   })
 
@@ -1957,7 +1986,7 @@ async function renderTemplates() {
         )
         if (!previewDiff.changed) {
           reportActionSuccess('Templates', `Version ${targetVersion} already matches current state; no revert needed.`)
-          await renderTemplates()
+          await rerenderTemplates()
           return
         }
       }
@@ -1969,8 +1998,9 @@ async function renderTemplates() {
     } catch (error) {
       reportActionError('Templates', error)
     }
-    await renderTemplates()
+    await rerenderTemplates()
   })
+  focusWithinView('#templates-heading')
 }
 
 function boardCardMarkup(card, kind) {
@@ -2064,7 +2094,7 @@ function boardMarkup(kind, board) {
     <p class="muted compact" role="status" aria-live="polite">${escapeHtml(state.workflowStatusMessage || '')}</p>
     <div class="section-header">
       <div>
-        <h2>${escapeHtml(kind === 'prospect' ? 'Prospects' : 'Clients')} Board</h2>
+        <h2 id="board-heading">${escapeHtml(kind === 'prospect' ? 'Prospects' : 'Clients')} Board</h2>
         <p class="muted">Drag cards to reorder or move across stages. Inline edits save optimistically.</p>
       </div>
     </div>
@@ -2382,6 +2412,7 @@ async function renderBoard(kind) {
       renderProfileStageSelect()
       viewEl.innerHTML = boardMarkup(kind, state.board)
       wireBoardInteractions(kind)
+      focusWithinView('#board-heading')
       return
     }
     await ensureStageConfig()
@@ -2402,6 +2433,7 @@ async function renderBoard(kind) {
   } catch (error) {
     viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner(kind === 'prospect' ? 'prospect board' : 'client board', error)}${emptyStateMarkup()}`
   }
+  focusWithinView('#board-heading')
 }
 
 function roleAccessMatrixMarkup() {
@@ -2576,7 +2608,7 @@ async function renderExports() {
     ${flashMarkup()}
     ${alertMarkup()}
     ${exportsLoadError ? viewErrorBanner('exports', exportsLoadError) : ''}
-    <div class="section-header"><div><h2>Exports Operations</h2><p class="muted">Queue health, retries, and artifact readiness by job.</p></div></div>
+    <div class="section-header"><div><h2 id="exports-heading">Exports Operations</h2><p class="muted">Queue health, retries, and artifact readiness by job.</p></div></div>
     <p id="exports-live-region" class="muted compact" role="status" aria-live="polite" aria-atomic="true">${escapeHtml(
       state.workflowStatusMessage || ''
     )}</p>
@@ -2672,6 +2704,11 @@ async function renderExports() {
     </section>
   `
 
+  const rerenderExports = async (selector = '#exports-heading') => {
+    queueViewFocus(selector)
+    await renderExports()
+  }
+
   document.querySelector('#exports-filter-form')?.addEventListener('submit', async (event) => {
     event.preventDefault()
     const formData = withTrimmedFormData(event.currentTarget)
@@ -2682,7 +2719,7 @@ async function renderExports() {
     viewState.sort = formData.sort || 'createdAt_desc'
     viewState.selectedIds = new Set()
     setWorkflowStatus('Exports filters applied.')
-    await renderExports()
+    await rerenderExports('#exports-filter-form [name="status"]')
   })
 
   document.querySelector('#clear-export-filters')?.addEventListener('click', async () => {
@@ -2693,7 +2730,7 @@ async function renderExports() {
     viewState.sort = 'createdAt_desc'
     viewState.selectedIds = new Set()
     setWorkflowStatus('Exports filters cleared.')
-    await renderExports()
+    await rerenderExports('#exports-filter-form [name="status"]')
   })
 
   document.querySelector('#select-all-exports')?.addEventListener('change', (event) => {
@@ -2702,6 +2739,7 @@ async function renderExports() {
     } else {
       selectableJobs.forEach((job) => viewState.selectedIds.delete(job.id))
     }
+    queueViewFocus('#select-all-exports')
     renderExports()
   })
   const selectAllEl = document.querySelector('#select-all-exports')
@@ -2715,6 +2753,7 @@ async function renderExports() {
       const id = event.currentTarget.dataset.selectExport
       if (event.currentTarget.checked) viewState.selectedIds.add(id)
       else viewState.selectedIds.delete(id)
+      queueViewFocus(`[data-select-export="${id}"]`)
       renderExports()
     })
   })
@@ -2723,7 +2762,7 @@ async function renderExports() {
     if (!selectedRetryable.length) {
       setFlash('error', 'Bulk retry: no selected exports are eligible for retry.')
       setWorkflowStatus('Bulk retry skipped. No eligible exports selected.')
-      await renderExports()
+      await rerenderExports('#exports-heading')
       return
     }
     viewState.bulkBusy = true
@@ -2742,14 +2781,14 @@ async function renderExports() {
     viewState.selectedIds = new Set()
     summarizeBulkResults('Bulk retry', { succeeded, failed, skipped })
     setWorkflowStatus('Bulk retry finished. Review flash summary for details.')
-    await renderExports()
+    await rerenderExports('#exports-heading')
   })
 
   document.querySelector('#bulk-download-exports')?.addEventListener('click', async () => {
     if (!selectedDownloadable.length) {
       setFlash('error', 'Bulk download: no selected exports are ready to download.')
       setWorkflowStatus('Bulk download skipped. No ready exports selected.')
-      await renderExports()
+      await rerenderExports('#exports-heading')
       return
     }
     viewState.bulkBusy = true
@@ -2767,7 +2806,7 @@ async function renderExports() {
     viewState.bulkBusy = false
     summarizeBulkResults('Bulk download', { succeeded, failed, skipped })
     setWorkflowStatus('Bulk download finished. Review flash summary for details.')
-    await renderExports()
+    await rerenderExports('#exports-heading')
   })
 
   document.querySelector('#retry-failed-jobs')?.addEventListener('click', async () => {
@@ -2782,7 +2821,7 @@ async function renderExports() {
       reportActionError('Exports', error)
       setWorkflowStatus('Retry failed jobs did not complete. See error details.')
     }
-    await renderExports()
+    await rerenderExports('#exports-heading')
   })
   document.querySelectorAll('[data-retry-export]').forEach((button) => {
     button.addEventListener('click', async () => {
@@ -2792,7 +2831,7 @@ async function renderExports() {
       } catch (error) {
         reportActionError('Exports', error)
       }
-      await renderExports()
+      await rerenderExports(`[data-retry-export="${button.dataset.retryExport}"]`)
     })
   })
   document.querySelectorAll('[data-download-export]').forEach((button) => {
@@ -2806,6 +2845,7 @@ async function renderExports() {
       }
     })
   })
+  focusWithinView('#exports-heading')
 }
 
 function operationsPayloadJson() {
@@ -2874,7 +2914,7 @@ async function renderOperations() {
     <section class="section-card">
       <div class="row between">
         <div>
-          <h2>Operations</h2>
+          <h2 id="operations-heading">Operations</h2>
           <p class="muted compact">Operator snapshot of readiness, health, exports queue, and diagnostics.</p>
         </div>
         <span class="badge subtle">${state.operations.lastUpdatedAt ? `Updated ${new Date(state.operations.lastUpdatedAt).toLocaleString()}` : 'Not yet updated'}</span>
@@ -2899,6 +2939,7 @@ async function renderOperations() {
   const refreshButton = viewEl.querySelector('[data-ops-refresh]')
   refreshButton?.addEventListener('click', async () => {
     await loadOperationsSnapshot()
+    queueViewFocus('[data-ops-refresh]')
     await renderOperations()
   })
 
@@ -2923,215 +2964,10 @@ async function renderOperations() {
     } catch {
       state.operations.feedback = 'Copy command block failed. Download the command block instead.'
     }
+    queueViewFocus('[data-ops-copy-json]')
     await renderOperations()
   })
-
-  const commandDownloadButton = viewEl.querySelector('[data-ops-download-commands]')
-  commandDownloadButton?.addEventListener('click', async () => {
-    try {
-      downloadTextFile(operationsCommandBlock(), 'release-command-block-RELEASE_ID.txt')
-      state.operations.feedback = 'Downloaded command block.'
-    } catch {
-      state.operations.feedback = 'Download command block failed. Copy the command block instead.'
-    }
-    await renderOperations()
-  })
-}
-
-async function renderHouseholds() {
-  viewEl.innerHTML = `
-    ${flashMarkup()}
-    ${alertMarkup()}
-    <section class="section-card">
-      <h2>Households</h2>
-      ${emptyStateMarkup('Loading households…')}
-    </section>
-  `
-  try {
-    const [households, clients] = await Promise.all([request(routes.households()), request(routes.profiles({ kind: 'client' }))])
-    const clientNameById = new Map(
-      clients.map((profile) => [profile.id, `${profile.firstName || ''} ${profile.lastName || ''}`.trim() || profile.id])
-    )
-    const householdRows = households
-      .map((household) => {
-        const primaryName = clientNameById.get(household.primaryClientId) || household.primaryClientId || 'Unassigned'
-        const members = Array.isArray(household.memberClientIds) ? household.memberClientIds.length : 0
-        return `<tr>
-          <td><code>${escapeHtml(household.id || '')}</code></td>
-          <td>${escapeHtml(household.name || 'Untitled household')}</td>
-          <td>${escapeHtml(primaryName)}</td>
-          <td>${members}</td>
-          <td>${escapeHtml(formatDateTime(household.createdAt))}</td>
-        </tr>`
-      })
-      .join('')
-
-    viewEl.innerHTML = `
-      ${flashMarkup()}
-      ${alertMarkup()}
-      <section class="section-card">
-        <div class="section-header">
-          <div>
-            <h2>Households</h2>
-            <p class="muted compact">Read-only household directory with primary client and member counts.</p>
-          </div>
-          <span class="badge subtle">${households.length} total</span>
-        </div>
-        <div class="view-panel-grid">
-          <article class="panel-card">
-            <h3>Household Directory</h3>
-            ${
-              householdRows
-                ? `<div class="data-table-wrap"><table><thead><tr><th>ID</th><th>Name</th><th>Primary client</th><th>Members</th><th>Created</th></tr></thead><tbody>${householdRows}</tbody></table></div>`
-                : emptyStateMarkup('No households found yet. Create one from the admin forms panel.')
-            }
-          </article>
-        </div>
-      </section>
-    `
-  } catch (error) {
-    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner('households', error)}${emptyStateMarkup()}`
-  }
-}
-
-async function renderAudit() {
-  viewEl.innerHTML = `
-    ${flashMarkup()}
-    ${alertMarkup()}
-    <section class="section-card">
-      <h2>Audit</h2>
-      ${emptyStateMarkup('Loading audit events…')}
-    </section>
-  `
-  try {
-    const entries = await request(routes.audit())
-    const rows = entries
-      .map(
-        (entry) => `<tr>
-          <td>${escapeHtml(formatDateTime(entry.occurredAt || entry.createdAt))}</td>
-          <td>${escapeHtml(entry.action || 'n/a')}</td>
-          <td>${escapeHtml(entry.entityType || 'n/a')}</td>
-          <td><code>${escapeHtml(entry.entityId || 'n/a')}</code></td>
-          <td>${escapeHtml(entry.actorUserId || entry.userId || 'system')}</td>
-        </tr>`
-      )
-      .join('')
-
-    viewEl.innerHTML = `
-      ${flashMarkup()}
-      ${alertMarkup()}
-      <section class="section-card">
-        <div class="section-header">
-          <div>
-            <h2>Audit</h2>
-            <p class="muted compact">Recent cross-domain events captured by the canonical audit stream.</p>
-          </div>
-          <span class="badge subtle">${entries.length} event(s)</span>
-        </div>
-        <article class="panel-card">
-          <h3>Recent Events</h3>
-          ${
-            rows
-              ? `<div class="data-table-wrap"><table><thead><tr><th>When</th><th>Action</th><th>Entity</th><th>Entity ID</th><th>Actor</th></tr></thead><tbody>${rows}</tbody></table></div>`
-              : emptyStateMarkup('No audit events available yet.')
-          }
-        </article>
-      </section>
-    `
-  } catch (error) {
-    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner('audit', error)}${emptyStateMarkup()}`
-  }
-}
-
-async function renderClientWorkspace() {
-  viewEl.innerHTML = `
-    ${flashMarkup()}
-    ${alertMarkup()}
-    <section class="section-card">
-      <h2>My Portal</h2>
-      ${emptyStateMarkup('Loading workspace…')}
-    </section>
-  `
-  try {
-    const [profiles, submissions, drafts] = await Promise.all([
-      request(routes.profiles({ kind: 'client' })),
-      request(routes.formSubmissions()),
-      request(routes.formDrafts())
-    ])
-    const profileCards = profiles
-      .map(
-        (profile) => `<li class="item compact">
-          <strong>${escapeHtml(`${profile.firstName || ''} ${profile.lastName || ''}`.trim() || profile.id)}</strong>
-          <div class="muted">Email: ${escapeHtml(profile.email || '—')}</div>
-          <div class="muted">Stage: ${escapeHtml(profile.stage || '—')}</div>
-        </li>`
-      )
-      .join('')
-    const submissionRows = submissions
-      .slice(0, 8)
-      .map(
-        (submission) => `<tr>
-          <td><code>${escapeHtml(submission.id || '')}</code></td>
-          <td>${escapeHtml(submission.templateId || 'n/a')}</td>
-          <td>${escapeHtml(formatDateTime(submission.updatedAt || submission.createdAt))}</td>
-          <td>${escapeHtml(submission.status || 'saved')}</td>
-        </tr>`
-      )
-      .join('')
-    const draftRows = drafts
-      .slice(0, 8)
-      .map(
-        (draft) => `<tr>
-          <td><code>${escapeHtml(draft.id || '')}</code></td>
-          <td>${escapeHtml(draft.templateId || 'n/a')}</td>
-          <td>${escapeHtml(formatDateTime(draft.updatedAt || draft.createdAt))}</td>
-          <td>${draft.revisionId || 1}</td>
-        </tr>`
-      )
-      .join('')
-
-    viewEl.innerHTML = `
-      ${flashMarkup()}
-      ${alertMarkup()}
-      <section class="section-card">
-        <div class="section-header">
-          <div>
-            <h2>My Portal</h2>
-            <p class="muted compact">Client-facing summary of your profiles, form submissions, and active drafts.</p>
-          </div>
-        </div>
-        <div class="stat-grid compact-stats">
-          ${metricCard('profiles', profiles.length)}
-          ${metricCard('submissions', submissions.length)}
-          ${metricCard('drafts', drafts.length)}
-        </div>
-        <div class="view-panel-grid">
-          <article class="panel-card">
-            <h3>My Profiles</h3>
-            ${profileCards ? `<ul class="list panel-list">${profileCards}</ul>` : emptyStateMarkup('No client profiles found for this account.')}
-          </article>
-          <article class="panel-card">
-            <h3>Recent Submissions</h3>
-            ${
-              submissionRows
-                ? `<div class="data-table-wrap"><table><thead><tr><th>Submission</th><th>Template</th><th>Updated</th><th>Status</th></tr></thead><tbody>${submissionRows}</tbody></table></div>`
-                : emptyStateMarkup('No submissions yet.')
-            }
-          </article>
-          <article class="panel-card">
-            <h3>Recent Drafts</h3>
-            ${
-              draftRows
-                ? `<div class="data-table-wrap"><table><thead><tr><th>Draft</th><th>Template</th><th>Updated</th><th>Revision</th></tr></thead><tbody>${draftRows}</tbody></table></div>`
-                : emptyStateMarkup('No drafts in progress.')
-            }
-          </article>
-        </div>
-      </section>
-    `
-  } catch (error) {
-    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner('client workspace', error)}${emptyStateMarkup()}`
-  }
+  focusWithinView('#operations-heading')
 }
 
 function applyHashRoute() {
@@ -3144,27 +2980,36 @@ function applyHashRoute() {
 }
 
 async function renderFallback(title) {
-  viewEl.innerHTML = `${flashMarkup()}<h2>${escapeHtml(title)}</h2><p class="muted">This view remains functional in API workflows and can be expanded with richer cards later.</p>`
+  viewEl.innerHTML = `${flashMarkup()}<h2 id="fallback-heading">${escapeHtml(title)}</h2><p class="muted">This view remains functional in API workflows and can be expanded with richer cards later.</p>`
 }
 
 async function renderCurrentView() {
   updateViewNavState()
   if (!state.user) {
-    viewEl.innerHTML = `${flashMarkup()}<h2>Sign in to continue</h2>`
+    viewEl.innerHTML = `${flashMarkup()}<h2 id="auth-view-heading">Sign in to continue</h2>`
+    focusWithinView('#auth-view-heading')
     return
   }
-  if (state.view === 'dashboard') return renderDashboard()
-  if (state.view === 'analytics') return renderAnalytics()
-  if (state.view === 'forms') return renderForms()
-  if (state.view === 'templates') return renderTemplates()
-  if (state.view === 'exports') return renderExports()
-  if (state.view === 'operations') return renderOperations()
-  if (state.view === 'prospects') return renderBoard('prospect')
-  if (state.view === 'clients') return renderBoard('client')
-  if (state.view === 'households') return renderHouseholds()
-  if (state.view === 'audit') return renderAudit()
-  if (state.view === 'client-workspace') return renderClientWorkspace()
-  return renderFallback(state.view)
+  const viewFocusByName = {
+    dashboard: '#dashboard-heading',
+    analytics: '#analytics-heading',
+    forms: '#forms-heading',
+    templates: '#templates-heading',
+    exports: '#exports-heading',
+    operations: '#operations-heading',
+    prospects: '#board-heading',
+    clients: '#board-heading'
+  }
+  if (state.view === 'dashboard') await renderDashboard()
+  else if (state.view === 'analytics') await renderAnalytics()
+  else if (state.view === 'forms') await renderForms()
+  else if (state.view === 'templates') await renderTemplates()
+  else if (state.view === 'exports') await renderExports()
+  else if (state.view === 'operations') await renderOperations()
+  else if (state.view === 'prospects') await renderBoard('prospect')
+  else if (state.view === 'clients') await renderBoard('client')
+  else await renderFallback(state.view)
+  focusWithinView(viewFocusByName[state.view] || '#fallback-heading')
 }
 
 async function hydrateSession() {
