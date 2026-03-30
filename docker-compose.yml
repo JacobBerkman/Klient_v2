@@ -13,7 +13,7 @@ services:
       PORT: 3000
       HOST: 0.0.0.0
       NODE_ENV: production
-      APP_SECRET: ${APP_SECRET:-change-this-before-production}
+      APP_SECRET: ${APP_SECRET}
       LOG_LEVEL: ${LOG_LEVEL:-info}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]

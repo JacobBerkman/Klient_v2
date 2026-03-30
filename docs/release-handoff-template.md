@@ -2,6 +2,8 @@
 
 Use this handoff package for every production release so engineering, SRE, and approvers review one consistent record.
 
+Architecture note: this release process assumes the existing single-process **Node + SQLite + static web** deployment model (no split app-tier/database migration in this template).
+
 ## 1) Release identity
 - **Release ID**: `release-YYYYMMDD-HHMM`  
 - **Environment**: `staging | production`  
@@ -16,7 +18,8 @@ Record whether each required key is set in the deployment target (do not paste s
 
 | Key | Present (Y/N) | Notes |
 |---|---|---|
-| `APP_SECRET` |  |  |
+| `APP_SECRET` |  | Explicitly injected; no default fallback allowed |
+| `AUTH_PROVIDER` |  | Required in production (`local`, `oidc`, or `saml`) |
 | `NODE_ENV` |  |  |
 | `PORT` |  |  |
 | `HOST` |  |  |
@@ -24,10 +27,22 @@ Record whether each required key is set in the deployment target (do not paste s
 | `ENABLE_DEMO_MODE` |  |  |
 | `KLIENT_BASE_URL` |  |  |
 | `KLIENT_OPS_TOKEN` |  |  |
-| `PII_KEY_PROVIDER` (if used) |  |  |
+| `PII_KEY_PROVIDER` |  | Required mode selection (`env` or `kms`) |
+| `PII_ACTIVE_KEY_ID` (if `PII_KEY_PROVIDER=env`) |  |  |
+| `PII_KEYRING` (if `PII_KEY_PROVIDER=env`) |  |  |
 | `PII_KMS_KEY_ALIAS` (if `PII_KEY_PROVIDER=kms`) |  |  |
 | `PII_KMS_ACTIVE_KEY_ID` (if `PII_KEY_PROVIDER=kms`) |  |  |
 | `PII_KMS_KEYRING` (if `PII_KEY_PROVIDER=kms`) |  |  |
+
+
+## 2a) Startup fail-fast verification (production)
+Confirm that startup fails before bind/listen when runtime config is invalid, and records clear issues.
+
+| Check | Result | Evidence path / notes |
+|---|---|---|
+| Invalid production config blocks startup (`server.startup.blocked`) |  |  |
+| Error payload lists `startupDiagnostics.issues` entries |  |  |
+| Valid config starts normally and emits `server.started` |  |  |
 
 ## 3) Evidence artifact links
 Attach links or paths to the objective release evidence.
