@@ -59,25 +59,26 @@ Use one canonical manifest link for approvers; include optional direct links onl
 
 | Evidence package | Artifact link or path |
 |---|---|
-| Release evidence manifest (required) | `artifacts/release-evidence/release-20260330-1400/manifest.json` |
+| Release evidence manifest (required) | `artifacts/release-evidence/<release-id>/manifest.json` |
+| UX/accessibility acceptance record (RC journeys) | `docs/rc-web-journeys-acceptance-YYYY-MM-DD.md` |
 
-Optional per-file links (requested for this handoff):
-- `artifacts/release-evidence/release-20260330-1400/validate-master-summary.json`
-- `artifacts/release-evidence/release-20260330-1400/api-contract-summary.json`
-- `artifacts/release-evidence/release-20260330-1400/integration-summary.json`
-- `artifacts/release-evidence/release-20260330-1400/migration-summary.json`
-- `artifacts/release-evidence/release-20260330-1400/smoke-summary.json`
-- `artifacts/release-evidence/release-20260330-1400/security-summary.json`
-- `artifacts/release-evidence/release-20260330-1400/branch-parity.txt`
-- `artifacts/release-evidence/release-20260330-1400/backup.json`
-- `artifacts/release-evidence/release-20260330-1400/startup-failfast.json`
-- `artifacts/release-evidence/release-20260330-1400/startup-failfast.txt`
-- `artifacts/release-evidence/release-20260330-1400/restore.json`
-- `artifacts/release-evidence/release-20260330-1400/restore-drill.json`
-- `artifacts/release-evidence/release-20260330-1400/postdeploy-health.json`
-- `artifacts/release-evidence/release-20260330-1400/postdeploy-ready.json`
-- `artifacts/release-evidence/release-20260330-1400/postdeploy-exports-queue.json`
-- `artifacts/release-evidence/release-20260330-1400/postdeploy-telemetry-bundle.json`
+Optional per-file links (if needed for review):
+- `artifacts/release-evidence/<release-id>/validate-master-summary.json`
+- `artifacts/release-evidence/<release-id>/api-contract-summary.json`
+- `artifacts/release-evidence/<release-id>/integration-summary.json`
+- `artifacts/release-evidence/<release-id>/migration-summary.json`
+- `artifacts/release-evidence/<release-id>/smoke-summary.json`
+- `artifacts/release-evidence/<release-id>/security-summary.json`
+- `artifacts/release-evidence/<release-id>/branch-parity.txt`
+- `artifacts/release-evidence/<release-id>/backup.json`
+- `artifacts/release-evidence/<release-id>/startup-failfast.json`
+- `artifacts/release-evidence/<release-id>/startup-failfast.txt`
+- `artifacts/release-evidence/<release-id>/restore.json`
+- `artifacts/release-evidence/<release-id>/restore-drill.json`
+- `artifacts/release-evidence/<release-id>/postdeploy-health.json`
+- `artifacts/release-evidence/<release-id>/postdeploy-ready.json`
+- `artifacts/release-evidence/<release-id>/postdeploy-exports-queue.json`
+- `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json`
 
 ## 4) Rollback readiness
 - **Pre-release backup artifact ID**: `backup-20260330-133015`
