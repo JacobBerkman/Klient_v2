@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0.0",
+  "gate": "smoke",
+  "command": "npm run test:smoke",
+  "startedAt": "2026-03-30T21:11:13.732Z",
+  "finishedAt": "2026-03-30T21:11:38.280Z",
+  "durationMs": 24548,
+  "status": "passed",
+  "metadata": {},
+  "details": {
+    "ok": true,
+    "profileId": "76c76898-4bb8-47e7-b06a-07ac720cf427",
+    "templateId": "8a9c7ba3-0913-4d5c-9444-2266494b620e",
+    "exportJobId": "b265034e-759a-4e84-bf02-c50563f1a598",
+    "exportStatus": "queued",
+    "exportArtifactReady": false,
+    "flakyJobId": "eb3fd169-644e-44db-803b-4feff64669d7",
+    "flakyStatus": "queued",
+    "queuePending": 2
+  },
+  "error": null
+}

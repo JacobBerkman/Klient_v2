@@ -128,6 +128,9 @@ export function createExportsService({ exportsRepository, policy, store }) {
     },
     getQueueHealth(user) {
       policy.requireGuard(user, 'canReadExports')
+      if (user?.authMode === 'ops-token') {
+        return normalizeQueueHealthPayload(exportsRepository.getQueueHealth(user))
+      }
       return normalizeQueueHealthPayload(exportsRepository.getQueueHealth(createFirmContext(user)))
     },
     retryFailed(user, options = {}) {

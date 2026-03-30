@@ -14,6 +14,12 @@ Architecture note: this release process assumes the existing single-process **No
 - **Container image**: `ghcr.io/klient/klient-v2:release-20260330-1400`
 - **Image digest**: `sha256:9bfa9b8f06c4cc6e4ad7a69cccf128d982f5aac3b5ba2ec84dc0e863d0ee80da`
 
+Release identity collection checklist (fill before GO/NO-GO):
+- `Release ID`: match the `RELEASE_ID` environment variable used for artifact generation.
+- `Environment`: must be an explicit deploy target (`staging` or `production`).
+- `Commit / tag`: record the immutable git commit SHA (or signed tag that resolves to a commit).
+- `Image digest`: record the immutable OCI digest actually deployed (`sha256:...`), not a mutable image tag.
+
 ## 2) Required environment keys (presence check)
 Record whether each required key is set in the deployment target (do not paste secret values).
 

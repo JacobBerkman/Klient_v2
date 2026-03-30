@@ -1,0 +1,75 @@
+{
+  "generatedAt": "2026-03-30T21:15:32.742Z",
+  "queue": {
+    "queued": 0,
+    "running": 0,
+    "processing": 0,
+    "completed": 1,
+    "failed": 0,
+    "deadLetter": 0,
+    "readyNow": 0,
+    "stalled": 0,
+    "total": 1,
+    "activeLeases": [],
+    "retryCounts": [],
+    "byStatus": {
+      "completed": 1
+    },
+    "latestJob": {
+      "id": "b832d49a-db38-4842-a130-c1f91077c98d",
+      "firmId": "5d9f4a4d-28a5-4d62-b602-75ba91333833",
+      "clientId": "dfa267b3-accf-48d1-9164-37945db3a68a",
+      "templateId": "dfa2ce97-e062-422e-b1f4-39d71d9b6828",
+      "type": "pdf",
+      "status": "completed",
+      "output": {
+        "fileName": "client-intake-demo.json",
+        "object": {
+          "bucket": "klient-exports",
+          "key": "5d9f4a4d-28a5-4d62-b602-75ba91333833/exports/client-intake-demo.json",
+          "checksum": null,
+          "contentType": "application/json",
+          "retentionClass": "export_artifact"
+        }
+      },
+      "createdAt": "2026-03-30T21:05:06.840Z",
+      "updatedAt": "2026-03-30T21:05:06.840Z"
+    },
+    "queuedOnly": 0,
+    "retrying": 0,
+    "pending": 0,
+    "activeLeasesCount": 0,
+    "activeLeaseDetails": [],
+    "retries": {
+      "active": 0,
+      "readyNow": 0,
+      "scheduledLater": 0,
+      "countsByAttempt": []
+    },
+    "machineState": {
+      "activeLeases": [],
+      "retries": {
+        "active": 0,
+        "readyNow": 0,
+        "scheduledLater": 0,
+        "countsByAttempt": []
+      },
+      "failed": {
+        "count": 0,
+        "ids": []
+      },
+      "deadLetter": {
+        "count": 0,
+        "ids": []
+      },
+      "completed": {
+        "count": 1,
+        "ids": [
+          "b832d49a-db38-4842-a130-c1f91077c98d"
+        ]
+      }
+    },
+    "failedRetryable": 0,
+    "deadLetterEligible": 0
+  }
+}
