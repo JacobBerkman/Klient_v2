@@ -1,6 +1,7 @@
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { dirname, resolve } from 'node:path'
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { dirname, resolve, relative } from 'node:path'
 import { spawn } from 'node:child_process'
+import { collectArtifactMetadata } from './release-evidence.mjs'
 
 function fail(message) {
   process.stderr.write(`\n❌ ${message}\n`)
@@ -98,7 +99,7 @@ function runStep({ name, command, args, outputFile = '', env = process.env }) {
         writeFileSync(outputFile, stdout, 'utf8')
       }
 
-      resolveRun({ stdout, stderr, durationMs: Date.now() - startedAt })
+      resolveRun({ stdout, stderr, durationMs: Date.now() - startedAt, outputFile })
     })
   })
 }
@@ -153,6 +154,62 @@ function ensureEnv(name) {
   }
 }
 
+function listFilesRecursively(rootDir) {
+  const files = []
+  const walk = (dir) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const fullPath = resolve(dir, entry.name)
+      if (entry.isDirectory()) {
+        walk(fullPath)
+      } else if (entry.isFile()) {
+        files.push(fullPath)
+      }
+    }
+  }
+
+  walk(rootDir)
+  return files
+}
+
+function resolvePhaseArtifacts({ beforePaths, afterPaths }) {
+  const beforeSet = new Set(beforePaths)
+  return afterPaths.filter((path) => !beforeSet.has(path)).sort((left, right) => left.localeCompare(right))
+}
+
+function initializePhaseReport(status = 'skipped') {
+  return {
+    status,
+    artifactPaths: []
+  }
+}
+
+function writeManifest({ releaseId, evidenceDir, phaseReports, generatedAt }) {
+  const allArtifacts = Object.values(phaseReports)
+    .flatMap((report) => report.artifactPaths)
+    .filter((artifactPath) => relative(evidenceDir, artifactPath) !== 'manifest.json')
+
+  const manifest = {
+    schemaVersion: '1.0.0',
+    releaseId,
+    generatedAt,
+    phaseStatuses: Object.fromEntries(
+      Object.entries(phaseReports).map(([phaseName, report]) => [
+        phaseName,
+        {
+          status: report.status,
+          artifacts: report.artifactPaths.map((artifactPath) => relative(process.cwd(), artifactPath))
+        }
+      ])
+    ),
+    files: collectArtifactMetadata(allArtifacts).map((artifact) => ({
+      ...artifact,
+      path: relative(process.cwd(), artifact.path)
+    }))
+  }
+
+  writeFileSync(resolve(evidenceDir, 'manifest.json'), `${JSON.stringify(manifest, null, 2)}\n`, 'utf8')
+}
+
 const options = parseArgs(process.argv.slice(2))
 if (options.help) {
   printHelp()
@@ -170,6 +227,12 @@ if (!options.releaseId) {
 const evidenceDir = resolve(process.cwd(), 'artifacts/release-evidence', options.releaseId)
 mkdirSync(evidenceDir, { recursive: true })
 process.stdout.write(`Using evidence directory: ${evidenceDir}\n`)
+
+const phaseReports = {
+  preflight: initializePhaseReport(options.phase === 'all' || options.phase === 'preflight' ? 'pending' : 'skipped'),
+  restore: initializePhaseReport(options.phase === 'restore' ? 'pending' : 'skipped'),
+  postdeploy: initializePhaseReport(options.phase === 'all' || options.phase === 'postdeploy' ? 'pending' : 'skipped')
+}
 
 const preflight = async () => {
   const backupFile = resolve(evidenceDir, 'backup.json')
@@ -248,18 +311,46 @@ const postdeploy = async () => {
   })
 }
 
+async function runPhase(phaseName, runner) {
+  phaseReports[phaseName].status = 'running'
+  const beforePaths = listFilesRecursively(evidenceDir)
+  try {
+    await runner()
+    const afterPaths = listFilesRecursively(evidenceDir)
+    phaseReports[phaseName].artifactPaths = resolvePhaseArtifacts({ beforePaths, afterPaths })
+    phaseReports[phaseName].status = 'passed'
+  } catch (error) {
+    const afterPaths = listFilesRecursively(evidenceDir)
+    phaseReports[phaseName].artifactPaths = resolvePhaseArtifacts({ beforePaths, afterPaths })
+    phaseReports[phaseName].status = 'failed'
+    throw error
+  }
+}
+
 try {
   if (options.phase === 'preflight') {
-    await preflight()
+    await runPhase('preflight', preflight)
   } else if (options.phase === 'restore') {
-    await restoreValidation()
+    await runPhase('restore', restoreValidation)
   } else if (options.phase === 'postdeploy') {
-    await postdeploy()
+    await runPhase('postdeploy', postdeploy)
   } else {
-    await preflight()
-    await postdeploy()
+    await runPhase('preflight', preflight)
+    await runPhase('postdeploy', postdeploy)
   }
+  writeManifest({
+    releaseId: options.releaseId,
+    evidenceDir,
+    phaseReports,
+    generatedAt: new Date().toISOString()
+  })
   process.stdout.write('\n✅ release-go-no-go completed successfully.\n')
 } catch (error) {
+  writeManifest({
+    releaseId: options.releaseId,
+    evidenceDir,
+    phaseReports,
+    generatedAt: new Date().toISOString()
+  })
   fail(error.message)
 }
