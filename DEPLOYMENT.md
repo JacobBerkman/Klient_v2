@@ -116,6 +116,9 @@ The gate is objective and fails if any required suite fails:
 Before approving GO/NO-GO, complete and archive the standardized handoff package in
 `docs/release-handoff-template.md`.
 
+Quick operator reference (exact phase commands, env vars, artifacts, failure signatures):
+`docs/deployment-quick-reference.md`.
+
 ## Deterministic test environment behavior
 - Use isolated test state by default (ephemeral test directories).
 - Deterministic port assignment is based on `TEST_SEED` and suite name.

@@ -1,6 +1,7 @@
 # Release Handoff Template
 
 Use this handoff package for every production release so engineering, SRE, and approvers review one consistent record.
+For exact operator commands and diagnostics triage, pair this template with `docs/deployment-quick-reference.md`.
 
 Architecture note: this release process assumes the existing single-process **Node + SQLite + static web** deployment model (no split app-tier/database migration in this template).
 
