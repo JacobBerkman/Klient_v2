@@ -115,6 +115,10 @@ The gate is objective and fails if any required suite fails:
 
 Before approving GO/NO-GO, complete and archive the standardized handoff package in
 `docs/release-handoff-template.md`.
+When completing Section 2 of that package, explicitly record:
+- selected `AUTH_PROVIDER` path (`local`, `oidc`, or `saml`) and companion key presence checks,
+- selected `PII_KEY_PROVIDER` path (`env` or `kms`) and companion key presence checks,
+- and immutable release identity values (release ID, commit/tag, image digest, environment).
 
 Quick operator reference (exact phase commands, env vars, artifacts, failure signatures):
 `docs/deployment-quick-reference.md`.

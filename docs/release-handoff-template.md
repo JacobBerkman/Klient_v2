@@ -6,7 +6,7 @@ For exact operator commands and diagnostics triage, pair this template with `doc
 Architecture note: this release process assumes the existing single-process **Node + SQLite + static web** deployment model (no split app-tier/database migration in this template).
 
 ## 1) Release identity
-- **Release ID**: `release-YYYYMMDD-HHMM`  
+- **Release ID**: `release-YYYYMMDD-HHMM` (UTC timestamp, example: `release-20260330-1545`)  
 - **Environment**: `staging | production`  
 - **Release manager**:  
 - **Deployment window (UTC)**:  
@@ -14,26 +14,45 @@ Architecture note: this release process assumes the existing single-process **No
 - **Container image**:  
 - **Image digest**: `sha256:...`
 
+Release identity collection checklist (fill before GO/NO-GO):
+- `Release ID`: match the `RELEASE_ID` environment variable used for artifact generation.
+- `Environment`: must be an explicit deploy target (`staging` or `production`).
+- `Commit / tag`: record the immutable git commit SHA (or signed tag that resolves to a commit).
+- `Image digest`: record the immutable OCI digest actually deployed (`sha256:...`), not a mutable image tag.
+
 ## 2) Required environment keys (presence check)
 Record whether each required key is set in the deployment target (do not paste secret values).
 
-| Key | Present (Y/N) | Notes |
-|---|---|---|
-| `APP_SECRET` |  | Explicitly injected; no default fallback allowed |
-| `AUTH_PROVIDER` |  | Required in production (`local`, `oidc`, or `saml`) |
-| `NODE_ENV` |  |  |
-| `PORT` |  |  |
-| `HOST` |  |  |
-| `LOG_LEVEL` |  |  |
-| `ENABLE_DEMO_MODE` |  |  |
-| `KLIENT_BASE_URL` |  |  |
-| `KLIENT_OPS_TOKEN` |  |  |
-| `PII_KEY_PROVIDER` |  | Required mode selection (`env` or `kms`) |
-| `PII_ACTIVE_KEY_ID` (if `PII_KEY_PROVIDER=env`) |  |  |
-| `PII_KEYRING` (if `PII_KEY_PROVIDER=env`) |  |  |
-| `PII_KMS_KEY_ALIAS` (if `PII_KEY_PROVIDER=kms`) |  |  |
-| `PII_KMS_ACTIVE_KEY_ID` (if `PII_KEY_PROVIDER=kms`) |  |  |
-| `PII_KMS_KEYRING` (if `PII_KEY_PROVIDER=kms`) |  |  |
+Provider-path selections (must be explicit):
+- **Selected `AUTH_PROVIDER`**: `local | oidc | saml`  
+- **Selected `PII_KEY_PROVIDER`**: `env | kms`
+
+Validation rule: mark `Required for selected path` as `Y` only when the chosen provider path requires the key. Every row with `Required for selected path = Y` must also have `Present (Y/N) = Y` before GO.
+
+| Key | Required for selected path (Y/N) | Present (Y/N) | Notes |
+|---|---|---|---|
+| `APP_SECRET` | Y |  | Explicitly injected; no default fallback allowed |
+| `AUTH_PROVIDER` | Y |  | Required in production (`local`, `oidc`, or `saml`) |
+| `NODE_ENV` | Y |  | Must be `production` for production release handoff |
+| `PORT` | Y |  |  |
+| `HOST` | Y |  |  |
+| `LOG_LEVEL` | Y |  |  |
+| `ENABLE_DEMO_MODE` | Y |  | Production should be `false` or unset |
+| `KLIENT_BASE_URL` | Y |  | Required by release operator post-deploy checks |
+| `KLIENT_OPS_TOKEN` | Y |  | Required by release operator diagnostics checks |
+| `OIDC_ISSUER_URL` | if `AUTH_PROVIDER=oidc` |  | HTTPS required in production |
+| `OIDC_CLIENT_ID` | if `AUTH_PROVIDER=oidc` |  |  |
+| `OIDC_CLIENT_SECRET` | if `AUTH_PROVIDER=oidc` |  |  |
+| `OIDC_REDIRECT_URI` | if `AUTH_PROVIDER=oidc` |  | HTTPS required in production |
+| `SAML_ENTRY_POINT` | if `AUTH_PROVIDER=saml` |  | HTTPS required in production |
+| `SAML_ISSUER` | if `AUTH_PROVIDER=saml` |  |  |
+| `SAML_CERT` | if `AUTH_PROVIDER=saml` |  | PEM certificate required |
+| `PII_KEY_PROVIDER` | Y |  | Required mode selection (`env` or `kms`) |
+| `PII_ACTIVE_KEY_ID` | if `PII_KEY_PROVIDER=env` |  | Must exist in `PII_KEYRING` |
+| `PII_KEYRING` | if `PII_KEY_PROVIDER=env` |  | JSON object keyed by key id |
+| `PII_KMS_KEY_ALIAS` | if `PII_KEY_PROVIDER=kms` |  | KMS bootstrap alias |
+| `PII_KMS_ACTIVE_KEY_ID` | if `PII_KEY_PROVIDER=kms` |  | Must exist in `PII_KMS_KEYRING` |
+| `PII_KMS_KEYRING` | if `PII_KEY_PROVIDER=kms` |  | JSON object keyed by key id |
 
 
 ## 2a) Startup fail-fast verification (production)
