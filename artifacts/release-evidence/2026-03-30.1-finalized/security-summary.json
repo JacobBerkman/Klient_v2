@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0.0",
+  "gate": "security",
+  "command": "npm run test:security",
+  "startedAt": "2026-03-30T21:11:38.934Z",
+  "finishedAt": "2026-03-30T21:12:14.502Z",
+  "durationMs": 35568,
+  "status": "passed",
+  "metadata": {
+    "suites": [
+      "apps/api/src/test/auth-policy.test.mjs",
+      "apps/api/src/test/pii-crypto.test.mjs"
+    ]
+  },
+  "details": {
+    "suites": [
+      "apps/api/src/test/auth-policy.test.mjs",
+      "apps/api/src/test/pii-crypto.test.mjs"
+    ]
+  },
+  "error": null
+}

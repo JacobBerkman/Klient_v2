@@ -1,0 +1,50 @@
+{
+  "schemaVersion": "1.0.0",
+  "releaseId": "2026-03-30.1-finalized",
+  "generatedAt": "2026-03-30T21:15:32.830Z",
+  "phaseStatuses": {
+    "preflight": {
+      "status": "skipped",
+      "artifacts": []
+    },
+    "restore": {
+      "status": "skipped",
+      "artifacts": []
+    },
+    "postdeploy": {
+      "status": "passed",
+      "artifacts": [
+        "artifacts/release-evidence/2026-03-30.1-finalized/postdeploy-exports-queue.json",
+        "artifacts/release-evidence/2026-03-30.1-finalized/postdeploy-health.json",
+        "artifacts/release-evidence/2026-03-30.1-finalized/postdeploy-ready.json",
+        "artifacts/release-evidence/2026-03-30.1-finalized/postdeploy-telemetry-bundle.json"
+      ]
+    }
+  },
+  "files": [
+    {
+      "path": "artifacts/release-evidence/2026-03-30.1-finalized/postdeploy-exports-queue.json",
+      "sha256": "96e413c054515dd8d4df6a6d3ba2214fad4b584074899834105e51fb3e0e6542",
+      "sizeBytes": 1804,
+      "modifiedAt": "2026-03-30T21:15:32.744Z"
+    },
+    {
+      "path": "artifacts/release-evidence/2026-03-30.1-finalized/postdeploy-health.json",
+      "sha256": "9859d983c2d22fa6e9fb5da216fcdf050ddcf619d701a74bf5bd776afc74c4c5",
+      "sizeBytes": 78,
+      "modifiedAt": "2026-03-30T21:15:32.640Z"
+    },
+    {
+      "path": "artifacts/release-evidence/2026-03-30.1-finalized/postdeploy-ready.json",
+      "sha256": "eab6c61b2b890db7efe42034454b3873a3e56de68ab0283ad7d67dd5f105a96b",
+      "sizeBytes": 2906,
+      "modifiedAt": "2026-03-30T21:15:32.696Z"
+    },
+    {
+      "path": "artifacts/release-evidence/2026-03-30.1-finalized/postdeploy-telemetry-bundle.json",
+      "sha256": "aa37667afa14149eecc841752d999324a933f23404d47d4a13a7e4f0284b40df",
+      "sizeBytes": 5538,
+      "modifiedAt": "2026-03-30T21:15:32.796Z"
+    }
+  ]
+}

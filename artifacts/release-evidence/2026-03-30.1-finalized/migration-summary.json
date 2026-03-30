@@ -1,0 +1,23 @@
+{
+  "schemaVersion": "1.0.0",
+  "gate": "migration",
+  "command": "npm run check:migrations",
+  "startedAt": "2026-03-30T21:11:11.743Z",
+  "finishedAt": "2026-03-30T21:11:13.157Z",
+  "durationMs": 1414,
+  "status": "passed",
+  "metadata": {},
+  "details": {
+    "ok": true,
+    "checks": {
+      "templateMigration": "pass",
+      "templateMigrationIdempotent": "pass",
+      "templateMigrationVerify": "pass",
+      "piiReencryptionPath": "pass"
+    },
+    "templateAggregateCount": 2,
+    "rotatedProfiles": 0,
+    "rotatedFields": 0
+  },
+  "error": null
+}

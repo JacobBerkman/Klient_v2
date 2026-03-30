@@ -1,0 +1,30 @@
+{
+  "ok": true,
+  "status": "succeeded",
+  "generatedAt": "2026-03-30T21:05:55.156Z",
+  "probe": "invalid-config-startup-failfast",
+  "command": {
+    "command": "node",
+    "args": [
+      "apps/api/src/server.mjs"
+    ]
+  },
+  "checks": {
+    "exitCodeNonZero": true,
+    "startupBlockedLogged": true,
+    "startupIssuesPresent": true,
+    "listenPrevented": true
+  },
+  "observed": {
+    "exitCode": 1,
+    "blockedIssueCount": 2,
+    "blockedIssues": [
+      "AUTH_PROVIDER must be explicitly set in production (local, oidc, or saml); implicit local fallback is blocked.",
+      "KLIENT_OPS_TOKEN must be set in production for /api/ops/diagnostics and /api/ops/exports/queue token auth."
+    ],
+    "sawServerStarted": false
+  },
+  "artifacts": {
+    "rawOutput": "artifacts/release-evidence/2026-03-30.1-finalized/startup-failfast.txt"
+  }
+}

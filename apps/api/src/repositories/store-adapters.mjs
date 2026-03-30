@@ -246,7 +246,7 @@ export class StoreExportsRepository extends ExportsRepository {
     return this.store.retryExport(firmContext.user || firmContext, exportId)
   }
   getQueueHealth(firmContext) {
-    return this.store.getExportQueueHealth(firmContext.user || firmContext)
+    return this.store.getExportQueueHealth(firmContext?.user || firmContext)
   }
   retryFailed(firmContext, options = {}) {
     return this.store.retryFailedExports(firmContext.user || firmContext, options)

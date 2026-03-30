@@ -579,7 +579,13 @@ export function createHttpServer({ modules }) {
           error.statusCode = 401
           throw error
         }
-        return { id: 'ops-token', role: 'admin', authMode: 'ops-token' }
+        const queueHealth = readExportWorkerStatus()
+        return {
+          id: 'ops-token',
+          role: 'admin',
+          authMode: 'ops-token',
+          firmId: queueHealth?.latestJob?.firmId || null
+        }
       }
       return null
     }
@@ -1488,11 +1494,16 @@ function startServer() {
   function shutdown(signal) {
     if (isShuttingDown) return
     isShuttingDown = true
+    const exitCode = signal === 'uncaughtException' ? 1 : 0
     log('info', 'server.shutdown.started', { signal })
     server.close(() => {
-      closeDatabase()
+      try {
+        closeDatabase()
+      } catch (error) {
+        log('warn', 'server.shutdown.closeDatabase.failed', { signal, error: error?.message || String(error) })
+      }
       log('info', 'server.shutdown.completed', { signal })
-      process.exit(0)
+      process.exit(exitCode)
     })
     setTimeout(() => {
       log('error', 'server.shutdown.timeout', { signal })
