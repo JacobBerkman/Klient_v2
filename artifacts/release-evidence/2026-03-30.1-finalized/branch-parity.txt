@@ -1,0 +1,2 @@
+OK: 'main' is fully merged into 'work'.
+INFO: 'work' has no unmerged commits relative to 'main'.

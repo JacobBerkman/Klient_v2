@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "1.0.0",
+  "gate": "integration",
+  "command": "npm run test:integration",
+  "startedAt": "2026-03-30T21:06:37.606Z",
+  "finishedAt": "2026-03-30T21:11:11.187Z",
+  "durationMs": 273581,
+  "status": "passed",
+  "metadata": {},
+  "details": {
+    "totalDurationMs": 273552,
+    "executed": [
+      {
+        "script": "integration-tenancy.mjs",
+        "durationMs": 16117
+      },
+      {
+        "script": "integration-rbac.mjs",
+        "durationMs": 10636
+      },
+      {
+        "script": "integration-rbac-matrix.mjs",
+        "durationMs": 114293
+      },
+      {
+        "script": "integration-templates.mjs",
+        "durationMs": 8183
+      },
+      {
+        "script": "integration-exports.mjs",
+        "durationMs": 86956
+      },
+      {
+        "script": "integration-portal-lifecycle.mjs",
+        "durationMs": 6051
+      },
+      {
+        "script": "integration-submission-repeatable-items.mjs",
+        "durationMs": 8032
+      },
+      {
+        "script": "integration-analytics.mjs",
+        "durationMs": 8030
+      },
+      {
+        "script": "integration-csrf.mjs",
+        "durationMs": 4370
+      },
+      {
+        "script": "integration-audit.mjs",
+        "durationMs": 10884
+      }
+    ]
+  },
+  "error": null
+}

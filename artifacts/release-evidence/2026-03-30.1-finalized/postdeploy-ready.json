@@ -1,0 +1,112 @@
+{
+  "status": "ready",
+  "querySummary": {
+    "firms": 1,
+    "users": 1,
+    "profiles": 4,
+    "households": 1,
+    "templates": 1,
+    "exports": 1
+  },
+  "database": {
+    "ok": true,
+    "dbPath": "/workspace/Klient_v2/data/app.db",
+    "exists": true
+  },
+  "storageHealth": {
+    "dbPath": "/workspace/Klient_v2/data/app.db",
+    "exists": true,
+    "sizeBytes": 147456,
+    "quickCheck": "ok",
+    "connected": true,
+    "latencyMs": 0
+  },
+  "exportWorker": {
+    "queued": 0,
+    "running": 0,
+    "processing": 0,
+    "completed": 1,
+    "failed": 0,
+    "deadLetter": 0,
+    "readyNow": 0,
+    "stalled": 0,
+    "total": 1,
+    "activeLeases": 0,
+    "retryCounts": [],
+    "byStatus": {
+      "completed": 1
+    },
+    "latestJob": {
+      "id": "b832d49a-db38-4842-a130-c1f91077c98d",
+      "firmId": "5d9f4a4d-28a5-4d62-b602-75ba91333833",
+      "clientId": "dfa267b3-accf-48d1-9164-37945db3a68a",
+      "templateId": "dfa2ce97-e062-422e-b1f4-39d71d9b6828",
+      "type": "pdf",
+      "status": "completed",
+      "output": {
+        "fileName": "client-intake-demo.json",
+        "object": {
+          "bucket": "klient-exports",
+          "key": "5d9f4a4d-28a5-4d62-b602-75ba91333833/exports/client-intake-demo.json",
+          "checksum": null,
+          "contentType": "application/json",
+          "retentionClass": "export_artifact"
+        }
+      },
+      "createdAt": "2026-03-30T21:05:06.840Z",
+      "updatedAt": "2026-03-30T21:05:06.840Z"
+    }
+  },
+  "auditEvents": {
+    "total": 1,
+    "latest": {
+      "occurredAt": "2026-03-30T21:05:06.840Z",
+      "action": "seed.created"
+    }
+  },
+  "startupDiagnostics": {
+    "ok": true,
+    "issues": [],
+    "warnings": [
+      "AUTH_PROVIDER=local enables built-in password authentication flows.",
+      "AUTH_PROVIDER=local in production enables password-based local auth; verify this is intentional for your threat model."
+    ],
+    "config": {
+      "nodeEnv": "production",
+      "host": "127.0.0.1",
+      "port": 3000,
+      "logLevel": "info",
+      "authProvider": "local",
+      "authDiagnostics": {
+        "issues": [],
+        "warnings": [
+          "AUTH_PROVIDER=local enables built-in password authentication flows."
+        ]
+      },
+      "piiKeyProvider": "env",
+      "opsTokenAuthEnabled": true,
+      "serviceName": "kinetic-klient-api",
+      "instanceId": "1cf8b12de317",
+      "storageProvider": "local",
+      "storageBuckets": {
+        "documents": "klient-documents",
+        "exports": "klient-exports"
+      }
+    }
+  },
+  "checks": {
+    "databaseReady": true,
+    "storageReady": false,
+    "exportQueueReachable": true,
+    "startupConfigValid": true
+  },
+  "diagnostics": {
+    "generatedAt": "2026-03-30T21:15:32.692Z",
+    "endpoints": {
+      "health": "/health",
+      "ready": "/ready",
+      "exportsQueue": "/api/ops/exports/queue",
+      "telemetry": "/api/ops/diagnostics"
+    }
+  }
+}

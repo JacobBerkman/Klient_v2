@@ -1,0 +1,30 @@
+{
+  "operation": "restore-db",
+  "status": "succeeded",
+  "ok": true,
+  "executionMode": "verify-only-drill",
+  "evidenceLabel": "release-go-no-go-restore-drill",
+  "startedAt": "2026-03-30T21:04:53.898Z",
+  "finishedAt": "2026-03-30T21:04:53.906Z",
+  "source": {
+    "path": "/workspace/Klient_v2/data/backup-1774904687467.db",
+    "sizeBytes": 118784,
+    "modifiedAt": "2026-03-30T21:04:47.463Z",
+    "sha256": "222502ef39168024aae3e842d4b5cc2d966f0765dda6cff81d6062a7f9ad1661",
+    "sqliteQuickCheck": "ok"
+  },
+  "restoreTarget": {
+    "path": "/workspace/Klient_v2/tmp/restore-verify-1774904693899.db",
+    "kind": "verify-temporary-path",
+    "sizeBytes": 118784,
+    "modifiedAt": "2026-03-30T21:04:53.895Z",
+    "sha256": "222502ef39168024aae3e842d4b5cc2d966f0765dda6cff81d6062a7f9ad1661",
+    "sqliteQuickCheck": "ok"
+  },
+  "checks": {
+    "sizeMatch": true,
+    "sha256Match": true,
+    "sourceQuickCheckOk": true,
+    "targetQuickCheckOk": true
+  }
+}

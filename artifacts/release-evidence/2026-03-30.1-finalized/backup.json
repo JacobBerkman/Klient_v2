@@ -1,0 +1,14 @@
+{
+  "operation": "backup-db",
+  "status": "succeeded",
+  "ok": true,
+  "startedAt": "2026-03-30T21:05:54.067Z",
+  "finishedAt": "2026-03-30T21:05:54.071Z",
+  "artifact": {
+    "path": "/workspace/Klient_v2/data/backup-1774904754069.db",
+    "sizeBytes": 147456,
+    "modifiedAt": "2026-03-30T21:05:54.065Z",
+    "sha256": "8d50305b67c254b9592463b7b5bd3b1f9628fbf3cf3608d154aff83f8d34c2ef",
+    "sqliteQuickCheck": "ok"
+  }
+}
