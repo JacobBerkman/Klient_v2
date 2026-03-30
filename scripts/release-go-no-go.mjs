@@ -62,7 +62,7 @@ function printHelp() {
   process.stdout.write(`  npm run release:go-no-go -- --release-id 2026-03-27.1 --phase restore-drill --restore-path data/backup-20260327.db\n`)
 }
 
-function runStep({ name, command, args, outputFile = '', env = process.env }) {
+function runStep({ name, command, args, outputFile = '', outputMode = 'stdout', env = process.env, allowedExitCodes = [0] }) {
   return new Promise((resolveRun, reject) => {
     const startedAt = Date.now()
     process.stdout.write(`\n▶ ${name}\n$ ${command} ${args.join(' ')}\n`)
@@ -95,17 +95,18 @@ function runStep({ name, command, args, outputFile = '', env = process.env }) {
         reject(new Error(`${name} terminated by signal ${signal}`))
         return
       }
-      if (code !== 0) {
+      if (!allowedExitCodes.includes(code)) {
         reject(new Error(`${name} failed with exit code ${code}`))
         return
       }
 
       if (outputFile) {
         mkdirSync(dirname(outputFile), { recursive: true })
-        writeFileSync(outputFile, stdout, 'utf8')
+        const output = outputMode === 'combined' ? `${stdout}${stderr}` : stdout
+        writeFileSync(outputFile, output, 'utf8')
       }
 
-      resolveRun({ stdout, stderr, durationMs: Date.now() - startedAt, outputFile })
+      resolveRun({ stdout, stderr, durationMs: Date.now() - startedAt, outputFile, exitCode: code })
     })
   })
 }
@@ -151,6 +152,39 @@ function ensureRestoreEvidence(restoreFile, expectedMode = 'live-restore') {
   if (!valid) {
     fail(
       `Restore evidence validation failed at ${restoreFile}. Expected ok=true, status=succeeded, executionMode=${expectedMode}, source/restoreTarget sqliteQuickCheck=ok, and checks.sizeMatch/checks.sha256Match=true`
+    )
+  }
+}
+
+function parseJsonLines(text) {
+  return String(text || '')
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+}
+
+function ensureStartupFailfastEvidence(probeFile) {
+  const report = parseJsonFile(probeFile, 'Startup fail-fast evidence')
+  const valid =
+    report &&
+    report.ok === true &&
+    report.status === 'succeeded' &&
+    report.checks?.exitCodeNonZero === true &&
+    report.checks?.startupBlockedLogged === true &&
+    report.checks?.startupIssuesPresent === true &&
+    report.checks?.listenPrevented === true
+
+  if (!valid) {
+    fail(
+      `Startup fail-fast validation failed at ${probeFile}. Expected ok=true, status=succeeded, and checks exitCodeNonZero/startupBlockedLogged/startupIssuesPresent/listenPrevented=true`
     )
   }
 }
@@ -258,8 +292,64 @@ const preflight = async () => {
     outputFile: resolve(evidenceDir, 'branch-parity.txt')
   })
 
+  const startupFailfastOutput = resolve(evidenceDir, 'startup-failfast.txt')
+  const startupFailfastEvidence = resolve(evidenceDir, 'startup-failfast.json')
+  const probeEnv = {
+    ...process.env,
+    NODE_ENV: 'production',
+    HOST: '127.0.0.1',
+    PORT: '3901',
+    LOG_LEVEL: 'info',
+    SERVICE_NAME: 'release-go-no-go-startup-probe',
+    APP_SECRET: 'ProbeStrongSecretValue!2026#Alpha',
+    AUTH_PROVIDER: '',
+    PII_KEY_PROVIDER: 'env',
+    PII_ACTIVE_KEY_ID: 'probe-key-1',
+    PII_KEYRING: '{"probe-key-1":"dGVzdC1rZXktbWF0ZXJpYWw"}'
+  }
+  const probeResult = await runStep({
+    name: 'Flow A.3 Controlled invalid-config startup fail-fast probe',
+    command: 'node',
+    args: ['apps/api/src/server.mjs'],
+    env: probeEnv,
+    outputFile: startupFailfastOutput,
+    outputMode: 'combined',
+    allowedExitCodes: [1]
+  })
+  const probeLogs = parseJsonLines(`${probeResult.stdout}\n${probeResult.stderr}`)
+  const blockedEntry = probeLogs.find((entry) => entry.message === 'server.startup.blocked')
+  const serverStartedEntry = probeLogs.find((entry) => entry.message === 'server.started')
+  const checks = {
+    exitCodeNonZero: probeResult.exitCode !== 0,
+    startupBlockedLogged: Boolean(blockedEntry),
+    startupIssuesPresent: Array.isArray(blockedEntry?.issues) && blockedEntry.issues.length > 0,
+    listenPrevented: !serverStartedEntry
+  }
+  const probeReport = {
+    ok: Object.values(checks).every(Boolean),
+    status: Object.values(checks).every(Boolean) ? 'succeeded' : 'failed',
+    generatedAt: new Date().toISOString(),
+    probe: 'invalid-config-startup-failfast',
+    command: {
+      command: 'node',
+      args: ['apps/api/src/server.mjs']
+    },
+    checks,
+    observed: {
+      exitCode: probeResult.exitCode,
+      blockedIssueCount: Array.isArray(blockedEntry?.issues) ? blockedEntry.issues.length : 0,
+      blockedIssues: blockedEntry?.issues || [],
+      sawServerStarted: Boolean(serverStartedEntry)
+    },
+    artifacts: {
+      rawOutput: relative(process.cwd(), startupFailfastOutput)
+    }
+  }
+  writeFileSync(startupFailfastEvidence, `${JSON.stringify(probeReport, null, 2)}\n`, 'utf8')
+  ensureStartupFailfastEvidence(startupFailfastEvidence)
+
   await runStep({
-    name: 'Flow A.3 Hard release gate',
+    name: 'Flow A.4 Hard release gate',
     command: 'npm',
     args: ['run', '--silent', 'validate:master'],
     env: { ...process.env, RELEASE_EVIDENCE_DIR: evidenceDir }
