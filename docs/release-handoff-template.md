@@ -1,6 +1,7 @@
 # Release Handoff Template
 
 Use this handoff package for every production release so engineering, SRE, and approvers review one consistent record.
+For exact operator commands and diagnostics triage, pair this template with `docs/deployment-quick-reference.md`.
 
 ## 1) Release identity
 - **Release ID**: `release-YYYYMMDD-HHMM`  

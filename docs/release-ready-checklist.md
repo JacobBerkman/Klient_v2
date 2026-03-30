@@ -3,6 +3,7 @@
 Use this checklist as a strict go/no-go control for production releases.
 A release is **ready** only when every check is an objective **PASS** with captured evidence artifacts.
 Capture the release package with the standard handoff template at `docs/release-handoff-template.md`.
+Use the command-level quick runbook at `docs/deployment-quick-reference.md` for exact preflight/deploy/postdeploy/restore sequences and diagnostics triage.
 
 ## Primary operator command (GO/NO-GO)
 Run the operator workflow (fails fast, deterministic order):
