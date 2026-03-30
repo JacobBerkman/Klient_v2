@@ -92,9 +92,13 @@ test('exports selection state and bulk action rules include retryability and rol
   assert.match(appJs, /Readonly role: retry actions hidden\./)
 })
 
-test('exports per-job table includes failure class and operator guidance column data', () => {
-  assert.match(appJs, /<th>Failure Class<\/th>/)
+test('exports per-job table keeps header and row columns aligned', () => {
+  assert.match(
+    appJs,
+    /<table aria-describedby="exports-live-region"><thead><tr><th><input id="select-all-exports"[\s\S]*<\/th><th>ID<\/th><th>Status<\/th><th>Failure Class<\/th><th>Attempts<\/th><th>Artifact Details<\/th><th>Actions<\/th><\/tr><\/thead><tbody>/
+  )
   assert.match(appJs, /exportSelectionState\(job, canMutate\)\.failureClass/)
-  assert.match(appJs, /<div class=\"muted\">\$\{escapeHtml\(selection\.guidance\)\}<\/div>/)
+  assert.match(appJs, /<td>\$\{escapeHtml\(job\.statusLabel \|\| job\.status\)\}<\/td>\s*<td>\$\{escapeHtml\(exportSelectionState\(job, canMutate\)\.failureClass\)\}<\/td>\s*<td>\$\{job\.attempts \|\| 0\}\/\$\{job\.maxAttempts \|\| 0\}<\/td>/)
+  assert.match(appJs, /<tr><td colspan="7">No export jobs yet\. Run an export to populate queue activity and artifact status\.<\/td><\/tr>/)
   assert.match(appJs, /No export jobs yet\. Run an export to populate queue activity and artifact status\./)
 })

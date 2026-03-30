@@ -2494,7 +2494,7 @@ async function renderExports() {
     </section>
     <section class="item">
       <h3>Per-job Artifact Status</h3>
-      <table aria-describedby="exports-live-region"><thead><tr><th><input id="select-all-exports" type="checkbox" aria-label="Select all eligible exports" ${selectableJobs.length && selectedJobs.length === selectableJobs.length ? 'checked' : ''} /></th><th>ID</th><th>Status</th><th>Attempts</th><th>Artifact Details</th><th>Actions</th></tr></thead><tbody>
+      <table aria-describedby="exports-live-region"><thead><tr><th><input id="select-all-exports" type="checkbox" aria-label="Select all eligible exports" ${selectableJobs.length && selectedJobs.length === selectableJobs.length ? 'checked' : ''} /></th><th>ID</th><th>Status</th><th>Failure Class</th><th>Attempts</th><th>Artifact Details</th><th>Actions</th></tr></thead><tbody>
         ${
           jobs
             .map(
