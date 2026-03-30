@@ -32,7 +32,8 @@ const state = {
   operations: {
     busy: false,
     lastUpdatedAt: '',
-    snapshot: null
+    snapshot: null,
+    feedback: ''
   }
 }
 
@@ -2688,6 +2689,28 @@ function operationsPayloadJson() {
   )
 }
 
+function operationsCommandBlock() {
+  return [
+    'export RELEASE_ID=<release-id>',
+    'export KLIENT_BASE_URL=https://<env-host>',
+    'export KLIENT_OPS_TOKEN=<ops-token>',
+    'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight',
+    'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy',
+    'export RESTORE_BACKUP_PATH=data/backup-<timestamp>.db',
+    'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"'
+  ].join('\n')
+}
+
+function downloadTextFile(content, filename) {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(objectUrl)
+}
+
 async function renderOperations() {
   if (!state.operations.snapshot) {
     await loadOperationsSnapshot()
@@ -2729,9 +2752,12 @@ async function renderOperations() {
       <div class="ops-actions">
         <button type="button" data-ops-refresh>${state.operations.busy ? 'Refreshing…' : 'Refresh'}</button>
         <button type="button" data-ops-copy-json>Copy JSON</button>
+        <button type="button" class="tiny secondary" data-ops-copy-commands>Copy command block</button>
+        <button type="button" class="tiny secondary" data-ops-download-commands>Download command block</button>
         <a href="/docs/release-ready-checklist.md#deterministic-command-flows-operator-runbook">Runbook: deterministic checks</a>
-        <a href="/docs/release-ready-checklist.md#go-no-go-sign-off-grid">Runbook: go/no-go grid</a>
+        <a href="/docs/release-ready-checklist.md#objective-passfail-criteria">Runbook: go/no-go grid</a>
       </div>
+      <p class="muted compact" data-ops-action-feedback role="status" aria-live="polite" aria-atomic="true">${escapeHtml(state.operations.feedback || '')}</p>
       <div class="ops-grid">${statusCards}</div>
       <details open>
         <summary>Diagnostics payload</summary>
@@ -2751,8 +2777,32 @@ async function renderOperations() {
     try {
       await navigator.clipboard.writeText(operationsPayloadJson())
       setFlash('success', 'Operations payload copied to clipboard.')
+      state.operations.feedback = 'Copied JSON snapshot to clipboard.'
     } catch {
       setFlash('error', 'Clipboard copy failed. Copy from the diagnostics block instead.')
+      state.operations.feedback = 'Copy JSON failed. Copy from the diagnostics block instead.'
+    }
+    await renderOperations()
+  })
+
+  const commandCopyButton = viewEl.querySelector('[data-ops-copy-commands]')
+  commandCopyButton?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(operationsCommandBlock())
+      state.operations.feedback = 'Copied preflight/postdeploy/restore command block.'
+    } catch {
+      state.operations.feedback = 'Copy command block failed. Download the command block instead.'
+    }
+    await renderOperations()
+  })
+
+  const commandDownloadButton = viewEl.querySelector('[data-ops-download-commands]')
+  commandDownloadButton?.addEventListener('click', async () => {
+    try {
+      downloadTextFile(operationsCommandBlock(), 'release-command-block-RELEASE_ID.txt')
+      state.operations.feedback = 'Downloaded command block.'
+    } catch {
+      state.operations.feedback = 'Download command block failed. Copy the command block instead.'
     }
     await renderOperations()
   })
