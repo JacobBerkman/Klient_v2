@@ -41,6 +41,8 @@
       <section class="card">
         <h2>Upload a Document</h2>
         <p class="muted">Track what has already been uploaded and share missing files securely.</p>
+        <p id="portal-upload-status" class="muted compact" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></p>
+        <p id="portal-upload-error" class="hidden" role="alert" aria-live="assertive" aria-atomic="true" tabindex="-1"></p>
         <form id="portal-upload-form" class="grid two">
           <label>
             <span>File</span>
@@ -75,6 +77,8 @@
           </div>
           <span id="portal-status" class="badge subtle">Awaiting template</span>
         </div>
+        <p id="portal-form-status" class="muted compact" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></p>
+        <p id="portal-form-error" class="hidden" role="alert" aria-live="assertive" aria-atomic="true" tabindex="-1"></p>
 
         <div class="grid two">
           <label>
@@ -113,6 +117,10 @@
       const form = document.querySelector('#portal-form')
       const uploadForm = document.querySelector('#portal-upload-form')
       const draftButton = document.querySelector('[data-save-draft]')
+      const formStatusRegion = document.querySelector('#portal-form-status')
+      const formErrorRegion = document.querySelector('#portal-form-error')
+      const uploadStatusRegion = document.querySelector('#portal-upload-status')
+      const uploadErrorRegion = document.querySelector('#portal-upload-error')
 
       const portalState = {
         token,
@@ -145,6 +153,34 @@
 
       function renderEmptyState(target, message) {
         target.innerHTML = `<div class="item compact muted">${escapeHtml(message)}</div>`
+      }
+
+      function updateRegion(region, message, { error = false, focus = false } = {}) {
+        if (!region) return
+        region.textContent = message || ''
+        region.classList.toggle('hidden', !message)
+        if (error) region.classList.add('error-banner')
+        else region.classList.remove('error-banner')
+        if (focus && message) region.focus()
+      }
+
+      function setFormFeedback(message = '', { error = false, focus = false } = {}) {
+        updateRegion(formStatusRegion, error ? '' : message, { error: false, focus: !error && focus })
+        updateRegion(formErrorRegion, error ? message : '', { error: true, focus: error && focus })
+      }
+
+      function setUploadFeedback(message = '', { error = false, focus = false } = {}) {
+        updateRegion(uploadStatusRegion, error ? '' : message, { error: false, focus: !error && focus })
+        updateRegion(uploadErrorRegion, error ? message : '', { error: true, focus: error && focus })
+      }
+
+      function clearValidationHighlights() {
+        form.querySelectorAll('[aria-invalid="true"]').forEach((field) => field.setAttribute('aria-invalid', 'false'))
+      }
+
+      function focusFirstInvalidField() {
+        const firstInvalid = form.querySelector('[aria-invalid="true"]')
+        if (firstInvalid) firstInvalid.focus()
       }
 
       function selectedTemplate() {
@@ -559,6 +595,31 @@
       })
 
       async function saveSubmission(status) {
+        clearValidationHighlights()
+        const template = selectedTemplate()
+        if (!template) {
+          setFormFeedback('Please select a template.', { error: true, focus: true })
+          throw new Error('Please select a template.')
+        }
+        for (let sectionIndex = 0; sectionIndex < (template.sections || []).length; sectionIndex += 1) {
+          const section = template.sections[sectionIndex]
+          const rows = section.repeatable ? repeatCountFor(sectionIndex) : 1
+          for (let rowIndex = 0; rowIndex < rows; rowIndex += 1) {
+            for (const field of section.fields || []) {
+              if (!field.required) continue
+              const controlName = fieldName(sectionIndex, field.key, section.repeatable ? rowIndex : null)
+              const input = form.elements.namedItem(controlName)
+              const value = String(input?.value || '').trim()
+              if (!value) {
+                if (input?.setAttribute) input.setAttribute('aria-invalid', 'true')
+                setFormFeedback(`Please complete ${field.label || field.key}.`, { error: true, focus: false })
+                focusFirstInvalidField()
+                throw new Error(`${field.label || field.key} is required.`)
+              }
+            }
+          }
+        }
+        setFormFeedback(status === 'draft' ? 'Saving draft…' : 'Submitting form…')
         const payload = buildPayloadFromForm()
         const submission = await apiRequest(`/api/portal/${token}/submissions`, {
           method: 'POST',
@@ -569,6 +630,7 @@
         if (status !== 'draft') form.reset()
         statusBadge.textContent = status === 'draft' ? 'Draft saved' : 'Form submitted'
         statusBadge.className = 'badge'
+        setFormFeedback(status === 'draft' ? 'Draft saved.' : 'Form submitted successfully.', { focus: true })
       }
 
       form.addEventListener('submit', async (event) => {
@@ -576,6 +638,9 @@
         try {
           await saveSubmission('submitted')
         } catch (error) {
+          if (!form.querySelector('[aria-invalid="true"]')) {
+            setFormFeedback(error.message, { error: true, focus: true })
+          }
           statusBadge.textContent = error.message
           statusBadge.className = 'badge subtle'
         }
@@ -585,6 +650,9 @@
         try {
           await saveSubmission('draft')
         } catch (error) {
+          if (!form.querySelector('[aria-invalid="true"]')) {
+            setFormFeedback(error.message, { error: true, focus: true })
+          }
           statusBadge.textContent = error.message
           statusBadge.className = 'badge subtle'
         }
@@ -595,11 +663,14 @@
         const payload = new FormData(uploadForm)
         const file = payload.get('file')
         if (!(file instanceof File) || !file.size) {
+          setUploadFeedback('Please select a file.', { error: true, focus: true })
+          uploadForm.querySelector('input[name="file"]')?.focus()
           statusBadge.textContent = 'Please select a file.'
           statusBadge.className = 'badge subtle'
           return
         }
         try {
+          setUploadFeedback('Preparing secure upload…')
           const presignResponse = await fetch(`/api/portal/${token}/uploads/presign`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -611,12 +682,14 @@
           })
           const presign = await presignResponse.json()
           if (!presignResponse.ok) throw new Error(presign.message || 'Unable to prepare upload.')
+          setUploadFeedback('Uploading file…')
           const uploadResponse = await fetch(presign.presigned.url, {
             method: presign.presigned.method || 'PUT',
             headers: presign.presigned.headers || { 'Content-Type': file.type || 'application/octet-stream' },
             body: file
           })
           if (!uploadResponse.ok) throw new Error('Upload transfer failed.')
+          setUploadFeedback('Finalizing upload record…')
           const response = await fetch(`/api/portal/${token}/uploads`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -632,9 +705,11 @@
           if (!response.ok) throw new Error(result.message || 'Unable to log upload.')
           uploadForm.reset()
           await loadPortal()
+          setUploadFeedback('Document upload complete.', { focus: true })
           statusBadge.textContent = 'Document upload complete'
           statusBadge.className = 'badge'
         } catch (error) {
+          setUploadFeedback(error.message, { error: true, focus: true })
           statusBadge.textContent = error.message
           statusBadge.className = 'badge subtle'
         }
