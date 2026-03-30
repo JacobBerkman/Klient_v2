@@ -177,6 +177,19 @@ textarea {
   gap: 6px;
   margin-top: 8px;
 }
+.workflow-action-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.workflow-action-meta .badge {
+  font-size: 11px;
+}
+.workflow-action-meta .compact-meta {
+  line-height: 1.3;
+}
 .workflow-shortcut,
 .workflow-shortcut-link {
   font-size: 12px;
