@@ -74,12 +74,12 @@ Optional per-file links (if needed for review):
 - `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json`
 
 ## 4) Rollback readiness
-- **Pre-release backup artifact ID**:  
-- **Backup path**: `data/backup-<timestamp>.db`  
-- **Backup SHA-256**:  
-- **Restore drill status**: `PASS | FAIL | NOT-RUN`  
-- **Restore drill evidence**: `artifacts/release-evidence/<release-id>/restore-drill.json` (`executionMode=verify-only-drill`)  
-- **Live rollback evidence (if executed)**: `artifacts/release-evidence/<release-id>/restore.json` (`executionMode=live-restore`)
+- **Pre-release backup artifact ID**: `backup-1774904687467`  
+- **Backup path**: `data/backup-1774904687467.db`  
+- **Backup SHA-256**: `222502ef39168024aae3e842d4b5cc2d966f0765dda6cff81d6062a7f9ad1661`  
+- **Restore drill status**: `PASS` (`executionMode=verify-only-drill`; integrity checks `sizeMatch=true`, `sha256Match=true`, and source/target `sqliteQuickCheck=ok`)  
+- **Restore drill evidence**: `artifacts/release-evidence/release-20260330-2104/restore-drill.json` (`executionMode=verify-only-drill`)  
+- **Live rollback evidence (if executed)**: `artifacts/release-evidence/release-20260330-2104/restore.json` (`executionMode=live-restore`, not executed in this drill)
 
 Decision rule (must match artifact + mode):
 - Live rollback evidence: `restore.json` and `executionMode=live-restore`.
