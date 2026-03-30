@@ -231,12 +231,10 @@ RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
   npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"
 ```
 
-### Restore evidence decision rules (operator safety)
-- Treat `executionMode=live-restore` as real rollback execution evidence.
-- Treat `executionMode=verify-only-drill` as drill evidence only; it MUST NOT be used as proof that a live restore was executed.
-- For GO/NO-GO acceptance, require the artifact filename and mode to match intent:
-  - Drill: `restore-drill.json` with `executionMode=verify-only-drill`
-  - Live rollback: `restore.json` with `executionMode=live-restore`
+### Restore evidence decision rules
+- Live rollback evidence: `restore.json` and `executionMode=live-restore`.
+- Drill evidence only: `restore-drill.json` and `executionMode=verify-only-drill`.
+- Never mark a live rollback as complete based on `restore-drill.json`.
 
 ## Deployment playbook
 1. **Pre-flight**

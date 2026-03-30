@@ -64,6 +64,7 @@ Optional per-file links (if needed for review):
 - `artifacts/release-evidence/<release-id>/branch-parity.txt`
 - `artifacts/release-evidence/<release-id>/backup.json`
 - `artifacts/release-evidence/<release-id>/restore.json`
+- `artifacts/release-evidence/<release-id>/restore-drill.json`
 - `artifacts/release-evidence/<release-id>/postdeploy-health.json`
 - `artifacts/release-evidence/<release-id>/postdeploy-ready.json`
 - `artifacts/release-evidence/<release-id>/postdeploy-exports-queue.json`
@@ -74,7 +75,13 @@ Optional per-file links (if needed for review):
 - **Backup path**: `data/backup-<timestamp>.db`  
 - **Backup SHA-256**:  
 - **Restore drill status**: `PASS | FAIL | NOT-RUN`  
-- **Restore evidence**: `artifacts/release-evidence/<release-id>/restore.json`
+- **Restore drill evidence**: `artifacts/release-evidence/<release-id>/restore-drill.json` (`executionMode=verify-only-drill`)  
+- **Live rollback evidence (if executed)**: `artifacts/release-evidence/<release-id>/restore.json` (`executionMode=live-restore`)
+
+Decision rule (must match artifact + mode):
+- Live rollback evidence: `restore.json` and `executionMode=live-restore`.
+- Drill evidence only: `restore-drill.json` and `executionMode=verify-only-drill`.
+- Never mark a live rollback as complete based on `restore-drill.json`.
 
 ## 5) Release notes snapshot
 - **Key changes included**:  

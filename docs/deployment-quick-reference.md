@@ -27,7 +27,8 @@ Core outputs by phase:
 |---|---|
 | Preflight | `backup.json`, `branch-parity.txt`, `validate-master-summary.json`, plus gate summaries (`api-contract-summary.json`, `integration-summary.json`, `migration-summary.json`, `smoke-summary.json`, `security-summary.json`). |
 | Postdeploy | `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`. |
-| Restore/Drill | `restore.json`. |
+| Restore (live rollback) | `restore.json` with `executionMode=live-restore`. |
+| Restore drill (verify-only) | `restore-drill.json` with `executionMode=verify-only-drill`. |
 
 ## Exact command sequence
 
@@ -58,6 +59,18 @@ npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy
 export RESTORE_BACKUP_PATH=data/backup-<timestamp>.db
 npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"
 ```
+
+Verify-only drill command:
+
+```bash
+export RESTORE_BACKUP_PATH=data/backup-<timestamp>.db
+npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"
+```
+
+Decision rule (must match artifact + mode):
+- Live rollback evidence: `restore.json` and `executionMode=live-restore`.
+- Drill evidence only: `restore-drill.json` and `executionMode=verify-only-drill`.
+- Never mark a live rollback as complete based on `restore-drill.json`.
 
 ## Common failure signatures (diagnostics-keyed)
 
