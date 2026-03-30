@@ -258,6 +258,28 @@ textarea {
   display: grid;
   gap: 12px;
 }
+.view-panel-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-items: start;
+}
+.panel-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #0b1220;
+  border: 1px solid #1e293b;
+}
+.panel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.data-table-wrap {
+  overflow-x: auto;
+}
 
 .ops-actions {
   display: flex;
