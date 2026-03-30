@@ -105,7 +105,7 @@ Execute in this exact order and stop on first failure:
 - **GO**: `npm run release:go-no-go -- --release-id "$RELEASE_ID"` passes and every required row above is PASS with captured command output, evidence files, and `manifest.json`.
 - **NO-GO**: Any row FAILS, is skipped, or has inconclusive evidence.
 
-## Restore evidence interpretation rules
-- Use `restore.json` only for real rollback execution evidence and require `executionMode=live-restore`.
-- Use `restore-drill.json` only for verify-only drill evidence and require `executionMode=verify-only-drill`.
-- Never mark a live rollback as complete based on `restore-drill.json`; drill output is intentionally separated to prevent operator confusion.
+## Restore evidence decision rules
+- Live rollback evidence: `restore.json` and `executionMode=live-restore`.
+- Drill evidence only: `restore-drill.json` and `executionMode=verify-only-drill`.
+- Never mark a live rollback as complete based on `restore-drill.json`.
