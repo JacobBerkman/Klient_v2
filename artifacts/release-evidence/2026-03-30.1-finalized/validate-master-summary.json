@@ -1,0 +1,102 @@
+{
+  "schemaVersion": "1.1.0",
+  "generatedAt": "2026-03-30T21:12:15.009Z",
+  "nodeEnv": null,
+  "evidenceDir": "/workspace/Klient_v2/artifacts/release-evidence/2026-03-30.1-finalized",
+  "status": "passed",
+  "startedAt": "2026-03-30T21:05:55.639Z",
+  "finishedAt": "2026-03-30T21:12:15.009Z",
+  "failedStep": null,
+  "steps": [
+    {
+      "name": "Static syntax checks",
+      "command": "npm run check:syntax",
+      "evidenceFile": null,
+      "status": "passed",
+      "durationMs": 2461,
+      "startedAt": "2026-03-30T21:05:55.640Z",
+      "finishedAt": "2026-03-30T21:05:58.103Z"
+    },
+    {
+      "name": "Conflict marker guard",
+      "command": "npm run check:conflicts",
+      "evidenceFile": null,
+      "status": "passed",
+      "durationMs": 645,
+      "startedAt": "2026-03-30T21:05:58.104Z",
+      "finishedAt": "2026-03-30T21:05:58.749Z"
+    },
+    {
+      "name": "API contract tests",
+      "command": "npm run test:contract",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/2026-03-30.1-finalized/api-contract-summary.json",
+      "status": "passed",
+      "durationMs": 10708,
+      "startedAt": "2026-03-30T21:05:58.749Z",
+      "finishedAt": "2026-03-30T21:06:09.457Z"
+    },
+    {
+      "name": "Negative-path RBAC checks",
+      "command": "node scripts/integration-rbac.mjs",
+      "evidenceFile": null,
+      "status": "passed",
+      "durationMs": 11466,
+      "startedAt": "2026-03-30T21:06:09.457Z",
+      "finishedAt": "2026-03-30T21:06:20.923Z"
+    },
+    {
+      "name": "Negative-path tenancy checks",
+      "command": "node scripts/integration-tenancy.mjs",
+      "evidenceFile": null,
+      "status": "passed",
+      "durationMs": 16206,
+      "startedAt": "2026-03-30T21:06:20.923Z",
+      "finishedAt": "2026-03-30T21:06:37.129Z"
+    },
+    {
+      "name": "Integration suites",
+      "command": "npm run test:integration",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/2026-03-30.1-finalized/integration-summary.json",
+      "status": "passed",
+      "durationMs": 274116,
+      "startedAt": "2026-03-30T21:06:37.129Z",
+      "finishedAt": "2026-03-30T21:11:11.245Z"
+    },
+    {
+      "name": "Migration order checks",
+      "command": "npm run check:migrations",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/2026-03-30.1-finalized/migration-summary.json",
+      "status": "passed",
+      "durationMs": 1987,
+      "startedAt": "2026-03-30T21:11:11.246Z",
+      "finishedAt": "2026-03-30T21:11:13.233Z"
+    },
+    {
+      "name": "Smoke test",
+      "command": "npm run test:smoke",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/2026-03-30.1-finalized/smoke-summary.json",
+      "status": "passed",
+      "durationMs": 25230,
+      "startedAt": "2026-03-30T21:11:13.233Z",
+      "finishedAt": "2026-03-30T21:11:38.463Z"
+    },
+    {
+      "name": "Security checks",
+      "command": "npm run test:security",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/2026-03-30.1-finalized/security-summary.json",
+      "status": "passed",
+      "durationMs": 36084,
+      "startedAt": "2026-03-30T21:11:38.463Z",
+      "finishedAt": "2026-03-30T21:12:14.547Z"
+    },
+    {
+      "name": "Merge/main parity check",
+      "command": "npm run check:merge-main",
+      "evidenceFile": null,
+      "status": "passed",
+      "durationMs": 459,
+      "startedAt": "2026-03-30T21:12:14.548Z",
+      "finishedAt": "2026-03-30T21:12:15.007Z"
+    }
+  ]
+}
