@@ -22,7 +22,7 @@ Required environment variables:
 - `RELEASE_ID` (or pass `--release-id`) for artifact scoping.
 - `KLIENT_BASE_URL` for post-deploy health/readiness checks.
 - `KLIENT_OPS_TOKEN` for authenticated ops diagnostics endpoints.
-- `RESTORE_BACKUP_PATH` only when running `--phase restore`.
+- `RESTORE_BACKUP_PATH` only when running `--phase restore` or `--phase restore-drill`.
 
 Hard gate only (legacy/manual mode):
 
@@ -61,10 +61,16 @@ RELEASE_EVIDENCE_FILE=artifacts/release-evidence/<release-id>/validate-master-su
 npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight
 ```
 
-### Flow B — deterministic restore-validation (single command)
+### Flow B — deterministic restore-validation (single command, live rollback path)
 ```bash
 RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
   npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"
+```
+
+### Flow B.1 — verify-only restore drill (single command, non-live path)
+```bash
+RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
+  npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"
 ```
 
 ## Objective pass/fail criteria
@@ -79,7 +85,8 @@ RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
 | Branch parity | Engineering Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/branch-parity.txt` | Exit code `0`; branch is merge-compatible with `main`. | **SEV-2** | No runtime rollback trigger by itself; block release until parity is restored. |
 | Backup metadata | SRE / On-call | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/backup.json` | Exit code `0`; JSON has `ok=true`, `status=succeeded`, non-empty `artifact.path`, `artifact.sizeBytes>0`, `artifact.sqliteQuickCheck=ok`. | **SEV-1** | Roll back and halt further deploys if deploy proceeds without a verified fresh backup artifact and integrity check. |
 | Deterministic preflight flow | Release Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/backup.json`, `artifacts/release-evidence/<release-id>/branch-parity.txt`, `artifacts/release-evidence/<release-id>/validate-master-summary.json` | Single command exits `0`; includes passing backup metadata, branch parity, and hard release gate evidence. | **SEV-1** | Block release if flow fails at any stage; no deploy until all evidence is regenerated and PASS. |
-| Deterministic restore-validation flow | Data/DB Owner + SRE | `RESTORE_BACKUP_PATH=data/backup-<timestamp>.db npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"` | `artifacts/release-evidence/<release-id>/restore.json` | Exit code `0`; restore JSON has `ok=true`, both `source/target.sqliteQuickCheck=ok`, `checks.sizeMatch=true`, `checks.sha256Match=true`. | **SEV-1** | Roll back/hold release if restore drill or real restore validation fails integrity checks. |
+| Deterministic restore-validation flow (live restore) | Data/DB Owner + SRE | `RESTORE_BACKUP_PATH=data/backup-<timestamp>.db npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"` | `artifacts/release-evidence/<release-id>/restore.json` | Exit code `0`; JSON has `ok=true`, `executionMode=live-restore`, both `source/restoreTarget.sqliteQuickCheck=ok`, `checks.sizeMatch=true`, `checks.sha256Match=true`. | **SEV-1** | Roll back/hold release if live restore validation fails integrity checks. |
+| Verify-only restore drill flow (non-live) | Data/DB Owner + SRE | `RESTORE_BACKUP_PATH=data/backup-<timestamp>.db npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"` | `artifacts/release-evidence/<release-id>/restore-drill.json` | Exit code `0`; JSON has `ok=true`, `executionMode=verify-only-drill`, both `source/restoreTarget.sqliteQuickCheck=ok`, `checks.sizeMatch=true`, `checks.sha256Match=true`. | **SEV-2** | Block GO if drill evidence is required by policy and absent/failed; do not treat drill output as proof of live restore execution. |
 | Post-deploy health + readiness | SRE / On-call | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-health.json`, `artifacts/release-evidence/<release-id>/postdeploy-ready.json` | Both return HTTP `200`; readiness has `status=ready` and `checks.*=true`. | **SEV-1** | Roll back if health/readiness are non-200 for **>5 minutes** or if readiness remains degraded after one remediation attempt. |
 | Export queue diagnostics | SRE / On-call | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-exports-queue.json` | Endpoint returns HTTP `200` and queue counters are machine-parseable. | **SEV-1** | Roll back if queue processing is stalled and no successful processing occurs within **10 minutes**. |
 | Telemetry bundle | Observability Owner | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json` | Endpoint returns HTTP `200`; bundle includes startup/runtime diagnostics and export/audit/security sections. | **SEV-1** | Roll back if telemetry indicates sustained SLO breach for **>10 minutes** or unresolved critical/high alerts. |
@@ -96,3 +103,8 @@ Execute in this exact order and stop on first failure:
 ## Release decision rubric
 - **GO**: `npm run release:go-no-go -- --release-id "$RELEASE_ID"` passes and every required row above is PASS with captured command output, evidence files, and `manifest.json`.
 - **NO-GO**: Any row FAILS, is skipped, or has inconclusive evidence.
+
+## Restore evidence interpretation rules
+- Use `restore.json` only for real rollback execution evidence and require `executionMode=live-restore`.
+- Use `restore-drill.json` only for verify-only drill evidence and require `executionMode=verify-only-drill`.
+- Never mark a live rollback as complete based on `restore-drill.json`; drill output is intentionally separated to prevent operator confusion.

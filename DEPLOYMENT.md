@@ -79,7 +79,7 @@ Required environment variables:
 - `RELEASE_ID` (or pass `--release-id`) to scope evidence output.
 - `KLIENT_BASE_URL` for post-deploy `/health` and `/ready`.
 - `KLIENT_OPS_TOKEN` for authenticated post-deploy diagnostics.
-- `RESTORE_BACKUP_PATH` only when running `--phase restore`.
+- `RESTORE_BACKUP_PATH` only when running `--phase restore` or `--phase restore-drill`.
 
 Hard gate only (legacy/manual mode):
 
@@ -181,15 +181,21 @@ Create a backup:
 node scripts/backup-db.mjs | tee artifacts/release-evidence/<release-id>/backup.json
 ```
 
-Restore from a backup file:
+Restore from a backup file (live rollback execution):
 
 ```bash
 node scripts/restore-db.mjs data/backup-<timestamp>.db | tee artifacts/release-evidence/<release-id>/restore.json
 ```
 
+Run a verify-only restore drill (uses a temporary path and removes it after integrity checks):
+
+```bash
+node scripts/restore-db.mjs data/backup-<timestamp>.db --verify-only | tee artifacts/release-evidence/<release-id>/restore-drill.json
+```
+
 Both scripts emit structured JSON metadata for release evidence automation:
 - backup: `operation`, `status`, `artifact.path`, `artifact.sizeBytes`, `artifact.sha256`, `artifact.sqliteQuickCheck`, `startedAt`, `finishedAt`
-- restore: `operation`, `status`, `source.*`, `target.*`, `checks.sizeMatch`, `checks.sha256Match`, timestamps
+- restore/verify: `operation`, `status`, `executionMode` (`live-restore` or `verify-only-drill`), `evidenceLabel`, `source.*`, `restoreTarget.*`, `restoreTarget.kind`, `checks.sizeMatch`, `checks.sha256Match`, `checks.sourceQuickCheckOk`, `checks.targetQuickCheckOk`, timestamps
 
 ## Deterministic operations flows
 
@@ -207,12 +213,27 @@ PASS criteria (all required):
 - hard gate command exits `0` with `validate-master-summary.json` status `passed`
 
 ### Flow B — deterministic restore-validation (single command)
-Run this only for rollback/restore drills or real recovery:
+Run this command only for a real rollback restore (writes to the live DB path):
 
 ```bash
 RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
   npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"
 ```
+
+### Flow B.1 — verify-only restore drill (single command)
+Run this command for drill evidence without touching the live DB path:
+
+```bash
+RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
+  npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"
+```
+
+### Restore evidence decision rules (operator safety)
+- Treat `executionMode=live-restore` as real rollback execution evidence.
+- Treat `executionMode=verify-only-drill` as drill evidence only; it MUST NOT be used as proof that a live restore was executed.
+- For GO/NO-GO acceptance, require the artifact filename and mode to match intent:
+  - Drill: `restore-drill.json` with `executionMode=verify-only-drill`
+  - Live rollback: `restore.json` with `executionMode=live-restore`
 
 ## Deployment playbook
 1. **Pre-flight**

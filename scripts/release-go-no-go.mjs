@@ -12,7 +12,8 @@ function parseArgs(argv) {
   const options = {
     phase: 'all',
     releaseId: process.env.RELEASE_ID || '',
-    restorePath: process.env.RESTORE_BACKUP_PATH || ''
+    restorePath: process.env.RESTORE_BACKUP_PATH || '',
+    restoreVerifyOnly: false
   }
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -32,6 +33,10 @@ function parseArgs(argv) {
       index += 1
       continue
     }
+    if (token === '--restore-verify-only') {
+      options.restoreVerifyOnly = true
+      continue
+    }
     if (token === '--help' || token === '-h') {
       options.help = true
       continue
@@ -49,11 +54,12 @@ function parseArgs(argv) {
 function printHelp() {
   process.stdout.write(`Release go/no-go operator\n\n`)
   process.stdout.write(`Usage:\n`)
-  process.stdout.write(`  npm run release:go-no-go -- --release-id <release-id> [--phase all|preflight|postdeploy|restore] [--restore-path <backup-file>]\n\n`)
+  process.stdout.write(`  npm run release:go-no-go -- --release-id <release-id> [--phase all|preflight|postdeploy|restore|restore-drill] [--restore-path <backup-file>] [--restore-verify-only]\n\n`)
   process.stdout.write(`Examples:\n`)
   process.stdout.write(`  npm run release:go-no-go -- --release-id 2026-03-27.1\n`)
   process.stdout.write(`  npm run release:go-no-go -- --release-id 2026-03-27.1 --phase preflight\n`)
   process.stdout.write(`  npm run release:go-no-go -- --release-id 2026-03-27.1 --phase restore --restore-path data/backup-20260327.db\n`)
+  process.stdout.write(`  npm run release:go-no-go -- --release-id 2026-03-27.1 --phase restore-drill --restore-path data/backup-20260327.db\n`)
 }
 
 function runStep({ name, command, args, outputFile = '', env = process.env }) {
@@ -130,20 +136,21 @@ function ensureBackupEvidence(backupFile) {
   }
 }
 
-function ensureRestoreEvidence(restoreFile) {
+function ensureRestoreEvidence(restoreFile, expectedMode = 'live-restore') {
   const report = parseJsonFile(restoreFile, 'Restore evidence')
   const valid =
     report &&
     report.ok === true &&
     report.status === 'succeeded' &&
+    report.executionMode === expectedMode &&
     report.source?.sqliteQuickCheck === 'ok' &&
-    report.target?.sqliteQuickCheck === 'ok' &&
+    report.restoreTarget?.sqliteQuickCheck === 'ok' &&
     report.checks?.sizeMatch === true &&
     report.checks?.sha256Match === true
 
   if (!valid) {
     fail(
-      `Restore evidence validation failed at ${restoreFile}. Expected ok=true, status=succeeded, source/target sqliteQuickCheck=ok, and checks.sizeMatch/checks.sha256Match=true`
+      `Restore evidence validation failed at ${restoreFile}. Expected ok=true, status=succeeded, executionMode=${expectedMode}, source/restoreTarget sqliteQuickCheck=ok, and checks.sizeMatch/checks.sha256Match=true`
     )
   }
 }
@@ -216,9 +223,9 @@ if (options.help) {
   process.exit(0)
 }
 
-const validPhases = new Set(['all', 'preflight', 'postdeploy', 'restore'])
+const validPhases = new Set(['all', 'preflight', 'postdeploy', 'restore', 'restore-drill'])
 if (!validPhases.has(options.phase)) {
-  fail(`Invalid --phase value "${options.phase}". Use one of: all, preflight, postdeploy, restore.`)
+  fail(`Invalid --phase value "${options.phase}". Use one of: all, preflight, postdeploy, restore, restore-drill.`)
 }
 if (!options.releaseId) {
   fail('Missing release id. Pass --release-id <release-id> or set RELEASE_ID.')
@@ -259,20 +266,25 @@ const preflight = async () => {
   })
 }
 
-const restoreValidation = async () => {
+const restoreValidation = async ({ verifyOnly = false } = {}) => {
   const restorePath = options.restorePath || process.env.RESTORE_BACKUP_PATH
   if (!restorePath) {
     fail('Restore flow requires --restore-path <backup-file> or RESTORE_BACKUP_PATH.')
   }
 
-  const restoreFile = resolve(evidenceDir, 'restore.json')
+  const restoreFile = resolve(evidenceDir, verifyOnly ? 'restore-drill.json' : 'restore.json')
+  const restoreArgs = ['run', '--silent', 'restore', '--', restorePath]
+  if (verifyOnly) {
+    restoreArgs.push('--verify-only', '--evidence-label', 'release-go-no-go-restore-drill')
+  }
+
   await runStep({
-    name: 'Flow B.1 Restore metadata capture',
+    name: verifyOnly ? 'Flow B.1 Restore verify-only drill metadata capture' : 'Flow B.1 Restore metadata capture',
     command: 'npm',
-    args: ['run', '--silent', 'restore', '--', restorePath],
+    args: restoreArgs,
     outputFile: restoreFile
   })
-  ensureRestoreEvidence(restoreFile)
+  ensureRestoreEvidence(restoreFile, verifyOnly ? 'verify-only-drill' : 'live-restore')
 }
 
 const postdeploy = async () => {
@@ -331,7 +343,9 @@ try {
   if (options.phase === 'preflight') {
     await runPhase('preflight', preflight)
   } else if (options.phase === 'restore') {
-    await runPhase('restore', restoreValidation)
+    await restoreValidation({ verifyOnly: options.restoreVerifyOnly })
+  } else if (options.phase === 'restore-drill') {
+    await restoreValidation({ verifyOnly: true })
   } else if (options.phase === 'postdeploy') {
     await runPhase('postdeploy', postdeploy)
   } else {
