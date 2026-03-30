@@ -1890,24 +1890,45 @@ function boardCardMarkup(card, kind) {
   const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
   const cardStage = card.stage || getStageDefinitions({ includeInactive: false })[0]?.id || 'discovery'
   const workflow = card.workflowSummary || {}
+  const submissionCount = Number(workflow.submissionCount || 0)
+  const draftCount = Number(workflow.draftCount || 0)
+  const hasDraft = Boolean(workflow.latestDraftId)
+  const hasSubmission = Boolean(workflow.latestSubmissionId)
+  const workflowStatusText = hasDraft
+    ? 'Draft in progress'
+    : hasSubmission
+      ? 'Submission ready for review'
+      : 'No forms started'
+  const primaryAction = hasDraft
+    ? { id: workflow.latestDraftId, label: 'Resume draft' }
+    : hasSubmission
+      ? { id: workflow.latestSubmissionId, label: 'Review submission' }
+      : null
+  const secondaryAction =
+    hasDraft && hasSubmission && workflow.latestDraftId !== workflow.latestSubmissionId
+      ? { id: workflow.latestSubmissionId, label: 'Latest submission' }
+      : null
   const workflowActionsMarkup =
     kind === 'client'
       ? `
       <div class="workflow-shortcuts" data-workflow-card="${card.id}">
         <button type="button" class="secondary tiny workflow-shortcut" data-open-profile-detail="${card.id}" aria-expanded="false" aria-controls="profile-detail-${card.id}">Profile detail</button>
         ${
-          workflow.latestSubmissionId
-            ? `<a class="secondary tiny workflow-shortcut-link" href="#${appRoutes.clientFormSubmission(card.id, workflow.latestSubmissionId)}" data-workflow-client="${card.id}" data-workflow-submission="${workflow.latestSubmissionId}">Edit submission</a>`
-            : `<button type="button" class="secondary tiny workflow-shortcut" disabled>No submission</button>`
+          primaryAction
+            ? `<button type="button" class="secondary tiny workflow-shortcut" data-workflow-nav-primary="${card.id}" data-workflow-submission="${primaryAction.id}">${primaryAction.label}</button>`
+            : `<button type="button" class="secondary tiny workflow-shortcut" disabled>Start forms</button>`
         }
         ${
-          workflow.latestDraftId
-            ? `<a class="secondary tiny workflow-shortcut-link" href="#${appRoutes.clientFormSubmission(card.id, workflow.latestDraftId)}" data-workflow-client="${card.id}" data-workflow-submission="${workflow.latestDraftId}">Edit draft</a>`
-            : `<button type="button" class="secondary tiny workflow-shortcut" disabled>No draft</button>`
+          secondaryAction
+            ? `<button type="button" class="secondary tiny workflow-shortcut" data-workflow-nav-secondary="${card.id}" data-workflow-submission="${secondaryAction.id}">${secondaryAction.label}</button>`
+            : ''
         }
         <button type="button" class="secondary tiny workflow-shortcut" data-open-doc-actions="${card.id}" data-workflow-submission="${workflow.latestSubmissionId || workflow.latestDraftId || ''}">Document actions</button>
       </div>
-      <div class="muted compact-meta">Forms: ${workflow.submissionCount || 0} submissions · ${workflow.draftCount || 0} drafts</div>
+      <div class="workflow-action-meta">
+        <span class="badge subtle">${workflowStatusText}</span>
+        <span class="muted compact-meta">Forms: ${submissionCount} submissions · ${draftCount} drafts</span>
+      </div>
       <div id="profile-detail-${card.id}" class="hidden card-detail muted compact-meta top-gap" data-profile-detail="${card.id}" role="status" aria-live="polite"></div>
     `
       : ''
@@ -2175,11 +2196,32 @@ function wireBoardInteractions(kind) {
     })
   })
 
+  const navigateWorkflowTarget = (control) => {
+    const clientId = control?.dataset?.workflowClient || ''
+    const submissionId = control?.dataset?.workflowSubmission || ''
+    if (!clientId || !submissionId) return
+    const targetRoute = appRoutes.clientFormSubmission(clientId, submissionId)
+    setWorkflowContext({ clientId, submissionId })
+    if (window.location.hash === `#${targetRoute}`) return
+    window.location.hash = targetRoute
+  }
+
   document.querySelectorAll('[data-workflow-client]').forEach((link) => {
     link.addEventListener('click', () => {
       setWorkflowContext({
         clientId: link.dataset.workflowClient || '',
         submissionId: link.dataset.workflowSubmission || ''
+      })
+    })
+  })
+
+  document.querySelectorAll('[data-workflow-nav-primary], [data-workflow-nav-secondary]').forEach((button) => {
+    button.addEventListener('click', () => {
+      navigateWorkflowTarget({
+        dataset: {
+          workflowClient: button.dataset.workflowNavPrimary || button.dataset.workflowNavSecondary || '',
+          workflowSubmission: button.dataset.workflowSubmission || ''
+        }
       })
     })
   })
