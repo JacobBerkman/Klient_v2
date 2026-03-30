@@ -575,6 +575,13 @@ function viewErrorBanner(viewName, error) {
   return `<div class="item compact error-banner" role="alert">We couldn’t load ${escapeHtml(viewName)}.${escapeHtml(detail)}</div>`
 }
 
+function formatDateTime(value) {
+  if (!value) return '—'
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) return String(value)
+  return new Date(parsed).toLocaleString()
+}
+
 async function request(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase()
   if (MUTATING_METHODS.has(method) && path.startsWith('/api/') && !csrfToken) {
@@ -2758,6 +2765,202 @@ async function renderOperations() {
   })
 }
 
+async function renderHouseholds() {
+  viewEl.innerHTML = `
+    ${flashMarkup()}
+    ${alertMarkup()}
+    <section class="section-card">
+      <h2>Households</h2>
+      ${emptyStateMarkup('Loading households…')}
+    </section>
+  `
+  try {
+    const [households, clients] = await Promise.all([request(routes.households()), request(routes.profiles({ kind: 'client' }))])
+    const clientNameById = new Map(
+      clients.map((profile) => [profile.id, `${profile.firstName || ''} ${profile.lastName || ''}`.trim() || profile.id])
+    )
+    const householdRows = households
+      .map((household) => {
+        const primaryName = clientNameById.get(household.primaryClientId) || household.primaryClientId || 'Unassigned'
+        const members = Array.isArray(household.memberClientIds) ? household.memberClientIds.length : 0
+        return `<tr>
+          <td><code>${escapeHtml(household.id || '')}</code></td>
+          <td>${escapeHtml(household.name || 'Untitled household')}</td>
+          <td>${escapeHtml(primaryName)}</td>
+          <td>${members}</td>
+          <td>${escapeHtml(formatDateTime(household.createdAt))}</td>
+        </tr>`
+      })
+      .join('')
+
+    viewEl.innerHTML = `
+      ${flashMarkup()}
+      ${alertMarkup()}
+      <section class="section-card">
+        <div class="section-header">
+          <div>
+            <h2>Households</h2>
+            <p class="muted compact">Read-only household directory with primary client and member counts.</p>
+          </div>
+          <span class="badge subtle">${households.length} total</span>
+        </div>
+        <div class="view-panel-grid">
+          <article class="panel-card">
+            <h3>Household Directory</h3>
+            ${
+              householdRows
+                ? `<div class="data-table-wrap"><table><thead><tr><th>ID</th><th>Name</th><th>Primary client</th><th>Members</th><th>Created</th></tr></thead><tbody>${householdRows}</tbody></table></div>`
+                : emptyStateMarkup('No households found yet. Create one from the admin forms panel.')
+            }
+          </article>
+        </div>
+      </section>
+    `
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner('households', error)}${emptyStateMarkup()}`
+  }
+}
+
+async function renderAudit() {
+  viewEl.innerHTML = `
+    ${flashMarkup()}
+    ${alertMarkup()}
+    <section class="section-card">
+      <h2>Audit</h2>
+      ${emptyStateMarkup('Loading audit events…')}
+    </section>
+  `
+  try {
+    const entries = await request(routes.audit())
+    const rows = entries
+      .map(
+        (entry) => `<tr>
+          <td>${escapeHtml(formatDateTime(entry.occurredAt || entry.createdAt))}</td>
+          <td>${escapeHtml(entry.action || 'n/a')}</td>
+          <td>${escapeHtml(entry.entityType || 'n/a')}</td>
+          <td><code>${escapeHtml(entry.entityId || 'n/a')}</code></td>
+          <td>${escapeHtml(entry.actorUserId || entry.userId || 'system')}</td>
+        </tr>`
+      )
+      .join('')
+
+    viewEl.innerHTML = `
+      ${flashMarkup()}
+      ${alertMarkup()}
+      <section class="section-card">
+        <div class="section-header">
+          <div>
+            <h2>Audit</h2>
+            <p class="muted compact">Recent cross-domain events captured by the canonical audit stream.</p>
+          </div>
+          <span class="badge subtle">${entries.length} event(s)</span>
+        </div>
+        <article class="panel-card">
+          <h3>Recent Events</h3>
+          ${
+            rows
+              ? `<div class="data-table-wrap"><table><thead><tr><th>When</th><th>Action</th><th>Entity</th><th>Entity ID</th><th>Actor</th></tr></thead><tbody>${rows}</tbody></table></div>`
+              : emptyStateMarkup('No audit events available yet.')
+          }
+        </article>
+      </section>
+    `
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner('audit', error)}${emptyStateMarkup()}`
+  }
+}
+
+async function renderClientWorkspace() {
+  viewEl.innerHTML = `
+    ${flashMarkup()}
+    ${alertMarkup()}
+    <section class="section-card">
+      <h2>My Portal</h2>
+      ${emptyStateMarkup('Loading workspace…')}
+    </section>
+  `
+  try {
+    const [profiles, submissions, drafts] = await Promise.all([
+      request(routes.profiles({ kind: 'client' })),
+      request(routes.formSubmissions()),
+      request(routes.formDrafts())
+    ])
+    const profileCards = profiles
+      .map(
+        (profile) => `<li class="item compact">
+          <strong>${escapeHtml(`${profile.firstName || ''} ${profile.lastName || ''}`.trim() || profile.id)}</strong>
+          <div class="muted">Email: ${escapeHtml(profile.email || '—')}</div>
+          <div class="muted">Stage: ${escapeHtml(profile.stage || '—')}</div>
+        </li>`
+      )
+      .join('')
+    const submissionRows = submissions
+      .slice(0, 8)
+      .map(
+        (submission) => `<tr>
+          <td><code>${escapeHtml(submission.id || '')}</code></td>
+          <td>${escapeHtml(submission.templateId || 'n/a')}</td>
+          <td>${escapeHtml(formatDateTime(submission.updatedAt || submission.createdAt))}</td>
+          <td>${escapeHtml(submission.status || 'saved')}</td>
+        </tr>`
+      )
+      .join('')
+    const draftRows = drafts
+      .slice(0, 8)
+      .map(
+        (draft) => `<tr>
+          <td><code>${escapeHtml(draft.id || '')}</code></td>
+          <td>${escapeHtml(draft.templateId || 'n/a')}</td>
+          <td>${escapeHtml(formatDateTime(draft.updatedAt || draft.createdAt))}</td>
+          <td>${draft.revisionId || 1}</td>
+        </tr>`
+      )
+      .join('')
+
+    viewEl.innerHTML = `
+      ${flashMarkup()}
+      ${alertMarkup()}
+      <section class="section-card">
+        <div class="section-header">
+          <div>
+            <h2>My Portal</h2>
+            <p class="muted compact">Client-facing summary of your profiles, form submissions, and active drafts.</p>
+          </div>
+        </div>
+        <div class="stat-grid compact-stats">
+          ${metricCard('profiles', profiles.length)}
+          ${metricCard('submissions', submissions.length)}
+          ${metricCard('drafts', drafts.length)}
+        </div>
+        <div class="view-panel-grid">
+          <article class="panel-card">
+            <h3>My Profiles</h3>
+            ${profileCards ? `<ul class="list panel-list">${profileCards}</ul>` : emptyStateMarkup('No client profiles found for this account.')}
+          </article>
+          <article class="panel-card">
+            <h3>Recent Submissions</h3>
+            ${
+              submissionRows
+                ? `<div class="data-table-wrap"><table><thead><tr><th>Submission</th><th>Template</th><th>Updated</th><th>Status</th></tr></thead><tbody>${submissionRows}</tbody></table></div>`
+                : emptyStateMarkup('No submissions yet.')
+            }
+          </article>
+          <article class="panel-card">
+            <h3>Recent Drafts</h3>
+            ${
+              draftRows
+                ? `<div class="data-table-wrap"><table><thead><tr><th>Draft</th><th>Template</th><th>Updated</th><th>Revision</th></tr></thead><tbody>${draftRows}</tbody></table></div>`
+                : emptyStateMarkup('No drafts in progress.')
+            }
+          </article>
+        </div>
+      </section>
+    `
+  } catch (error) {
+    viewEl.innerHTML = `${flashMarkup()}${alertMarkup()}${viewErrorBanner('client workspace', error)}${emptyStateMarkup()}`
+  }
+}
+
 function applyHashRoute() {
   const hashPath = window.location.hash.startsWith('#') ? window.location.hash.slice(1) : ''
   const route = appRoutes.parseClientFormSubmission(hashPath)
@@ -2785,6 +2988,9 @@ async function renderCurrentView() {
   if (state.view === 'operations') return renderOperations()
   if (state.view === 'prospects') return renderBoard('prospect')
   if (state.view === 'clients') return renderBoard('client')
+  if (state.view === 'households') return renderHouseholds()
+  if (state.view === 'audit') return renderAudit()
+  if (state.view === 'client-workspace') return renderClientWorkspace()
   return renderFallback(state.view)
 }
 
