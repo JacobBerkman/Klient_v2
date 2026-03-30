@@ -174,6 +174,7 @@ const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
 const authProviderRaw = readNonEmptyString('AUTH_PROVIDER')
 const authProvider = readAuthProvider(authProviderRaw || undefined)
 const piiKeyProvider = readPiiKeyProvider(process.env.PII_KEY_PROVIDER)
+const klientOpsToken = readNonEmptyString('KLIENT_OPS_TOKEN')
 
 if (nodeEnv === 'production' && enableTestCsrfBypass) {
   throw new Error('ENABLE_TEST_CSRF_BYPASS cannot be enabled in production.')
@@ -230,6 +231,8 @@ export const runtime = {
     strict: nodeEnv === 'production'
   }),
   piiKeyProvider,
+  klientOpsToken,
+  opsTokenAuthEnabled: Boolean(klientOpsToken),
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',
   instanceId: process.env.INSTANCE_ID || hostname(),
@@ -338,6 +341,15 @@ export function validateRuntimeConfig() {
     }
   }
 
+  if (runtime.nodeEnv === 'production' && !runtime.opsTokenAuthEnabled) {
+    issues.push('KLIENT_OPS_TOKEN must be set in production for /api/ops/diagnostics and /api/ops/exports/queue token auth.')
+  }
+  if (runtime.opsTokenAuthEnabled && runtime.klientOpsToken.length < 24) {
+    const message = 'KLIENT_OPS_TOKEN should be at least 24 characters to reduce brute-force risk.'
+    if (runtime.nodeEnv === 'production') issues.push(message)
+    else warnings.push(message)
+  }
+
   if (runtime.nodeEnv === 'production' && runtime.logLevel === 'debug') {
     warnings.push('LOG_LEVEL=debug in production may emit sensitive operational details.')
   }
@@ -371,6 +383,7 @@ export function validateRuntimeConfig() {
       authProvider: runtime.authProvider,
       authDiagnostics: runtime.authStartupDiagnostics,
       piiKeyProvider: runtime.piiKeyProvider,
+      opsTokenAuthEnabled: runtime.opsTokenAuthEnabled,
       serviceName: runtime.serviceName,
       instanceId: runtime.instanceId,
       storageProvider: runtime.storageProvider,

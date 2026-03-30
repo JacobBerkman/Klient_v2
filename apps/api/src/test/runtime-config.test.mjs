@@ -8,7 +8,8 @@ const trackedEnvKeys = [
   'NODE_ENV',
   'APP_SECRET',
   'ALLOW_DEV_FALLBACK_APP_SECRET',
-  'UNSAFE_ALLOW_WEAK_APP_SECRET'
+  'UNSAFE_ALLOW_WEAK_APP_SECRET',
+  'KLIENT_OPS_TOKEN'
 ];
 
 async function loadRuntimeWithEnv(overrides) {
@@ -52,18 +53,43 @@ test('runtime allows fallback APP_SECRET in development when explicit override i
   assert.match(diagnostics.warnings.join(' '), /ALLOW_DEV_FALLBACK_APP_SECRET=true/);
 });
 
-test('runtime rejects weak APP_SECRET in production unless unsafe override is set', async () => {
+test('runtime rejects weak APP_SECRET in production and disallows unsafe override', async () => {
   await assert.rejects(
     () => loadRuntimeWithEnv({ NODE_ENV: 'production', APP_SECRET: 'abc123' }),
-    /UNSAFE_ALLOW_WEAK_APP_SECRET=true/
+    /minimum security requirements for production/
   );
 
-  const { runtime, validateRuntimeConfig } = await loadRuntimeWithEnv({
+  await assert.rejects(
+    () =>
+      loadRuntimeWithEnv({
+        NODE_ENV: 'production',
+        APP_SECRET: 'abc123',
+        UNSAFE_ALLOW_WEAK_APP_SECRET: 'true'
+      }),
+    /UNSAFE_ALLOW_WEAK_APP_SECRET cannot be enabled in production/
+  );
+});
+
+
+test('runtime diagnostics fail clearly in production when ops token auth is expected but missing', async () => {
+  const { validateRuntimeConfig } = await loadRuntimeWithEnv({
     NODE_ENV: 'production',
-    APP_SECRET: 'abc123',
-    UNSAFE_ALLOW_WEAK_APP_SECRET: 'true'
+    APP_SECRET: 'VeryStrongProductionSecretValue123!@#',
+    UNSAFE_ALLOW_WEAK_APP_SECRET: 'false'
   });
   const diagnostics = validateRuntimeConfig();
-  assert.equal(runtime.allowUnsafeAppSecret, true);
-  assert.match(diagnostics.warnings.join(' '), /UNSAFE_ALLOW_WEAK_APP_SECRET=true/);
+  assert.equal(diagnostics.ok, false);
+  assert.match(diagnostics.issues.join(' '), /KLIENT_OPS_TOKEN must be set in production/);
+});
+
+test('runtime diagnostics reject short ops token when configured', async () => {
+  const { validateRuntimeConfig } = await loadRuntimeWithEnv({
+    NODE_ENV: 'production',
+    APP_SECRET: 'VeryStrongProductionSecretValue123!@#',
+    KLIENT_OPS_TOKEN: 'short-token',
+    UNSAFE_ALLOW_WEAK_APP_SECRET: 'false'
+  });
+  const diagnostics = validateRuntimeConfig();
+  assert.equal(diagnostics.ok, false);
+  assert.match(diagnostics.issues.join(' '), /KLIENT_OPS_TOKEN should be at least 24 characters/);
 });
