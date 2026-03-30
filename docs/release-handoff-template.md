@@ -38,12 +38,13 @@ Record whether each required key is set in the deployment target (do not paste s
 
 ## 2a) Startup fail-fast verification (production)
 Confirm that startup fails before bind/listen when runtime config is invalid, and records clear issues.
+Use `artifacts/release-evidence/<release-id>/startup-failfast.json` as the default evidence source from `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight`.
 
 | Check | Result | Evidence path / notes |
 |---|---|---|
-| Invalid production config blocks startup (`server.startup.blocked`) |  |  |
-| Error payload lists `startupDiagnostics.issues` entries |  |  |
-| Valid config starts normally and emits `server.started` |  |  |
+| Invalid production config blocks startup (`server.startup.blocked`) |  | `artifacts/release-evidence/<release-id>/startup-failfast.json` (`checks.startupBlockedLogged=true`) |
+| Error payload lists startup validation issues |  | `artifacts/release-evidence/<release-id>/startup-failfast.json` (`checks.startupIssuesPresent=true`) |
+| Startup is blocked before bind/listen |  | `artifacts/release-evidence/<release-id>/startup-failfast.json` (`checks.listenPrevented=true`) |
 
 ## 3) Evidence artifact links
 Attach links or paths to the objective release evidence.
@@ -63,6 +64,8 @@ Optional per-file links (if needed for review):
 - `artifacts/release-evidence/<release-id>/security-summary.json`
 - `artifacts/release-evidence/<release-id>/branch-parity.txt`
 - `artifacts/release-evidence/<release-id>/backup.json`
+- `artifacts/release-evidence/<release-id>/startup-failfast.json`
+- `artifacts/release-evidence/<release-id>/startup-failfast.txt`
 - `artifacts/release-evidence/<release-id>/restore.json`
 - `artifacts/release-evidence/<release-id>/postdeploy-health.json`
 - `artifacts/release-evidence/<release-id>/postdeploy-ready.json`
