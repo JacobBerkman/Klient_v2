@@ -189,6 +189,19 @@ textarea {
   gap: 6px;
   margin-top: 8px;
 }
+.workflow-action-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-top: 6px;
+}
+.workflow-action-meta .badge {
+  font-size: 11px;
+}
+.workflow-action-meta .compact-meta {
+  line-height: 1.3;
+}
 .workflow-shortcut,
 .workflow-shortcut-link {
   font-size: 12px;
@@ -269,6 +282,28 @@ textarea {
 .section-card {
   display: grid;
   gap: 12px;
+}
+.view-panel-grid {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  align-items: start;
+}
+.panel-card {
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border-radius: 12px;
+  background: #0b1220;
+  border: 1px solid #1e293b;
+}
+.panel-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.data-table-wrap {
+  overflow-x: auto;
 }
 
 .ops-actions {
@@ -370,6 +405,28 @@ textarea {
 .mapping-control.is-invalid {
   border-color: #ef4444;
   box-shadow: 0 0 0 1px rgba(239, 68, 68, 0.25);
+}
+
+.mapping-row-item {
+  cursor: pointer;
+}
+
+.mapping-row-item.is-selected {
+  outline: 1px solid #60a5fa;
+  outline-offset: -1px;
+}
+
+.mapping-row-item.is-jumped {
+  outline: 2px solid #f59e0b;
+  outline-offset: -2px;
+}
+
+.mapping-row-item.is-selected:focus-visible,
+.mapping-row-item.is-jumped:focus-visible,
+.mapping-row-item:focus-visible {
+  outline: 2px solid #93c5fd;
+  outline-offset: -2px;
+  box-shadow: inset 0 0 0 2px rgba(30, 64, 175, 0.45);
 }
 
 .field-error-text {

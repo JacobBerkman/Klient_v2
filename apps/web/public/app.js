@@ -28,11 +28,15 @@ const state = {
   templatePreviewByTemplateId: {},
   templatePublishPreflightByTemplateId: {},
   templatePreviewSelectionByTemplateId: {},
+  templateMappingFilterByTemplateId: {},
+  templateInspectorFocusRequestByTemplateId: {},
+  templateJumpHighlightByTemplateId: {},
   workflowStatusMessage: '',
   operations: {
     busy: false,
     lastUpdatedAt: '',
-    snapshot: null
+    snapshot: null,
+    feedback: ''
   }
 }
 
@@ -589,6 +593,13 @@ function emptyStateMarkup(message = 'Nothing to show yet. Adjust filters or crea
 function viewErrorBanner(viewName, error) {
   const detail = error?.message ? ` ${error.message}` : ''
   return `<div class="item compact error-banner" role="alert">We couldn’t load ${escapeHtml(viewName)}.${escapeHtml(detail)}</div>`
+}
+
+function formatDateTime(value) {
+  if (!value) return '—'
+  const parsed = Date.parse(value)
+  if (!Number.isFinite(parsed)) return String(value)
+  return new Date(parsed).toLocaleString()
 }
 
 async function request(path, options = {}) {
@@ -1360,6 +1371,9 @@ async function renderTemplates() {
   if (!state.templateInspector) state.templateInspector = {}
   if (!state.templateSaveStateByTemplateId) state.templateSaveStateByTemplateId = {}
   if (!state.templateAutosaveTimers) state.templateAutosaveTimers = {}
+  if (!state.templateMappingFilterByTemplateId) state.templateMappingFilterByTemplateId = {}
+  if (!state.templateInspectorFocusRequestByTemplateId) state.templateInspectorFocusRequestByTemplateId = {}
+  if (!state.templateJumpHighlightByTemplateId) state.templateJumpHighlightByTemplateId = {}
 
   const mappingDraftFromServer = (mapping = {}) => ({
     pdfField: String(mapping.pdfField || ''),
@@ -1428,6 +1442,11 @@ async function renderTemplates() {
   const hasBlockingPreviewWarnings =
     Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
   const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings || preflightIssues.length > 0
+  const templateFilter = state.templateMappingFilterByTemplateId[template?.id] || 'all'
+  const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unmapped', 'preview-warning'])
+  const activeTemplateFilter = allowedTemplateFilters.has(templateFilter) ? templateFilter : 'all'
+  if (template && activeTemplateFilter !== templateFilter) state.templateMappingFilterByTemplateId[template.id] = activeTemplateFilter
+  const rowJumpHighlight = template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
 
   const selectedRowIndex = Number.isInteger(state.templateInspector?.[template?.id]?.rowIndex)
     ? state.templateInspector[template.id].rowIndex
@@ -1501,14 +1520,37 @@ async function renderTemplates() {
       <section class="item">
         <h3>Mappings</h3>
         <div class="row gap-sm wrap"><button id="add-mapping-row" class="tiny">Add Mapping</button><button id="save-mappings" class="tiny">Save Now</button></div>
+        <div class="row gap-sm wrap top-gap">
+          ${[
+            { value: 'all', label: `All (${draftMappings.length})` },
+            { value: 'needs-fix', label: `Needs fix (${draftMappings.filter((_, index) => (mappingIssuesByIndex.get(index) || []).length > 0 || preflightIssues.some((issue) => Number(issue.rowIndex) === index)).length})` },
+            { value: 'unmapped', label: `Unmapped (${draftMappings.filter((mapping) => !String(mapping.pdfField || '').trim()).length})` },
+            { value: 'preview-warning', label: `Preview warning (${draftMappings.filter((_, index) => previewWarningRows.has(index) || previewIssueRows.has(index)).length})` }
+          ]
+            .map(
+              (filter) =>
+                `<button type="button" class="tiny ${activeTemplateFilter === filter.value ? '' : 'secondary'}" data-mapping-filter="${filter.value}" aria-pressed="${activeTemplateFilter === filter.value ? 'true' : 'false'}">${filter.label}</button>`
+            )
+            .join('')}
+        </div>
         <table><thead><tr><th>#</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
           ${draftMappings
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
               const hasPreviewWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
               const serverPreflightIssues = preflightIssues.filter((issue) => Number(issue.rowIndex) === index)
+              const isUnmapped = !String(mapping.pdfField || '').trim()
+              const showRow =
+                activeTemplateFilter === 'all' ||
+                (activeTemplateFilter === 'needs-fix' && (issues.length > 0 || serverPreflightIssues.length > 0)) ||
+                (activeTemplateFilter === 'unmapped' && isUnmapped) ||
+                (activeTemplateFilter === 'preview-warning' && hasPreviewWarnings)
+              if (!showRow) return ''
               const sampleValue = resolveSampleValue(mapping.sourcePath)
-              return `<tr id="mapping-row-${index}" data-select-row="${index}" style="cursor:pointer;${index === safeSelectedRowIndex ? 'outline:1px solid #60a5fa;' : ''}">
+              const rowClasses = ['mapping-row-item']
+              if (index === safeSelectedRowIndex) rowClasses.push('is-selected')
+              if (index === rowJumpHighlight) rowClasses.push('is-jumped')
+              return `<tr id="mapping-row-${index}" class="${rowClasses.join(' ')}" data-select-row="${index}" tabindex="0">
                 <td>${index + 1}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
@@ -1519,7 +1561,7 @@ async function renderTemplates() {
                 <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
               </tr>`
             })
-            .join('') || '<tr><td colspan="8" class="muted">No mappings configured.</td></tr>'}
+            .join('') || '<tr><td colspan="8" class="muted">No mappings match this filter.</td></tr>'}
         </tbody></table>
       </section>
       <section class="item">
@@ -1568,14 +1610,20 @@ async function renderTemplates() {
           ${preview.issues?.length ? `<div class="muted">issues: ${escapeHtml(String(preview.issues.length))}</div>` : ''}
           <table><thead><tr><th>PDF field</th><th>Source path</th><th>Resolved value</th><th>Warnings</th></tr></thead><tbody>
             ${(preview.rows || [])
-              .map(
-                (row) => `<tr>
+              .map((row) => {
+                const rowIndex = Number(row.rowIndex)
+                const hasWarnings = Array.isArray(row.warnings) && row.warnings.length > 0
+                return `<tr>
               <td>${escapeHtml(row.pdfField || '')}</td>
               <td>${escapeHtml(row.sourcePath || '')}</td>
               <td>${escapeHtml(row.value == null ? '' : String(row.value))}</td>
-              <td><button class="tiny secondary" data-jump-rowindex="${Number(row.rowIndex)}">Row ${Number(row.rowIndex) + 1}</button> ${previewWarningMarkup(row.warnings || [])}</td>
+              <td>${
+                hasWarnings
+                  ? `<button class="tiny secondary" data-jump-rowindex="${rowIndex}" data-focus-inspector="sourcePath">Jump to row ${rowIndex + 1}</button>`
+                  : `<span class="muted">Row ${rowIndex + 1}</span>`
+              } ${previewWarningMarkup(row.warnings || [])}</td>
             </tr>`
-              )
+              })
               .join('')}
           </tbody></table>
         `
@@ -1593,7 +1641,13 @@ async function renderTemplates() {
         ${
           preflightIssues.length
             ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s) across ${preflightIssueRows.size || 0} mapped row(s).</p><ul>${preflightIssues
-                .map((issue) => `<li><code>${escapeHtml(issue?.meta?.issueId || issue.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`)
+                .map((issue) => {
+                  const rowIndex = Number(issue.rowIndex)
+                  const rowCta = Number.isFinite(rowIndex)
+                    ? `<button class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-focus-inspector="sourcePath">Row ${rowIndex + 1}</button> · `
+                    : ''
+                  return `<li>${rowCta}<code>${escapeHtml(issue?.meta?.issueId || issue.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`
+                })
                 .join('')}</ul>`
             : '<p class="muted">Run preflight to surface publish-time schema validation (unknown source paths, required mappings, and transform issues) before attempting publish.</p>'
         }
@@ -1698,8 +1752,26 @@ async function renderTemplates() {
     await rerenderTemplates()
   })
 
+  const selectTemplateRow = async (rowIndex, { focusInspector = false, focusField = 'sourcePath', highlightRow = false } = {}) => {
+    if (!template) return
+    state.templateInspector[template.id] = { rowIndex: Number(rowIndex) }
+    state.templateInspectorFocusRequestByTemplateId[template.id] = focusInspector ? focusField : ''
+    state.templateJumpHighlightByTemplateId[template.id] = highlightRow ? Number(rowIndex) : NaN
+    await renderTemplates()
+  }
+
   document.querySelectorAll('[data-select-row]').forEach((row) => {
-    row.addEventListener('click', async () => {
+    const rowIndex = Number(row.dataset.selectRow)
+    row.addEventListener('click', async () => selectTemplateRow(rowIndex))
+    row.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
+      await selectTemplateRow(rowIndex)
+    })
+  })
+
+  document.querySelectorAll('[data-mapping-filter]').forEach((button) => {
+    button.addEventListener('click', async () => {
       if (!template) return
       state.templateInspector[template.id] = { rowIndex: Number(row.dataset.selectRow) }
       await rerenderTemplates()
@@ -1815,17 +1887,34 @@ async function renderTemplates() {
   })
 
   document.querySelectorAll('[data-jump-rowindex]').forEach((button) => {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', async () => {
       const rowIndex = Number(button.dataset.jumpRowindex)
-      const target = document.querySelector(`#mapping-row-${rowIndex}`)
-      if (!target) return
-      target.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      target.style.outline = '2px solid #f59e0b'
-      setTimeout(() => {
-        target.style.outline = ''
-      }, 1500)
+      await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
     })
   })
+  document.querySelectorAll('[data-preflight-rowindex]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const rowIndex = Number(button.dataset.preflightRowindex)
+      await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
+    })
+  })
+
+  const pendingInspectorFocusField = template ? state.templateInspectorFocusRequestByTemplateId[template.id] : ''
+  if (pendingInspectorFocusField) {
+    const inspectorEl = document.querySelector(`#inspector-${pendingInspectorFocusField}`)
+    inspectorEl?.focus()
+    state.templateInspectorFocusRequestByTemplateId[template.id] = ''
+  }
+  const pendingJumpRow = template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
+  if (Number.isFinite(pendingJumpRow)) {
+    const target = document.querySelector(`#mapping-row-${pendingJumpRow}`)
+    target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+    target?.focus()
+    setTimeout(() => {
+      if (template) state.templateJumpHighlightByTemplateId[template.id] = NaN
+      renderTemplates()
+    }, 1500)
+  }
 
   document.querySelector('#publish-template')?.addEventListener('click', async () => {
     try {
@@ -1920,24 +2009,45 @@ function boardCardMarkup(card, kind) {
   const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
   const cardStage = card.stage || getStageDefinitions({ includeInactive: false })[0]?.id || 'discovery'
   const workflow = card.workflowSummary || {}
+  const submissionCount = Number(workflow.submissionCount || 0)
+  const draftCount = Number(workflow.draftCount || 0)
+  const hasDraft = Boolean(workflow.latestDraftId)
+  const hasSubmission = Boolean(workflow.latestSubmissionId)
+  const workflowStatusText = hasDraft
+    ? 'Draft in progress'
+    : hasSubmission
+      ? 'Submission ready for review'
+      : 'No forms started'
+  const primaryAction = hasDraft
+    ? { id: workflow.latestDraftId, label: 'Resume draft' }
+    : hasSubmission
+      ? { id: workflow.latestSubmissionId, label: 'Review submission' }
+      : null
+  const secondaryAction =
+    hasDraft && hasSubmission && workflow.latestDraftId !== workflow.latestSubmissionId
+      ? { id: workflow.latestSubmissionId, label: 'Latest submission' }
+      : null
   const workflowActionsMarkup =
     kind === 'client'
       ? `
       <div class="workflow-shortcuts" data-workflow-card="${card.id}">
         <button type="button" class="secondary tiny workflow-shortcut" data-open-profile-detail="${card.id}" aria-expanded="false" aria-controls="profile-detail-${card.id}">Profile detail</button>
         ${
-          workflow.latestSubmissionId
-            ? `<a class="secondary tiny workflow-shortcut-link" href="#${appRoutes.clientFormSubmission(card.id, workflow.latestSubmissionId)}" data-workflow-client="${card.id}" data-workflow-submission="${workflow.latestSubmissionId}">Edit submission</a>`
-            : `<button type="button" class="secondary tiny workflow-shortcut" disabled>No submission</button>`
+          primaryAction
+            ? `<button type="button" class="secondary tiny workflow-shortcut" data-workflow-nav-primary="${card.id}" data-workflow-submission="${primaryAction.id}">${primaryAction.label}</button>`
+            : `<button type="button" class="secondary tiny workflow-shortcut" disabled>Start forms</button>`
         }
         ${
-          workflow.latestDraftId
-            ? `<a class="secondary tiny workflow-shortcut-link" href="#${appRoutes.clientFormSubmission(card.id, workflow.latestDraftId)}" data-workflow-client="${card.id}" data-workflow-submission="${workflow.latestDraftId}">Edit draft</a>`
-            : `<button type="button" class="secondary tiny workflow-shortcut" disabled>No draft</button>`
+          secondaryAction
+            ? `<button type="button" class="secondary tiny workflow-shortcut" data-workflow-nav-secondary="${card.id}" data-workflow-submission="${secondaryAction.id}">${secondaryAction.label}</button>`
+            : ''
         }
         <button type="button" class="secondary tiny workflow-shortcut" data-open-doc-actions="${card.id}" data-workflow-submission="${workflow.latestSubmissionId || workflow.latestDraftId || ''}">Document actions</button>
       </div>
-      <div class="muted compact-meta">Forms: ${workflow.submissionCount || 0} submissions · ${workflow.draftCount || 0} drafts</div>
+      <div class="workflow-action-meta">
+        <span class="badge subtle">${workflowStatusText}</span>
+        <span class="muted compact-meta">Forms: ${submissionCount} submissions · ${draftCount} drafts</span>
+      </div>
       <div id="profile-detail-${card.id}" class="hidden card-detail muted compact-meta top-gap" data-profile-detail="${card.id}" role="status" aria-live="polite"></div>
     `
       : ''
@@ -2205,11 +2315,32 @@ function wireBoardInteractions(kind) {
     })
   })
 
+  const navigateWorkflowTarget = (control) => {
+    const clientId = control?.dataset?.workflowClient || ''
+    const submissionId = control?.dataset?.workflowSubmission || ''
+    if (!clientId || !submissionId) return
+    const targetRoute = appRoutes.clientFormSubmission(clientId, submissionId)
+    setWorkflowContext({ clientId, submissionId })
+    if (window.location.hash === `#${targetRoute}`) return
+    window.location.hash = targetRoute
+  }
+
   document.querySelectorAll('[data-workflow-client]').forEach((link) => {
     link.addEventListener('click', () => {
       setWorkflowContext({
         clientId: link.dataset.workflowClient || '',
         submissionId: link.dataset.workflowSubmission || ''
+      })
+    })
+  })
+
+  document.querySelectorAll('[data-workflow-nav-primary], [data-workflow-nav-secondary]').forEach((button) => {
+    button.addEventListener('click', () => {
+      navigateWorkflowTarget({
+        dataset: {
+          workflowClient: button.dataset.workflowNavPrimary || button.dataset.workflowNavSecondary || '',
+          workflowSubmission: button.dataset.workflowSubmission || ''
+        }
       })
     })
   })
@@ -2728,6 +2859,28 @@ function operationsPayloadJson() {
   )
 }
 
+function operationsCommandBlock() {
+  return [
+    'export RELEASE_ID=<release-id>',
+    'export KLIENT_BASE_URL=https://<env-host>',
+    'export KLIENT_OPS_TOKEN=<ops-token>',
+    'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight',
+    'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy',
+    'export RESTORE_BACKUP_PATH=data/backup-<timestamp>.db',
+    'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"'
+  ].join('\n')
+}
+
+function downloadTextFile(content, filename) {
+  const blob = new Blob([content], { type: 'text/plain;charset=utf-8' })
+  const objectUrl = URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = objectUrl
+  link.download = filename
+  link.click()
+  URL.revokeObjectURL(objectUrl)
+}
+
 async function renderOperations() {
   if (!state.operations.snapshot) {
     await loadOperationsSnapshot()
@@ -2769,9 +2922,12 @@ async function renderOperations() {
       <div class="ops-actions">
         <button type="button" data-ops-refresh>${state.operations.busy ? 'Refreshing…' : 'Refresh'}</button>
         <button type="button" data-ops-copy-json>Copy JSON</button>
+        <button type="button" class="tiny secondary" data-ops-copy-commands>Copy command block</button>
+        <button type="button" class="tiny secondary" data-ops-download-commands>Download command block</button>
         <a href="/docs/release-ready-checklist.md#deterministic-command-flows-operator-runbook">Runbook: deterministic checks</a>
-        <a href="/docs/release-ready-checklist.md#go-no-go-sign-off-grid">Runbook: go/no-go grid</a>
+        <a href="/docs/release-ready-checklist.md#objective-passfail-criteria">Runbook: go/no-go grid</a>
       </div>
+      <p class="muted compact" data-ops-action-feedback role="status" aria-live="polite" aria-atomic="true">${escapeHtml(state.operations.feedback || '')}</p>
       <div class="ops-grid">${statusCards}</div>
       <details open>
         <summary>Diagnostics payload</summary>
@@ -2792,8 +2948,21 @@ async function renderOperations() {
     try {
       await navigator.clipboard.writeText(operationsPayloadJson())
       setFlash('success', 'Operations payload copied to clipboard.')
+      state.operations.feedback = 'Copied JSON snapshot to clipboard.'
     } catch {
       setFlash('error', 'Clipboard copy failed. Copy from the diagnostics block instead.')
+      state.operations.feedback = 'Copy JSON failed. Copy from the diagnostics block instead.'
+    }
+    await renderOperations()
+  })
+
+  const commandCopyButton = viewEl.querySelector('[data-ops-copy-commands]')
+  commandCopyButton?.addEventListener('click', async () => {
+    try {
+      await navigator.clipboard.writeText(operationsCommandBlock())
+      state.operations.feedback = 'Copied preflight/postdeploy/restore command block.'
+    } catch {
+      state.operations.feedback = 'Copy command block failed. Download the command block instead.'
     }
     queueViewFocus('[data-ops-copy-json]')
     await renderOperations()
