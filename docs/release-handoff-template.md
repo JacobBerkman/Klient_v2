@@ -54,6 +54,7 @@ Use one canonical manifest link for approvers; include optional direct links onl
 | Evidence package | Artifact link or path |
 |---|---|
 | Release evidence manifest (required) | `artifacts/release-evidence/<release-id>/manifest.json` |
+| UX/accessibility acceptance record (RC journeys) | `docs/rc-web-journeys-acceptance-YYYY-MM-DD.md` |
 
 Optional per-file links (if needed for review):
 - `artifacts/release-evidence/<release-id>/validate-master-summary.json`
