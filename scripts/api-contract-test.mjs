@@ -105,6 +105,7 @@ test('production Node server contract supports auth and profile workflows', asyn
   })
   assert.equal(loginResponse.status, 200, stderr)
   assert.equal(login.user.email, 'admin@demo.test')
+  assert.equal(Object.hasOwn(login, 'token'), false)
   const adminCookie = extractSessionCookie(loginResponse)
   assert.ok(adminCookie.startsWith('__Host-klient-session='))
 
@@ -249,6 +250,7 @@ test('production Node server contract supports auth and profile workflows', asyn
     })
   })
   assert.equal(acceptInviteResponse.status, 200, JSON.stringify(readonlySession))
+  assert.equal(Object.hasOwn(readonlySession, 'token'), false)
   const readonlyCookie = extractSessionCookie(acceptInviteResponse)
   assert.ok(readonlyCookie.startsWith('__Host-klient-session='))
 
@@ -283,6 +285,7 @@ test('production Node server contract supports auth and profile workflows', asyn
     })
   })
   assert.equal(outsiderRegisterResponse.status, 201, JSON.stringify(outsider))
+  assert.equal(Object.hasOwn(outsider, 'token'), false)
   const outsiderCookie = extractSessionCookie(outsiderRegisterResponse)
   assert.ok(outsiderCookie.startsWith('__Host-klient-session='))
 

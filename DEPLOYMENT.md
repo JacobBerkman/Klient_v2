@@ -52,6 +52,7 @@ Required behavior and validation:
 - Rotation requires adding the next key id to `PII_KMS_KEYRING` before switching `PII_KMS_ACTIVE_KEY_ID`.
 - Passwords accepted by registration, invite acceptance, and password reset must satisfy the runtime password policy.
 - Sessions expire after 8 hours.
+- User-session auth is cookie-only (`__Host-klient-session`); login/register/invite acceptance responses do not emit legacy bearer `token` fields.
 - Failed login attempts are rate limited per email over a 15-minute window.
 
 ## Demo mode vs production
@@ -81,7 +82,7 @@ Required environment variables:
 - `KLIENT_OPS_TOKEN` for authenticated post-deploy diagnostics.
 - `RESTORE_BACKUP_PATH` only when running `--phase restore` or `--phase restore-drill`.
 
-Hard gate only (legacy/manual mode):
+Hard gate only (manual mode):
 
 ```bash
 npm run validate:master

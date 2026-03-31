@@ -86,6 +86,7 @@ Demo credentials (only when demo mode is enabled):
 - In production, set `APP_SECRET` to a long random secret.
 - New passwords must be at least 12 characters and include uppercase, lowercase, and numeric characters.
 - Sessions expire after 8 hours.
+- User session authentication is cookie-only (`__Host-klient-session`); login/register/invite-accept no longer return a legacy bearer `token` field.
 - Repeated failed login attempts are rate limited.
 - Sensitive identifiers are stored encrypted and only returned in masked form.
 - Sensitive identifiers now use envelope encryption metadata (`keyId`, `alg`, `createdAt`, `ciphertext`) with key-provider backed rotation support and audited unmask policy checks.
@@ -160,6 +161,7 @@ curl -X POST http://localhost:3000/api/login \
   -d '{"email":"admin@demo.test","password":"ChangeMe123!"}'
 ```
 `/ready` now includes config validation output, SQLite quick-check results, export worker status summary, and audit event counts. `/api/ops/diagnostics` adds richer startup/runtime metadata for on-call troubleshooting.
+User-session API calls under `/api/*` authenticate via session cookies, while `/api/ops/*` supports `KLIENT_OPS_TOKEN` bearer authentication for non-browser operations.
 
 Public runtime feature flags are available at `GET /api/runtime`.
 

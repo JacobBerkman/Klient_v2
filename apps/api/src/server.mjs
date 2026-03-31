@@ -41,9 +41,6 @@ const COOKIE_POLICY = Object.freeze({
     sameSite: 'Strict'
   }
 })
-const AUTH_COMPATIBILITY_HEADER = 'x-klient-auth-mode'
-const AUTH_COMPATIBILITY_MODE = 'bearer'
-const AUTH_COMPATIBILITY_SUNSET = 'Wed, 31 Dec 2026 23:59:59 GMT'
 const CSRF_HEADER = 'x-csrf-token'
 const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const CSRF_BOOTSTRAP_PATH = '/api/csrf'
@@ -142,12 +139,8 @@ function clearSessionCookie(req) {
   )
 }
 
-function getBearerToken(req) {
-  return req.headers.authorization?.replace('Bearer ', '').trim()
-}
-
 function readOpsBearerToken(req) {
-  return getBearerToken(req)
+  return req.headers.authorization?.replace('Bearer ', '').trim()
 }
 
 function currentOpsToken() {
@@ -163,41 +156,16 @@ function isValidOpsToken(candidate) {
   return timingSafeEqual(expected, provided)
 }
 
-function shouldIssueCompatibilityBearer(req) {
-  if (!runtime.enableBearerAuthCompat) return false
-  if (runtime.nodeEnv === 'test') return true
-  return String(req.headers[AUTH_COMPATIBILITY_HEADER] || '').toLowerCase() === AUTH_COMPATIBILITY_MODE
-}
-
 function resolveSessionToken(req) {
-  if (runtime.enableBearerAuthCompat) {
-    const bearerToken = getBearerToken(req)
-    if (bearerToken) return bearerToken
-  }
   const cookies = parseCookies(req)
   const cookieToken = String(cookies[COOKIE_POLICY.session.name] || '').trim()
   if (cookieToken) return cookieToken
   return ''
 }
 
-function compatibilityHeadersFor(req) {
-  if (!shouldIssueCompatibilityBearer(req)) return {}
-  return {
-    Deprecation: 'true',
-    Sunset: AUTH_COMPATIBILITY_SUNSET
-  }
-}
-
 function requiresCsrfProtection(method = 'GET') {
   if (runtime.nodeEnv === 'test' && runtime.enableTestCsrfBypass) return false
   return !CSRF_SAFE_METHODS.has(method.toUpperCase())
-}
-
-function isBearerCompatRequest(req) {
-  if (!runtime.enableBearerAuthCompat) return false
-  if (!getBearerToken(req)) return false
-  const hasBrowserCsrfSignals = Boolean(req.headers.origin || req.headers.referer || req.headers['sec-fetch-site'])
-  return !hasBrowserCsrfSignals
 }
 
 function getCsrfErrorResponse(reason, requestId) {
@@ -763,7 +731,7 @@ export function createHttpServer({ modules }) {
         finalizeLog(200);
         return replyJson(200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId });
       }
-      if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method) && !isCsrfExempt(pathname) && !isBearerCompatRequest(req)) {
+      if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method) && !isCsrfExempt(pathname)) {
         sessionToken = resolveSessionToken(req)
         authenticatedUser = modules.auth.requireUser(sessionToken)
         const csrfError = validateCsrf(req, requestId, sessionToken, authenticatedUser)
@@ -777,14 +745,12 @@ export function createHttpServer({ modules }) {
         authorize('canRegister', { allowAnonymous: true })
         const result = modules.auth.register(await parseBody(req))
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
-        const responseBody = shouldIssueCompatibilityBearer(req) ? result : { ...result, token: undefined }
         finalizeLog(201)
         return replyJson(
           201,
-          { ...responseBody, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
+          { user: result.user, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
           {
             'X-Request-Id': requestId,
-            ...compatibilityHeadersFor(req),
             'Set-Cookie': [buildSessionCookie(req, result.token), csrf.headers['Set-Cookie']],
             [CSRF_HEADER]: csrf.headers[CSRF_HEADER]
           }
@@ -804,14 +770,12 @@ export function createHttpServer({ modules }) {
           securityDiagnostics.session.rotatedTotal += 1
         }
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
-        const responseBody = shouldIssueCompatibilityBearer(req) ? result : { ...result, token: undefined }
         finalizeLog(200)
         return replyJson(
           200,
-          { ...responseBody, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
+          { user: result.user, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
           {
             'X-Request-Id': requestId,
-            ...compatibilityHeadersFor(req),
             'Set-Cookie': [buildSessionCookie(req, result.token), csrf.headers['Set-Cookie']],
             [CSRF_HEADER]: csrf.headers[CSRF_HEADER]
           }
@@ -828,14 +792,12 @@ export function createHttpServer({ modules }) {
         authorize('canAcceptInvite', { allowAnonymous: true })
         const result = modules.firmsUsers.acceptInvite(await parseBody(req))
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
-        const responseBody = shouldIssueCompatibilityBearer(req) ? result : { ...result, token: undefined }
         finalizeLog(200)
         return replyJson(
           200,
-          { ...responseBody, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
+          { user: result.user, csrfToken: csrf.csrfToken, csrfExpiresAt: csrf.expiresAt },
           {
             'X-Request-Id': requestId,
-            ...compatibilityHeadersFor(req),
             'Set-Cookie': [buildSessionCookie(req, result.token), csrf.headers['Set-Cookie']],
             [CSRF_HEADER]: csrf.headers[CSRF_HEADER]
           }

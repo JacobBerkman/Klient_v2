@@ -169,7 +169,6 @@ const nodeEnv = normalizeNodeEnv(process.env.NODE_ENV || 'development')
 const allowDevFallbackSecret = readBoolean('ALLOW_DEV_FALLBACK_APP_SECRET', false)
 const allowUnsafeAppSecret = readBoolean('UNSAFE_ALLOW_WEAK_APP_SECRET', false)
 const enableTestCsrfBypass = readBoolean('ENABLE_TEST_CSRF_BYPASS', false)
-const enableBearerAuthCompat = readBoolean('ENABLE_BEARER_AUTH_COMPAT', true)
 const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
 const authProviderRaw = readNonEmptyString('AUTH_PROVIDER')
 const authProvider = readAuthProvider(authProviderRaw || undefined)
@@ -225,7 +224,6 @@ export const runtime = {
   allowDevFallbackSecret,
   allowUnsafeAppSecret,
   enableTestCsrfBypass: nodeEnv === 'test' && enableTestCsrfBypass,
-  enableBearerAuthCompat,
   authProvider,
   authStartupDiagnostics: providerRuntimeDiagnostics(authProvider, {
     strict: nodeEnv === 'production'
