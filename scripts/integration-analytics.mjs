@@ -3,8 +3,8 @@ import { assert, createTestContext } from './test-harness.mjs'
 const context = await createTestContext('analytics')
 
 try {
-  const admin = await context.login()
-  const headers = context.authHeaders(admin.token)
+  await context.login()
+  const headers = context.authHeaders()
 
   const prospectA = await context.request('/api/profiles', {
     method: 'POST',
@@ -66,13 +66,13 @@ try {
 
   const analytics = await context.request(
     '/api/analytics?startDate=2026-01-01&endDate=2026-12-31&cohortBy=all',
-    { headers: { Authorization: `Bearer ${admin.token}` } }
+    { headers }
   )
   const dashboard = await context.request('/api/analytics/dashboard?startDate=2026-01-01&endDate=2026-12-31', {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers: { Cookie: context.sessionCookie }
   })
   const csvResponse = await fetch(`http://127.0.0.1:${context.port}/api/analytics/export?startDate=2026-01-01`, {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers: { Cookie: context.sessionCookie }
   })
   const csv = await csvResponse.text()
 

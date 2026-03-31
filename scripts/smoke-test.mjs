@@ -10,16 +10,16 @@ const evidence = createEvidenceRecorder({
 
 const context = await createTestContext('smoke')
 
-async function waitForExportCompletion(ctx, token, exportIds, { maxTicks = 24 } = {}) {
+async function waitForExportCompletion(ctx, exportIds, { maxTicks = 24 } = {}) {
   for (let attempt = 0; attempt < maxTicks; attempt += 1) {
     const exportsList = await ctx.request('/api/exports?sort=updatedAt_desc', {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: ctx.authHeaders()
     })
     const job = exportsList.find(
       (entry) => exportIds.includes(entry.id) && ['completed', 'failed', 'dead-letter'].includes(entry.status)
     )
     if (job) return job
-    await ctx.request('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${token}` } })
+    await ctx.request('/api/exports/process', { method: 'POST', headers: ctx.authHeaders() })
   }
   return null
 }
@@ -29,8 +29,8 @@ try {
   const ready = await context.request('/ready')
   assert(ready.status === 'ready', 'Readiness endpoint did not report ready state.')
 
-  const login = await context.login()
-  const headers = context.authHeaders(login.token)
+  await context.login()
+  const headers = context.authHeaders()
 
   const profile = await context.request('/api/profiles', {
     method: 'POST',
@@ -52,7 +52,7 @@ try {
 
   const publishResult = await context.request(`/api/templates/${template.id}/publish`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Smoke publish validation' })
   })
 
@@ -103,17 +103,17 @@ try {
     })
   })
 
-  await context.request('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } })
-  await context.request('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } })
+  await context.request('/api/exports/process', { method: 'POST', headers })
+  await context.request('/api/exports/process', { method: 'POST', headers })
   await context.request(`/api/exports/${flakyJob.id}/retry`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${login.token}`, 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({})
   })
-  await context.request('/api/exports/process', { method: 'POST', headers: { Authorization: `Bearer ${login.token}` } })
-  const completedExport = await waitForExportCompletion(context, login.token, [exportJob.id, flakyJob.id])
-  const exportsList = await context.request('/api/exports?sort=updatedAt_desc', { headers: { Authorization: `Bearer ${login.token}` } })
-  const queueHealth = await context.request('/api/ops/exports/queue', { headers: { Authorization: `Bearer ${login.token}` } })
+  await context.request('/api/exports/process', { method: 'POST', headers })
+  const completedExport = await waitForExportCompletion(context, [exportJob.id, flakyJob.id])
+  const exportsList = await context.request('/api/exports?sort=updatedAt_desc', { headers: context.authHeaders() })
+  const queueHealth = await context.request('/api/ops/exports/queue', { headers: context.opsHeaders() })
 
   assert(exportsList.some((entry) => entry.id === exportJob.id), 'Export job missing from export list.')
   assert(exportsList.some((entry) => entry.id === flakyJob.id), 'Flaky export job missing from export list.')
@@ -132,7 +132,7 @@ try {
     const completedDownloadTarget = exportsList.find((entry) => entry.id === trackedSmokeExport.id && entry.status === 'completed')
     assert(Boolean(completedDownloadTarget), 'Completed smoke export should be available in export listing.')
     const download = await fetch(`http://127.0.0.1:${context.port}/api/exports/${completedDownloadTarget.id}/download`, {
-      headers: { Authorization: `Bearer ${login.token}` }
+      headers: context.authHeaders()
     })
     assert(download.status === 200, 'Completed smoke export should be downloadable.')
     const downloadType = download.headers.get('content-type') || ''

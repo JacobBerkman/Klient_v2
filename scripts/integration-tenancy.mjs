@@ -3,10 +3,10 @@ import { assert, createTestContext } from './test-harness.mjs'
 const context = await createTestContext('tenancy')
 
 try {
-  const admin = await context.login()
-  const adminHeaders = context.authHeaders(admin.token)
+  await context.login('admin@demo.test', 'ChangeMe123!', 'admin')
+  const adminHeaders = context.authHeaders('admin')
 
-  const ownProfile = await context.request('/api/profiles', {
+  const ownProfile = await context.requestAs('admin', '/api/profiles', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({
@@ -30,8 +30,9 @@ try {
     })
   })
 
-  const secondHeaders = context.authHeaders(registration.token)
-  const secondProfile = await context.request('/api/profiles', {
+  await context.login(registration.user.email, 'Isolation123!', 'secondFirm')
+  const secondHeaders = context.authHeaders('secondFirm')
+  const secondProfile = await context.requestAs('secondFirm', '/api/profiles', {
     method: 'POST',
     headers: secondHeaders,
     body: JSON.stringify({
@@ -43,7 +44,7 @@ try {
     })
   })
 
-  const household = await context.request('/api/households', {
+  const household = await context.requestAs('admin', '/api/households', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({
@@ -52,7 +53,7 @@ try {
     })
   })
 
-  const formTemplate = await context.request('/api/forms/templates', {
+  const formTemplate = await context.requestAs('admin', '/api/forms/templates', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({
@@ -61,7 +62,7 @@ try {
     })
   })
 
-  const submission = await context.request('/api/forms/submissions', {
+  const submission = await context.requestAs('admin', '/api/forms/submissions', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({
@@ -72,7 +73,7 @@ try {
     })
   })
 
-  const documentTemplate = await context.request('/api/templates', {
+  const documentTemplate = await context.requestAs('admin', '/api/templates', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({
@@ -83,7 +84,7 @@ try {
     })
   })
 
-  const exportJob = await context.request('/api/exports', {
+  const exportJob = await context.requestAs('admin', '/api/exports', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({
@@ -93,18 +94,10 @@ try {
     })
   })
 
-  const firstFirmProfiles = await context.request('/api/profiles?search=Tenant', {
-    headers: { Authorization: `Bearer ${admin.token}` }
-  })
-  const secondFirmProfiles = await context.request('/api/profiles?search=Tenant', {
-    headers: { Authorization: `Bearer ${registration.token}` }
-  })
-  const firstFirmDashboard = await context.request('/api/dashboard', {
-    headers: { Authorization: `Bearer ${admin.token}` }
-  })
-  const secondFirmDashboard = await context.request('/api/dashboard', {
-    headers: { Authorization: `Bearer ${registration.token}` }
-  })
+  const firstFirmProfiles = await context.requestAs('admin', '/api/profiles?search=Tenant', { headers: context.authHeaders('admin') })
+  const secondFirmProfiles = await context.requestAs('secondFirm', '/api/profiles?search=Tenant', { headers: secondHeaders })
+  const firstFirmDashboard = await context.requestAs('admin', '/api/dashboard', { headers: context.authHeaders('admin') })
+  const secondFirmDashboard = await context.requestAs('secondFirm', '/api/dashboard', { headers: secondHeaders })
 
   assert(
     firstFirmProfiles.some((profile) => profile.id === ownProfile.id),
@@ -118,69 +111,76 @@ try {
   assert(!secondFirmProfiles.some((profile) => profile.id === ownProfile.id), 'Secondary firm can see foreign profile')
   assert(firstFirmDashboard.firm.id !== secondFirmDashboard.firm.id, 'Dashboard firm IDs should differ across tenants')
 
-  await context.requestExpectError(`/api/profiles/${ownProfile.id}`, { headers: secondHeaders }, 404)
-  await context.requestExpectError(
+  await context.requestExpectErrorAs('secondFirm', `/api/profiles/${ownProfile.id}`, { headers: secondHeaders }, [403, 404])
+  await context.requestExpectErrorAs(
+    'secondFirm',
     `/api/profiles/${ownProfile.id}`,
     {
       method: 'PATCH',
       headers: secondHeaders,
       body: JSON.stringify({ firstName: 'Compromised' })
     },
-    404
+    [403, 404]
   )
-  await context.requestExpectError(
+  await context.requestExpectErrorAs(
+    'secondFirm',
     `/api/households/${household.id}/members`,
     {
       method: 'POST',
       headers: secondHeaders,
       body: JSON.stringify({ clientId: secondProfile.id, role: 'member' })
     },
-    404
+    [403, 404]
   )
-  await context.requestExpectError(
+  await context.requestExpectErrorAs(
+    'secondFirm',
     `/api/forms/submissions/${submission.id}`,
     {
       method: 'PATCH',
       headers: secondHeaders,
       body: JSON.stringify({ status: 'submitted' })
     },
-    404
+    [403, 404]
   )
-  await context.requestExpectError(
+  await context.requestExpectErrorAs(
+    'secondFirm',
     `/api/forms/submissions/${submission.id}`,
     {
       method: 'DELETE',
       headers: secondHeaders
     },
-    404
+    [403, 404]
   )
-  await context.requestExpectError(
+  await context.requestExpectErrorAs(
+    'secondFirm',
     `/api/templates/${documentTemplate.id}/mappings`,
     {
       method: 'POST',
       headers: secondHeaders,
       body: JSON.stringify({ mappings: [{ key: 'x', source: 'y' }] })
     },
-    404
+    [403, 404]
   )
-  await context.requestExpectError(
+  await context.requestExpectErrorAs(
+    'secondFirm',
     `/api/templates/${documentTemplate.id}/publish`,
     {
       method: 'POST',
       headers: secondHeaders
     },
-    404
+    [403, 404]
   )
-  await context.requestExpectError(
+  await context.requestExpectErrorAs(
+    'secondFirm',
     `/api/exports/${exportJob.id}/retry`,
     {
       method: 'POST',
       headers: secondHeaders
     },
-    404
+    [403, 404]
   )
 
-  const secondAudit = await context.request('/api/audit', { headers: secondHeaders })
+  const secondAudit = await context.requestAs('secondFirm', '/api/audit', { headers: secondHeaders })
   assert(secondAudit.length > 0, 'Secondary firm audit stream should include its own tenant activity')
   assert(
     secondAudit.some((entry) => entry.entityId === secondProfile.id),

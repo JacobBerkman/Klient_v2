@@ -3,10 +3,10 @@ import { assert, createTestContext } from './test-harness.mjs'
 const context = await createTestContext('templates')
 
 try {
-  const admin = await context.login()
-  const headers = context.authHeaders(admin.token)
+  await context.login('admin@demo.test', 'ChangeMe123!', 'admin')
+  const headers = context.authHeaders('admin')
 
-  const template = await context.request('/api/templates', {
+  const template = await context.requestAs('admin', '/api/templates', {
     method: 'POST',
     headers,
     body: JSON.stringify({
@@ -17,13 +17,14 @@ try {
     })
   })
 
-  const mapped = await context.request(`/api/templates/${template.id}/mappings`, {
+  const mapped = await context.requestAs('admin', `/api/templates/${template.id}/mappings`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ mappings: [{ key: 'client.address.city', source: 'profile.address.city' }] })
   })
 
-  const guardedPublishError = await context.requestExpectError(
+  const guardedPublishError = await context.requestExpectErrorAs(
+    'admin',
     `/api/templates/${template.id}/publish`,
     {
       method: 'POST',
@@ -37,27 +38,27 @@ try {
     400
   )
 
-  const published = await context.request(`/api/templates/${template.id}/publish`, {
+  const published = await context.requestAs('admin', `/api/templates/${template.id}/publish`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${admin.token}` },
+    headers,
     body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Initial publication' })
   })
 
-  const versions = await context.request(`/api/templates/${template.id}/versions`, {
-    headers: { Authorization: `Bearer ${admin.token}` }
+  const versions = await context.requestAs('admin', `/api/templates/${template.id}/versions`, {
+    headers
   })
-  const transitions = await context.request(`/api/templates/${template.id}/publish-transitions`, {
-    headers: { Authorization: `Bearer ${admin.token}` }
+  const transitions = await context.requestAs('admin', `/api/templates/${template.id}/publish-transitions`, {
+    headers
   })
-  const compared = await context.request(`/api/templates/${template.id}/compare?baseVersion=1&targetVersion=2`, {
-    headers: { Authorization: `Bearer ${admin.token}` }
+  const compared = await context.requestAs('admin', `/api/templates/${template.id}/compare?baseVersion=1&targetVersion=2`, {
+    headers
   })
-  const reverted = await context.request(`/api/templates/${template.id}/revert`, {
+  const reverted = await context.requestAs('admin', `/api/templates/${template.id}/revert`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ targetVersion: 1, changelog: 'Rollback for deterministic check' })
   })
-  const templates = await context.request('/api/templates', { headers: { Authorization: `Bearer ${admin.token}` } })
+  const templates = await context.requestAs('admin', '/api/templates', { headers })
 
   assert(mapped.mappings.length === 1, 'Template mappings update failed')
   assert(guardedPublishError.error?.code === 'SCHEMA_VALIDATION_FAILED', 'Publish guard should reject unknown mapping path')
@@ -80,7 +81,7 @@ try {
   )
 
   const readonlyEmail = 'readonly.templates@demo.test'
-  const readonlyInvite = await context.request('/api/invites', {
+  const readonlyInvite = await context.requestAs('admin', '/api/invites', {
     method: 'POST',
     headers,
     body: JSON.stringify({ email: readonlyEmail, role: 'readonly' })
@@ -96,11 +97,12 @@ try {
     })
   })
 
-  const readonlyVersions = await context.request(`/api/templates/${template.id}/versions`, {
-    headers: { Authorization: `Bearer ${readonlyAccepted.token}` }
+  await context.login(readonlyAccepted.user.email, 'ReadonlyPass123!', 'readonly')
+  const readonlyVersions = await context.requestAs('readonly', `/api/templates/${template.id}/versions`, {
+    headers: context.authHeaders('readonly')
   })
-  const readonlyTransitions = await context.request(`/api/templates/${template.id}/publish-transitions`, {
-    headers: { Authorization: `Bearer ${readonlyAccepted.token}` }
+  const readonlyTransitions = await context.requestAs('readonly', `/api/templates/${template.id}/publish-transitions`, {
+    headers: context.authHeaders('readonly')
   })
   assert(Array.isArray(readonlyVersions) && readonlyVersions.length >= 3, 'Readonly role cannot read template versions')
   assert(
@@ -119,14 +121,17 @@ try {
       password: 'OutsidePass123!'
     })
   })
-  await context.requestExpectError(
+  await context.login(outsider.user.email, 'OutsidePass123!', 'outsider')
+  await context.requestExpectErrorAs(
+    'outsider',
     `/api/templates/${template.id}/versions`,
-    { headers: { Authorization: `Bearer ${outsider.token}` } },
+    { headers: context.authHeaders('outsider') },
     [400, 404]
   )
-  await context.requestExpectError(
+  await context.requestExpectErrorAs(
+    'outsider',
     `/api/templates/${template.id}/publish-transitions`,
-    { headers: { Authorization: `Bearer ${outsider.token}` } },
+    { headers: context.authHeaders('outsider') },
     [400, 404]
   )
 
