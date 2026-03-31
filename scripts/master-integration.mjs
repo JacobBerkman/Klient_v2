@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process'
 import { access } from 'node:fs/promises'
 import { createEvidenceRecorder } from './release-evidence.mjs'
+import { runSuite } from './runner-lifecycle.mjs'
 
 const integrationSuites = [
   {
@@ -54,37 +54,6 @@ const evidence = createEvidenceRecorder({
 
 async function ensureScriptExists(script) {
   await access(new URL(`./${script}`, import.meta.url))
-}
-
-function runSuite(suite, index, total) {
-  return new Promise((resolve, reject) => {
-    const start = Date.now()
-    console.log(`\n▶ [${index + 1}/${total}] ${suite.script}`)
-    console.log(`   Invariant: ${suite.invariant}`)
-
-    const child = spawn(process.execPath, [`scripts/${suite.script}`], {
-      stdio: 'inherit'
-    })
-
-    child.on('error', (error) => {
-      reject(new Error(`${suite.script} failed to start: ${error.message}`))
-    })
-
-    child.on('exit', (code, signal) => {
-      const durationMs = Date.now() - start
-      if (signal) {
-        reject(new Error(`${suite.script} terminated by signal ${signal} after ${durationMs}ms`))
-        return
-      }
-      if (code !== 0) {
-        reject(new Error(`${suite.script} exited with code ${code} after ${durationMs}ms`))
-        return
-      }
-
-      console.log(`✓ ${suite.script} passed in ${durationMs}ms`)
-      resolve({ durationMs })
-    })
-  })
 }
 
 async function main() {
