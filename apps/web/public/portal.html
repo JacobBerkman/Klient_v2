@@ -78,6 +78,7 @@
           <span id="portal-status" class="badge subtle">Awaiting template</span>
         </div>
         <p id="portal-form-status" class="muted compact" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></p>
+        <p id="portal-template-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
         <p id="portal-form-error" class="hidden" role="alert" aria-live="assertive" aria-atomic="true" tabindex="-1"></p>
 
         <div class="grid two">
@@ -118,6 +119,7 @@
       const uploadForm = document.querySelector('#portal-upload-form')
       const draftButton = document.querySelector('[data-save-draft]')
       const formStatusRegion = document.querySelector('#portal-form-status')
+      const templateAnnouncementRegion = document.querySelector('#portal-template-announcement')
       const formErrorRegion = document.querySelector('#portal-form-error')
       const uploadStatusRegion = document.querySelector('#portal-upload-status')
       const uploadErrorRegion = document.querySelector('#portal-upload-error')
@@ -172,6 +174,15 @@
       function setUploadFeedback(message = '', { error = false, focus = false } = {}) {
         updateRegion(uploadStatusRegion, error ? '' : message, { error: false, focus: !error && focus })
         updateRegion(uploadErrorRegion, error ? message : '', { error: true, focus: error && focus })
+      }
+
+      function announceTemplateChange(template, { silent = false } = {}) {
+        if (!templateAnnouncementRegion || silent) return
+        const sectionCount = Array.isArray(template?.sections) ? template.sections.length : 0
+        const fieldCount = (template?.sections || []).reduce((count, section) => count + (section?.fields?.length || 0), 0)
+        templateAnnouncementRegion.textContent = template
+          ? `Template ${template.name} selected. ${sectionCount} sections, ${fieldCount} fields.`
+          : 'No template selected.'
       }
 
       function clearValidationHighlights() {
@@ -297,13 +308,14 @@
           .replace(/[^a-z0-9_-]+/g, '_')
       }
 
-      function renderTemplateFields() {
+      function renderTemplateFields({ silentAnnouncement = false } = {}) {
         const template = selectedTemplate()
         if (!template) {
           templateDescription.textContent = 'No shared template selected yet.'
           statusBadge.textContent = 'Awaiting template'
           statusBadge.className = 'badge subtle'
           fieldsTarget.innerHTML = ''
+          announceTemplateChange(null, { silent: silentAnnouncement })
           return
         }
 
@@ -311,6 +323,7 @@
           template.description || 'No additional instructions were provided for this form.'
         statusBadge.textContent = `Ready: ${template.name}`
         statusBadge.className = 'badge'
+        announceTemplateChange(template, { silent: silentAnnouncement })
 
         fieldsTarget.innerHTML = template.sections
           .map((section, sectionIndex) => {
@@ -347,7 +360,7 @@
           button.addEventListener('click', () => {
             const sectionIndex = Number(button.dataset.addRepeat)
             portalState.sectionRepeats.set(sectionIndex, repeatCountFor(sectionIndex) + 1)
-            renderTemplateFields()
+            renderTemplateFields({ silentAnnouncement: true })
           })
         })
       }
@@ -381,7 +394,7 @@
         if (section.repeatable) {
           const rows = Array.isArray(snapshot.rows) && snapshot.rows.length ? snapshot.rows : [{}]
           portalState.sectionRepeats.set(sectionIndex, rows.length)
-          renderTemplateFields()
+          renderTemplateFields({ silentAnnouncement: false })
           rows.forEach((row, rowIndex) => {
             ;(section.fields || []).forEach((field) => {
               const element = form.elements.namedItem(fieldName(sectionIndex, field.key, rowIndex))
@@ -533,7 +546,7 @@
         renderSubmissions(data.submissions || [])
         renderCompletion(data)
         renderUploads(data.uploads || [])
-        renderTemplateFields()
+        renderTemplateFields({ silentAnnouncement: true })
         await loadDraftSectionStates()
         const template = selectedTemplate()
         template?.sections?.forEach((section, sectionIndex) => {
@@ -545,7 +558,7 @@
       templatePicker.addEventListener('change', async () => {
         portalState.selectedTemplateId = templatePicker.value
         portalState.sectionRepeats = new Map()
-        renderTemplateFields()
+        renderTemplateFields({ silentAnnouncement: false })
         portalState.activeDraftId =
           (portalState.data?.submissions || []).find(
             (entry) => entry.templateId === portalState.selectedTemplateId && entry.status === 'draft'

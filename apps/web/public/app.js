@@ -1725,6 +1725,11 @@ async function renderTemplates() {
 
   document.querySelector('#template-select')?.addEventListener('change', async (event) => {
     state.selectedTemplateId = event.target.value
+    const selectedTemplate = templates.find((entry) => entry.id === state.selectedTemplateId)
+    if (selectedTemplate) {
+      const mappingCount = (selectedTemplate.mappings || []).length
+      setWorkflowStatus(`Template selected: ${selectedTemplate.name} (${mappingCount} mappings).`)
+    }
     await rerenderTemplates()
   })
   document.querySelectorAll('[data-remove-extracted]').forEach((button) => {

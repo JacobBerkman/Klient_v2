@@ -7,6 +7,23 @@
 body {
   margin: 0;
 }
+
+.skip-link {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  z-index: 1000;
+  padding: 8px 12px;
+  border-radius: 8px;
+  background: #1d4ed8;
+  color: #fff;
+  text-decoration: none;
+  transform: translateY(-140%);
+}
+.skip-link:focus-visible {
+  transform: translateY(0);
+}
+
 .layout {
   display: grid;
   grid-template-columns: 260px 1fr;
