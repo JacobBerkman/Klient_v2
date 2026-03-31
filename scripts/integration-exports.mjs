@@ -14,6 +14,11 @@ function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
+async function consumeResponse(response) {
+  if (!response?.body) return
+  await response.arrayBuffer()
+}
+
 async function waitForTerminalExport(context, token, exportId, { maxTicks = 20 } = {}) {
   for (let attempt = 0; attempt < maxTicks; attempt += 1) {
     const exportsList = await context.request('/api/exports?sort=updatedAt_desc', {
@@ -352,6 +357,7 @@ try {
     assert(completedDisposition.includes('.pdf'), 'Expected completed export download filename metadata')
     const completedDownloadType = completedDownload.headers.get('content-type') || ''
     assert(completedDownloadType === 'application/pdf', 'Expected completed export download content type')
+    await consumeResponse(completedDownload)
   }
   const retriedProcessed = afterRetryProcessing.find((entry) => entry.id === bulkRetryJob.id)
   assert(
@@ -363,6 +369,7 @@ try {
       headers: { Authorization: `Bearer ${admin.token}` }
     })
     assert(retriedDownload.status === 200, 'Expected retried completed export to download successfully')
+    await consumeResponse(retriedDownload)
   }
 
   console.log(
