@@ -40,3 +40,20 @@ test('aggregate runner rejects deterministically for failing child script', asyn
     /exited with code 7/
   )
 })
+
+test('aggregate runner does not stall waiting on inherited stdio held by grandchildren', async () => {
+  const fixturePath = resolve(testDir, 'fixtures/runner-lifecycle/exit-before-stdio-close-fixture.mjs')
+  const start = Date.now()
+
+  const result = await runChildProcess({
+    scriptPath: fixturePath,
+    label: 'exit-before-stdio-close-fixture',
+    stdio: 'inherit',
+    timeoutMs: 1200,
+    cwd: repoRoot
+  })
+
+  const elapsed = Date.now() - start
+  assert.equal(result.code, 0)
+  assert(elapsed < 450, `expected to resolve from child exit without waiting on stdio close, got ${elapsed}ms`)
+})

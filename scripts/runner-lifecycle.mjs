@@ -28,8 +28,6 @@ export function runChildProcess({
 
     let settled = false
     let timeoutId = null
-    let exitInfo = null
-
     const settle = (resolver, value) => {
       if (settled) return
       settled = true
@@ -42,13 +40,7 @@ export function runChildProcess({
     })
 
     child.once('exit', (code, signal) => {
-      exitInfo = { code, signal }
-    })
-
-    child.once('close', (closeCode, closeSignal) => {
       const durationMs = Date.now() - start
-      const code = exitInfo?.code ?? closeCode
-      const signal = exitInfo?.signal ?? closeSignal
 
       if (signal) {
         settle(reject, new Error(`${displayLabel} terminated by signal ${signal} after ${durationMs}ms`))
