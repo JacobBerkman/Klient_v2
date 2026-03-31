@@ -172,6 +172,7 @@ const enableTestCsrfBypass = readBoolean('ENABLE_TEST_CSRF_BYPASS', false)
 const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
 const authProviderRaw = readNonEmptyString('AUTH_PROVIDER')
 const authProvider = readAuthProvider(authProviderRaw || undefined)
+const allowProductionLocalAuthBreakglass = readBoolean('ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS', false)
 const piiKeyProvider = readPiiKeyProvider(process.env.PII_KEY_PROVIDER)
 const klientOpsToken = readNonEmptyString('KLIENT_OPS_TOKEN')
 
@@ -285,9 +286,15 @@ export function validateRuntimeConfig() {
     )
   }
   if (runtime.nodeEnv === 'production' && runtime.authProvider === 'local') {
-    warnings.push(
-      'AUTH_PROVIDER=local in production enables password-based local auth; verify this is intentional for your threat model.'
-    )
+    if (!allowProductionLocalAuthBreakglass) {
+      issues.push(
+        'AUTH_PROVIDER=local is blocked in production. Set AUTH_PROVIDER=oidc or AUTH_PROVIDER=saml, or temporarily set ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true with recorded approval.'
+      )
+    } else {
+      warnings.push(
+        'BREAK-GLASS ACTIVE: ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true permits AUTH_PROVIDER=local in production. Ensure approval is recorded and remove override immediately after incident mitigation.'
+      )
+    }
   }
 
   if (runtime.piiKeyProvider === 'kms') {
