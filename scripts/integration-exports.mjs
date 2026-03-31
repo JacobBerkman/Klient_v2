@@ -1,10 +1,10 @@
 import { assert, createTestContext } from './test-harness.mjs'
 
-async function processQueued(context, token, times = 1) {
+async function processQueued(context, times = 1) {
   for (let i = 0; i < times; i += 1) {
     await context.request('/api/exports/process', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` }
+      headers: context.authHeaders()
     })
     await wait(300)
   }
@@ -19,26 +19,26 @@ async function consumeResponse(response) {
   await response.arrayBuffer()
 }
 
-async function waitForTerminalExport(context, token, exportId, { maxTicks = 20 } = {}) {
+async function waitForTerminalExport(context, exportId, { maxTicks = 20 } = {}) {
   for (let attempt = 0; attempt < maxTicks; attempt += 1) {
     const exportsList = await context.request('/api/exports?sort=updatedAt_desc', {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: context.authHeaders()
     })
     const job = exportsList.find((entry) => entry.id === exportId)
     if (job && ['completed', 'failed', 'dead-letter'].includes(job.status)) return job
     await context.request('/api/exports/process', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` }
+      headers: context.authHeaders()
     })
     await wait(250)
   }
   return null
 }
 
-async function waitForCompletedExport(context, token, exportIds, { maxTicks = 30 } = {}) {
+async function waitForCompletedExport(context, exportIds, { maxTicks = 30 } = {}) {
   for (let attempt = 0; attempt < maxTicks; attempt += 1) {
     const exportsList = await context.request('/api/exports?sort=updatedAt_desc', {
-      headers: { Authorization: `Bearer ${token}` }
+      headers: context.authHeaders()
     })
     const terminal = exportsList.find(
       (entry) => exportIds.includes(entry.id) && ['completed', 'failed', 'dead-letter'].includes(entry.status)
@@ -46,7 +46,7 @@ async function waitForCompletedExport(context, token, exportIds, { maxTicks = 30
     if (terminal) return terminal
     await context.request('/api/exports/process', {
       method: 'POST',
-      headers: { Authorization: `Bearer ${token}` }
+      headers: context.authHeaders()
     })
     await wait(300)
   }
@@ -56,8 +56,8 @@ async function waitForCompletedExport(context, token, exportIds, { maxTicks = 30
 const context = await createTestContext('exports')
 
 try {
-  const admin = await context.login()
-  const headers = context.authHeaders(admin.token)
+  await context.login()
+  const headers = context.authHeaders()
 
   const profile = await context.request('/api/profiles', {
     method: 'POST',
@@ -76,7 +76,7 @@ try {
   })
   await context.request(`/api/templates/${template.id}/publish`, {
     method: 'POST',
-    headers: { Authorization: `Bearer ${admin.token}`, 'Content-Type': 'application/json' },
+    headers,
     body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Integration exports publish' })
   })
 
@@ -190,37 +190,37 @@ try {
     })
   })
 
-  await processQueued(context, admin.token, 24)
-  const completedSettled = await waitForCompletedExport(context, admin.token, [completedJob.id, duplicateA.id, xlsxJob.id])
-  const flakySettled = await waitForTerminalExport(context, admin.token, flakyJob.id)
+  await processQueued(context, 24)
+  const completedSettled = await waitForCompletedExport(context, [completedJob.id, duplicateA.id, xlsxJob.id])
+  const flakySettled = await waitForTerminalExport(context, flakyJob.id)
   const exportsList = await context.request('/api/exports', {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers
   })
   const completedOnly = await context.request(`/api/exports?status=completed&sort=createdAt_desc`, {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers
   })
   const profileOnly = await context.request(`/api/exports?profileId=${encodeURIComponent(profile.id)}&sort=createdAt_asc`, {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers
   })
   const futureWindow = await context.request(`/api/exports?fromDate=2099-01-01T00:00:00.000Z`, {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers
   })
   const diagnostics = await context.request('/api/ops/diagnostics', {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers: context.opsHeaders()
   })
   const queueHealth = await context.request('/api/ops/exports/queue', {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers: context.opsHeaders()
   })
   const safeRetryDryRun = await context.request('/api/ops/exports/retry-failed', {
     method: 'POST',
-    headers: { Authorization: `Bearer ${admin.token}` },
+    headers,
     body: JSON.stringify({ dryRun: true, includeDeadLetter: false })
   })
 
   const unauthorizedDownload = await fetch(`http://127.0.0.1:${context.port}/api/analytics/export`)
   assert(unauthorizedDownload.status === 401, 'Analytics export download should require authentication')
   const authorizedDownload = await fetch(`http://127.0.0.1:${context.port}/api/analytics/export`, {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers: { Cookie: context.sessionCookie }
   })
   const csvDownload = await authorizedDownload.text()
   const downloadDisposition = authorizedDownload.headers.get('content-disposition') || ''
@@ -237,17 +237,17 @@ try {
   for (const candidate of retryCandidates) {
     const retried = await context.request(`/api/exports/${candidate.id}/retry`, {
       method: 'POST',
-      headers: { Authorization: `Bearer ${admin.token}`, 'Content-Type': 'application/json' },
+      headers,
       body: JSON.stringify({})
     })
     bulkRetryResults.push(retried)
   }
   const afterBulkRetry = await context.request(`/api/exports?status=queued&sort=updatedAt_desc`, {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers
   })
-  await processQueued(context, admin.token, 6)
+  await processQueued(context, 6)
   const afterRetryProcessing = await context.request('/api/exports?sort=updatedAt_desc', {
-    headers: { Authorization: `Bearer ${admin.token}` }
+    headers
   })
   const completedForAssertions =
     (completed?.status === 'completed' ? completed : completedSettled) || exportsList.find((entry) => entry.id === completedJob.id) || null
@@ -350,7 +350,7 @@ try {
   const completedAfterRetry = afterRetryProcessing.find((entry) => entry.id === (completedForAssertions?.id || completedJob.id))
   if (completedAfterRetry?.status === 'completed') {
     const completedDownload = await fetch(`http://127.0.0.1:${context.port}/api/exports/${completedAfterRetry.id}/download`, {
-      headers: { Authorization: `Bearer ${admin.token}` }
+      headers: { Cookie: context.sessionCookie }
     })
     assert(completedDownload.status === 200, 'Expected completed export to be downloadable')
     const completedDisposition = completedDownload.headers.get('content-disposition') || ''
@@ -366,7 +366,7 @@ try {
   )
   if (retriedProcessed?.status === 'completed') {
     const retriedDownload = await fetch(`http://127.0.0.1:${context.port}/api/exports/${retriedProcessed.id}/download`, {
-      headers: { Authorization: `Bearer ${admin.token}` }
+      headers: { Cookie: context.sessionCookie }
     })
     assert(retriedDownload.status === 200, 'Expected retried completed export to download successfully')
     await consumeResponse(retriedDownload)

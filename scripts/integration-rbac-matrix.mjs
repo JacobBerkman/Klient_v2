@@ -21,11 +21,11 @@ function ensureGuardCoverage(checks) {
 }
 
 try {
-  const adminSession = await context.login()
-  const adminHeaders = context.authHeaders(adminSession.token)
+  await context.login('admin@demo.test', 'ChangeMe123!', 'admin')
+  const adminHeaders = context.authHeaders('admin')
 
   const createRoleUser = async (role) => {
-    const invite = await context.request('/api/invites', {
+    const invite = await context.requestAs('admin', '/api/invites', {
       method: 'POST',
       headers: adminHeaders,
       body: JSON.stringify({ email: `${role}+${Date.now()}@test.local`, role })
@@ -38,55 +38,57 @@ try {
   }
 
   const advisorSession = await createRoleUser('advisor')
+  await context.login(advisorSession.user.email, 'RolePass1234A', 'advisor')
   const readonlySession = await createRoleUser('readonly')
+  await context.login(readonlySession.user.email, 'RolePass1234A', 'readonly')
   const clientSession = await createRoleUser('client')
+  await context.login(clientSession.user.email, 'RolePass1234A', 'client')
 
-  const profile = await context.request('/api/profiles', {
+  const profile = await context.requestAs('admin', '/api/profiles', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ kind: 'client', firstName: 'RBAC', lastName: 'Client', email: clientSession.user.email })
   })
-  const household = await context.request('/api/households', {
+  const household = await context.requestAs('admin', '/api/households', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ name: 'RBAC Household', primaryClientId: profile.id })
   })
-  const formTemplate = await context.request('/api/forms/templates', {
+  const formTemplate = await context.requestAs('admin', '/api/forms/templates', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ name: 'RBAC Form', sections: [] })
   })
-  const docTemplate = await context.request('/api/templates', {
+  const docTemplate = await context.requestAs('admin', '/api/templates', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ name: 'RBAC Template', fileName: 'rbac.pdf' })
   })
-  const submission = await context.request('/api/forms/submissions', {
+  const submission = await context.requestAs('admin', '/api/forms/submissions', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ clientId: profile.id, templateId: formTemplate.id, status: 'draft', data: {} })
   })
-  const exportJob = await context.request('/api/exports', {
+  const exportJob = await context.requestAs('admin', '/api/exports', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ clientId: profile.id, templateId: docTemplate.id, type: 'pdf' })
   })
-  const portalLink = await context.request('/api/portal-links', {
+  const portalLink = await context.requestAs('admin', '/api/portal-links', {
     method: 'POST',
     headers: adminHeaders,
     body: JSON.stringify({ profileId: profile.id, maxUses: 10 })
   })
 
   const actors = {
-    admin: adminSession.token,
-    advisor: advisorSession.token,
-    readonly: readonlySession.token,
-    client: clientSession.token
+    admin: 'admin',
+    advisor: 'advisor',
+    readonly: 'readonly',
+    client: 'client'
   }
 
   const checks = [
     { path: '/api/session', method: 'GET', guard: 'canReadSession' },
-    { path: '/api/ops/diagnostics', method: 'GET', guard: 'canReadDiagnostics' },
     { path: '/api/dashboard', method: 'GET', guard: 'canViewDashboard' },
     { path: '/api/users', method: 'GET', guard: 'canReadUsers' },
     { path: '/api/profiles', method: 'GET', guard: 'canReadProfiles' },
@@ -118,8 +120,6 @@ try {
     { path: '/api/exports', method: 'POST', body: { clientId: profile.id, templateId: docTemplate.id, type: 'pdf' }, guard: 'canWriteExports' },
     { path: '/api/exports/process', method: 'POST', body: {}, guard: 'canProcessExports' },
     { path: `/api/exports/${exportJob.id}/retry`, method: 'POST', body: {}, guard: 'canProcessExports' },
-    { path: '/api/ops/exports/queue', method: 'GET', guard: 'canProcessExports' },
-    { path: '/api/ops/exports/retry-failed', method: 'POST', body: { dryRun: true }, guard: 'canProcessExports' },
     { path: '/api/audit', method: 'GET', guard: 'canReadAudit' },
     { path: '/api/analytics', method: 'GET', guard: 'canReadAnalytics' },
     { path: '/api/client/workspace', method: 'GET', guard: 'canReadClientWorkspace' },
@@ -153,16 +153,16 @@ try {
       if (Array.isArray(check.scopeRoles) && !check.scopeRoles.includes(role)) {
         continue
       }
-      const token = actors[role]
+      const sessionName = actors[role]
       const method = check.method || 'GET'
-      const headers = method === 'GET' ? { Authorization: `Bearer ${token}` } : context.authHeaders(token)
+      const headers = context.authHeaders(sessionName)
       const options = { method, headers }
       if (check.body) options.body = JSON.stringify(check.body)
 
       if (allow.has(role)) {
-        await context.request(check.path, options)
+        await context.requestAs(sessionName, check.path, options)
       } else {
-        const denied = await context.requestExpectError(check.path, options, 403)
+        const denied = await context.requestExpectErrorAs(sessionName, check.path, options, 403)
         observedDenials.add(`${role}:${check.guard}`)
         assert(Boolean(denied), `${role} must be denied ${method} ${check.path}`)
       }

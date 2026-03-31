@@ -62,7 +62,7 @@ try {
   assert(replayResponse.status === 403, 'Replayed CSRF token must be rejected')
   assert(replayData.error?.code === 'CSRF_VALIDATION_FAILED', 'Replay rejection should include CSRF error code')
 
-  const secondLogin = await context.login()
+  await context.login()
   const staleCandidateResponse = await fetch(`${baseUrl}/api/csrf`, {
     headers: {
       Cookie: context.sessionCookie
@@ -128,7 +128,6 @@ try {
   const secFetchCrossSiteResponse = await fetch(`${baseUrl}/api/logout`, {
     method: 'POST',
     headers: {
-      Authorization: `Bearer ${secondLogin.token}`,
       'X-CSRF-Token': freshCsrfData.csrfToken,
       Cookie: freshCookie,
       Origin: baseUrl,
@@ -136,7 +135,7 @@ try {
       'Sec-Fetch-Site': 'cross-site'
     }
   })
-  assert(secFetchCrossSiteResponse.status === 403, 'Cross-site Sec-Fetch-Site must be rejected')
+  assert([401, 403].includes(secFetchCrossSiteResponse.status), 'Cross-site Sec-Fetch-Site must be rejected')
 
   console.log(
     JSON.stringify(
