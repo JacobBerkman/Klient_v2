@@ -10,6 +10,46 @@ function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
 }
 
+function waitForChildExit(child, timeoutMs) {
+  return new Promise((resolveExit) => {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      resolveExit(true)
+      return
+    }
+
+    let settled = false
+    const finish = (exited) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      child.removeListener('exit', onExitOrClose)
+      child.removeListener('close', onExitOrClose)
+      child.removeListener('error', onExitOrClose)
+      resolveExit(exited)
+    }
+    const onExitOrClose = () => finish(true)
+    const timeout = setTimeout(() => finish(false), timeoutMs)
+
+    child.on('exit', onExitOrClose)
+    child.on('close', onExitOrClose)
+    child.on('error', onExitOrClose)
+  })
+}
+
+async function terminateChild(
+  child,
+  { gracefulSignal = 'SIGTERM', graceMs = 3000, killMs = 2000 } = {}
+) {
+  if (child.exitCode !== null || child.signalCode !== null) return
+
+  child.kill(gracefulSignal)
+  const exitedGracefully = await waitForChildExit(child, graceMs)
+  if (exitedGracefully) return
+
+  child.kill('SIGKILL')
+  await waitForChildExit(child, killMs)
+}
+
 function isCsrfExemptPath(path) {
   return [
     '/api/login',
@@ -177,8 +217,7 @@ export async function createTestContext(name) {
             return data
           },
           async shutdown() {
-            server.kill('SIGTERM')
-            await wait(120)
+            await terminateChild(server)
             if (resetBehavior === 'isolated') {
               await rm(testCwd, { recursive: true, force: true })
             }
@@ -191,7 +230,7 @@ export async function createTestContext(name) {
     await wait(100)
   }
 
-  server.kill('SIGTERM')
+  await terminateChild(server)
   if (resetBehavior === 'isolated') {
     await rm(testCwd, { recursive: true, force: true })
   }
