@@ -25,7 +25,7 @@ test('GET /api/dashboard routes through policy + profiles service', async () => 
   const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
   const address = await listen(server)
   const res = await fetch(`http://${address.address}:${address.port}/api/dashboard`, {
-    headers: { authorization: 'Bearer token' }
+    headers: { cookie: '__Host-klient-session=token' }
   })
   const body = await res.json()
   assert.equal(res.status, 200)
@@ -55,7 +55,7 @@ test('GET /api/profiles forwards query params to profiles service', async () => 
   const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
   const address = await listen(server)
   const res = await fetch(`http://${address.address}:${address.port}/api/profiles?kind=prospect&search=casey`, {
-    headers: { authorization: 'Bearer token' }
+    headers: { cookie: '__Host-klient-session=token' }
   })
   const body = await res.json()
   assert.equal(res.status, 200)
@@ -78,15 +78,25 @@ test('pipeline stage config routes are transport-only and call pipelineStages mo
   const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
   const address = await listen(server)
   const base = `http://${address.address}:${address.port}`
+  const cookie = '__Host-klient-session=token'
+  const csrfBootstrap = await fetch(`${base}/api/csrf`, { headers: { cookie } })
+  const csrfPayload = await csrfBootstrap.json()
+  const csrfToken = csrfPayload.csrfToken
 
-  const listRes = await fetch(`${base}/api/pipeline/stages`, { headers: { authorization: 'Bearer token' } })
+  const listRes = await fetch(`${base}/api/pipeline/stages`, { headers: { cookie } })
   const listBody = await listRes.json()
   assert.equal(listRes.status, 200)
   assert.deepEqual(listBody, { stages: [] })
 
   const createRes = await fetch(`${base}/api/pipeline/stages`, {
     method: 'POST',
-    headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+    headers: {
+      cookie,
+      'content-type': 'application/json',
+      'x-csrf-token': csrfToken,
+      origin: base,
+      referer: `${base}/`
+    },
     body: JSON.stringify({ key: 'new_stage', label: 'New Stage' })
   })
   const createBody = await createRes.json()
@@ -138,9 +148,9 @@ test('authenticated MFA routes enforce policy + forward payloads', async () => {
   const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
   const address = await listen(server)
 
-  const headers = { authorization: 'Bearer token', 'content-type': 'application/json' }
+  const headers = { cookie: '__Host-klient-session=token', 'content-type': 'application/json' }
   const base = `http://${address.address}:${address.port}`
-  const csrfBootstrap = await fetch(`${base}/api/csrf`, { headers: { authorization: 'Bearer token' } })
+  const csrfBootstrap = await fetch(`${base}/api/csrf`, { headers: { cookie: '__Host-klient-session=token' } })
   const csrfPayload = await csrfBootstrap.json()
   let csrfCookie = (csrfBootstrap.headers.get('set-cookie') || '').split(';')[0]
   let csrfToken = csrfPayload.csrfToken
@@ -204,7 +214,7 @@ test('authenticated MFA routes enforce policy + forward payloads', async () => {
   await close(server)
 })
 
-test('POST /api/login rotates prior bearer token to prevent fixation', async () => {
+test('POST /api/login rotates prior session token to prevent fixation', async () => {
   const calls = []
   const modules = {
     auth: {
@@ -218,12 +228,12 @@ test('POST /api/login rotates prior bearer token to prevent fixation', async () 
   const address = await listen(server)
   const res = await fetch(`http://${address.address}:${address.port}/api/login`, {
     method: 'POST',
-    headers: { authorization: 'Bearer stale-token', 'content-type': 'application/json', 'x-api-compatibility-bearer': '1' },
+    headers: { cookie: '__Host-klient-session=stale-token', 'content-type': 'application/json' },
     body: JSON.stringify({ email: 'mfa@example.com', password: 'secret' })
   })
   const body = await res.json()
   assert.equal(res.status, 200)
-  assert.ok(body.token === 'fresh-token' || body.token === undefined)
+  assert.equal(body.token, undefined)
   assert.deepEqual(calls, ['logout:stale-token'])
   await close(server)
 })
@@ -241,7 +251,7 @@ test('GET /api/analytics/export requires auth and applies download headers', asy
   const base = `http://${address.address}:${address.port}`
 
   const authorized = await fetch(`${base}/api/analytics/export`, {
-    headers: { authorization: 'Bearer token' }
+    headers: { cookie: '__Host-klient-session=token' }
   })
   const csv = await authorized.text()
 
@@ -295,27 +305,33 @@ test('stage config routes are wired through policy + pipeline service', async (t
   const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
   const address = await listen(server)
   const base = `http://${address.address}:${address.port}`
+  const cookie = '__Host-klient-session=token'
+  const csrfBootstrap = await fetch(`${base}/api/csrf`, { headers: { cookie } })
+  const csrfPayload = await csrfBootstrap.json()
+  let csrfToken = csrfPayload.csrfToken
 
-  const listRes = await fetch(`${base}/api/pipeline/stages`, { headers: { authorization: 'Bearer token' } })
+  const listRes = await fetch(`${base}/api/pipeline/stages`, { headers: { cookie } })
   assert.equal(listRes.status, 200)
 
   const createRes = await fetch(`${base}/api/pipeline/stages`, {
     method: 'POST',
-    headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+    headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': csrfToken, origin: base, referer: `${base}/` },
     body: JSON.stringify({ key: 'estate_planning', label: 'Estate Planning' })
   })
   assert.equal(createRes.status, 201)
+  csrfToken = createRes.headers.get('x-csrf-token') || csrfToken
 
   const reorderRes = await fetch(`${base}/api/pipeline/stages/reorder`, {
     method: 'PATCH',
-    headers: { authorization: 'Bearer token', 'content-type': 'application/json' },
+    headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': csrfToken, origin: base, referer: `${base}/` },
     body: JSON.stringify({ stageOrder: ['estate_planning', 'discovery'] })
   })
   assert.equal(reorderRes.status, 200)
+  csrfToken = reorderRes.headers.get('x-csrf-token') || csrfToken
 
   const deactivateRes = await fetch(`${base}/api/pipeline/stages/estate_planning/deactivate`, {
     method: 'POST',
-    headers: { authorization: 'Bearer token' }
+    headers: { cookie, 'x-csrf-token': csrfToken, origin: base, referer: `${base}/` }
   })
   assert.equal(deactivateRes.status, 200)
 

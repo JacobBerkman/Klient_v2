@@ -1,20 +1,14 @@
-# Auth session cookie migration (temporary bearer compatibility)
+# Auth session cookie migration (completed)
 
-The API now authenticates web flows with the `__Host-klient-session` cookie and no longer returns reusable bearer tokens by default from:
+Session-cookie authentication is now the only user-session path. The API authenticates web flows with the `__Host-klient-session` cookie and does **not** emit reusable bearer tokens from:
 
 - `POST /api/login`
 - `POST /api/register`
 - `POST /api/invites/accept`
 
-## Temporary compatibility shim
+## Current behavior
 
-For non-browser callers that still require bearer-based flows, send:
-
-- `x-klient-auth-compat: bearer`
-
-When that header is present **and** `ENABLE_BEARER_AUTH_COMPAT=true`, auth responses include the legacy `token` field and deprecation headers.
-
-## Deprecation timeline
-
-- Compatibility mode sunset target: **June 30, 2026**
-- Follow-up task: remove `ENABLE_BEARER_AUTH_COMPAT` fallback and `x-klient-auth-compat` header handling.
+- Auth responses include user profile + CSRF bootstrap metadata.
+- Auth responses no longer include a legacy `token` field.
+- Session continuity must be driven by the `__Host-klient-session` cookie.
+- Operator automation remains bearer-based only for `KLIENT_OPS_TOKEN` on `/api/ops/*` endpoints.
