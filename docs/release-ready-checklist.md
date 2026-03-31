@@ -74,6 +74,15 @@ RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
   npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"
 ```
 
+
+## Federated auth approval gate (production)
+- Production GO requires `AUTH_PROVIDER=oidc` or `AUTH_PROVIDER=saml`.
+- `AUTH_PROVIDER=local` is a break-glass exception only and requires all of the following evidence before GO:
+  - `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true` was set intentionally for the deployment window.
+  - Incident/risk approval is recorded in `docs/release-handoff-template.md` (Section 2 auth mode notes + approver sign-off).
+  - A rollback/remediation plan and expiry time for removing break-glass are documented.
+- Approvers must explicitly verify provider mode and whether any break-glass exception was used.
+
 ## Objective pass/fail criteria
 
 | Gate | Owner | Evidence command | Evidence artifact target | PASS criteria | Severity if failed | Rollback trigger (SLO/SLA) |
@@ -83,6 +92,7 @@ RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
 | Migration checks | Data/DB Owner | `npm run check:migrations` | `artifacts/release-evidence/<release-id>/migration-summary.json` | Exit code `0`; summary has `status=passed` with migration + idempotency checks. | **SEV-1** | Roll back if migration idempotency fails, aggregate counts drift, or any data correctness SLO is violated; database restore required on confirmed corruption (SLA). |
 | Smoke | Release Manager | `npm run test:smoke` | `artifacts/release-evidence/<release-id>/smoke-summary.json` | Exit code `0`; summary has `status=passed`. | **SEV-1** | Roll back if smoke journey fails twice consecutively post-deploy or any core user journey remains broken for **10 minutes**. |
 | Security checks | Security Owner | `npm run test:security` | `artifacts/release-evidence/<release-id>/security-summary.json` | Exit code `0`; summary has `status=passed`. | **SEV-0/1** | Roll back immediately on auth bypass, PII exposure risk, or crypto regression (SLA/security policy breach). |
+| Auth provider mode verification | Security Owner + Release Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/startup-failfast.json` + `docs/release-handoff-template.md` | Production uses `AUTH_PROVIDER=oidc` or `AUTH_PROVIDER=saml`, or break-glass (`AUTH_PROVIDER=local` + `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true`) has explicit recorded approval and expiry/removal plan. | **SEV-1** | Block GO if auth mode is unverified, non-federated without approval, or exception evidence is incomplete. |
 | Branch parity | Engineering Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/branch-parity.txt` | Exit code `0`; branch is merge-compatible with `main`. | **SEV-2** | No runtime rollback trigger by itself; block release until parity is restored. |
 | Backup metadata | SRE / On-call | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/backup.json` | Exit code `0`; JSON has `ok=true`, `status=succeeded`, non-empty `artifact.path`, `artifact.sizeBytes>0`, `artifact.sqliteQuickCheck=ok`. | **SEV-1** | Roll back and halt further deploys if deploy proceeds without a verified fresh backup artifact and integrity check. |
 | Startup fail-fast probe (invalid config) | Release Manager + API Lead | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/startup-failfast.json` and `artifacts/release-evidence/<release-id>/startup-failfast.txt` | Probe report has `ok=true`, `status=succeeded`, and checks `exitCodeNonZero=true`, `startupBlockedLogged=true`, `startupIssuesPresent=true`, `listenPrevented=true` (proves startup blocked before listen). | **SEV-1** | Block release if probe fails or artifact is missing; invalid production config must fail-fast before bind/listen. |

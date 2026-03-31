@@ -26,7 +26,8 @@ Record whether each required key is set in the deployment target (do not paste s
 | Key | Present (Y/N) | Notes |
 |---|---|---|
 | `APP_SECRET` | Y | Explicitly injected via secret manager; no default fallback |
-| `AUTH_PROVIDER` | Y | `oidc` in production |
+| `AUTH_PROVIDER` | Y | `oidc` or `saml` required for standard production GO |
+| `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS` (only if `AUTH_PROVIDER=local`) | N | Must be `Y` only for approved break-glass; otherwise unset/false |
 | `NODE_ENV` | Y | `production` |
 | `PORT` | Y | `3000` |
 | `HOST` | Y | `0.0.0.0` |
@@ -42,7 +43,16 @@ Record whether each required key is set in the deployment target (do not paste s
 | `PII_KMS_KEYRING` (if `PII_KEY_PROVIDER=kms`) | Y | KMS keyring configured |
 
 
-## 2a) Startup fail-fast verification (production)
+## 2a) Auth provider verification and exceptions (required for approvers)
+Record explicit auth mode verification for production GO.
+
+| Check | Result | Evidence path / notes |
+|---|---|---|
+| Production provider mode is federated (`oidc` or `saml`) | PASS/FAIL | Record exact value and evidence source |
+| If `AUTH_PROVIDER=local`, break-glass was explicitly approved | PASS/FAIL/N/A | Link ticket/incident approval and approver names |
+| If break-glass used, `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true` confirmed and expiry/removal plan recorded | PASS/FAIL/N/A | Include target time/date to remove exception |
+
+## 2b) Startup fail-fast verification (production)
 Confirm that startup fails before bind/listen when runtime config is invalid, and records clear issues.
 Use `artifacts/release-evidence/<release-id>/startup-failfast.json` as the default evidence source from `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight`.
 

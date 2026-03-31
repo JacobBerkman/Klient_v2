@@ -15,7 +15,7 @@ Copy `.env.example` to `.env` and set at least:
 
 ```bash
 APP_SECRET=replace-with-a-long-random-secret
-AUTH_PROVIDER=local
+AUTH_PROVIDER=oidc
 NODE_ENV=production
 PORT=3000
 HOST=0.0.0.0
@@ -28,7 +28,8 @@ PII_KEYRING={"app-key-v1":"plain:replace-with-32-byte-base64-or-hex-key"}
 
 ### Production requirements
 - `APP_SECRET` must be explicitly injected (no default fallback in Compose/runtime).
-- `AUTH_PROVIDER` must be explicitly set (`local`, `oidc`, or `saml`) in production.
+- `AUTH_PROVIDER` must be explicitly set to a federated provider (`oidc` or `saml`) in production.
+- `AUTH_PROVIDER=local` is blocked in production unless temporary break-glass override `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true` is set and approval is recorded in release evidence.
 - When `AUTH_PROVIDER=oidc`, set `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_REDIRECT_URI` (HTTPS URLs required in production).
 - When `AUTH_PROVIDER=saml`, set `SAML_ENTRY_POINT`, `SAML_ISSUER`, and `SAML_CERT` (HTTPS entry point + PEM certificate required in production).
 - When `PII_KEY_PROVIDER=env`, set both `PII_ACTIVE_KEY_ID` and `PII_KEYRING`; APP_SECRET-derived fallback key material is blocked in production.
@@ -116,7 +117,7 @@ The gate is objective and fails if any required suite fails:
 Before approving GO/NO-GO, complete and archive the standardized handoff package in
 `docs/release-handoff-template.md`.
 When completing Section 2 of that package, explicitly record:
-- selected `AUTH_PROVIDER` path (`local`, `oidc`, or `saml`) and companion key presence checks,
+- selected `AUTH_PROVIDER` path (`oidc`/`saml` required for normal production GO, `local` only with recorded break-glass approval) and companion key presence checks,
 - selected `PII_KEY_PROVIDER` path (`env` or `kms`) and companion key presence checks,
 - and immutable release identity values (release ID, commit/tag, image digest, environment).
 
