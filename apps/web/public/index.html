@@ -7,6 +7,7 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <a class="skip-link" href="#main-content-heading">Skip to main content</a>
     <div class="layout">
       <aside class="sidebar">
         <h1>Kinetic Klient</h1>
@@ -35,7 +36,8 @@
           <button type="button" data-view="client-workspace" data-roles="client" aria-controls="view">My Portal</button>
         </nav>
       </aside>
-      <main class="content">
+      <main id="main-content" class="content" tabindex="-1" aria-labelledby="main-content-heading">
+        <h2 id="main-content-heading" class="sr-only">Main content</h2>
         <section class="auth-panel card">
           <h2>Authenticate</h2>
           <div class="grid two">

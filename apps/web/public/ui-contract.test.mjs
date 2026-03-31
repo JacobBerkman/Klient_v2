@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs'
 
 const html = readFileSync(new URL('./index.html', import.meta.url), 'utf8')
 const appJs = readFileSync(new URL('./app.js', import.meta.url), 'utf8')
+const portalHtml = readFileSync(new URL('./portal.html', import.meta.url), 'utf8')
 
 test('targeted forms expose inline feedback regions for validation and error rendering', () => {
   for (const formId of [
@@ -37,6 +38,9 @@ test('app wiring includes conflict normalization and form-level validation helpe
 })
 
 test('navigation and board controls include accessibility-critical semantics', () => {
+  assert.match(html, /<a class="skip-link" href="#main-content-heading">Skip to main content<\/a>/)
+  assert.match(html, /<main id="main-content" class="content" tabindex="-1" aria-labelledby="main-content-heading">/)
+  assert.match(html, /<h2 id="main-content-heading" class="sr-only">Main content<\/h2>/)
   assert.match(html, /<nav aria-label="Primary">/)
   assert.match(html, /<button type="button" data-view="dashboard"[^>]*aria-controls="view"/)
   assert.match(html, /<pre id="auth-status"[^>]*role="status"[^>]*aria-live="polite"[^>]*aria-atomic="true"/)
@@ -54,6 +58,14 @@ test('navigation and board controls include accessibility-critical semantics', (
   assert.match(appJs, /button\.setAttribute\('aria-expanded', 'false'\)/)
 })
 
+test('template change announcements are exposed for app and portal workflows', () => {
+  assert.match(appJs, /setWorkflowStatus\(`Template selected: \$\{selectedTemplate\.name\} \(\$\{mappingCount\} mappings\)\.`\)/)
+  assert.match(portalHtml, /id="portal-template-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"/)
+  assert.match(portalHtml, /function announceTemplateChange\(template, \{ silent = false \} = \{\}\)/)
+  assert.match(portalHtml, /Template \$\{template\.name\} selected\. \$\{sectionCount\} sections, \$\{fieldCount\} fields\./)
+  assert.match(portalHtml, /renderTemplateFields\(\{ silentAnnouncement: false \}\)/)
+})
+
 test('exports workflow includes keyboard-friendly selection labels and live-region updates', () => {
   assert.match(appJs, /id="exports-live-region"[\s\S]*role="status"[\s\S]*aria-live="polite"/)
   assert.match(appJs, /<table aria-describedby="exports-live-region">/)
@@ -67,6 +79,8 @@ test('exports workflow includes keyboard-friendly selection labels and live-regi
 
 test('styles provide visible focus indicators and empty-state affordances', () => {
   const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8')
+  assert.match(styles, /\.skip-link \{/)
+  assert.match(styles, /\.skip-link:focus-visible \{/)
   assert.match(styles, /button:focus-visible,/)
   assert.match(styles, /\.sidebar nav button\[aria-current='page'\]/)
   assert.match(styles, /\.empty-state \{/)
