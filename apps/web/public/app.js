@@ -754,6 +754,12 @@ function metricCard(label, value) {
   return `<div class="stat"><strong>${escapeHtml(value)}</strong><div class="muted">${escapeHtml(label)}</div></div>`
 }
 
+const RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS = {
+  maxQueueStalled: 0,
+  maxQueueDeadLetter: 0,
+  maxQueueFailedRetryable: 0
+}
+
 function normalizeOpsSignal(payload, preferredKeys = []) {
   if (payload == null) return null
   if (typeof payload === 'boolean') return payload
@@ -809,6 +815,24 @@ function deriveOpsCardStatus(key, endpoint) {
   if (explicitSignal === false) return { level: 'FAIL', note: 'Diagnostic signal reports failure.' }
   if (degraded || explicitSignal == null) return { level: 'WARN', note: degraded ? 'Degraded mode signaled.' : 'No explicit pass signal.' }
   return { level: 'PASS', note: 'Endpoint returned healthy response.' }
+}
+
+function operationRuleSetMarkup() {
+  return `
+    <details>
+      <summary>GO criteria enforced by <code>release:go-no-go --phase postdeploy</code></summary>
+      <ul class="muted compact">
+        <li><code>/health</code> must evaluate healthy.</li>
+        <li><code>/ready</code> must evaluate ready and <code>checks.*</code> must all be true.</li>
+        <li><code>queue.stalled</code> must be ≤ <strong>${RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueStalled}</strong>.</li>
+        <li><code>queue.machineState.deadLetter.count</code> (or <code>queue.deadLetter</code>) must be ≤ <strong>${RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueDeadLetter}</strong>.</li>
+        <li><code>queue.failedRetryable</code> must be ≤ <strong>${RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueFailedRetryable}</strong>.</li>
+        <li><code>/ready startupDiagnostics.ok</code> must be true (when present).</li>
+        <li><code>/api/ops/diagnostics startup.runtime.ok</code> must be true.</li>
+      </ul>
+      <p class="muted compact">If a release uses tuned thresholds, set <code>RELEASE_POSTDEPLOY_MAX_QUEUE_*</code> env vars in the command block before running postdeploy.</p>
+    </details>
+  `
 }
 
 async function fetchOpsEndpoint(path) {
@@ -2864,6 +2888,9 @@ function operationsCommandBlock() {
     'export RELEASE_ID=<release-id>',
     'export KLIENT_BASE_URL=https://<env-host>',
     'export KLIENT_OPS_TOKEN=<ops-token>',
+    'export RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED=0',
+    'export RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER=0',
+    'export RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE=0',
     'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight',
     'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy',
     'export RESTORE_BACKUP_PATH=data/backup-<timestamp>.db',
@@ -2928,6 +2955,7 @@ async function renderOperations() {
         <a href="/docs/release-ready-checklist.md#objective-passfail-criteria">Runbook: go/no-go grid</a>
       </div>
       <p class="muted compact" data-ops-action-feedback role="status" aria-live="polite" aria-atomic="true">${escapeHtml(state.operations.feedback || '')}</p>
+      ${operationRuleSetMarkup()}
       <div class="ops-grid">${statusCards}</div>
       <details open>
         <summary>Diagnostics payload</summary>

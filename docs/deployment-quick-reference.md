@@ -10,6 +10,9 @@ Set these before running flows (never commit secret values):
 | `RELEASE_ID` | all flows | Scopes artifacts to `artifacts/release-evidence/<release-id>`. |
 | `KLIENT_BASE_URL` | postdeploy, full operator run | Base URL for `/health`, `/ready`, and ops diagnostics checks. |
 | `KLIENT_OPS_TOKEN` | postdeploy, full operator run | Bearer token for `/api/ops/exports/queue` and `/api/ops/diagnostics`. |
+| `RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED` | postdeploy, full operator run | Max allowed `queue.stalled` count (default `0`). |
+| `RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER` | postdeploy, full operator run | Max allowed dead-letter count from `queue.machineState.deadLetter.count`/`queue.deadLetter` (default `0`). |
+| `RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE` | postdeploy, full operator run | Max allowed `queue.failedRetryable` count (default `0`). |
 | `RESTORE_BACKUP_PATH` | restore/drill only | Backup file path used for restore validation flow. |
 
 Baseline app/runtime variables remain required per deployment target (`APP_SECRET`, `NODE_ENV`, `PORT`, `HOST`, `LOG_LEVEL`, `ENABLE_DEMO_MODE`, and KMS keys when enabled).
@@ -26,7 +29,7 @@ Core outputs by phase:
 | Phase | Expected outputs |
 |---|---|
 | Preflight | `backup.json`, `branch-parity.txt`, `validate-master-summary.json`, plus gate summaries (`api-contract-summary.json`, `integration-summary.json`, `migration-summary.json`, `smoke-summary.json`, `security-summary.json`). |
-| Postdeploy | `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`. |
+| Postdeploy | `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`. |
 | Restore (live rollback) | `restore.json` with `executionMode=live-restore`. |
 | Restore drill (verify-only) | `restore-drill.json` with `executionMode=verify-only-drill`. |
 
@@ -37,6 +40,9 @@ Core outputs by phase:
 export RELEASE_ID=<release-id>
 export KLIENT_BASE_URL=https://<env-host>
 export KLIENT_OPS_TOKEN=<ops-token>
+export RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED=0
+export RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER=0
+export RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE=0
 ```
 
 ### 1) Preflight (must pass before deploy)
@@ -52,6 +58,21 @@ docker compose --env-file .env up --build -d
 ### 3) Postdeploy validation (run in this phase after deploy)
 ```bash
 npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy
+```
+
+`--phase postdeploy` now enforces hard GO rules and exits non-zero if any rule fails:
+- `/health` and `/ready` must both evaluate healthy/ready.
+- `/ready checks.*` must all be `true`.
+- `queue.stalled <= RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED`.
+- `queue.machineState.deadLetter.count` (or `queue.deadLetter`) `<= RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER`.
+- `queue.failedRetryable <= RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE`.
+- `/ready startupDiagnostics.ok` must be `true` when present.
+- `/api/ops/diagnostics startup.runtime.ok` must be `true`.
+
+Machine-readable evaluation output:
+
+```text
+artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json
 ```
 
 ### 4) Restore / rollback drill (or recovery)

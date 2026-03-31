@@ -119,6 +119,154 @@ function parseJsonFile(file, label) {
   }
 }
 
+const POSTDEPLOY_THRESHOLDS = {
+  maxQueueStalled: Number.parseInt(process.env.RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED || '0', 10),
+  maxQueueDeadLetter: Number.parseInt(process.env.RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER || '0', 10),
+  maxQueueFailedRetryable: Number.parseInt(process.env.RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE || '0', 10)
+}
+
+function parseNumericThreshold(value, fallback, key) {
+  if (Number.isFinite(value) && value >= 0) return value
+  process.stdout.write(`\n⚠ Invalid ${key} threshold; using fallback value ${fallback}.\n`)
+  return fallback
+}
+
+function normalizeBooleanSignal(payload) {
+  if (typeof payload === 'boolean') return payload
+  if (typeof payload === 'string') {
+    const lowered = payload.trim().toLowerCase()
+    if (['ok', 'pass', 'ready', 'healthy', 'up', 'true'].includes(lowered)) return true
+    if (['fail', 'failed', 'error', 'down', 'false', 'unhealthy'].includes(lowered)) return false
+    return null
+  }
+  if (!payload || typeof payload !== 'object') return null
+  const keys = ['ok', 'ready', 'healthy', 'status', 'state']
+  for (const key of keys) {
+    if (key in payload) return normalizeBooleanSignal(payload[key])
+  }
+  return null
+}
+
+function toNumber(value, fallback = 0) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function evaluatePostdeployPayloads({ releaseId, evidenceDir }) {
+  const healthPayload = parseJsonFile(resolve(evidenceDir, 'postdeploy-health.json'), 'Postdeploy health payload')
+  const readyPayload = parseJsonFile(resolve(evidenceDir, 'postdeploy-ready.json'), 'Postdeploy readiness payload')
+  const queuePayload = parseJsonFile(resolve(evidenceDir, 'postdeploy-exports-queue.json'), 'Postdeploy queue payload')
+  const diagnosticsPayload = parseJsonFile(resolve(evidenceDir, 'postdeploy-telemetry-bundle.json'), 'Postdeploy diagnostics payload')
+
+  const thresholds = {
+    maxQueueStalled: parseNumericThreshold(POSTDEPLOY_THRESHOLDS.maxQueueStalled, 0, 'RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED'),
+    maxQueueDeadLetter: parseNumericThreshold(
+      POSTDEPLOY_THRESHOLDS.maxQueueDeadLetter,
+      0,
+      'RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER'
+    ),
+    maxQueueFailedRetryable: parseNumericThreshold(
+      POSTDEPLOY_THRESHOLDS.maxQueueFailedRetryable,
+      0,
+      'RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE'
+    )
+  }
+
+  const queue = queuePayload?.queue || queuePayload || {}
+  const diagnosticsStartupRuntime = diagnosticsPayload?.startup?.runtime || diagnosticsPayload?.data?.startup?.runtime || {}
+  const readyChecks = readyPayload?.checks && typeof readyPayload.checks === 'object' ? readyPayload.checks : {}
+  const failedReadyChecks = Object.entries(readyChecks).filter(([, signal]) => normalizeBooleanSignal(signal) !== true)
+  const queueStalled = toNumber(queue.stalled)
+  const queueDeadLetter = toNumber(queue.machineState?.deadLetter?.count ?? queue.deadLetter)
+  const queueFailedRetryable = toNumber(queue.failedRetryable)
+
+  const rules = [
+    {
+      id: 'health-ok',
+      description: '/health must indicate healthy status',
+      passed: normalizeBooleanSignal(healthPayload) === true,
+      observed: {
+        ok: normalizeBooleanSignal(healthPayload),
+        status: healthPayload?.status
+      }
+    },
+    {
+      id: 'ready-ok',
+      description: '/ready must indicate ready status',
+      passed: normalizeBooleanSignal(readyPayload) === true,
+      observed: {
+        ok: normalizeBooleanSignal(readyPayload),
+        status: readyPayload?.status
+      }
+    },
+    {
+      id: 'ready-checks-all-true',
+      description: '/ready checks.* must all be true',
+      passed: failedReadyChecks.length === 0 && Object.keys(readyChecks).length > 0,
+      observed: {
+        totalChecks: Object.keys(readyChecks).length,
+        failedChecks: failedReadyChecks.map(([name, signal]) => ({ name, signal }))
+      }
+    },
+    {
+      id: 'queue-stalled-threshold',
+      description: 'Queue stalled count must be within threshold',
+      passed: queueStalled <= thresholds.maxQueueStalled,
+      observed: { value: queueStalled, threshold: thresholds.maxQueueStalled }
+    },
+    {
+      id: 'queue-dead-letter-threshold',
+      description: 'Queue dead-letter count must be within threshold',
+      passed: queueDeadLetter <= thresholds.maxQueueDeadLetter,
+      observed: { value: queueDeadLetter, threshold: thresholds.maxQueueDeadLetter }
+    },
+    {
+      id: 'queue-failed-retryable-threshold',
+      description: 'Queue failed-retryable count must be within threshold',
+      passed: queueFailedRetryable <= thresholds.maxQueueFailedRetryable,
+      observed: { value: queueFailedRetryable, threshold: thresholds.maxQueueFailedRetryable }
+    },
+    {
+      id: 'ready-startup-diagnostics-ok',
+      description: '/ready startupDiagnostics.ok must be true when present',
+      passed:
+        readyPayload?.startupDiagnostics?.ok === undefined || normalizeBooleanSignal(readyPayload?.startupDiagnostics?.ok) === true,
+      observed: {
+        startupDiagnosticsOk: readyPayload?.startupDiagnostics?.ok ?? null,
+        issues: readyPayload?.startupDiagnostics?.issues || []
+      }
+    },
+    {
+      id: 'runtime-diagnostics-ok',
+      description: '/api/ops/diagnostics startup.runtime.ok must be true',
+      passed: normalizeBooleanSignal(diagnosticsStartupRuntime?.ok) === true,
+      observed: {
+        startupRuntimeOk: diagnosticsStartupRuntime?.ok ?? null,
+        issues: diagnosticsStartupRuntime?.issues || []
+      }
+    }
+  ]
+
+  const failedRules = rules.filter((rule) => !rule.passed)
+  const evaluation = {
+    schemaVersion: '1.0.0',
+    releaseId,
+    generatedAt: new Date().toISOString(),
+    status: failedRules.length === 0 ? 'passed' : 'failed',
+    thresholds,
+    rules
+  }
+  const summaryPath = resolve(evidenceDir, 'postdeploy-evaluation-summary.json')
+  writeFileSync(summaryPath, `${JSON.stringify(evaluation, null, 2)}\n`, 'utf8')
+
+  if (failedRules.length > 0) {
+    const failedRuleIds = failedRules.map((rule) => rule.id).join(', ')
+    throw new Error(
+      `Postdeploy evaluation failed (${failedRules.length} rule(s)): ${failedRuleIds}. See ${relative(process.cwd(), summaryPath)}`
+    )
+  }
+}
+
 function ensureBackupEvidence(backupFile) {
   const report = parseJsonFile(backupFile, 'Backup evidence')
   const valid =
@@ -411,6 +559,8 @@ const postdeploy = async () => {
     args: ['-fsS', '-H', `Authorization: Bearer ${opsToken}`, `${baseUrl}/api/ops/diagnostics`],
     outputFile: resolve(evidenceDir, 'postdeploy-telemetry-bundle.json')
   })
+
+  evaluatePostdeployPayloads({ releaseId: options.releaseId, evidenceDir })
 }
 
 async function runPhase(phaseName, runner) {
