@@ -3,7 +3,7 @@
 Use this checklist as a strict go/no-go control for production releases.
 A release is **ready** only when every check is an objective **PASS** with captured evidence artifacts.
 Capture the release package with the standard handoff template at `docs/release-handoff-template.md`.
-Use the command-level quick runbook at `docs/deployment-quick-reference.md` for exact preflight/deploy/postdeploy/restore sequences and diagnostics triage.
+Use the canonical operator flow at `docs/deployment-quick-reference.md#canonical-operator-flow-exact-command-sequence` for exact preflight/deploy/postdeploy/restore commands and diagnostics triage.
 
 ## Primary operator command (GO/NO-GO)
 Run the operator workflow (fails fast, deterministic order):
@@ -60,23 +60,12 @@ RELEASE_EVIDENCE_FILE=artifacts/release-evidence/<release-id>/validate-master-su
 
 ## Deterministic command flows (operator runbook)
 
-### Flow A — deterministic preflight (single command)
-```bash
-npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight
-```
-
-### Flow B — deterministic restore-validation (single command, live rollback path)
-```bash
-RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
-  npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"
-```
-
-### Flow B.1 — verify-only restore drill (single command, non-live path)
-```bash
-RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
-  npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"
-```
-
+To avoid command drift, do not maintain a second command sequence here.
+Use only `docs/deployment-quick-reference.md#canonical-operator-flow-exact-command-sequence` as the source of truth for:
+- preflight phase command
+- deploy command
+- postdeploy phase command
+- restore and restore-drill commands
 
 ## Federated auth approval gate (production)
 - Production GO requires `AUTH_PROVIDER=oidc` or `AUTH_PROVIDER=saml`.
@@ -124,3 +113,8 @@ Execute in this exact order and stop on first failure:
 - Live rollback evidence: `restore.json` and `executionMode=live-restore`.
 - Drill evidence only: `restore-drill.json` and `executionMode=verify-only-drill`.
 - Never mark a live rollback as complete based on `restore-drill.json`.
+
+
+## Documentation freshness owner
+- **Owner:** Release Operations (Release Manager + SRE primary)
+- **Expectation:** keep this checklist synchronized with `docs/deployment-quick-reference.md` whenever runtime validation logic, thresholds, or evidence artifacts change.
