@@ -31,6 +31,15 @@ Each module exposes `service.mjs` and is composed in `apps/api/src/modules/index
   - route-level policy checks
   - invoking module services
 
+### Request logging redaction
+- `request.completed` and `request.failed` logs now emit a sanitized `path` value.
+- By default, only the URL pathname is logged (query strings are omitted).
+- If `LOG_REQUEST_QUERY=true`, query strings are included with filtering:
+  - known sensitive keys (`token`, `code`, `session`, `secret`) are replaced with `[REDACTED]`
+  - non-allowlisted keys are replaced with `[OMITTED]`
+  - safe allowlisted keys (for example `kind`, `search`, `page`, `limit`) retain values for debugging
+- Operational expectation: responders should not expect raw auth/session query values in production request logs; request IDs remain the primary correlation key.
+
 ### 2) Service layer (domain modules)
 - Files: `apps/api/src/modules/*/service.mjs`
 - Responsibilities:

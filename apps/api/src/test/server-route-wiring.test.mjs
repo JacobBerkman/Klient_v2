@@ -13,6 +13,31 @@ function close(server) {
   return new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
 }
 
+async function withCapturedLogs(run) {
+  const originalLog = console.log
+  const lines = []
+  console.log = (...args) => lines.push(args.join(' '))
+  try {
+    await run(lines)
+  } finally {
+    console.log = originalLog
+  }
+  return lines
+}
+
+function requestCompletedLogEntry(lines) {
+  const parsed = lines
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+  return parsed.find((entry) => entry.message === 'request.completed')
+}
+
 
 test('GET /api/dashboard routes through policy + profiles service', async () => {
   const calls = []
@@ -62,6 +87,69 @@ test('GET /api/profiles forwards query params to profiles service', async () => 
   assert.equal(body.length, 1)
   assert.deepEqual(calls, ['policy', { kind: 'prospect', search: 'casey' }])
   await close(server)
+})
+
+test('request.completed logs omit query strings by default', async () => {
+  const fakeUser = { id: 'u1', firmId: 'f1', role: 'admin' }
+  const modules = {
+    auth: { requireUser: () => fakeUser },
+    policy: { requireGuard: () => true },
+    profiles: { listProfiles: () => [] }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+
+  const lines = await withCapturedLogs(async () => {
+    await fetch(`${base}/api/profiles?kind=prospect&search=casey&token=raw-token-value&secret=raw-secret`, {
+      headers: { cookie: '__Host-klient-session=token' }
+    })
+  })
+  const entry = requestCompletedLogEntry(lines)
+  assert.ok(entry)
+  assert.equal(entry.path, '/api/profiles')
+  assert.equal(entry.path.includes('raw-token-value'), false)
+  assert.equal(entry.path.includes('raw-secret'), false)
+
+  await close(server)
+})
+
+test('request.completed logs redact sensitive query values when LOG_REQUEST_QUERY=true', async () => {
+  process.env.LOG_REQUEST_QUERY = 'true'
+  try {
+    const { createHttpServer: createHttpServerWithQueryLogging } = await import(
+      new URL(`../server.mjs?query-logging=${Date.now()}`, import.meta.url)
+    )
+    const fakeUser = { id: 'u1', firmId: 'f1', role: 'admin' }
+    const modules = {
+      auth: { requireUser: () => fakeUser },
+      policy: { requireGuard: () => true },
+      profiles: { listProfiles: () => [] }
+    }
+    const server = createHttpServerWithQueryLogging({
+      modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} })
+    })
+    const address = await listen(server)
+    const base = `http://${address.address}:${address.port}`
+
+    const lines = await withCapturedLogs(async () => {
+      await fetch(`${base}/api/profiles?kind=prospect&search=casey&token=raw-token-value&session=abc123&foo=bar`, {
+        headers: { cookie: '__Host-klient-session=token' }
+      })
+    })
+    const entry = requestCompletedLogEntry(lines)
+    assert.ok(entry)
+    assert.equal(
+      entry.path,
+      '/api/profiles?kind=prospect&search=casey&token=%5BREDACTED%5D&session=%5BREDACTED%5D&foo=%5BOMITTED%5D'
+    )
+    assert.equal(entry.path.includes('raw-token-value'), false)
+    assert.equal(entry.path.includes('abc123'), false)
+
+    await close(server)
+  } finally {
+    delete process.env.LOG_REQUEST_QUERY
+  }
 })
 
 test('pipeline stage config routes are transport-only and call pipelineStages module', async () => {
