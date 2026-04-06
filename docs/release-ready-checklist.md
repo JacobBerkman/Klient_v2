@@ -11,7 +11,8 @@ Run the operator workflow (fails fast, deterministic order):
 ```bash
 export RELEASE_ID=<release-id>
 export KLIENT_BASE_URL=https://<env-host>
-export KLIENT_OPS_TOKEN=<ops-token>
+export KLIENT_OPS_TOKEN_ACTIVE=<ops-token-active>
+export KLIENT_OPS_TOKEN_PREVIOUS=<ops-token-previous-while-rotating>
 npm run release:go-no-go -- --release-id "$RELEASE_ID"
 ```
 
@@ -22,7 +23,9 @@ The GO/NO-GO evidence package is complete only when `artifacts/release-evidence/
 Required environment variables:
 - `RELEASE_ID` (or pass `--release-id`) for artifact scoping.
 - `KLIENT_BASE_URL` for post-deploy health/readiness checks.
-- `KLIENT_OPS_TOKEN` for authenticated ops diagnostics endpoints.
+- `KLIENT_OPS_TOKEN_ACTIVE` for authenticated ops diagnostics endpoints (recommended).
+- `KLIENT_OPS_TOKEN_PREVIOUS` during token rotation windows to prevent postdeploy check interruptions while secrets propagate.
+- `KLIENT_OPS_TOKEN` as a legacy fallback if rotation-safe vars are unavailable.
 - `RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED` for release-time tuning of allowed stalled queue count (default `0`).
 - `RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER` for release-time tuning of allowed dead-letter count (default `0`).
 - `RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE` for release-time tuning of allowed retryable-failure count (default `0`).
@@ -91,9 +94,9 @@ Use only `docs/deployment-quick-reference.md#canonical-operator-flow-exact-comma
 | Deterministic preflight flow | Release Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/backup.json`, `artifacts/release-evidence/<release-id>/branch-parity.txt`, `artifacts/release-evidence/<release-id>/startup-failfast.json`, `artifacts/release-evidence/<release-id>/validate-master-summary.json` | Single command exits `0`; includes passing backup metadata, branch parity, startup fail-fast probe evidence, and hard release gate evidence. | **SEV-1** | Block release if flow fails at any stage; no deploy until all evidence is regenerated and PASS. |
 | Deterministic restore-validation flow (live restore) | Data/DB Owner + SRE | `RESTORE_BACKUP_PATH=data/backup-<timestamp>.db npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"` | `artifacts/release-evidence/<release-id>/restore.json` | Exit code `0`; JSON has `ok=true`, `executionMode=live-restore`, both `source/restoreTarget.sqliteQuickCheck=ok`, `checks.sizeMatch=true`, `checks.sha256Match=true`. | **SEV-1** | Roll back/hold release if live restore validation fails integrity checks. |
 | Verify-only restore drill flow (non-live) | Data/DB Owner + SRE | `RESTORE_BACKUP_PATH=data/backup-<timestamp>.db npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"` | `artifacts/release-evidence/<release-id>/restore-drill.json` | Exit code `0`; JSON has `ok=true`, `executionMode=verify-only-drill`, both `source/restoreTarget.sqliteQuickCheck=ok`, `checks.sizeMatch=true`, `checks.sha256Match=true`. | **SEV-2** | Block GO if drill evidence is required by policy and absent/failed; do not treat drill output as proof of live restore execution. |
-| Post-deploy health + readiness | SRE / On-call | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-health.json`, `artifacts/release-evidence/<release-id>/postdeploy-ready.json` | Both return HTTP `200`; `/health` evaluates healthy, `/ready` evaluates ready, and `/ready checks.*` are all true. | **SEV-1** | Roll back if health/readiness are non-200 for **>5 minutes** or if readiness remains degraded after one remediation attempt. |
+| Post-deploy health + readiness | SRE / On-call | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-health.json`, `artifacts/release-evidence/<release-id>/postdeploy-ready.json` | Both return HTTP `200`; `/health` evaluates healthy, `/ready` returns `status=ready` with `ready=true`, and `/ready checks.*` are all true. | **SEV-1** | Roll back if health/readiness are non-200 for **>5 minutes** or if readiness remains degraded after one remediation attempt. |
 | Export queue diagnostics thresholds | SRE / On-call | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-exports-queue.json`, `artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json` | `queue.stalled <= RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED`; `queue.machineState.deadLetter.count` (or `queue.deadLetter`) `<= RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER`; `queue.failedRetryable <= RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE`. | **SEV-1** | Roll back if queue processing is stalled and no successful processing occurs within **10 minutes** or dead-letter/retryable failures exceed threshold without rapid mitigation. |
-| Telemetry/runtime diagnostics | Observability Owner | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json`, `artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json` | `/ready startupDiagnostics.ok` is true when present and `/api/ops/diagnostics startup.runtime.ok` is true. | **SEV-1** | Roll back if telemetry indicates sustained SLO breach for **>10 minutes** or unresolved critical/high alerts. |
+| Telemetry/runtime diagnostics | Observability Owner | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json`, `artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json` | `/api/ops/diagnostics startup.runtime.ok` is true (and `/ready` remains minimal/public-safe). | **SEV-1** | Roll back if telemetry indicates sustained SLO breach for **>10 minutes** or unresolved critical/high alerts. |
 | Post-deploy enforced rule summary | Release Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json` | Summary has `status=passed`; every rule entry has `passed=true`; threshold values match release-time env var settings. | **SEV-1** | NO-GO if summary is missing or has any failed rule. |
 | Evidence manifest | Release Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID"` | `artifacts/release-evidence/<release-id>/manifest.json` | Manifest exists and includes release id, per-phase status, generation timestamp, and SHA-256 metadata for produced artifact files. | **SEV-1** | Block GO/NO-GO decision until manifest is generated and attached to release handoff. |
 
@@ -104,6 +107,11 @@ Execute in this exact order and stop on first failure:
 2. readiness (executed second inside the command)
 3. export queue diagnostics (executed third inside the command)
 4. telemetry bundle (executed fourth inside the command)
+
+### Operator guidance for deep debugging
+- Treat `/ready` as a machine-usable, minimal readiness probe only (`status`, `ready`, `checks.*`).
+- Use `/api/ops/diagnostics` with `KLIENT_OPS_TOKEN` for deep internals (query summary, storage internals, startup warnings/issues, queue internals).
+- Use `/api/ops/exports/queue` with `KLIENT_OPS_TOKEN` for queue threshold remediation details.
 
 ## Release decision rubric
 - **GO**: `npm run release:go-no-go -- --release-id "$RELEASE_ID"` passes and every required row above is PASS with captured command output, evidence files, and `manifest.json`.

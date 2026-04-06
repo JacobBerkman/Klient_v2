@@ -705,6 +705,15 @@ function canMutateProfiles() {
   return roleAllowed('admin,advisor')
 }
 
+function canReadDiagnostics() {
+  const operationsViewRoles = document.querySelector('[data-view="operations"]')?.dataset.roles || 'admin,advisor'
+  return roleAllowed(operationsViewRoles)
+}
+
+function canViewLaunchOpsPanel() {
+  return roleAllowed('admin') && canReadDiagnostics()
+}
+
 function canMutateSection(sectionEl) {
   return roleAllowed(sectionEl?.dataset.requiresRole || '')
 }
@@ -943,15 +952,72 @@ function buildClientWorkflowMap(drafts = [], submissions = []) {
 async function renderDashboard() {
   try {
     const data = await request(routes.dashboard())
+    if (canViewLaunchOpsPanel() && !state.operations.snapshot && !state.operations.busy) {
+      try {
+        await loadOperationsSnapshot()
+      } catch {
+        // Keep dashboard functional even if operations snapshot is temporarily unavailable.
+      }
+    }
     const stats = Object.entries(data?.stats || {})
+    const launchOpsCards = [
+      { key: 'health', title: '/health', href: '/health', data: state.operations.snapshot?.health },
+      { key: 'ready', title: '/ready', href: '/ready', data: state.operations.snapshot?.ready },
+      {
+        key: 'queue',
+        title: 'Exports queue',
+        href: routes.exportsQueueHealth(),
+        data: state.operations.snapshot?.queue
+      }
+    ]
+      .map(({ key, title, href, data }) => {
+        const status = deriveOpsCardStatus(key, data)
+        const detail = data?.ok ? status.note : data?.error || 'Check unavailable. Open Operations for details.'
+        return `<article class="ops-card">
+          <div class="row between">
+            <strong><a href="${escapeHtml(href)}" target="_blank" rel="noreferrer">${escapeHtml(title)}</a></strong>
+            <span class="ops-badge ${status.level.toLowerCase()}">${status.level}</span>
+          </div>
+          <p class="muted compact">${escapeHtml(detail)}</p>
+        </article>`
+      })
+      .join('')
+    const diagnosticsGeneratedAt = state.operations.snapshot?.diagnostics?.payload?.generatedAt || ''
+    const launchOpsPanel = canViewLaunchOpsPanel()
+      ? `
+        <section class="section-card" data-launch-ops-panel data-requires-role="admin" data-policy-guard="canReadDiagnostics">
+          <div class="row between">
+            <div>
+              <h3 id="launch-ops-heading">Launch Ops</h3>
+              <p class="muted compact">Read-only operator checks for release GO/NO-GO decisions.</p>
+            </div>
+            <button type="button" class="tiny" data-launch-ops-open>Open Operations</button>
+          </div>
+          <p class="muted compact"><strong>GO:</strong> /health and /ready pass, exports queue has no stalled/dead-letter/retryable-failed jobs, and diagnostics runtime checks remain green.</p>
+          <p class="muted compact"><strong>NO-GO:</strong> Any FAIL/WARN below, missing diagnostics evidence, or unresolved queue failures requiring remediation.</p>
+          <p class="muted compact">
+            Evidence artifacts: store release proof under
+            <code>artifacts/release-evidence/&lt;release-id&gt;</code>.
+          </p>
+          <p class="muted compact">Latest diagnostics timestamp: <strong>${escapeHtml(diagnosticsGeneratedAt || 'Not yet captured')}</strong></p>
+          <div class="ops-grid">${launchOpsCards}</div>
+        </section>
+      `
+      : ''
     viewEl.innerHTML = `
       ${flashMarkup()}
       <div class="section-header"><h2 id="dashboard-heading">Dashboard</h2></div>
       <div class="stat-grid">
         ${stats.map(([key, value]) => metricCard(key, value)).join('') || emptyStateMarkup('No dashboard metrics are available yet.')}
       </div>
+      ${launchOpsPanel}
       <div class="item compact muted">Recent activity and profile management remain available in their dedicated tabs.</div>
     `
+    viewEl.querySelector('[data-launch-ops-open]')?.addEventListener('click', async () => {
+      state.view = 'operations'
+      queueViewFocus('#operations-heading')
+      await renderCurrentView()
+    })
   } catch (error) {
     viewEl.innerHTML = `${flashMarkup()}${viewErrorBanner('dashboard', error)}${emptyStateMarkup()}`
   }

@@ -11,30 +11,33 @@ This deployment remains a single-process **Node + SQLite + static web** architec
 - and the portal UI is served from `/portal`.
 
 ## Environment contract
-Copy `.env.example` to `.env` and set at least:
+Copy `.env.example` to `.env` and set the runtime-required production variables.
 
 ```bash
+NODE_ENV=production
 APP_SECRET=replace-with-a-long-random-secret
 AUTH_PROVIDER=oidc
-NODE_ENV=production
-PORT=3000
-HOST=0.0.0.0
-LOG_LEVEL=info
-ENABLE_DEMO_MODE=false
+KLIENT_OPS_TOKEN=replace-with-24-plus-char-ops-token
 PII_KEY_PROVIDER=env
 PII_ACTIVE_KEY_ID=app-key-v1
 PII_KEYRING={"app-key-v1":"plain:replace-with-32-byte-base64-or-hex-key"}
 ```
 
-### Production requirements
-- `APP_SECRET` must be explicitly injected (no default fallback in Compose/runtime).
-- `AUTH_PROVIDER` must be explicitly set to a federated provider (`oidc` or `saml`) in production.
-- `AUTH_PROVIDER=local` is blocked in production unless temporary break-glass override `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true` is set and approval is recorded in release evidence.
-- When `AUTH_PROVIDER=oidc`, set `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, and `OIDC_REDIRECT_URI` (HTTPS URLs required in production).
-- When `AUTH_PROVIDER=saml`, set `SAML_ENTRY_POINT`, `SAML_ISSUER`, and `SAML_CERT` (HTTPS entry point + PEM certificate required in production).
-- When `PII_KEY_PROVIDER=env`, set both `PII_ACTIVE_KEY_ID` and `PII_KEYRING`; APP_SECRET-derived fallback key material is blocked in production.
-- When `PII_KEY_PROVIDER=kms`, set both `PII_KMS_ACTIVE_KEY_ID` and `PII_KMS_KEYRING`.
-- Runtime now fails fast in production before `server.listen(...)` when `validateRuntimeConfig()` reports any issue.
+### Production runtime-required variables (exactly enforced)
+| Variable | Required when | Runtime enforcement |
+|---|---|---|
+| `APP_SECRET` | always in production | must be explicitly set and meet minimum strength requirements. |
+| `AUTH_PROVIDER` | always in production | must be explicitly set; `local` requires `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true`, otherwise startup is blocked. |
+| `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` | `AUTH_PROVIDER=oidc` | all required; issuer + redirect must be HTTPS; client secret must be >= 16 chars. |
+| `SAML_ENTRY_POINT`, `SAML_ISSUER`, `SAML_CERT` | `AUTH_PROVIDER=saml` | all required; entry point must be HTTPS; cert must contain a PEM certificate block. |
+| `PII_KEY_PROVIDER` | always in production | provider selector (`env` or `kms`). |
+| `PII_ACTIVE_KEY_ID`, `PII_KEYRING` | `PII_KEY_PROVIDER=env` | both required; `PII_KEYRING` must be a JSON object and include `PII_ACTIVE_KEY_ID`. |
+| `PII_KMS_KEYRING` + (`PII_KMS_ACTIVE_KEY_ID` or `PII_ACTIVE_KEY_ID`) | `PII_KEY_PROVIDER=kms` | keyring required and must be a JSON object; active key id required. |
+| `KLIENT_OPS_TOKEN` | always in production | required and must be at least 24 characters. |
+| `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY` | `STORAGE_PROVIDER=s3` | required together when S3 storage is selected. |
+
+### Deployment contract consistency
+`docker-compose.yml` environment passthrough must be a **superset** of production keys validated by `validateRuntimeConfig()` in `apps/api/src/runtime.mjs`.
 
 ### PII KMS key provider configuration
 If you set `PII_KEY_PROVIDER=kms`, configure the bootstrap key adapter values as well:

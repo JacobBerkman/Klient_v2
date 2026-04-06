@@ -62,6 +62,17 @@ Use `artifacts/release-evidence/<release-id>/startup-failfast.json` as the defau
 | Error payload lists startup validation issues | `<PASS/FAIL>` | `<path + field>` |
 | Startup is blocked before bind/listen | `<PASS/FAIL>` | `<path + field>` |
 
+## 2c) Ops token rotation handoff checklist (deployment window)
+Record rotation details so postdeploy checks can run while active/previous token overlap is in place.
+
+| Check | Result | Evidence path / notes |
+|---|---|---|
+| Rotation timestamp (UTC) captured | PASS/FAIL | Include exact cutover time (e.g., `2026-03-30 14:05 UTC`) |
+| Rotation owner recorded | PASS/FAIL | Name + team owning secret change |
+| Active token var (`KLIENT_OPS_TOKEN_ACTIVE`) confirmed | PASS/FAIL | Secret/version reference; never paste token |
+| Previous token overlap window documented (`KLIENT_OPS_TOKEN_PREVIOUS`) | PASS/FAIL/N/A | Start + planned removal timestamp |
+| Previous token expiry/removal expectation recorded | PASS/FAIL | Removal SLA and ticket/runbook reference |
+
 ## 3) Evidence artifact links
 Attach links or paths to the objective release evidence.
 

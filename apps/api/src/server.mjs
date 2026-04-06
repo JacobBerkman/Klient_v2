@@ -46,6 +46,11 @@ const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const CSRF_BOOTSTRAP_PATH = '/api/csrf'
 const CSRF_TTL_SECONDS = 60 * 15
 const SESSION_IDLE_TIMEOUT_SECONDS = 60 * 30
+const REQUEST_LOG_INCLUDE_QUERY = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.LOG_REQUEST_QUERY || '').toLowerCase()
+)
+const LOG_SENSITIVE_QUERY_KEYS = new Set(['token', 'code', 'session', 'secret'])
+const LOG_QUERY_SAFE_KEYS = new Set(['id', 'page', 'limit', 'kind', 'search', 'sort', 'filter'])
 const CSRF_EXEMPT_PATHS = new Set([
   '/api/login',
   '/api/register',
@@ -143,17 +148,27 @@ function readOpsBearerToken(req) {
   return req.headers.authorization?.replace('Bearer ', '').trim()
 }
 
-function currentOpsToken() {
-  return String(runtime.klientOpsToken || process.env.KLIENT_OPS_TOKEN || '').trim()
+function configuredOpsTokens() {
+  const configured = Array.isArray(runtime.klientOpsTokens) ? runtime.klientOpsTokens : []
+  if (configured.length > 0) return configured
+  const legacy = String(runtime.klientOpsToken || process.env.KLIENT_OPS_TOKEN || '').trim()
+  return legacy ? [{ token: legacy, slot: 'legacy' }] : []
 }
 
-function isValidOpsToken(candidate) {
-  const configured = currentOpsToken()
-  if (!configured) return false
-  const expected = Buffer.from(configured)
+function getOpsTokenMatch(candidate) {
+  const candidates = configuredOpsTokens()
   const provided = Buffer.from(String(candidate || ''))
-  if (expected.length === 0 || expected.length !== provided.length) return false
-  return timingSafeEqual(expected, provided)
+  for (const entry of candidates) {
+    const expected = Buffer.from(entry.token)
+    if (expected.length === 0 || expected.length !== provided.length) continue
+    if (timingSafeEqual(expected, provided)) return entry
+  }
+  return null
+}
+
+function opsTokenFingerprint(token) {
+  if (!token) return null
+  return createHash('sha256').update(token).digest('hex').slice(0, 12)
 }
 
 function resolveSessionToken(req) {
@@ -496,16 +511,51 @@ function sendError(res, error, requestId) {
 
 function requestLogger(req, requestId) {
   const startedAt = Date.now()
+  const sanitizedPath = sanitizeRequestLogPath(req.url, { includeQuery: REQUEST_LOG_INCLUDE_QUERY })
   return (statusCode, metadata = {}) => {
     log('info', 'request.completed', {
       requestId,
       method: req.method,
-      path: req.url,
+      path: sanitizedPath,
       statusCode,
       durationMs: Date.now() - startedAt,
       ...metadata
     })
   }
+}
+
+function sanitizeRequestLogPath(rawUrl, { includeQuery = false } = {}) {
+  const fallback = '/'
+  const input = String(rawUrl || fallback)
+  let url
+  try {
+    url = new URL(input, 'http://localhost')
+  } catch {
+    return fallback
+  }
+  const pathname = url.pathname || fallback
+  if (!includeQuery || !url.searchParams || [...url.searchParams.keys()].length === 0) {
+    return pathname
+  }
+  const query = sanitizeRequestLogQuery(url.searchParams)
+  return query ? `${pathname}?${query}` : pathname
+}
+
+function sanitizeRequestLogQuery(searchParams) {
+  const sanitized = new URLSearchParams()
+  for (const [key, value] of searchParams.entries()) {
+    const normalizedKey = String(key || '').toLowerCase()
+    if (LOG_SENSITIVE_QUERY_KEYS.has(normalizedKey)) {
+      sanitized.set(key, '[REDACTED]')
+      continue
+    }
+    if (!LOG_QUERY_SAFE_KEYS.has(normalizedKey)) {
+      sanitized.set(key, '[OMITTED]')
+      continue
+    }
+    sanitized.set(key, value)
+  }
+  return sanitized.toString()
 }
 
 
@@ -523,6 +573,7 @@ export function createHttpServer({ modules }) {
     let sessionToken = null
     let authenticatedUser = null
     let rotateCsrfAfterResponse = false
+    let opsAuditMetadata = null
     const rejectSession = (reason) => {
       securityDiagnostics.session.rejectedTotal += 1
       securityDiagnostics.session.rejectedByReason[reason] = (securityDiagnostics.session.rejectedByReason[reason] || 0) + 1
@@ -540,19 +591,36 @@ export function createHttpServer({ modules }) {
       }
     }
     const authorizeOpsRequest = () => {
-      if (currentOpsToken()) {
+      const configuredTokens = configuredOpsTokens()
+      if (configuredTokens.length > 0) {
         const opsToken = readOpsBearerToken(req)
-        if (!isValidOpsToken(opsToken)) {
+        const tokenMatch = getOpsTokenMatch(opsToken)
+        if (!tokenMatch) {
+          opsAuditMetadata = {
+            authMode: 'ops-token',
+            result: 'denied',
+            reason: 'invalid_or_missing_token',
+            tokenPresent: Boolean(opsToken),
+            configuredTokenCount: configuredTokens.length
+          }
           const error = new Error('Ops token authentication required.')
           error.statusCode = 401
           throw error
         }
         const queueHealth = readExportWorkerStatus()
+        opsAuditMetadata = {
+          authMode: 'ops-token',
+          result: 'granted',
+          tokenSlot: tokenMatch.slot,
+          tokenFingerprint: opsTokenFingerprint(tokenMatch.token),
+          configuredTokenCount: configuredTokens.length
+        }
         return {
           id: 'ops-token',
           role: 'admin',
           authMode: 'ops-token',
-          firmId: queueHealth?.latestJob?.firmId || null
+          firmId: queueHealth?.latestJob?.firmId || null,
+          authAudit: opsAuditMetadata
         }
       }
       return null
@@ -609,33 +677,54 @@ export function createHttpServer({ modules }) {
         const database = ensureDatabaseReady()
         const storageHealth = readStorageHealth()
         const queue = readExportWorkerStatus()
-        const querySummary = readQuerySummary()
-        const auditEvents = readAuditEventSummary()
+        const checks = {
+          databaseReady: Boolean(database?.ok),
+          storageReady: Boolean(storageHealth?.ok),
+          exportQueueReachable: Boolean(queue && typeof queue === 'object'),
+          startupConfigValid: runtime.isProduction ? Boolean(startupDiagnostics?.ok) : true
+        }
+        const ready = Object.values(checks).every(Boolean)
+        const includeDiagnostics =
+          ['1', 'true', 'ops', 'full'].includes(String(url.searchParams.get('verbose') || '').toLowerCase()) ||
+          ['1', 'true', 'ops', 'full'].includes(String(url.searchParams.get('details') || '').toLowerCase())
+        let diagnosticsPayload = null
+        if (includeDiagnostics) {
+          authorizeOpsRequest()
+          diagnosticsPayload = {
+            querySummary: readQuerySummary(),
+            database,
+            storageHealth,
+            exportWorker: queue,
+            auditEvents: readAuditEventSummary(),
+            startupDiagnostics
+          }
+        }
         finalizeLog(200)
         return replyJson(
           200,
           {
             status: 'ready',
-            querySummary,
-            database,
-            storageHealth,
-            exportWorker: queue,
-            auditEvents,
-            startupDiagnostics,
-            checks: {
-              databaseReady: Boolean(database?.ok),
-              storageReady: Boolean(storageHealth?.ok),
-              exportQueueReachable: Boolean(queue && typeof queue === 'object'),
-              startupConfigValid: Boolean(startupDiagnostics?.ok)
-            },
-            diagnostics: {
+            ready,
+            service: runtime.serviceName,
+            bootedAt,
+            uptimeSeconds: Math.round(process.uptime()),
+            checks,
+            diagnostics: includeDiagnostics
+              ? {
+                  mode: 'privileged',
+                  ...diagnosticsPayload
+                }
+              : {
+                  mode: 'minimal',
+                  message: 'Use /api/ops/diagnostics with KLIENT_OPS_TOKEN for deep diagnostics.',
+                  endpoint: '/api/ops/diagnostics'
+                },
+            links: {
               generatedAt: new Date().toISOString(),
-              endpoints: {
-                health: '/health',
-                ready: '/ready',
-                exportsQueue: '/api/ops/exports/queue',
-                telemetry: '/api/ops/diagnostics'
-              }
+              health: '/health',
+              ready: '/ready',
+              exportsQueue: '/api/ops/exports/queue',
+              telemetry: '/api/ops/diagnostics'
             }
           },
           { 'X-Request-Id': requestId }
@@ -650,7 +739,7 @@ export function createHttpServer({ modules }) {
           acc[job.status] = (acc[job.status] || 0) + 1
           return acc
         }, {})
-        finalizeLog(200)
+        finalizeLog(200, { opsAuth: user?.authAudit || opsAuditMetadata })
         return replyJson(
           200,
           {
@@ -696,7 +785,7 @@ export function createHttpServer({ modules }) {
         const user = authorizeOpsRequest() || requireUser()
         if (user?.authMode !== 'ops-token') modules.policy.requireGuard(user, 'canProcessExports')
         const result = modules.exports.getQueueHealth(user)
-        finalizeLog(200)
+        finalizeLog(200, { opsAuth: user?.authAudit || opsAuditMetadata })
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/ops/exports/retry-failed' && req.method === 'POST') {
@@ -1426,10 +1515,16 @@ export function createHttpServer({ modules }) {
       finalizeLog(200, { static: true })
       return serveStatic(pathname, res, requestId)
     } catch (error) {
+      if (opsAuditMetadata) {
+        error.details = {
+          ...(error.details || {}),
+          opsAuth: opsAuditMetadata
+        }
+      }
       log('error', 'request.failed', {
         requestId,
         method: req.method,
-        path: req.url,
+        path: sanitizeRequestLogPath(req.url, { includeQuery: REQUEST_LOG_INCLUDE_QUERY }),
         error: error.message || String(error)
       })
       finalizeLog(/not found/i.test(error?.message || '') ? 404 : 400)

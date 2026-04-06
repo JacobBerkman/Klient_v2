@@ -26,6 +26,7 @@ test('targeted forms expose inline feedback regions for validation and error ren
 test('role-aware gating keeps invite admin-only while portal link remains advisor/admin', () => {
   assert.match(html, /<section class="actions grid two" data-requires-role="admin">[\s\S]*id="invite-form"/)
   assert.match(html, /<section class="actions grid two" data-requires-role="admin,advisor">[\s\S]*id="portal-form"/)
+  assert.match(html, /data-view="operations"[\s\S]*data-policy-guard="canReadDiagnostics"/)
 })
 
 test('app wiring includes conflict normalization and form-level validation helpers', () => {
@@ -115,4 +116,18 @@ test('exports per-job table keeps header and row columns aligned', () => {
   assert.match(appJs, /<td>\$\{escapeHtml\(job\.statusLabel \|\| job\.status\)\}<\/td>\s*<td>\$\{escapeHtml\(exportSelectionState\(job, canMutate\)\.failureClass\)\}<\/td>\s*<td>\$\{job\.attempts \|\| 0\}\/\$\{job\.maxAttempts \|\| 0\}<\/td>/)
   assert.match(appJs, /<tr><td colspan="7">No export jobs yet\. Run an export to populate queue activity and artifact status\.<\/td><\/tr>/)
   assert.match(appJs, /No export jobs yet\. Run an export to populate queue activity and artifact status\./)
+})
+
+test('launch ops panel contract keeps admin gating, read-only copy, and diagnostics links stable', () => {
+  assert.match(appJs, /function canReadDiagnostics\(/)
+  assert.match(appJs, /function canViewLaunchOpsPanel\(\)/)
+  assert.match(appJs, /return roleAllowed\('admin'\) && canReadDiagnostics\(\)/)
+  assert.match(appJs, /data-launch-ops-panel data-requires-role="admin" data-policy-guard="canReadDiagnostics"/)
+  assert.match(appJs, /Read-only operator checks for release GO\/NO-GO decisions\./)
+  assert.match(appJs, /Evidence artifacts: store release proof under[\s\S]*artifacts\/release-evidence\/&lt;release-id&gt;/)
+  assert.match(appJs, /Latest diagnostics timestamp:/)
+  assert.match(appJs, /title: '\/health', href: '\/health'/)
+  assert.match(appJs, /title: '\/ready', href: '\/ready'/)
+  assert.match(appJs, /title: 'Exports queue',[\s\S]*href: routes\.exportsQueueHealth\(\)/)
+  assert.match(appJs, /data-launch-ops-open/)
 })

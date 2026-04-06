@@ -15,6 +15,28 @@ services:
       NODE_ENV: production
       APP_SECRET: ${APP_SECRET}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+
+      # Runtime production contract: AUTH_PROVIDER must be explicitly set.
+      AUTH_PROVIDER: ${AUTH_PROVIDER}
+
+      # Ops endpoints (/api/ops/diagnostics and /api/ops/exports/queue) require a production token.
+      KLIENT_OPS_TOKEN: ${KLIENT_OPS_TOKEN}
+
+      # PII provider selection + provider-specific key material passthrough.
+      PII_KEY_PROVIDER: ${PII_KEY_PROVIDER:-env}
+      PII_ACTIVE_KEY_ID: ${PII_ACTIVE_KEY_ID:-}
+      PII_KEYRING: ${PII_KEYRING:-}
+      PII_KMS_ACTIVE_KEY_ID: ${PII_KMS_ACTIVE_KEY_ID:-}
+      PII_KMS_KEYRING: ${PII_KMS_KEYRING:-}
+
+      # Auth provider-specific passthrough (required when provider is selected).
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+      SAML_ENTRY_POINT: ${SAML_ENTRY_POINT:-}
+      SAML_ISSUER: ${SAML_ISSUER:-}
+      SAML_CERT: ${SAML_CERT:-}
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
       interval: 30s
