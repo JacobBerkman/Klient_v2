@@ -46,6 +46,11 @@ const CSRF_SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 const CSRF_BOOTSTRAP_PATH = '/api/csrf'
 const CSRF_TTL_SECONDS = 60 * 15
 const SESSION_IDLE_TIMEOUT_SECONDS = 60 * 30
+const REQUEST_LOG_INCLUDE_QUERY = ['1', 'true', 'yes', 'on'].includes(
+  String(process.env.LOG_REQUEST_QUERY || '').toLowerCase()
+)
+const LOG_SENSITIVE_QUERY_KEYS = new Set(['token', 'code', 'session', 'secret'])
+const LOG_QUERY_SAFE_KEYS = new Set(['id', 'page', 'limit', 'kind', 'search', 'sort', 'filter'])
 const CSRF_EXEMPT_PATHS = new Set([
   '/api/login',
   '/api/register',
@@ -496,16 +501,51 @@ function sendError(res, error, requestId) {
 
 function requestLogger(req, requestId) {
   const startedAt = Date.now()
+  const sanitizedPath = sanitizeRequestLogPath(req.url, { includeQuery: REQUEST_LOG_INCLUDE_QUERY })
   return (statusCode, metadata = {}) => {
     log('info', 'request.completed', {
       requestId,
       method: req.method,
-      path: req.url,
+      path: sanitizedPath,
       statusCode,
       durationMs: Date.now() - startedAt,
       ...metadata
     })
   }
+}
+
+function sanitizeRequestLogPath(rawUrl, { includeQuery = false } = {}) {
+  const fallback = '/'
+  const input = String(rawUrl || fallback)
+  let url
+  try {
+    url = new URL(input, 'http://localhost')
+  } catch {
+    return fallback
+  }
+  const pathname = url.pathname || fallback
+  if (!includeQuery || !url.searchParams || [...url.searchParams.keys()].length === 0) {
+    return pathname
+  }
+  const query = sanitizeRequestLogQuery(url.searchParams)
+  return query ? `${pathname}?${query}` : pathname
+}
+
+function sanitizeRequestLogQuery(searchParams) {
+  const sanitized = new URLSearchParams()
+  for (const [key, value] of searchParams.entries()) {
+    const normalizedKey = String(key || '').toLowerCase()
+    if (LOG_SENSITIVE_QUERY_KEYS.has(normalizedKey)) {
+      sanitized.set(key, '[REDACTED]')
+      continue
+    }
+    if (!LOG_QUERY_SAFE_KEYS.has(normalizedKey)) {
+      sanitized.set(key, '[OMITTED]')
+      continue
+    }
+    sanitized.set(key, value)
+  }
+  return sanitized.toString()
 }
 
 
@@ -1429,7 +1469,7 @@ export function createHttpServer({ modules }) {
       log('error', 'request.failed', {
         requestId,
         method: req.method,
-        path: req.url,
+        path: sanitizeRequestLogPath(req.url, { includeQuery: REQUEST_LOG_INCLUDE_QUERY }),
         error: error.message || String(error)
       })
       finalizeLog(/not found/i.test(error?.message || '') ? 404 : 400)
