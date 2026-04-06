@@ -78,3 +78,25 @@ test('master integration aggregate completes end-to-end for export suite in arti
   assert.equal(result.code, 0)
   assert(elapsed < 180000, `expected aggregate runner completion before timeout, got ${elapsed}ms`)
 })
+
+test('validate master exits cleanly after integration success in artifact-style flow', async () => {
+  const masterValidatePath = resolve(repoRoot, 'scripts/master-validate.mjs')
+  const start = Date.now()
+
+  const result = await runChildProcess({
+    scriptPath: masterValidatePath,
+    label: 'master-validate-integration-only',
+    stdio: 'inherit',
+    timeoutMs: 120000,
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      VALIDATE_MASTER_STEPS: 'integration-suites',
+      INTEGRATION_SUITES: 'integration-csrf.mjs'
+    }
+  })
+
+  const elapsed = Date.now() - start
+  assert.equal(result.code, 0)
+  assert(elapsed < 120000, `expected validate:master completion before timeout, got ${elapsed}ms`)
+})
