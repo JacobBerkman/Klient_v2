@@ -139,6 +139,12 @@ Run the standard integration coverage (tenancy, RBAC, templates, exports, portal
 npm run test:integration
 ```
 
+
+## Release operations (canonical flow)
+For production release execution, use one source of truth: `docs/deployment-quick-reference.md#canonical-operator-flow-exact-command-sequence`.
+That runbook defines preflight, deploy, postdeploy, and restore/restore-drill commands plus diagnostics interpretation.
+Use `docs/release-ready-checklist.md` for pass/fail policy and approval gates, not for alternate command ordering.
+
 ## Health checks
 ```bash
 curl http://localhost:3000/health
@@ -199,3 +205,8 @@ See `DEPLOYMENT.md` for deployment details.
 ### PII key rotation utility
 
 Run `node scripts/reencrypt-pii.mjs` to re-encrypt stored PII fields using the active key configured by `PII_ACTIVE_KEY_ID` and `PII_KEYRING`. Add `--validate` to assert that no legacy `*Ciphertext` values remain and all encrypted envelopes use the active key ID. The script returns one JSON object with rotation metrics (`rotatedProfiles`, `rotatedFields`, `activeKeyId`) and an optional `validation` block when requested.
+
+
+## Documentation freshness owner
+- **Owner:** Release Operations (Release Manager + SRE primary).
+- **Expectation:** update README links whenever release runbook command flow or runtime validation evidence requirements change.

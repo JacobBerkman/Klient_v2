@@ -50,7 +50,7 @@ Core outputs by phase:
 | Restore (live rollback) | `restore.json` with `executionMode=live-restore`. |
 | Restore drill (verify-only) | `restore-drill.json` with `executionMode=verify-only-drill`. |
 
-## Exact command sequence
+## Canonical operator flow (exact command sequence)
 
 ### 0) One-time shell setup for the release window
 ```bash
@@ -124,9 +124,34 @@ Decision rule (must match artifact + mode):
 | Dead-letter spike | `queue.machineState.deadLetter.count`, `queue.failedRetryable` | `postdeploy-exports-queue.json`; corroborate with telemetry `data.queue` | Permanent or repeated export failures accumulating. | Investigate failure root cause, retry only safe jobs, consider rollback if sustained. |
 | Telemetry indicates config/security instability | `startup.runtime.ok`, `data.security.csrf.rejectedTotal`, `data.security.sessions.rejectedTotal` | `postdeploy-telemetry-bundle.json` (`/api/ops/diagnostics`) | Misconfiguration or auth/session regressions after deploy. | Treat as release blocker, remediate and revalidate; rollback if SLA/SLO trigger persists. |
 
-Deep-debug note:
-- `/ready` is intentionally minimal and safe for broad probing.
-- For internals (query/storage/startup warnings/issues/queue internals), use `/api/ops/diagnostics` with `Authorization: Bearer $KLIENT_OPS_TOKEN`.
+
+## First 24 hours (hypercare)
+
+Use this cadence immediately after production deploy to convert post-deploy checks into sustained release confidence.
+
+### Alert cadence
+- **0-60 minutes:** monitor `/health`, `/ready`, queue diagnostics, and runtime diagnostics every **5 minutes**.
+- **60 minutes to 4 hours:** monitor every **15 minutes** if all checks remain green.
+- **4-24 hours:** monitor every **60 minutes** plus normal alert routing.
+- Re-run `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` at each cadence checkpoint and archive refreshed artifacts under the same release evidence directory.
+
+### Escalation path
+1. **On-call SRE** triages alert and confirms artifact evidence state.
+2. **Release Manager** decides hold/continue status for rollout communications.
+3. **Service Owner (API/Platform)** joins for remediation if issue persists beyond one checkpoint.
+4. **Security Owner** is paged immediately for auth/session/PII regressions.
+5. **Engineering Manager** is paged when rollback criteria are met or customer/SLA impact is confirmed.
+
+### Rollback trigger interpretation
+- Treat any `postdeploy-evaluation-summary.json` rule failure as immediate **NO-GO** for progression.
+- Roll back when health/readiness remains degraded for more than **5 minutes** after one remediation attempt.
+- Roll back when queue processing is stalled for more than **10 minutes** or dead-letter/retryable counts exceed thresholds without clear downward trend.
+- Roll back immediately for confirmed security regressions (auth bypass, PII exposure risk, cryptographic control failure).
+
+### Evidence refresh intervals
+- Refresh `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, and `postdeploy-evaluation-summary.json` at every hypercare checkpoint.
+- Update `docs/release-handoff-template.md` decision notes with checkpoint timestamps and any mitigations applied.
+- Keep one chronological incident/evidence log per release ID so approvers can audit all post-deploy state transitions.
 
 ## Optional single-command full operator flow
 If running the complete workflow (preflight + postdeploy in deterministic order):
@@ -134,3 +159,8 @@ If running the complete workflow (preflight + postdeploy in deterministic order)
 ```bash
 npm run release:go-no-go -- --release-id "$RELEASE_ID"
 ```
+
+
+## Documentation freshness owner
+- **Owner:** Release Operations (Release Manager + SRE primary)
+- **Expectation:** when runtime validation commands, phases, thresholds, or evidence schema change, update this runbook, `docs/release-ready-checklist.md`, `docs/release-handoff-template.md`, and README release-operation links in the same pull request.
