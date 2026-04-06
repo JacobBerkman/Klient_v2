@@ -343,6 +343,18 @@ function ensureEnv(name) {
   }
 }
 
+function resolveReleaseOpsToken() {
+  const candidates = [
+    process.env.KLIENT_OPS_TOKEN_ACTIVE,
+    process.env.KLIENT_OPS_TOKEN,
+    process.env.KLIENT_OPS_TOKEN_PREVIOUS
+  ]
+  for (const candidate of candidates) {
+    if (String(candidate || '').trim()) return String(candidate).trim()
+  }
+  return ''
+}
+
 function listFilesRecursively(rootDir) {
   const files = []
   const walk = (dir) => {
@@ -527,10 +539,14 @@ const restoreValidation = async ({ verifyOnly = false } = {}) => {
 
 const postdeploy = async () => {
   ensureEnv('KLIENT_BASE_URL')
-  ensureEnv('KLIENT_OPS_TOKEN')
+  const opsToken = resolveReleaseOpsToken()
+  if (!opsToken) {
+    fail(
+      'Missing ops token for postdeploy checks. Set KLIENT_OPS_TOKEN_ACTIVE (recommended) or KLIENT_OPS_TOKEN/KLIENT_OPS_TOKEN_PREVIOUS during rotation windows.'
+    )
+  }
 
   const baseUrl = process.env.KLIENT_BASE_URL
-  const opsToken = process.env.KLIENT_OPS_TOKEN
 
   await runStep({
     name: 'Post-deploy Step 1 Health',
