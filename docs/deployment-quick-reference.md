@@ -66,7 +66,6 @@ npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy
 - `queue.stalled <= RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED`.
 - `queue.machineState.deadLetter.count` (or `queue.deadLetter`) `<= RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER`.
 - `queue.failedRetryable <= RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE`.
-- `/ready startupDiagnostics.ok` must be `true` when present.
 - `/api/ops/diagnostics startup.runtime.ok` must be `true`.
 
 Machine-readable evaluation output:
@@ -97,11 +96,15 @@ Decision rule (must match artifact + mode):
 
 | Signature | Diagnostic field(s) to inspect | Where to inspect | Typical interpretation | Immediate operator action |
 |---|---|---|---|---|
-| Readiness degraded | `checks.databaseReady`, `checks.storageReady`, `checks.exportQueueReachable`, `checks.startupConfigValid` | `postdeploy-ready.json` (`/ready`) | One or more core dependencies are not ready. | Stop release progression, remediate failed dependency, rerun postdeploy phase. |
-| Runtime config invalid at readiness | `startupDiagnostics.ok`, `startupDiagnostics.issues[]`, `startupDiagnostics.warnings[]` | `postdeploy-ready.json` and `postdeploy-telemetry-bundle.json` (`startup.runtime`) | Required runtime config is invalid or risky. | Fix env/config contract, redeploy, rerun preflight + postdeploy evidence. |
+| Readiness degraded | `status`, `ready`, `checks.databaseReady`, `checks.storageReady`, `checks.exportQueueReachable`, `checks.startupConfigValid` | `postdeploy-ready.json` (`/ready`) | One or more core dependencies are not ready. | Stop release progression, remediate failed dependency, rerun postdeploy phase. |
+| Runtime config invalid | `startup.runtime.ok`, `startup.runtime.issues[]`, `startup.runtime.warnings[]` | `postdeploy-telemetry-bundle.json` (`/api/ops/diagnostics`) | Required runtime config is invalid or risky. | Fix env/config contract, redeploy, rerun preflight + postdeploy evidence. |
 | Queue backlog growth / stalled processing | `queue.pending`, `queue.stalled`, `queue.readyNow`, `queue.activeLeasesCount` | `postdeploy-exports-queue.json` (`/api/ops/exports/queue`) | Worker is not draining jobs fast enough or lease contention exists. | Run export worker/process path checks, verify retry behavior, hold GO decision until queue stabilizes. |
 | Dead-letter spike | `queue.machineState.deadLetter.count`, `queue.failedRetryable` | `postdeploy-exports-queue.json`; corroborate with telemetry `data.queue` | Permanent or repeated export failures accumulating. | Investigate failure root cause, retry only safe jobs, consider rollback if sustained. |
 | Telemetry indicates config/security instability | `startup.runtime.ok`, `data.security.csrf.rejectedTotal`, `data.security.sessions.rejectedTotal` | `postdeploy-telemetry-bundle.json` (`/api/ops/diagnostics`) | Misconfiguration or auth/session regressions after deploy. | Treat as release blocker, remediate and revalidate; rollback if SLA/SLO trigger persists. |
+
+Deep-debug note:
+- `/ready` is intentionally minimal and safe for broad probing.
+- For internals (query/storage/startup warnings/issues/queue internals), use `/api/ops/diagnostics` with `Authorization: Bearer $KLIENT_OPS_TOKEN`.
 
 ## Optional single-command full operator flow
 If running the complete workflow (preflight + postdeploy in deterministic order):
