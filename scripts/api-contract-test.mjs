@@ -96,7 +96,9 @@ test('production Node server contract supports auth and profile workflows', asyn
   const { response: readyResponse, data: ready } = await jsonFetch(port, '/ready')
   assert.equal(readyResponse.status, 200)
   assert.equal(ready.status, 'ready')
-  assert.equal(ready.querySummary.users, 1)
+  assert.equal(typeof ready.ready, 'boolean')
+  assert.equal(typeof ready.checks.databaseReady, 'boolean')
+  assert.equal(typeof ready.checks.storageReady, 'boolean')
 
   const { response: loginResponse, data: login } = await jsonFetch(port, '/api/login', {
     method: 'POST',

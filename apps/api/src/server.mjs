@@ -609,33 +609,54 @@ export function createHttpServer({ modules }) {
         const database = ensureDatabaseReady()
         const storageHealth = readStorageHealth()
         const queue = readExportWorkerStatus()
-        const querySummary = readQuerySummary()
-        const auditEvents = readAuditEventSummary()
+        const checks = {
+          databaseReady: Boolean(database?.ok),
+          storageReady: Boolean(storageHealth?.ok),
+          exportQueueReachable: Boolean(queue && typeof queue === 'object'),
+          startupConfigValid: runtime.isProduction ? Boolean(startupDiagnostics?.ok) : true
+        }
+        const ready = Object.values(checks).every(Boolean)
+        const includeDiagnostics =
+          ['1', 'true', 'ops', 'full'].includes(String(url.searchParams.get('verbose') || '').toLowerCase()) ||
+          ['1', 'true', 'ops', 'full'].includes(String(url.searchParams.get('details') || '').toLowerCase())
+        let diagnosticsPayload = null
+        if (includeDiagnostics) {
+          authorizeOpsRequest()
+          diagnosticsPayload = {
+            querySummary: readQuerySummary(),
+            database,
+            storageHealth,
+            exportWorker: queue,
+            auditEvents: readAuditEventSummary(),
+            startupDiagnostics
+          }
+        }
         finalizeLog(200)
         return replyJson(
           200,
           {
             status: 'ready',
-            querySummary,
-            database,
-            storageHealth,
-            exportWorker: queue,
-            auditEvents,
-            startupDiagnostics,
-            checks: {
-              databaseReady: Boolean(database?.ok),
-              storageReady: Boolean(storageHealth?.ok),
-              exportQueueReachable: Boolean(queue && typeof queue === 'object'),
-              startupConfigValid: Boolean(startupDiagnostics?.ok)
-            },
-            diagnostics: {
+            ready,
+            service: runtime.serviceName,
+            bootedAt,
+            uptimeSeconds: Math.round(process.uptime()),
+            checks,
+            diagnostics: includeDiagnostics
+              ? {
+                  mode: 'privileged',
+                  ...diagnosticsPayload
+                }
+              : {
+                  mode: 'minimal',
+                  message: 'Use /api/ops/diagnostics with KLIENT_OPS_TOKEN for deep diagnostics.',
+                  endpoint: '/api/ops/diagnostics'
+                },
+            links: {
               generatedAt: new Date().toISOString(),
-              endpoints: {
-                health: '/health',
-                ready: '/ready',
-                exportsQueue: '/api/ops/exports/queue',
-                telemetry: '/api/ops/diagnostics'
-              }
+              health: '/health',
+              ready: '/ready',
+              exportsQueue: '/api/ops/exports/queue',
+              telemetry: '/api/ops/diagnostics'
             }
           },
           { 'X-Request-Id': requestId }
