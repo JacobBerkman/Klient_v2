@@ -34,7 +34,9 @@ Record whether each required key is set in the deployment target (do not paste s
 | `LOG_LEVEL` | Y | `info` |
 | `ENABLE_DEMO_MODE` | Y | `false` |
 | `KLIENT_BASE_URL` | Y | Public production URL configured |
-| `KLIENT_OPS_TOKEN` | Y | Rotated token injected from secret store |
+| `KLIENT_OPS_TOKEN_ACTIVE` | Y | Active token injected from secret store |
+| `KLIENT_OPS_TOKEN_PREVIOUS` | Y/N | Set to `Y` only during rotation window; remove after cutover validation |
+| `KLIENT_OPS_TOKEN` | Y/N | Legacy fallback only; prefer rotation-safe active/previous vars |
 | `PII_KEY_PROVIDER` | Y | `kms` |
 | `PII_ACTIVE_KEY_ID` (if `PII_KEY_PROVIDER=env`) | N/A | Not required for KMS mode |
 | `PII_KEYRING` (if `PII_KEY_PROVIDER=env`) | N/A | Not required for KMS mode |
@@ -61,6 +63,17 @@ Use `artifacts/release-evidence/<release-id>/startup-failfast.json` as the defau
 | Invalid production config blocks startup (`server.startup.blocked`) | PASS | `artifacts/release-evidence/release-20260330-1400/startup-failfast.json` (`checks.startupBlockedLogged=true`) |
 | Error payload lists startup validation issues | PASS | `artifacts/release-evidence/release-20260330-1400/startup-failfast.json` (`checks.startupIssuesPresent=true`) |
 | Startup is blocked before bind/listen | PASS | `artifacts/release-evidence/release-20260330-1400/startup-failfast.json` (`checks.listenPrevented=true`) |
+
+## 2c) Ops token rotation handoff checklist (deployment window)
+Record rotation details so postdeploy checks can run while active/previous token overlap is in place.
+
+| Check | Result | Evidence path / notes |
+|---|---|---|
+| Rotation timestamp (UTC) captured | PASS/FAIL | Include exact cutover time (e.g., `2026-03-30 14:05 UTC`) |
+| Rotation owner recorded | PASS/FAIL | Name + team owning secret change |
+| Active token var (`KLIENT_OPS_TOKEN_ACTIVE`) confirmed | PASS/FAIL | Secret/version reference; never paste token |
+| Previous token overlap window documented (`KLIENT_OPS_TOKEN_PREVIOUS`) | PASS/FAIL/N/A | Start + planned removal timestamp |
+| Previous token expiry/removal expectation recorded | PASS/FAIL | Removal SLA and ticket/runbook reference |
 
 ## 3) Evidence artifact links
 Attach links or paths to the objective release evidence.

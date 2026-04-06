@@ -143,17 +143,27 @@ function readOpsBearerToken(req) {
   return req.headers.authorization?.replace('Bearer ', '').trim()
 }
 
-function currentOpsToken() {
-  return String(runtime.klientOpsToken || process.env.KLIENT_OPS_TOKEN || '').trim()
+function configuredOpsTokens() {
+  const configured = Array.isArray(runtime.klientOpsTokens) ? runtime.klientOpsTokens : []
+  if (configured.length > 0) return configured
+  const legacy = String(runtime.klientOpsToken || process.env.KLIENT_OPS_TOKEN || '').trim()
+  return legacy ? [{ token: legacy, slot: 'legacy' }] : []
 }
 
-function isValidOpsToken(candidate) {
-  const configured = currentOpsToken()
-  if (!configured) return false
-  const expected = Buffer.from(configured)
+function getOpsTokenMatch(candidate) {
+  const candidates = configuredOpsTokens()
   const provided = Buffer.from(String(candidate || ''))
-  if (expected.length === 0 || expected.length !== provided.length) return false
-  return timingSafeEqual(expected, provided)
+  for (const entry of candidates) {
+    const expected = Buffer.from(entry.token)
+    if (expected.length === 0 || expected.length !== provided.length) continue
+    if (timingSafeEqual(expected, provided)) return entry
+  }
+  return null
+}
+
+function opsTokenFingerprint(token) {
+  if (!token) return null
+  return createHash('sha256').update(token).digest('hex').slice(0, 12)
 }
 
 function resolveSessionToken(req) {
@@ -523,6 +533,7 @@ export function createHttpServer({ modules }) {
     let sessionToken = null
     let authenticatedUser = null
     let rotateCsrfAfterResponse = false
+    let opsAuditMetadata = null
     const rejectSession = (reason) => {
       securityDiagnostics.session.rejectedTotal += 1
       securityDiagnostics.session.rejectedByReason[reason] = (securityDiagnostics.session.rejectedByReason[reason] || 0) + 1
@@ -540,19 +551,36 @@ export function createHttpServer({ modules }) {
       }
     }
     const authorizeOpsRequest = () => {
-      if (currentOpsToken()) {
+      const configuredTokens = configuredOpsTokens()
+      if (configuredTokens.length > 0) {
         const opsToken = readOpsBearerToken(req)
-        if (!isValidOpsToken(opsToken)) {
+        const tokenMatch = getOpsTokenMatch(opsToken)
+        if (!tokenMatch) {
+          opsAuditMetadata = {
+            authMode: 'ops-token',
+            result: 'denied',
+            reason: 'invalid_or_missing_token',
+            tokenPresent: Boolean(opsToken),
+            configuredTokenCount: configuredTokens.length
+          }
           const error = new Error('Ops token authentication required.')
           error.statusCode = 401
           throw error
         }
         const queueHealth = readExportWorkerStatus()
+        opsAuditMetadata = {
+          authMode: 'ops-token',
+          result: 'granted',
+          tokenSlot: tokenMatch.slot,
+          tokenFingerprint: opsTokenFingerprint(tokenMatch.token),
+          configuredTokenCount: configuredTokens.length
+        }
         return {
           id: 'ops-token',
           role: 'admin',
           authMode: 'ops-token',
-          firmId: queueHealth?.latestJob?.firmId || null
+          firmId: queueHealth?.latestJob?.firmId || null,
+          authAudit: opsAuditMetadata
         }
       }
       return null
@@ -650,7 +678,7 @@ export function createHttpServer({ modules }) {
           acc[job.status] = (acc[job.status] || 0) + 1
           return acc
         }, {})
-        finalizeLog(200)
+        finalizeLog(200, { opsAuth: user?.authAudit || opsAuditMetadata })
         return replyJson(
           200,
           {
@@ -696,7 +724,7 @@ export function createHttpServer({ modules }) {
         const user = authorizeOpsRequest() || requireUser()
         if (user?.authMode !== 'ops-token') modules.policy.requireGuard(user, 'canProcessExports')
         const result = modules.exports.getQueueHealth(user)
-        finalizeLog(200)
+        finalizeLog(200, { opsAuth: user?.authAudit || opsAuditMetadata })
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/ops/exports/retry-failed' && req.method === 'POST') {
@@ -1426,6 +1454,12 @@ export function createHttpServer({ modules }) {
       finalizeLog(200, { static: true })
       return serveStatic(pathname, res, requestId)
     } catch (error) {
+      if (opsAuditMetadata) {
+        error.details = {
+          ...(error.details || {}),
+          opsAuth: opsAuditMetadata
+        }
+      }
       log('error', 'request.failed', {
         requestId,
         method: req.method,

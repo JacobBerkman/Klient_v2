@@ -11,7 +11,8 @@ Run the operator workflow (fails fast, deterministic order):
 ```bash
 export RELEASE_ID=<release-id>
 export KLIENT_BASE_URL=https://<env-host>
-export KLIENT_OPS_TOKEN=<ops-token>
+export KLIENT_OPS_TOKEN_ACTIVE=<ops-token-active>
+export KLIENT_OPS_TOKEN_PREVIOUS=<ops-token-previous-while-rotating>
 npm run release:go-no-go -- --release-id "$RELEASE_ID"
 ```
 
@@ -22,7 +23,9 @@ The GO/NO-GO evidence package is complete only when `artifacts/release-evidence/
 Required environment variables:
 - `RELEASE_ID` (or pass `--release-id`) for artifact scoping.
 - `KLIENT_BASE_URL` for post-deploy health/readiness checks.
-- `KLIENT_OPS_TOKEN` for authenticated ops diagnostics endpoints.
+- `KLIENT_OPS_TOKEN_ACTIVE` for authenticated ops diagnostics endpoints (recommended).
+- `KLIENT_OPS_TOKEN_PREVIOUS` during token rotation windows to prevent postdeploy check interruptions while secrets propagate.
+- `KLIENT_OPS_TOKEN` as a legacy fallback if rotation-safe vars are unavailable.
 - `RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED` for release-time tuning of allowed stalled queue count (default `0`).
 - `RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER` for release-time tuning of allowed dead-letter count (default `0`).
 - `RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE` for release-time tuning of allowed retryable-failure count (default `0`).

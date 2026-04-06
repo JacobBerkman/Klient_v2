@@ -68,6 +68,29 @@ function readList(name) {
     .filter(Boolean)
 }
 
+function readOpsTokenSet() {
+  const entries = []
+  const push = (token, slot) => {
+    const normalized = String(token || '').trim()
+    if (!normalized) return
+    entries.push({ token: normalized, slot })
+  }
+
+  push(process.env.KLIENT_OPS_TOKEN_ACTIVE, 'active')
+  push(process.env.KLIENT_OPS_TOKEN_PREVIOUS, 'previous')
+  for (const token of readList('KLIENT_OPS_TOKENS')) push(token, 'set')
+  push(process.env.KLIENT_OPS_TOKEN, 'legacy')
+
+  const deduped = []
+  const seen = new Set()
+  for (const entry of entries) {
+    if (seen.has(entry.token)) continue
+    seen.add(entry.token)
+    deduped.push(entry)
+  }
+  return deduped
+}
+
 function providerRuntimeDiagnostics(authProvider, { strict = false } = {}) {
   const issues = []
   const warnings = []
@@ -174,7 +197,8 @@ const authProviderRaw = readNonEmptyString('AUTH_PROVIDER')
 const authProvider = readAuthProvider(authProviderRaw || undefined)
 const allowProductionLocalAuthBreakglass = readBoolean('ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS', false)
 const piiKeyProvider = readPiiKeyProvider(process.env.PII_KEY_PROVIDER)
-const klientOpsToken = readNonEmptyString('KLIENT_OPS_TOKEN')
+const klientOpsTokens = readOpsTokenSet()
+const klientOpsToken = klientOpsTokens[0]?.token || ''
 
 if (nodeEnv === 'production' && enableTestCsrfBypass) {
   throw new Error('ENABLE_TEST_CSRF_BYPASS cannot be enabled in production.')
@@ -230,8 +254,9 @@ export const runtime = {
     strict: nodeEnv === 'production'
   }),
   piiKeyProvider,
+  klientOpsTokens,
   klientOpsToken,
-  opsTokenAuthEnabled: Boolean(klientOpsToken),
+  opsTokenAuthEnabled: klientOpsTokens.length > 0,
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',
   instanceId: process.env.INSTANCE_ID || hostname(),
@@ -347,10 +372,14 @@ export function validateRuntimeConfig() {
   }
 
   if (runtime.nodeEnv === 'production' && !runtime.opsTokenAuthEnabled) {
-    issues.push('KLIENT_OPS_TOKEN must be set in production for /api/ops/diagnostics and /api/ops/exports/queue token auth.')
+    issues.push(
+      'At least one ops token must be set in production (KLIENT_OPS_TOKEN_ACTIVE/KLIENT_OPS_TOKEN_PREVIOUS/KLIENT_OPS_TOKENS or legacy KLIENT_OPS_TOKEN) for /api/ops/* token auth.'
+    )
   }
-  if (runtime.opsTokenAuthEnabled && runtime.klientOpsToken.length < 24) {
-    const message = 'KLIENT_OPS_TOKEN should be at least 24 characters to reduce brute-force risk.'
+  const weakOpsTokens = runtime.klientOpsTokens.filter((entry) => entry.token.length < 24)
+  if (weakOpsTokens.length > 0) {
+    const slots = weakOpsTokens.map((entry) => entry.slot).join(', ')
+    const message = `Ops tokens should be at least 24 characters to reduce brute-force risk (weak slots: ${slots}).`
     if (runtime.nodeEnv === 'production') issues.push(message)
     else warnings.push(message)
   }

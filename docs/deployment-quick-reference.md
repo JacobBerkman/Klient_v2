@@ -9,7 +9,9 @@ Set these before running flows (never commit secret values):
 |---|---|---|
 | `RELEASE_ID` | all flows | Scopes artifacts to `artifacts/release-evidence/<release-id>`. |
 | `KLIENT_BASE_URL` | postdeploy, full operator run | Base URL for `/health`, `/ready`, and ops diagnostics checks. |
-| `KLIENT_OPS_TOKEN` | postdeploy, full operator run | Bearer token for `/api/ops/exports/queue` and `/api/ops/diagnostics`. |
+| `KLIENT_OPS_TOKEN_ACTIVE` | postdeploy, full operator run | Active bearer token for `/api/ops/exports/queue` and `/api/ops/diagnostics` (recommended for rotation-safe checks). |
+| `KLIENT_OPS_TOKEN_PREVIOUS` | optional during rotation windows | Previous bearer token kept temporarily to avoid auth breakage while active token propagates. |
+| `KLIENT_OPS_TOKEN` | optional legacy fallback | Legacy single-token variable; still accepted for compatibility. |
 | `RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED` | postdeploy, full operator run | Max allowed `queue.stalled` count (default `0`). |
 | `RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER` | postdeploy, full operator run | Max allowed dead-letter count from `queue.machineState.deadLetter.count`/`queue.deadLetter` (default `0`). |
 | `RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE` | postdeploy, full operator run | Max allowed `queue.failedRetryable` count (default `0`). |
@@ -39,11 +41,16 @@ Core outputs by phase:
 ```bash
 export RELEASE_ID=<release-id>
 export KLIENT_BASE_URL=https://<env-host>
-export KLIENT_OPS_TOKEN=<ops-token>
+export KLIENT_OPS_TOKEN_ACTIVE=<ops-token-active>
+export KLIENT_OPS_TOKEN_PREVIOUS=<ops-token-previous-while-rotating>
 export RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED=0
 export RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER=0
 export RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE=0
 ```
+
+Rotation-safe note:
+- Keep both `KLIENT_OPS_TOKEN_ACTIVE` and `KLIENT_OPS_TOKEN_PREVIOUS` set during deploy cutover.
+- After postdeploy checks pass with the new active token, remove `KLIENT_OPS_TOKEN_PREVIOUS` per your secret-removal SLA.
 
 ### 1) Preflight (must pass before deploy)
 ```bash
