@@ -39,20 +39,30 @@ export function runChildProcess({
       settle(reject, new Error(`${displayLabel} failed to start: ${error.message}`))
     })
 
-    child.once('exit', (code, signal) => {
+    const handleCompletion = (eventName, code, signal) => {
       const durationMs = Date.now() - start
 
       if (signal) {
-        settle(reject, new Error(`${displayLabel} terminated by signal ${signal} after ${durationMs}ms`))
+        settle(reject, new Error(`${displayLabel} terminated by signal ${signal} after ${durationMs}ms (${eventName})`))
         return
       }
       if (code !== 0) {
-        settle(reject, new Error(`${displayLabel} exited with code ${code} after ${durationMs}ms`))
+        settle(reject, new Error(`${displayLabel} exited with code ${code} after ${durationMs}ms (${eventName})`))
         return
       }
 
       console.log(`✓ ${displayLabel} passed in ${durationMs}ms`)
       settle(resolve, { durationMs, code })
+    }
+
+    // Prefer `exit` so we do not wait on inherited stdio held by descendants.
+    // Keep `close` as a fallback for environments where only stream-closure is emitted.
+    child.once('exit', (code, signal) => {
+      handleCompletion('exit', code, signal)
+    })
+
+    child.once('close', (code, signal) => {
+      handleCompletion('close', code, signal)
     })
 
     if (timeoutMs > 0) {

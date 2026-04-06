@@ -52,22 +52,41 @@ const evidence = createEvidenceRecorder({
   command: 'npm run test:integration'
 })
 
+function resolveSuitesFromEnv() {
+  const rawFilter = process.env.INTEGRATION_SUITES
+  if (!rawFilter) return integrationSuites
+
+  const requestedScripts = rawFilter
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+
+  if (requestedScripts.length === 0) return integrationSuites
+
+  const selected = integrationSuites.filter((suite) => requestedScripts.includes(suite.script))
+  if (selected.length === 0) {
+    throw new Error(`INTEGRATION_SUITES did not match any suite script names: ${rawFilter}`)
+  }
+  return selected
+}
+
 async function ensureScriptExists(script) {
   await access(new URL(`./${script}`, import.meta.url))
 }
 
 async function main() {
+  const suitesToRun = resolveSuitesFromEnv()
   console.log('Starting integration suite in deterministic order with explicit invariant coverage.')
 
-  for (const suite of integrationSuites) {
+  for (const suite of suitesToRun) {
     await ensureScriptExists(suite.script)
   }
 
   const executed = []
 
-  for (let index = 0; index < integrationSuites.length; index += 1) {
-    const suite = integrationSuites[index]
-    const result = await runSuite(suite, index, integrationSuites.length)
+  for (let index = 0; index < suitesToRun.length; index += 1) {
+    const suite = suitesToRun[index]
+    const result = await runSuite(suite, index, suitesToRun.length)
     executed.push({ script: suite.script, durationMs: result.durationMs })
   }
 
