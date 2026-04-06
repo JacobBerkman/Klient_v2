@@ -15,7 +15,22 @@ Set these before running flows (never commit secret values):
 | `RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE` | postdeploy, full operator run | Max allowed `queue.failedRetryable` count (default `0`). |
 | `RESTORE_BACKUP_PATH` | restore/drill only | Backup file path used for restore validation flow. |
 
-Baseline app/runtime variables remain required per deployment target (`APP_SECRET`, `NODE_ENV`, `PORT`, `HOST`, `LOG_LEVEL`, `ENABLE_DEMO_MODE`, and KMS keys when enabled).
+## Production runtime-required app variables (from startup validation)
+
+| Variable | Required when | Runtime enforcement |
+|---|---|---|
+| `APP_SECRET` | always in production | must be explicitly set and meet minimum strength requirements. |
+| `AUTH_PROVIDER` | always in production | must be explicitly set; `local` requires `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true` or startup is blocked. |
+| `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` | `AUTH_PROVIDER=oidc` | all required; issuer + redirect must be HTTPS; client secret must be >= 16 chars. |
+| `SAML_ENTRY_POINT`, `SAML_ISSUER`, `SAML_CERT` | `AUTH_PROVIDER=saml` | all required; entry point must be HTTPS; cert must contain `BEGIN CERTIFICATE`. |
+| `PII_KEY_PROVIDER` | always in production | provider selector (`env` or `kms`). |
+| `PII_ACTIVE_KEY_ID`, `PII_KEYRING` | `PII_KEY_PROVIDER=env` | both required; `PII_KEYRING` must be JSON and include `PII_ACTIVE_KEY_ID`. |
+| `PII_KMS_KEYRING` + (`PII_KMS_ACTIVE_KEY_ID` or `PII_ACTIVE_KEY_ID`) | `PII_KEY_PROVIDER=kms` | keyring required and must be JSON; active key id required. |
+| `KLIENT_OPS_TOKEN` | always in production | required and must be at least 24 characters. |
+| `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY` | `STORAGE_PROVIDER=s3` | required together when S3 storage is selected. |
+
+## Deployment contract consistency
+`docker-compose.yml` environment variables must be a **superset** of runtime production validation requirements so container startup cannot omit a runtime-required key path.
 
 ## Expected artifact outputs and locations
 All flow evidence is written under:
