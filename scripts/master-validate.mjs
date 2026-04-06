@@ -1,6 +1,6 @@
-import { spawn } from 'node:child_process'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { runCommandProcess } from './runner-lifecycle.mjs'
 
 const defaultEvidenceDir = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_DIR || 'artifacts/release-evidence')
 
@@ -47,6 +47,29 @@ const gateSteps = [
   { name: 'Merge/main parity check', command: 'npm', args: ['run', 'check:merge-main'], evidenceFile: null }
 ]
 
+
+function resolveGateStepsFromEnv() {
+  const rawFilter = process.env.VALIDATE_MASTER_STEPS
+  if (!rawFilter) return gateSteps
+
+  const requested = rawFilter
+    .split(',')
+    .map((entry) => entry.trim().toLowerCase())
+    .filter(Boolean)
+
+  if (requested.length === 0) return gateSteps
+
+  const selected = gateSteps.filter((step) => {
+    const slug = step.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+    return requested.includes(slug) || requested.includes(step.name.toLowerCase())
+  })
+
+  if (selected.length === 0) {
+    throw new Error(`VALIDATE_MASTER_STEPS did not match any gate steps: ${rawFilter}`)
+  }
+
+  return selected
+}
 function formatCommand(step) {
   return `${step.command} ${step.args.join(' ')}`
 }
@@ -61,40 +84,28 @@ function envForStep(step) {
   return env
 }
 
-function runStep(step, index, total) {
-  return new Promise((resolveRun, reject) => {
-    const start = Date.now()
-    process.stdout.write(`\n▶ [${index + 1}/${total}] ${step.name}\n$ ${formatCommand(step)}\n\n`)
+async function runStep(step, index, total) {
+  process.stdout.write(`\n$ ${formatCommand(step)}\n`)
 
-    const child = spawn(step.command, step.args, {
+  try {
+    return await runCommandProcess({
+      command: step.command,
+      args: step.args,
+      label: step.name,
+      index,
+      total,
       stdio: 'inherit',
       shell: process.platform === 'win32',
       env: envForStep(step)
     })
-
-    child.on('error', (error) => {
-      reject(
-        new Error(`Failed to launch step "${step.name}" (${formatCommand(step)}): ${error.message}`)
-      )
-    })
-
-    child.on('exit', (code, signal) => {
-      const durationMs = Date.now() - start
-      if (signal) {
-        reject(new Error(`Step "${step.name}" terminated by signal ${signal} after ${durationMs}ms`))
-        return
-      }
-      if (code !== 0) {
-        const error = new Error(
-          `Step "${step.name}" failed with exit code ${code} after ${durationMs}ms (${formatCommand(step)})`
-        )
-        error.exitCode = code
-        reject(error)
-        return
-      }
-      resolveRun({ durationMs })
-    })
-  })
+  } catch (error) {
+    const message = String(error?.message || error)
+    const matchedExitCode = message.match(/exited with code (\d+)/)
+    if (matchedExitCode) {
+      error.exitCode = Number.parseInt(matchedExitCode[1], 10)
+    }
+    throw error
+  }
 }
 
 function toIsoTimestamp(dateValue) {
@@ -105,11 +116,13 @@ const results = []
 let failure = null
 const startedAt = Date.now()
 
-for (let index = 0; index < gateSteps.length; index += 1) {
-  const step = gateSteps[index]
+const stepsToRun = resolveGateStepsFromEnv()
+
+for (let index = 0; index < stepsToRun.length; index += 1) {
+  const step = stepsToRun[index]
   try {
     // eslint-disable-next-line no-await-in-loop
-    const result = await runStep(step, index, gateSteps.length)
+    const result = await runStep(step, index, stepsToRun.length)
     results.push({
       ...step,
       status: 'passed',
@@ -131,7 +144,7 @@ for (let index = 0; index < gateSteps.length; index += 1) {
 }
 
 const executedCount = results.length
-const skipped = gateSteps.slice(executedCount)
+const skipped = stepsToRun.slice(executedCount)
 
 process.stdout.write('\nGate execution summary:\n')
 for (const result of results) {
@@ -168,7 +181,7 @@ const summary = {
   startedAt: toIsoTimestamp(startedAt),
   finishedAt: toIsoTimestamp(Date.now()),
   failedStep: failure ? results[results.length - 1]?.name || null : null,
-  steps: gateSteps.map((step) => {
+  steps: stepsToRun.map((step) => {
     const executed = results.find((result) => result.name === step.name)
     if (!executed) {
       return {

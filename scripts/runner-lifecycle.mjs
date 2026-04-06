@@ -1,7 +1,8 @@
 import { spawn } from 'node:child_process'
 
-export function runChildProcess({
-  scriptPath,
+export function runCommandProcess({
+  command,
+  args = [],
   label,
   invariant,
   index,
@@ -9,11 +10,12 @@ export function runChildProcess({
   stdio = 'inherit',
   timeoutMs = 0,
   cwd = process.cwd(),
-  env = process.env
+  env = process.env,
+  shell = false
 }) {
   return new Promise((resolve, reject) => {
     const start = Date.now()
-    const displayLabel = label || scriptPath
+    const displayLabel = label || `${command} ${args.join(' ')}`.trim()
 
     if (typeof index === 'number' && typeof total === 'number') {
       console.log(`\n▶ [${index + 1}/${total}] ${displayLabel}`)
@@ -24,24 +26,36 @@ export function runChildProcess({
       console.log(`   Invariant: ${invariant}`)
     }
 
-    const child = spawn(process.execPath, [scriptPath], { stdio, cwd, env })
+    const child = spawn(command, args, { stdio, cwd, env, shell })
 
     let settled = false
     let timeoutId = null
+
+    const cleanup = () => {
+      child.removeListener('error', onError)
+      child.removeListener('exit', onExit)
+      child.removeListener('close', onClose)
+      if (timeoutId) {
+        clearTimeout(timeoutId)
+        timeoutId = null
+      }
+    }
+
     const settle = (resolver, value) => {
       if (settled) return
       settled = true
-      if (timeoutId) clearTimeout(timeoutId)
+      cleanup()
       resolver(value)
     }
 
-    child.once('error', (error) => {
+    const onError = (error) => {
       settle(reject, new Error(`${displayLabel} failed to start: ${error.message}`))
-    })
+    }
 
     const handleCompletion = (eventName, code, signal) => {
-      const durationMs = Date.now() - start
+      if (settled) return
 
+      const durationMs = Date.now() - start
       if (signal) {
         settle(reject, new Error(`${displayLabel} terminated by signal ${signal} after ${durationMs}ms (${eventName})`))
         return
@@ -55,22 +69,35 @@ export function runChildProcess({
       settle(resolve, { durationMs, code })
     }
 
+    const onExit = (code, signal) => {
+      handleCompletion('exit', code, signal)
+    }
+
+    const onClose = (code, signal) => {
+      handleCompletion('close', code, signal)
+    }
+
     // Prefer `exit` so we do not wait on inherited stdio held by descendants.
     // Keep `close` as a fallback for environments where only stream-closure is emitted.
-    child.once('exit', (code, signal) => {
-      handleCompletion('exit', code, signal)
-    })
-
-    child.once('close', (code, signal) => {
-      handleCompletion('close', code, signal)
-    })
+    child.once('error', onError)
+    child.once('exit', onExit)
+    child.once('close', onClose)
 
     if (timeoutMs > 0) {
       timeoutId = setTimeout(() => {
         child.kill('SIGTERM')
         settle(reject, new Error(`${displayLabel} timed out after ${timeoutMs}ms`))
       }, timeoutMs)
+      timeoutId.unref()
     }
+  })
+}
+
+export function runChildProcess({ scriptPath, ...options }) {
+  return runCommandProcess({
+    command: process.execPath,
+    args: [scriptPath],
+    ...options
   })
 }
 
