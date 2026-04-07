@@ -83,7 +83,13 @@ Use one canonical manifest link for approvers; include optional direct links onl
 | Evidence package | Artifact link or path |
 |---|---|
 | Release evidence manifest (required) | `artifacts/release-evidence/<release-id>/manifest.json` |
+| Postdeploy checkpoints index (required for hypercare cadence evidence) | `artifacts/release-evidence/<release-id>/postdeploy-checkpoints.json` |
 | UX/accessibility acceptance record (if applicable) | `<path-or-N/A>` |
+
+Checkpoint citation guidance (required when multiple postdeploy runs exist):
+- Treat `manifest.json` as the canonical approver entrypoint for latest status and use `postdeployCheckpoints.latestCheckpoint`/`postdeployCheckpoints.latestArtifacts` for current-state links.
+- Use `postdeploy-checkpoints.json` (or `manifest.json` `postdeployCheckpoints.history`) to cite historical checkpoint timestamps and artifact paths in UTC.
+- Include at least one explicit checkpoint timestamp in Section 7 rationale when mitigations or transient failures occurred.
 
 Optional per-file links (if needed for review):
 - `artifacts/release-evidence/<release-id>/validate-master-summary.json`
@@ -138,6 +144,13 @@ All required approvers must sign before GO.
 - **Decision**: `<GO/NO-GO>`
 - **Decision timestamp (UTC)**: `<YYYY-MM-DD HH:MM>`
 - **Decision rationale**: `<objective rationale tied to evidence>`
+
+### 7a) Postdeploy checkpoint history log (hypercare + decision audit)
+Use one row per `--phase postdeploy` execution. Copy timestamps/paths from `postdeploy-checkpoints.json`.
+
+| Checkpoint timestamp (UTC) | Outcome (`passed`/`failed`) | Evidence artifacts cited | Notes / mitigations |
+|---|---|---|---|
+| `<YYYY-MM-DDTHH:MM:SS.sssZ>` | `<passed/failed>` | `<checkpoint artifact paths>` | `<what changed before next run>` |
 
 ## Documentation freshness owner
 - **Owner**: `<team-or-role>`
