@@ -442,7 +442,7 @@ function createTemplateVersion(template, event, overrides = {}) {
   const mappings = deepClone(overrides.mappings || template.mappings || [])
   const formSchema = deepClone(overrides.formSchema || template.formSchema || { sections: [] })
   const extractedFields = deepClone(overrides.extractedFields || template.extractedFields || [])
-  const extraction = deepClone(overrides.extraction || template.extraction || { status: 'completed', reasonCode: null })
+  const extraction = deepClone(overrides.extraction || template.extraction || { status: 'completed', reasonCode: null, error: null })
   return {
     version: (template.versions?.length || 0) + 1,
     event,
@@ -479,7 +479,7 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
     mappings,
     mappingRules: mappings,
     extractedFields: template.extractedFields || [],
-    extraction: template.extraction || { status: 'completed', reasonCode: null },
+    extraction: template.extraction || { status: 'completed', reasonCode: null, error: null },
     publishState,
     status: publishState, // deprecated internal alias for compatibility payloads
     versions: (template.versions || []).map((entry, index) => ({
@@ -489,7 +489,7 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
       mappings: deepClone(entry.mappings || mappings),
       formSchema: deepClone(entry.formSchema || formSchema),
       extractedFields: deepClone(entry.extractedFields || template.extractedFields || []),
-      extraction: deepClone(entry.extraction || template.extraction || { status: 'completed', reasonCode: null }),
+      extraction: deepClone(entry.extraction || template.extraction || { status: 'completed', reasonCode: null, error: null }),
       publishState: entry.publishState || publishState,
       immutable: entry.immutable === true,
       changelog: entry.changelog || null,
@@ -537,6 +537,7 @@ function documentTemplateAdapter(entry) {
     formSchema: deepClone(entry.formSchema || { sections: [] }),
     mappings: deepClone(entry.mappings || []),
     extractedFields: deepClone(entry.extractedFields || []),
+    extraction: deepClone(entry.extraction || { status: 'completed', reasonCode: null, error: null }),
     versions: deepClone(entry.versions || []),
     status: entry.publishState || 'draft',
     publishState: entry.publishState || 'draft',
@@ -575,16 +576,17 @@ function profileSourcePaths() {
   ])
 }
 
-function profileSourcePathsForFirm(firm) {
-  const paths = profileSourcePaths()
-  const fields = Array.isArray(firm?.customFieldSchema?.fields) ? firm.customFieldSchema.fields : []
-  for (const field of fields) {
-    const key = String(field?.key || '').trim()
-    const type = normalizeCustomFieldType(field?.type)
-    if (!key || !CUSTOM_FIELD_TYPES.has(type)) continue
-    paths.set(`profile.extensions.values.${key}`, { source: 'profileCustomField', type })
-  }
-  return paths
+function extractedFieldName(entry) {
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)) return String(entry.fieldName || '').trim()
+  return String(entry || '').trim()
+}
+
+function normalizeRequiredPdfFields(input = []) {
+  return Array.from(new Set((Array.isArray(input) ? input : []).map((entry) => extractedFieldName(entry)).filter(Boolean)))
+}
+
+function normalizeExtractedFields(input = []) {
+  return Array.isArray(input) ? deepClone(input) : []
 }
 
 
@@ -2617,10 +2619,12 @@ export function createStore({
       const formSchemaResult = validateFormDefinitionSchema(input.formSchema || { sections: [] }, { contextPath: '/formSchema' })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      const normalizedExtractedFields = normalizeExtractedFields(input.extractedFields || input.requiredPdfFields || [])
+      const requiredPdfFields = normalizeRequiredPdfFields(normalizedExtractedFields)
       const mappings = validateMappingRules(input.mappings || [], {
         contextPath: '/mappings',
         repeaterPaths: formSchemaResult.repeaterPaths,
-        requiredPdfFields: input.requiredPdfFields || [],
+        requiredPdfFields,
         allowedSourcePaths,
         enforceKnownSourcePaths: input.enforceKnownSourcePaths === true
       })
@@ -2634,8 +2638,9 @@ export function createStore({
           documentMetadata: { fileName: input.fileName || 'template.pdf' },
           blueprint: input.blueprint || { sections: [] },
           mappings,
-          extractedFields: deepClone(input.requiredPdfFields || []),
+          extractedFields: normalizedExtractedFields,
           formSchema: formSchemaResult.schema,
+          extraction: deepClone(input.extraction || { status: 'completed', reasonCode: null, error: null }),
           publishState: 'draft',
           versions: [
             {
@@ -2643,9 +2648,10 @@ export function createStore({
               event: 'created',
               blueprint: input.blueprint || { sections: [] },
               mappings,
-              extractedFields: deepClone(input.requiredPdfFields || []),
+              extractedFields: normalizedExtractedFields,
               formSchema: formSchemaResult.schema,
               publishState: 'draft',
+              extraction: deepClone(input.extraction || { status: 'completed', reasonCode: null, error: null }),
               createdAt,
               actorUserId: user.id
             }
@@ -2674,10 +2680,11 @@ export function createStore({
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      const requiredPdfFields = normalizeRequiredPdfFields(input.requiredPdfFields || template.extractedFields || [])
       const normalizedMappings = validateMappingRules(mappings || [], {
         contextPath: '/mappings',
         repeaterPaths: formSchemaResult.repeaterPaths,
-        requiredPdfFields: input.requiredPdfFields || template.extractedFields || [],
+        requiredPdfFields,
         allowedSourcePaths,
         enforceKnownSourcePaths: input.enforceKnownSourcePaths === true
       })
@@ -2694,7 +2701,7 @@ export function createStore({
       template.mappings = normalizedMappings
       template.mappingRules = template.mappings
       if (Array.isArray(input.requiredPdfFields)) {
-        template.extractedFields = input.requiredPdfFields.map((value) => String(value || '').trim()).filter(Boolean)
+        template.extractedFields = normalizeExtractedFields(input.requiredPdfFields)
       }
       template.versions.push(
         createTemplateVersion(template, 'mappings_updated', {
@@ -2746,7 +2753,7 @@ export function createStore({
         validateMappingRules(template.mappings || [], {
           contextPath: '/mappings',
           repeaterPaths: formSchemaResult.repeaterPaths,
-          requiredPdfFields: template.extractedFields || [],
+          requiredPdfFields: normalizeRequiredPdfFields(template.extractedFields || []),
           allowedSourcePaths,
           enforceKnownSourcePaths: true
         })
@@ -2803,10 +2810,51 @@ export function createStore({
       validateMappingRules(template.mappings || [], {
         contextPath: '/mappings',
         repeaterPaths: formSchemaResult.repeaterPaths,
-        requiredPdfFields: template.extractedFields || [],
+        requiredPdfFields: normalizeRequiredPdfFields(template.extractedFields || []),
         allowedSourcePaths,
         enforceKnownSourcePaths: input.enforceKnownSourcePaths === true
       })
+      const preflightClientId = String(input.clientId || '').trim()
+      const preflightSubmissionId = String(input.submissionId || '').trim()
+      if (preflightClientId && preflightSubmissionId) {
+        const profile = validateTenantEntityOwnership(
+          firmContext,
+          state.profiles.find((entry) => entry.id === preflightClientId),
+          { entityName: 'Profile' }
+        )
+        const submission = validateTenantEntityOwnership(
+          firmContext,
+          state.formSubmissions.find((entry) => entry.id === preflightSubmissionId),
+          { entityName: 'Submission' }
+        )
+        const preflight = resolveExportData({
+          mappings: template.mappings || [],
+          profile,
+          submission
+        })
+        const blockingIssues = (preflight.rows || []).flatMap((row) =>
+          (row.warnings || [])
+            .filter((warning) => warning?.blocking === true)
+            .map((warning) => ({
+              code: String(warning.code || 'preview_blocking_warning').toLowerCase(),
+              path: `/mappings/${row.rowIndex}/sourcePath`,
+              field: 'sourcePath',
+              rowIndex: row.rowIndex,
+              message: String(warning.message || 'Blocking preview warning'),
+              meta: {
+                issueId: `${warning.code || 'preview_blocking_warning'}:${row.rowIndex}:sourcePath`,
+                rowId: row.rowId || null
+              }
+            }))
+        )
+        if (blockingIssues.length) {
+          const error = new Error('Publish blocked: preview contains unresolved required mappings.')
+          error.statusCode = 400
+          error.code = 'SCHEMA_VALIDATION_FAILED'
+          error.details = { issues: blockingIssues }
+          throw error
+        }
+      }
       if (!input.versionBump || !String(input.versionBump).trim()) {
         throw new Error('Publish requires versionBump.')
       }
@@ -2887,7 +2935,7 @@ export function createStore({
       template.mappings = deepClone(target.mappings || [])
       template.mappingRules = template.mappings
       template.extractedFields = deepClone(target.extractedFields || [])
-      template.extraction = deepClone(target.extraction || { status: 'completed', reasonCode: null })
+      template.extraction = deepClone(target.extraction || { status: 'completed', reasonCode: null, error: null })
       template.publishState = normalizeTemplateState(target.publishState || 'draft')
       template.status = template.publishState
       template.versions.push(
@@ -3220,6 +3268,16 @@ export function createStore({
             : null
       const extraction = extractTemplateFieldsFromPdfBytes(pdfBytes)
       const extractedFieldNames = extraction.fields.map((entry) => entry.fieldName)
+      const uniqueMappings = []
+      const seenPdfFields = new Set()
+      extractedFieldNames.forEach((field) => {
+        if (seenPdfFields.has(field)) return
+        seenPdfFields.add(field)
+        uniqueMappings.push({
+          pdfField: field,
+          sourcePath: field.replace(/\s+/g, '_').toLowerCase()
+        })
+      })
       const sections = extractedFieldNames.reduce((acc, field) => {
         const sectionKey = String(field).split('.')[0] || 'general'
         acc[sectionKey] ||= []
@@ -3230,14 +3288,12 @@ export function createStore({
         name: input.name,
         fileName: input.fileName || 'uploaded.pdf',
         blueprint: { sections },
-        mappings: extractedFieldNames.map((field) => ({
-          pdfField: field,
-          sourcePath: field.replace(/\s+/g, '_').toLowerCase()
-        })),
+        mappings: uniqueMappings,
         extractedFields: extraction.fields,
         extraction: {
           status: extraction.status,
-          reasonCode: extraction.reasonCode
+          reasonCode: extraction.reasonCode,
+          error: extraction.error || null
         }
       })
     },

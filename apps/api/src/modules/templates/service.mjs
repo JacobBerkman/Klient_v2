@@ -8,6 +8,15 @@ function normalizeIssueRowIndex(issue = {}) {
   return match ? Number(match[1]) : null
 }
 
+const TEMPLATE_VALIDATION_MESSAGES = {
+  unknown_source_path: 'Mapping source path is not recognized by the profile/form schema.',
+  required_pdf_field_missing: 'A required PDF field is not mapped.',
+  required_pdf_field: 'PDF field is required.',
+  required_source_path: 'Source path is required.',
+  duplicate_pdf_field: 'PDF field is mapped more than once.',
+  required_repeater_path: 'Repeater path is required for array selector source paths.'
+}
+
 function normalizePublishPreflightIssue(issue = {}, index = 0) {
   const code = String(issue?.code || 'schema_validation_issue')
   const path = String(issue?.path || '')
@@ -18,10 +27,12 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
   const issueId = sourceMeta.issueId || [code, rowIndex ?? 'global', field || path || index].join(':')
   return {
     code,
+    errorCode: `TEMPLATE_VALIDATION_${code.toUpperCase()}`,
     path,
     field,
     rowIndex,
     message,
+    errorMessage: TEMPLATE_VALIDATION_MESSAGES[code] || message,
     severity: 'error',
     blocking: true,
     meta: {

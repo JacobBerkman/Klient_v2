@@ -1724,7 +1724,9 @@ function previewWarningMarkup(warnings = []) {
   return warnings
     .map((warning) => {
       const title = escapeHtml(warning.message || warning.code || 'Warning')
-      return `<span class="badge" title="${title}">${escapeHtml(warning.code || 'warning')}</span>`
+      const badgeClass = warning.blocking ? 'error-badge' : 'badge'
+      const suffix = warning.blocking ? ' (blocking)' : ''
+      return `<span class="${badgeClass}" title="${title}">${escapeHtml((warning.code || 'warning') + suffix)}</span>`
     })
     .join(' ')
 }
@@ -1823,6 +1825,25 @@ async function renderTemplates() {
       .filter((value) => Number.isFinite(value))
   )
   const previewIssueRows = new Set((preview?.issues || []).map((issue) => Number(issue.rowIndex)).filter((value) => Number.isFinite(value)))
+  const remediationRows = [
+    ...(preview?.rows || [])
+      .flatMap((row) =>
+        (row.warnings || []).map((warning) => ({
+          rowIndex: Number(row.rowIndex),
+          rowId: row.rowId || '',
+          blocking: warning.blocking === true,
+          code: warning.code || 'warning',
+          message: warning.message || 'Preview warning'
+        }))
+      ),
+    ...preflightIssues.map((issue) => ({
+      rowIndex: Number(issue.rowIndex),
+      rowId: issue?.meta?.rowId || '',
+      blocking: true,
+      code: issue.errorCode || issue.code || 'issue',
+      message: issue.errorMessage || issue.message || 'Preflight validation issue'
+    }))
+  ].filter((entry) => Number.isFinite(entry.rowIndex))
   const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
   const hasBlockingPreviewWarnings =
     Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
@@ -1992,6 +2013,7 @@ async function renderTemplates() {
             ? `
           <div class="muted">mappingVersionHash: <code>${escapeHtml(preview.mappingVersionHash || '')}</code></div>
           <div class="muted">warnings: ${escapeHtml(String(preview.warningsCount || 0))}</div>
+          <div class="muted">blocking warnings: ${escapeHtml(String(preview.blockingWarningsCount || 0))}</div>
           ${preview.issues?.length ? `<div class="muted">issues: ${escapeHtml(String(preview.issues.length))}</div>` : ''}
           <table><thead><tr><th>PDF field</th><th>Source path</th><th>Resolved value</th><th>Warnings</th></tr></thead><tbody>
             ${(preview.rows || [])
@@ -2006,7 +2028,7 @@ async function renderTemplates() {
                 hasWarnings
                   ? `<button class="tiny secondary" data-jump-rowindex="${rowIndex}" data-focus-inspector="sourcePath">Jump to row ${rowIndex + 1}</button>`
                   : `<span class="muted">Row ${rowIndex + 1}</span>`
-              } ${previewWarningMarkup(row.warnings || [])}</td>
+              } <span class="muted">id:<code>${escapeHtml(row.rowId || '')}</code></span> ${previewWarningMarkup(row.warnings || [])}</td>
             </tr>`
               })
               .join('')}
@@ -2035,6 +2057,16 @@ async function renderTemplates() {
                 })
                 .join('')}</ul>`
             : '<p class="muted">Run preflight to surface publish-time schema validation (unknown source paths, required mappings, and transform issues) before attempting publish.</p>'
+        }
+        ${
+          remediationRows.length
+            ? `<h4>Row-level remediation</h4><ul>${remediationRows
+                .map(
+                  (item) =>
+                    `<li><button class="tiny secondary" data-remediate-rowindex="${item.rowIndex}" data-focus-inspector="sourcePath">Row ${item.rowIndex + 1}</button> · <code>${escapeHtml(item.code)}</code> · ${escapeHtml(item.message)}${item.rowId ? ` · rowId <code>${escapeHtml(item.rowId)}</code>` : ''}${item.blocking ? ' · <strong>blocking</strong>' : ' · non-blocking'}</li>`
+                )
+                .join('')}</ul>`
+            : ''
         }
       </section>
       <section class="item">
@@ -2288,6 +2320,12 @@ async function renderTemplates() {
       await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
     })
   })
+  document.querySelectorAll('[data-remediate-rowindex]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const rowIndex = Number(button.dataset.remediateRowindex)
+      await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
+    })
+  })
 
   const pendingInspectorFocusField = template ? state.templateInspectorFocusRequestByTemplateId[template.id] : ''
   if (pendingInspectorFocusField) {
@@ -2326,7 +2364,13 @@ async function renderTemplates() {
       if (hasBlockingWarnings) throw new Error('Publish blocked: preview contains blocking warnings/issues.')
       await request(routes.documentTemplatePublish(template.id), {
         method: 'POST',
-        body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Publish template mapping updates.', enforceKnownSourcePaths: true })
+        body: JSON.stringify({
+          versionBump: '1.0.0',
+          changelog: 'Publish template mapping updates.',
+          enforceKnownSourcePaths: true,
+          clientId,
+          submissionId
+        })
       })
       state.templatePublishPreflightByTemplateId[template.id] = { checkedAt: new Date().toISOString(), issues: [] }
       reportActionSuccess('Templates', 'Template published.')
