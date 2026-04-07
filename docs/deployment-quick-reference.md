@@ -103,6 +103,12 @@ Machine-readable evaluation output:
 artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json
 ```
 
+Postdeploy checkpoint retention (every postdeploy execution):
+- Latest canonical files remain at the root (`postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`) for backward compatibility.
+- Timestamped snapshots are also written under `checkpoints/<timestamp>/` so every checkpoint run is preserved.
+- `postdeploy-checkpoints.json` tracks chronological checkpoint timestamps and per-artifact paths.
+- `manifest.json` includes `postdeployCheckpoints` with `latestCheckpoint`, `latestArtifacts`, and full `history` so approvers can review both current and prior checkpoint evidence without path guessing.
+
 ### 4) Restore / rollback drill (or recovery)
 ```bash
 export RESTORE_BACKUP_PATH=data/backup-<timestamp>.db
@@ -160,6 +166,7 @@ Use this cadence immediately after production deploy to convert post-deploy chec
 - Refresh `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, and `postdeploy-evaluation-summary.json` at every hypercare checkpoint.
 - Update `docs/release-handoff-template.md` decision notes with checkpoint timestamps and any mitigations applied.
 - Keep one chronological incident/evidence log per release ID so approvers can audit all post-deploy state transitions.
+- When citing checkpoint history, source timestamps and file paths from `postdeploy-checkpoints.json` (or `manifest.json -> postdeployCheckpoints.history`) and include UTC timestamps explicitly in handoff notes.
 
 ## Optional single-command full operator flow
 If running the complete workflow (preflight + postdeploy in deterministic order):

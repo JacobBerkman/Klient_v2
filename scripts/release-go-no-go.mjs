@@ -100,10 +100,13 @@ function runStep({ name, command, args, outputFile = '', outputMode = 'stdout', 
         return
       }
 
-      if (outputFile) {
-        mkdirSync(dirname(outputFile), { recursive: true })
+      const outputFiles = outputFile ? [outputFile] : []
+      if (outputFiles.length > 0) {
         const output = outputMode === 'combined' ? `${stdout}${stderr}` : stdout
-        writeFileSync(outputFile, output, 'utf8')
+        for (const targetFile of outputFiles) {
+          mkdirSync(dirname(targetFile), { recursive: true })
+          writeFileSync(targetFile, output, 'utf8')
+        }
       }
 
       resolveRun({ stdout, stderr, durationMs: Date.now() - startedAt, outputFile, exitCode: code })
@@ -398,10 +401,91 @@ function initializePhaseReport(status = 'skipped') {
   }
 }
 
+function formatCheckpointTimestamp(value = Date.now()) {
+  return new Date(value).toISOString().replaceAll(':', '-')
+}
+
+function resolvePostdeployArtifacts({ evidenceDir, checkpointTimestamp }) {
+  const checkpointDir = resolve(evidenceDir, 'checkpoints', checkpointTimestamp)
+  const names = {
+    health: 'postdeploy-health.json',
+    ready: 'postdeploy-ready.json',
+    queue: 'postdeploy-exports-queue.json',
+    telemetry: 'postdeploy-telemetry-bundle.json',
+    evaluation: 'postdeploy-evaluation-summary.json'
+  }
+  return {
+    checkpointTimestamp,
+    checkpointDir,
+    latest: {
+      health: resolve(evidenceDir, names.health),
+      ready: resolve(evidenceDir, names.ready),
+      queue: resolve(evidenceDir, names.queue),
+      telemetry: resolve(evidenceDir, names.telemetry),
+      evaluation: resolve(evidenceDir, names.evaluation)
+    },
+    checkpoint: {
+      health: resolve(checkpointDir, names.health),
+      ready: resolve(checkpointDir, names.ready),
+      queue: resolve(checkpointDir, names.queue),
+      telemetry: resolve(checkpointDir, names.telemetry),
+      evaluation: resolve(checkpointDir, names.evaluation)
+    }
+  }
+}
+
+function readJsonIfExists(path) {
+  try {
+    return JSON.parse(readFileSync(path, 'utf8'))
+  } catch {
+    return null
+  }
+}
+
+function copyArtifact(sourceFile, targetFile) {
+  mkdirSync(dirname(targetFile), { recursive: true })
+  writeFileSync(targetFile, readFileSync(sourceFile, 'utf8'), 'utf8')
+}
+
+function updatePostdeployCheckpointIndex({ releaseId, evidenceDir, checkpointTimestamp, artifacts }) {
+  const indexPath = resolve(evidenceDir, 'postdeploy-checkpoints.json')
+  const existing = readJsonIfExists(indexPath)
+  const checkpoints = Array.isArray(existing?.checkpoints) ? existing.checkpoints : []
+
+  const artifactPaths = Object.fromEntries(
+    Object.entries(artifacts).map(([key, artifactPath]) => [key, relative(process.cwd(), artifactPath)])
+  )
+  const nextCheckpoint = {
+    timestamp: checkpointTimestamp,
+    artifacts: artifactPaths
+  }
+
+  const withoutCurrent = checkpoints.filter((entry) => entry?.timestamp !== checkpointTimestamp)
+  const nextCheckpoints = [...withoutCurrent, nextCheckpoint].sort((left, right) => left.timestamp.localeCompare(right.timestamp))
+  const payload = {
+    schemaVersion: '1.0.0',
+    releaseId,
+    updatedAt: new Date().toISOString(),
+    latestCheckpoint: checkpointTimestamp,
+    checkpoints: nextCheckpoints
+  }
+
+  writeFileSync(indexPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8')
+  return { indexPath, payload }
+}
+
 function writeManifest({ releaseId, evidenceDir, phaseReports, generatedAt }) {
   const allArtifacts = Object.values(phaseReports)
     .flatMap((report) => report.artifactPaths)
     .filter((artifactPath) => relative(evidenceDir, artifactPath) !== 'manifest.json')
+
+  const postdeployCheckpointIndexPath = resolve(evidenceDir, 'postdeploy-checkpoints.json')
+  const postdeployCheckpointIndex = readJsonIfExists(postdeployCheckpointIndexPath)
+  const checkpointHistory = Array.isArray(postdeployCheckpointIndex?.checkpoints) ? postdeployCheckpointIndex.checkpoints : []
+  const latestCheckpointRecord =
+    checkpointHistory.find((entry) => entry.timestamp === postdeployCheckpointIndex?.latestCheckpoint) ||
+    checkpointHistory[checkpointHistory.length - 1] ||
+    null
 
   const manifest = {
     schemaVersion: '1.0.0',
@@ -416,6 +500,12 @@ function writeManifest({ releaseId, evidenceDir, phaseReports, generatedAt }) {
         }
       ])
     ),
+    postdeployCheckpoints: {
+      indexFile: postdeployCheckpointIndex ? relative(process.cwd(), postdeployCheckpointIndexPath) : null,
+      latestCheckpoint: postdeployCheckpointIndex?.latestCheckpoint || null,
+      latestArtifacts: latestCheckpointRecord?.artifacts || null,
+      history: checkpointHistory
+    },
     files: collectArtifactMetadata(allArtifacts).map((artifact) => ({
       ...artifact,
       path: relative(process.cwd(), artifact.path)
@@ -564,36 +654,49 @@ const postdeploy = async () => {
   }
 
   const baseUrl = process.env.KLIENT_BASE_URL
+  const checkpointTimestamp = formatCheckpointTimestamp()
+  const postdeployArtifacts = resolvePostdeployArtifacts({ evidenceDir, checkpointTimestamp })
 
   await runStep({
     name: 'Post-deploy Step 1 Health',
     command: 'curl',
     args: ['-fsS', `${baseUrl}/health`],
-    outputFile: resolve(evidenceDir, 'postdeploy-health.json')
+    outputFile: postdeployArtifacts.latest.health
   })
+  copyArtifact(postdeployArtifacts.latest.health, postdeployArtifacts.checkpoint.health)
 
   await runStep({
     name: 'Post-deploy Step 2 Readiness',
     command: 'curl',
     args: ['-fsS', `${baseUrl}/ready`],
-    outputFile: resolve(evidenceDir, 'postdeploy-ready.json')
+    outputFile: postdeployArtifacts.latest.ready
   })
+  copyArtifact(postdeployArtifacts.latest.ready, postdeployArtifacts.checkpoint.ready)
 
   await runStep({
     name: 'Post-deploy Step 3 Export queue diagnostics',
     command: 'curl',
     args: ['-fsS', '-H', `Authorization: Bearer ${opsToken}`, `${baseUrl}/api/ops/exports/queue`],
-    outputFile: resolve(evidenceDir, 'postdeploy-exports-queue.json')
+    outputFile: postdeployArtifacts.latest.queue
   })
+  copyArtifact(postdeployArtifacts.latest.queue, postdeployArtifacts.checkpoint.queue)
 
   await runStep({
     name: 'Post-deploy Step 4 Telemetry bundle',
     command: 'curl',
     args: ['-fsS', '-H', `Authorization: Bearer ${opsToken}`, `${baseUrl}/api/ops/diagnostics`],
-    outputFile: resolve(evidenceDir, 'postdeploy-telemetry-bundle.json')
+    outputFile: postdeployArtifacts.latest.telemetry
   })
+  copyArtifact(postdeployArtifacts.latest.telemetry, postdeployArtifacts.checkpoint.telemetry)
 
   evaluatePostdeployPayloads({ releaseId: options.releaseId, evidenceDir })
+  copyArtifact(postdeployArtifacts.latest.evaluation, postdeployArtifacts.checkpoint.evaluation)
+  updatePostdeployCheckpointIndex({
+    releaseId: options.releaseId,
+    evidenceDir,
+    checkpointTimestamp,
+    artifacts: postdeployArtifacts.checkpoint
+  })
 }
 
 async function runPhase(phaseName, runner) {
