@@ -219,6 +219,7 @@ try {
 
   const unauthorizedDownload = await fetch(`http://127.0.0.1:${context.port}/api/analytics/export`)
   assert(unauthorizedDownload.status === 401, 'Analytics export download should require authentication')
+  await consumeResponse(unauthorizedDownload)
   const authorizedDownload = await fetch(`http://127.0.0.1:${context.port}/api/analytics/export`, {
     headers: { Cookie: context.sessionCookie }
   })
