@@ -23,6 +23,15 @@ export class FormsRepository {
   reviseDraftSubmission(_firmContext, _submissionId, _input) {
     throw new Error('Not implemented')
   }
+  listDraftCollaborators(_firmContext, _submissionId) {
+    throw new Error('Not implemented')
+  }
+  addDraftCollaborator(_firmContext, _submissionId, _input) {
+    throw new Error('Not implemented')
+  }
+  removeDraftCollaborator(_firmContext, _submissionId, _collaboratorUserId) {
+    throw new Error('Not implemented')
+  }
   updateSubmission(_firmContext, _submissionId, _patch) {
     throw new Error('Not implemented')
   }

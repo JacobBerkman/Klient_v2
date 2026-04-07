@@ -189,6 +189,33 @@ function parseIso(value) {
   return Number.isFinite(time) ? time : 0
 }
 
+function normalizeDraftCollaborators(entry, fallbackUserId = '') {
+  const seed = []
+  if (fallbackUserId) {
+    seed.push({ userId: fallbackUserId, permission: 'write' })
+  }
+  if (entry?.createdByUserId) {
+    seed.push({ userId: entry.createdByUserId, permission: 'write' })
+  }
+  if (Array.isArray(entry?.collaborators)) {
+    seed.push(...entry.collaborators)
+  }
+  const byUser = new Map()
+  seed.forEach((item) => {
+    const userId = String(item?.userId || '').trim()
+    if (!userId) return
+    const permission = String(item?.permission || '').toLowerCase() === 'write' ? 'write' : 'read'
+    if (!byUser.has(userId) || permission === 'write') {
+      byUser.set(userId, { userId, permission })
+    }
+  })
+  return Array.from(byUser.values())
+}
+
+function resolveUserId(user) {
+  return String(user?.id || user?.userId || user?.user?.id || '').trim()
+}
+
 function profileOrderIndex(profile) {
   const raw = profile?.orderIndex ?? profile?.stageOrderIndex ?? null
   const numeric = Number(raw)
@@ -2107,15 +2134,22 @@ export function createStore({
     },
     listFormSubmissions(user, status = null) {
       requirePermission(user, 'forms:read')
+      const actorUserId = resolveUserId(user)
       const currentTime = Date.now()
       return state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
+        .filter((entry) => {
+          if (entry.status !== 'draft') return true
+          const collaborators = normalizeDraftCollaborators(entry)
+          return collaborators.some((item) => item.userId === actorUserId)
+        })
         .filter((entry) => !status || entry.status === status)
         .map((entry) => {
+          const collaborators = normalizeDraftCollaborators(entry)
           if (entry.lock && parseIso(entry.lock.expiresAt) <= currentTime) {
-            return { ...entry, lock: null }
+            return { ...entry, lock: null, collaborators }
           }
-          return entry
+          return { ...entry, collaborators }
         })
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
@@ -2244,6 +2278,7 @@ export function createStore({
     },
     createFormSubmission(user, input) {
       requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
       const status = input.status || 'draft'
       const createdAt = now()
       const submission = {
@@ -2253,11 +2288,12 @@ export function createStore({
         templateId: input.templateId,
         status,
         data: input.data || {},
-        createdByUserId: user.id,
+        createdByUserId: actorUserId || null,
         createdAt,
         updatedAt: createdAt,
         revisionId: status === 'draft' ? 1 : null,
-        lock: null
+        lock: null,
+        collaborators: status === 'draft' ? normalizeDraftCollaborators(input, actorUserId) : []
       }
       state.formSubmissions.push(submission)
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', {
@@ -2269,10 +2305,14 @@ export function createStore({
     },
     acquireDraftLock(user, submissionId, input = {}) {
       requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
       const submission = state.formSubmissions.find(
         (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
       )
       if (!submission) throw new Error('Draft submission not found.')
+      submission.collaborators = normalizeDraftCollaborators(submission)
+      const permission = submission.collaborators.find((entry) => entry.userId === actorUserId)?.permission || null
+      if (permission !== 'write') throw new Error('Draft collaborator access denied: write permission is required.')
 
       const nowTime = Date.now()
       const leaseMs = Math.max(5_000, Math.min(120_000, Number(input.leaseMs || 30_000)))
@@ -2291,7 +2331,7 @@ export function createStore({
 
       const lock = {
         leaseId: randomUUID(),
-        holderUserId: user.id,
+        holderUserId: actorUserId,
         acquiredAt: now(),
         expiresAt: new Date(nowTime + leaseMs).toISOString(),
         leaseMs
@@ -2307,13 +2347,14 @@ export function createStore({
     },
     releaseDraftLock(user, submissionId, leaseId = '') {
       requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
       const submission = state.formSubmissions.find(
         (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
       )
       if (!submission) throw new Error('Draft submission not found.')
       const existing = submission.lock
       if (!existing) return { ok: true, released: false }
-      if (existing.holderUserId !== user.id && leaseId && existing.leaseId !== leaseId) {
+      if (existing.holderUserId !== actorUserId && leaseId && existing.leaseId !== leaseId) {
         throw new Error('Cannot release lock held by another advisor.')
       }
       submission.lock = null
@@ -2324,10 +2365,14 @@ export function createStore({
     },
     reviseDraftSubmission(user, submissionId, input = {}) {
       requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
       const submission = state.formSubmissions.find(
         (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
       )
       if (!submission) throw new Error('Draft submission not found.')
+      submission.collaborators = normalizeDraftCollaborators(submission)
+      const permission = submission.collaborators.find((entry) => entry.userId === actorUserId)?.permission || null
+      if (permission !== 'write') throw new Error('Draft collaborator access denied: write permission is required.')
 
       const currentRevision = Number(submission.revisionId || 1)
       const expectedRevision = Number(input.expectedRevisionId || 0)
@@ -2337,7 +2382,7 @@ export function createStore({
 
       const lock = submission.lock
       const lockActive = lock && parseIso(lock.expiresAt) > Date.now()
-      if (!lockActive || lock.holderUserId !== user.id || lock.leaseId !== input.leaseId) {
+      if (!lockActive || lock.holderUserId !== actorUserId || lock.leaseId !== input.leaseId) {
         return {
           ok: false,
           conflict: true,
@@ -2385,6 +2430,52 @@ export function createStore({
       })
       persist()
       return { ok: true, submission }
+    },
+    listDraftCollaborators(user, submissionId) {
+      requirePermission(user, 'forms:read')
+      const actorUserId = resolveUserId(user)
+      const submission = state.formSubmissions.find(
+        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
+      )
+      if (!submission) throw new Error('Draft submission not found.')
+      submission.collaborators = normalizeDraftCollaborators(submission)
+      if (!submission.collaborators.some((entry) => entry.userId === actorUserId))
+        throw new Error('Draft collaborator access denied.')
+      return submission.collaborators
+    },
+    addDraftCollaborator(user, submissionId, input = {}) {
+      requirePermission(user, 'forms:write')
+      const submission = state.formSubmissions.find(
+        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
+      )
+      if (!submission) throw new Error('Draft submission not found.')
+      const userId = String(input.userId || '').trim()
+      if (!userId) throw new Error('Collaborator userId is required.')
+      const permission = String(input.permission || '').toLowerCase() === 'write' ? 'write' : 'read'
+      submission.collaborators = normalizeDraftCollaborators(submission)
+      const existingUser = state.users.find((entry) => entry.id === userId && entry.firmId === user.firmId)
+      if (!existingUser) throw new Error('Collaborator user not found.')
+      submission.collaborators = normalizeDraftCollaborators(
+        { ...submission, collaborators: [...submission.collaborators, { userId, permission }] },
+        submission.createdByUserId
+      )
+      submission.updatedAt = now()
+      persist()
+      return submission.collaborators
+    },
+    removeDraftCollaborator(user, submissionId, collaboratorUserId) {
+      requirePermission(user, 'forms:write')
+      const submission = state.formSubmissions.find(
+        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
+      )
+      if (!submission) throw new Error('Draft submission not found.')
+      submission.collaborators = normalizeDraftCollaborators(submission)
+      const targetUserId = String(collaboratorUserId || '').trim()
+      submission.collaborators = submission.collaborators.filter((entry) => entry.userId !== targetUserId)
+      submission.collaborators = normalizeDraftCollaborators(submission, submission.createdByUserId)
+      submission.updatedAt = now()
+      persist()
+      return submission.collaborators
     },
     listDocumentTemplates(user) {
       return this.listTemplateAggregates(user, { kind: 'document' }).map(documentTemplateAdapter)

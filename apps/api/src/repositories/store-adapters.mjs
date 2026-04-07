@@ -187,6 +187,15 @@ export class StoreFormsRepository extends FormsRepository {
   reviseDraftSubmission(user, submissionId, input) {
     return this.store.reviseDraftSubmission(user, submissionId, input)
   }
+  listDraftCollaborators(user, submissionId) {
+    return this.store.listDraftCollaborators(user, submissionId)
+  }
+  addDraftCollaborator(user, submissionId, input) {
+    return this.store.addDraftCollaborator(user, submissionId, input)
+  }
+  removeDraftCollaborator(user, submissionId, collaboratorUserId) {
+    return this.store.removeDraftCollaborator(user, submissionId, collaboratorUserId)
+  }
   updateSubmission(user, submissionId, patch) {
     return this.store.updateSubmission(user, submissionId, patch)
   }

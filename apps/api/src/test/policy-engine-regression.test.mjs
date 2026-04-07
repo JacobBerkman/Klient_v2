@@ -108,6 +108,31 @@ const operations = [
     allowed: new Set(['admin', 'advisor'])
   },
   {
+    key: 'forms.acquireDraftLock',
+    invoke: (s, u) => s.forms.acquireDraftLock(u, 'd1', {}),
+    allowed: new Set(['admin', 'advisor'])
+  },
+  {
+    key: 'forms.reviseDraftSubmission',
+    invoke: (s, u) => s.forms.reviseDraftSubmission(u, 'd1', { leaseId: 'l1', expectedRevisionId: 1, data: {} }),
+    allowed: new Set(['admin', 'advisor'])
+  },
+  {
+    key: 'forms.listDraftCollaborators',
+    invoke: (s, u) => s.forms.listDraftCollaborators(u, 'd1'),
+    allowed: new Set(['admin', 'advisor'])
+  },
+  {
+    key: 'forms.addDraftCollaborator',
+    invoke: (s, u) => s.forms.addDraftCollaborator(u, 'd1', { userId: 'u2', permission: 'write' }),
+    allowed: new Set(['admin', 'advisor'])
+  },
+  {
+    key: 'forms.removeDraftCollaborator',
+    invoke: (s, u) => s.forms.removeDraftCollaborator(u, 'd1', 'u2'),
+    allowed: new Set(['admin', 'advisor'])
+  },
+  {
     key: 'forms.getClientWorkspace',
     invoke: (s, u) => s.forms.getClientWorkspace(u),
     allowed: new Set(['client'])
