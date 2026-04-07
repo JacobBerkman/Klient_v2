@@ -228,6 +228,67 @@ test('mapping preview resolves profile and submission explicit path prefixes', a
   assert.equal(valueByField.goal_via_form, 'Build emergency fund')
 })
 
+test('firm custom profile fields participate in firm-aware preview + publish source path validation', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+  store.createProfileCustomField(user, {
+    key: 'risk_tolerance',
+    type: 'text',
+    label: 'Risk Tolerance'
+  })
+
+  const template = store.createDocumentTemplate(user, {
+    name: 'Custom field mapping template',
+    mappings: [{ pdfField: 'risk_tolerance', sourcePath: 'profile.extensions.values.risk_tolerance', required: true }],
+    enforceKnownSourcePaths: true
+  })
+  const profile = store.createProfile(user, {
+    kind: 'client',
+    firstName: 'Quinn',
+    lastName: 'Custom',
+    stage: 'intake',
+    extensions: { schemaVersion: '1.0.0', values: { risk_tolerance: 'Moderate' } }
+  })
+  const formTemplate = store.createFormTemplate(user, {
+    name: 'Custom field publish form',
+    sections: [{ key: 'goal', label: 'Goal', type: 'text' }]
+  })
+  const submission = store.createFormSubmission(user, {
+    clientId: profile.id,
+    templateId: formTemplate.id,
+    status: 'submitted',
+    data: { goal: 'Retire comfortably' }
+  })
+
+  const preview = store.previewTemplateMappings(user, template.id, {
+    clientId: profile.id,
+    submissionId: submission.id
+  })
+  assert.equal(preview.rows[0].value, 'Moderate')
+
+  const published = store.publishTemplate(user, template.id, {
+    versionBump: '1.0.0',
+    changelog: 'Publish custom field source path template',
+    enforceKnownSourcePaths: true,
+    clientId: profile.id,
+    submissionId: submission.id
+  })
+  assert.equal(published.publishState, 'published')
+})
+
+test('auto-build template flow stays healthy with firm-aware source path validation enabled', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const built = store.autoBuildTemplate(user, {
+    name: 'Auto-build regression guard',
+    fileBytes: [0x25, 0x50, 0x44, 0x46, 0x2d]
+  })
+
+  assert.equal(built.name, 'Auto-build regression guard')
+  assert.equal(built.extraction.status, 'failed')
+})
+
 test('preview returns blocking schema issues for missing mapping paths before publish', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)
