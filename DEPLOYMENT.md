@@ -17,7 +17,7 @@ Copy `.env.example` to `.env` and set the runtime-required production variables.
 NODE_ENV=production
 APP_SECRET=replace-with-a-long-random-secret
 AUTH_PROVIDER=oidc
-KLIENT_OPS_TOKEN=replace-with-24-plus-char-ops-token
+KLIENT_OPS_TOKEN_ACTIVE=replace-with-24-plus-char-ops-token-active
 PII_KEY_PROVIDER=env
 PII_ACTIVE_KEY_ID=app-key-v1
 PII_KEYRING={"app-key-v1":"plain:replace-with-32-byte-base64-or-hex-key"}
@@ -28,12 +28,14 @@ PII_KEYRING={"app-key-v1":"plain:replace-with-32-byte-base64-or-hex-key"}
 |---|---|---|
 | `APP_SECRET` | always in production | must be explicitly set and meet minimum strength requirements. |
 | `AUTH_PROVIDER` | always in production | must be explicitly set; `local` requires `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true`, otherwise startup is blocked. |
+| `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS` | only for approved incidents where `AUTH_PROVIDER=local` in production | break-glass override to temporarily permit local auth in production; emits runtime warning and should be removed immediately after mitigation. |
 | `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` | `AUTH_PROVIDER=oidc` | all required; issuer + redirect must be HTTPS; client secret must be >= 16 chars. |
 | `SAML_ENTRY_POINT`, `SAML_ISSUER`, `SAML_CERT` | `AUTH_PROVIDER=saml` | all required; entry point must be HTTPS; cert must contain a PEM certificate block. |
 | `PII_KEY_PROVIDER` | always in production | provider selector (`env` or `kms`). |
 | `PII_ACTIVE_KEY_ID`, `PII_KEYRING` | `PII_KEY_PROVIDER=env` | both required; `PII_KEYRING` must be a JSON object and include `PII_ACTIVE_KEY_ID`. |
 | `PII_KMS_KEYRING` + (`PII_KMS_ACTIVE_KEY_ID` or `PII_ACTIVE_KEY_ID`) | `PII_KEY_PROVIDER=kms` | keyring required and must be a JSON object; active key id required. |
-| `KLIENT_OPS_TOKEN` | always in production | required and must be at least 24 characters. |
+| `KLIENT_OPS_TOKEN_ACTIVE`, `KLIENT_OPS_TOKEN_PREVIOUS`, `KLIENT_OPS_TOKENS`, `KLIENT_OPS_TOKEN` | always in production (at least one token required) | rotation-safe token set; startup fails if none are set; each provided token must be at least 24 characters. |
+| `STORAGE_PROVIDER` | always in production | storage provider selector (`local` or `s3`). |
 | `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY` | `STORAGE_PROVIDER=s3` | required together when S3 storage is selected. |
 
 ### Deployment contract consistency
@@ -72,7 +74,7 @@ Run the operator command (fails fast, exact documented order):
 ```bash
 export RELEASE_ID=<release-id>
 export KLIENT_BASE_URL=https://<env-host>
-export KLIENT_OPS_TOKEN=<ops-token>
+export KLIENT_OPS_TOKEN_ACTIVE=<ops-token-active>
 npm run release:go-no-go -- --release-id "$RELEASE_ID"
 ```
 
@@ -83,7 +85,7 @@ This command writes all artifacts under `artifacts/release-evidence/<release-id>
 Required environment variables:
 - `RELEASE_ID` (or pass `--release-id`) to scope evidence output.
 - `KLIENT_BASE_URL` for post-deploy `/health` and `/ready`.
-- `KLIENT_OPS_TOKEN` for authenticated post-deploy diagnostics.
+- One of `KLIENT_OPS_TOKEN_ACTIVE` / `KLIENT_OPS_TOKEN_PREVIOUS` / `KLIENT_OPS_TOKENS` / `KLIENT_OPS_TOKEN` for authenticated post-deploy diagnostics.
 - `RESTORE_BACKUP_PATH` only when running `--phase restore` or `--phase restore-drill`.
 
 Hard gate only (manual mode):
@@ -123,6 +125,7 @@ Before approving GO/NO-GO, complete and archive the standardized handoff package
 When completing Section 2 of that package, explicitly record:
 - selected `AUTH_PROVIDER` path (`oidc`/`saml` required for normal production GO, `local` only with recorded break-glass approval) and companion key presence checks,
 - selected `PII_KEY_PROVIDER` path (`env` or `kms`) and companion key presence checks,
+- selected ops token path (`KLIENT_OPS_TOKEN_ACTIVE`, `KLIENT_OPS_TOKEN_PREVIOUS`, `KLIENT_OPS_TOKENS`, or legacy `KLIENT_OPS_TOKEN`) and rotation/remove timing,
 - and immutable release identity values (release ID, commit/tag, image digest, environment).
 
 Quick operator reference (exact phase commands, env vars, artifacts, failure signatures):

@@ -18,16 +18,38 @@ services:
 
       # Runtime production contract: AUTH_PROVIDER must be explicitly set.
       AUTH_PROVIDER: ${AUTH_PROVIDER}
+      ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS: ${ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS:-}
 
-      # Ops endpoints (/api/ops/diagnostics and /api/ops/exports/queue) require a production token.
+      # Ops endpoints (/api/ops/diagnostics and /api/ops/exports/queue) accept rotation-safe token inputs.
+      KLIENT_OPS_TOKEN_ACTIVE: ${KLIENT_OPS_TOKEN_ACTIVE:-}
+      KLIENT_OPS_TOKEN_PREVIOUS: ${KLIENT_OPS_TOKEN_PREVIOUS:-}
+      KLIENT_OPS_TOKENS: ${KLIENT_OPS_TOKENS:-}
       KLIENT_OPS_TOKEN: ${KLIENT_OPS_TOKEN}
 
       # PII provider selection + provider-specific key material passthrough.
       PII_KEY_PROVIDER: ${PII_KEY_PROVIDER:-env}
       PII_ACTIVE_KEY_ID: ${PII_ACTIVE_KEY_ID:-}
       PII_KEYRING: ${PII_KEYRING:-}
+      PII_KMS_KEY_ALIAS: ${PII_KMS_KEY_ALIAS:-}
       PII_KMS_ACTIVE_KEY_ID: ${PII_KMS_ACTIVE_KEY_ID:-}
       PII_KMS_KEYRING: ${PII_KMS_KEYRING:-}
+
+      # Storage provider selection + provider-specific passthrough.
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-local}
+      STORAGE_LOCAL_DIR: ${STORAGE_LOCAL_DIR:-}
+      STORAGE_BUCKET_DOCUMENTS: ${STORAGE_BUCKET_DOCUMENTS:-}
+      STORAGE_BUCKET_EXPORTS: ${STORAGE_BUCKET_EXPORTS:-}
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-}
+      STORAGE_REGION: ${STORAGE_REGION:-}
+      STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:-}
+      STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:-}
+      STORAGE_FORCE_PATH_STYLE: ${STORAGE_FORCE_PATH_STYLE:-}
+      STORAGE_EXPORT_TTL_DAYS: ${STORAGE_EXPORT_TTL_DAYS:-}
+      STORAGE_EXPORT_ARCHIVE_AFTER_DAYS: ${STORAGE_EXPORT_ARCHIVE_AFTER_DAYS:-}
+      STORAGE_EXPORT_PURGE_AFTER_DAYS: ${STORAGE_EXPORT_PURGE_AFTER_DAYS:-}
+      STORAGE_UPLOAD_TTL_DAYS: ${STORAGE_UPLOAD_TTL_DAYS:-}
+      STORAGE_UPLOAD_ARCHIVE_AFTER_DAYS: ${STORAGE_UPLOAD_ARCHIVE_AFTER_DAYS:-}
+      STORAGE_UPLOAD_PURGE_AFTER_DAYS: ${STORAGE_UPLOAD_PURGE_AFTER_DAYS:-}
 
       # Auth provider-specific passthrough (required when provider is selected).
       OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
