@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve, relative } from 'node:path'
 import { spawn } from 'node:child_process'
 import { collectArtifactMetadata } from './release-evidence.mjs'
+import { evaluateRuntimeRequiredEnvPresence } from '../apps/api/src/runtime-requirements.mjs'
 
 function fail(message) {
   process.stderr.write(`\n❌ ${message}\n`)
@@ -283,6 +284,32 @@ function evaluatePostdeployPayloads({ releaseId, evidenceDir }) {
   }
 }
 
+function ensurePreflightEnvEvidence(preflightFile) {
+  const report = parseJsonFile(preflightFile, 'Preflight env evidence')
+  const valid =
+    report &&
+    report.schemaVersion === '1.0.0' &&
+    report.mode &&
+    report.overall &&
+    typeof report.overall.ready === 'boolean'
+
+  if (!valid) {
+    fail(`Preflight env evidence validation failed at ${preflightFile}. Expected schemaVersion/mode/overall.ready.`)
+  }
+
+  if (!report.overall.ready) {
+    const details = [
+      report.auth?.missing?.length ? `auth missing: ${report.auth.missing.join(', ')}` : '',
+      report.opsTokens?.ready === false ? 'ops tokens missing: set KLIENT_OPS_TOKEN_ACTIVE or another ops token variable' : '',
+      report.pii?.missing?.length ? `pii missing: ${report.pii.missing.join(', ')}` : '',
+      report.storage?.missing?.length ? `storage missing: ${report.storage.missing.join(', ')}` : ''
+    ]
+      .filter(Boolean)
+      .join('; ')
+    fail(`Runtime-required env preflight failed. ${details}`)
+  }
+}
+
 function ensureBackupEvidence(backupFile) {
   const report = parseJsonFile(backupFile, 'Backup evidence')
   const valid =
@@ -455,6 +482,11 @@ const phaseReports = {
 }
 
 const preflight = async () => {
+  const preflightEnvFile = resolve(evidenceDir, 'preflight-env-summary.json')
+  const preflightEnvSummary = evaluateRuntimeRequiredEnvPresence({ ...process.env, NODE_ENV: 'production' })
+  writeFileSync(preflightEnvFile, `${JSON.stringify(preflightEnvSummary, null, 2)}\n`, 'utf8')
+  ensurePreflightEnvEvidence(preflightEnvFile)
+
   const backupFile = resolve(evidenceDir, 'backup.json')
   await runStep({
     name: 'Flow A.1 Backup metadata capture',

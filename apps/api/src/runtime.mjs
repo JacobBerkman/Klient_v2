@@ -1,4 +1,9 @@
 import { hostname } from 'node:os'
+import {
+  readAuthProviderFromEnv,
+  readPiiKeyProviderFromEnv,
+  readStorageProviderFromEnv
+} from './runtime-requirements.mjs'
 
 const DEFAULT_APP_SECRET = 'kinetic-klient-dev-secret'
 const MIN_APP_SECRET_LENGTH = 24
@@ -29,28 +34,6 @@ function readBoolean(name, fallback = false) {
   if (['0', 'false', 'no', 'off'].includes(normalized)) return false
   throw new Error(`Invalid ${name}: expected boolean value.`)
 }
-
-function readStorageProvider(value) {
-  const normalized = String(value || 'local').toLowerCase()
-  if (!['local', 's3'].includes(normalized)) {
-    throw new Error(`Invalid STORAGE_PROVIDER: ${normalized}.`)
-  }
-  return normalized
-}
-
-const acceptedAuthProviders = ['local', 'oidc', 'saml']
-
-function readAuthProvider(value) {
-  const raw = value === undefined || value === null || value === '' ? 'local' : String(value)
-  const normalized = raw.toLowerCase()
-  if (!acceptedAuthProviders.includes(normalized)) {
-    throw new Error(
-      `Invalid AUTH_PROVIDER: received "${raw}". Accepted values: ${acceptedAuthProviders.join(', ')}.`
-    )
-  }
-  return normalized
-}
-
 
 function readNonEmptyString(name, fallback = '') {
   const raw = process.env[name]
@@ -154,14 +137,6 @@ function providerRuntimeDiagnostics(authProvider, { strict = false } = {}) {
   issues.push(`Unsupported AUTH_PROVIDER runtime diagnostics for provider "${authProvider}".`)
   return { issues, warnings }
 }
-function readPiiKeyProvider(value) {
-  const normalized = String(value || 'env').toLowerCase()
-  if (!['env', 'kms'].includes(normalized)) {
-    throw new Error(`Invalid PII_KEY_PROVIDER: ${normalized}.`)
-  }
-  return normalized
-}
-
 function parseJsonObjectEnv(name) {
   const raw = readNonEmptyString(name)
   if (!raw) return { raw, parsed: null, parseError: null }
@@ -194,9 +169,9 @@ const allowUnsafeAppSecret = readBoolean('UNSAFE_ALLOW_WEAK_APP_SECRET', false)
 const enableTestCsrfBypass = readBoolean('ENABLE_TEST_CSRF_BYPASS', false)
 const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
 const authProviderRaw = readNonEmptyString('AUTH_PROVIDER')
-const authProvider = readAuthProvider(authProviderRaw || undefined)
+const authProvider = readAuthProviderFromEnv({ ...process.env, AUTH_PROVIDER: authProviderRaw || undefined })
 const allowProductionLocalAuthBreakglass = readBoolean('ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS', false)
-const piiKeyProvider = readPiiKeyProvider(process.env.PII_KEY_PROVIDER)
+const piiKeyProvider = readPiiKeyProviderFromEnv(process.env)
 const klientOpsTokens = readOpsTokenSet()
 const klientOpsToken = klientOpsTokens[0]?.token || ''
 
@@ -260,7 +235,7 @@ export const runtime = {
   logLevel: readLogLevel(process.env.LOG_LEVEL, nodeEnv === 'production' ? 'info' : 'debug'),
   serviceName: process.env.SERVICE_NAME || 'kinetic-klient-api',
   instanceId: process.env.INSTANCE_ID || hostname(),
-  storageProvider: readStorageProvider(process.env.STORAGE_PROVIDER),
+  storageProvider: readStorageProviderFromEnv(process.env),
   storageLocalDir: process.env.STORAGE_LOCAL_DIR || '',
   storageBucketDocuments: process.env.STORAGE_BUCKET_DOCUMENTS || 'klient-documents',
   storageBucketExports: process.env.STORAGE_BUCKET_EXPORTS || 'klient-exports',

@@ -47,7 +47,7 @@ Core outputs by phase:
 
 | Phase | Expected outputs |
 |---|---|
-| Preflight | `backup.json`, `branch-parity.txt`, `validate-master-summary.json`, plus gate summaries (`api-contract-summary.json`, `integration-summary.json`, `migration-summary.json`, `smoke-summary.json`, `security-summary.json`). |
+| Preflight | `preflight-env-summary.json`, `backup.json`, `branch-parity.txt`, `validate-master-summary.json`, plus gate summaries (`api-contract-summary.json`, `integration-summary.json`, `migration-summary.json`, `smoke-summary.json`, `security-summary.json`). |
 | Postdeploy | `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`. |
 | Restore (live rollback) | `restore.json` with `executionMode=live-restore`. |
 | Restore drill (verify-only) | `restore-drill.json` with `executionMode=verify-only-drill`. |
@@ -78,6 +78,12 @@ Rotation-safe note:
 ```bash
 npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight
 ```
+
+Behavior notes for this command:
+- Runs a runtime-required env preflight using production rules shared with API startup validation (`apps/api/src/runtime-requirements.mjs`).
+- Writes `artifacts/release-evidence/<release-id>/preflight-env-summary.json`.
+- Artifact intentionally includes only state booleans/mode + missing variable names (no secret values).
+- Fails the preflight phase when required env keys are missing for the selected auth/PII/storage modes or when no ops token variable is present.
 
 ### 2) Deploy
 ```bash
