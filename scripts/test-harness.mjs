@@ -237,8 +237,20 @@ export async function createTestContext(name) {
   })
 
   let bootError = ''
+  let bootOutput = ''
+  const appendBootLog = (chunk) => {
+    const text = chunk.toString()
+    bootOutput += text
+    if (bootOutput.length > 16_000) {
+      bootOutput = bootOutput.slice(-16_000)
+    }
+  }
+
+  // Drain stdio so high-volume request logging cannot block the child process on a full pipe buffer.
+  server.stdout.on('data', appendBootLog)
   server.stderr.on('data', (chunk) => {
     bootError += chunk.toString()
+    appendBootLog(chunk)
   })
 
   for (let attempt = 0; attempt < 40; attempt += 1) {
@@ -316,5 +328,5 @@ export async function createTestContext(name) {
   if (resetBehavior === 'isolated') {
     await rm(testCwd, { recursive: true, force: true })
   }
-  throw new Error(`Server failed to start for ${name}. ${bootError}`.trim())
+  throw new Error(`Server failed to start for ${name}. ${bootError || bootOutput}`.trim())
 }

@@ -60,7 +60,8 @@ test('aggregate runner does not stall waiting on inherited stdio held by grandch
   assert(elapsed < 450, `expected to resolve from child exit without waiting on stdio close, got ${elapsed}ms`)
 })
 
-test('master integration aggregate completes end-to-end for export suite in artifact-style execution', async () => {
+
+test('master integration aggregate completes with test-harness piped server stdio in artifact-style execution', async () => {
   const masterIntegrationPath = resolve(repoRoot, 'scripts/master-integration.mjs')
   const start = Date.now()
 
