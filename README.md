@@ -167,7 +167,7 @@ curl -X POST http://localhost:3000/api/login \
   -d '{"email":"admin@demo.test","password":"ChangeMe123!"}'
 ```
 `/ready` now includes config validation output, SQLite quick-check results, export worker status summary, and audit event counts. `/api/ops/diagnostics` adds richer startup/runtime metadata for on-call troubleshooting.
-User-session API calls under `/api/*` authenticate via session cookies, while `/api/ops/*` supports `KLIENT_OPS_TOKEN` bearer authentication for non-browser operations.
+User-session API calls under `/api/*` authenticate via session cookies, while `/api/ops/*` accepts bearer auth via the rotation-safe ops token set (`KLIENT_OPS_TOKEN_ACTIVE`, `KLIENT_OPS_TOKEN_PREVIOUS`, `KLIENT_OPS_TOKENS`, or legacy `KLIENT_OPS_TOKEN`).
 
 Public runtime feature flags are available at `GET /api/runtime`.
 
