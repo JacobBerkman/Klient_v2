@@ -769,6 +769,17 @@ const RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS = {
   maxQueueFailedRetryable: 0
 }
 
+const RELEASE_POSTDEPLOY_RULE_RUNBOOK_LINKS = {
+  'health-ok': '/docs/deployment-quick-reference.md#3-postdeploy-validation-run-in-this-phase-after-deploy',
+  'ready-ok': '/docs/deployment-quick-reference.md#3-postdeploy-validation-run-in-this-phase-after-deploy',
+  'ready-checks-all-true': '/docs/deployment-quick-reference.md#common-failure-signatures-diagnostics-keyed',
+  'queue-stalled-threshold': '/docs/deployment-quick-reference.md#common-failure-signatures-diagnostics-keyed',
+  'queue-dead-letter-threshold': '/docs/deployment-quick-reference.md#common-failure-signatures-diagnostics-keyed',
+  'queue-failed-retryable-threshold': '/docs/deployment-quick-reference.md#common-failure-signatures-diagnostics-keyed',
+  'ready-startup-diagnostics-ok': '/docs/deployment-quick-reference.md#common-failure-signatures-diagnostics-keyed',
+  'runtime-diagnostics-ok': '/docs/deployment-quick-reference.md#common-failure-signatures-diagnostics-keyed'
+}
+
 function normalizeOpsSignal(payload, preferredKeys = []) {
   if (payload == null) return null
   if (typeof payload === 'boolean') return payload
@@ -789,6 +800,117 @@ function normalizeOpsSignal(payload, preferredKeys = []) {
     if (key in payload) return normalizeOpsSignal(payload[key], preferredKeys)
   }
   return null
+}
+
+function toOpsNumber(value, fallback = 0) {
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : fallback
+}
+
+function evaluateReleaseReadinessRules(snapshot = {}) {
+  const healthEndpoint = snapshot.health || {}
+  const readyEndpoint = snapshot.ready || {}
+  const queueEndpoint = snapshot.queue || {}
+  const diagnosticsEndpoint = snapshot.diagnostics || {}
+
+  const healthPayload = healthEndpoint.payload
+  const readyPayload = readyEndpoint.payload
+  const queuePayload = queueEndpoint.payload
+  const diagnosticsPayload = diagnosticsEndpoint.payload
+
+  const queue = queuePayload?.queue || queuePayload || {}
+  const diagnosticsStartupRuntime = diagnosticsPayload?.startup?.runtime || diagnosticsPayload?.data?.startup?.runtime || {}
+  const readyChecks = readyPayload?.checks && typeof readyPayload.checks === 'object' ? readyPayload.checks : {}
+  const failedReadyChecks = Object.entries(readyChecks).filter(([, signal]) => normalizeOpsSignal(signal) !== true)
+  const queueStalled = toOpsNumber(queue.stalled)
+  const queueDeadLetter = toOpsNumber(queue.machineState?.deadLetter?.count ?? queue.deadLetter)
+  const queueFailedRetryable = toOpsNumber(queue.failedRetryable)
+
+  const rules = [
+    {
+      id: 'health-ok',
+      title: '/health healthy',
+      threshold: 'must evaluate healthy',
+      passed: healthEndpoint.ok ? normalizeOpsSignal(healthPayload) === true : null,
+      observed: `status=${healthPayload?.status || 'n/a'}`,
+      remediation:
+        'Stop GO decisioning, inspect /health dependency checks, remediate failing dependency, then rerun postdeploy evidence capture.'
+    },
+    {
+      id: 'ready-ok',
+      title: '/ready ready',
+      threshold: 'must evaluate ready',
+      passed: readyEndpoint.ok ? normalizeOpsSignal(readyPayload) === true : null,
+      observed: `status=${readyPayload?.status || 'n/a'}`,
+      remediation:
+        'Treat as release blocker. Verify app startup state and external dependencies, remediate, then rerun /ready and postdeploy checks.'
+    },
+    {
+      id: 'ready-checks-all-true',
+      title: '/ready checks.*',
+      threshold: 'all checks must be true',
+      passed: readyEndpoint.ok ? failedReadyChecks.length === 0 && Object.keys(readyChecks).length > 0 : null,
+      observed: `failed=${failedReadyChecks.map(([name]) => name).join(', ') || 'none'}; total=${Object.keys(readyChecks).length}`,
+      remediation:
+        'Review failing readiness checks and clear each dependency-level issue before proceeding. Missing checks evidence should be treated as NO-GO until restored.'
+    },
+    {
+      id: 'queue-stalled-threshold',
+      title: 'Queue stalled threshold',
+      threshold: `value ≤ ${RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueStalled}`,
+      passed: queueEndpoint.ok ? queueStalled <= RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueStalled : null,
+      observed: `value=${queueStalled}`,
+      remediation:
+        'Resolve stalled jobs first: inspect worker lease contention, restart stuck workers safely, and confirm stalled count trends back to threshold.'
+    },
+    {
+      id: 'queue-dead-letter-threshold',
+      title: 'Queue dead-letter threshold',
+      threshold: `value ≤ ${RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueDeadLetter}`,
+      passed: queueEndpoint.ok ? queueDeadLetter <= RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueDeadLetter : null,
+      observed: `value=${queueDeadLetter}`,
+      remediation:
+        'Do not proceed with dead-letter growth. Triage root cause per failed export, apply fix, then retry only safe dead-letter jobs after validation.'
+    },
+    {
+      id: 'queue-failed-retryable-threshold',
+      title: 'Queue failed-retryable threshold',
+      threshold: `value ≤ ${RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueFailedRetryable}`,
+      passed: queueEndpoint.ok
+        ? queueFailedRetryable <= RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueFailedRetryable
+        : null,
+      observed: `value=${queueFailedRetryable}`,
+      remediation:
+        'Clear retryable backlog by fixing transient failures, validate retries are draining, and hold GO until retryable count remains within threshold.'
+    },
+    {
+      id: 'ready-startup-diagnostics-ok',
+      title: '/ready startupDiagnostics.ok',
+      threshold: 'true when present',
+      passed:
+        readyEndpoint.ok && readyPayload
+          ? readyPayload?.startupDiagnostics?.ok === undefined || normalizeOpsSignal(readyPayload?.startupDiagnostics?.ok) === true
+          : null,
+      observed: `ok=${readyPayload?.startupDiagnostics?.ok ?? 'not-present'}`,
+      remediation:
+        'If startup diagnostics is present and failing, fix runtime config/startup issues before progressing release decisions.'
+    },
+    {
+      id: 'runtime-diagnostics-ok',
+      title: '/api/ops/diagnostics startup.runtime.ok',
+      threshold: 'must be true',
+      passed: diagnosticsEndpoint.ok ? normalizeOpsSignal(diagnosticsStartupRuntime?.ok) === true : null,
+      observed: `ok=${diagnosticsStartupRuntime?.ok ?? 'n/a'}`,
+      remediation:
+        'Treat runtime diagnostics failures as NO-GO. Correct config/security/runtime issues, redeploy if needed, and recapture diagnostics evidence.'
+    }
+  ]
+
+  return rules.map((rule) => {
+    const level = rule.passed === true ? 'PASS' : rule.passed === false ? 'FAIL' : 'WARN'
+    const note = rule.passed === null ? 'Evidence unavailable for definitive evaluation.' : rule.observed
+    return { ...rule, level, note, runbookHref: RELEASE_POSTDEPLOY_RULE_RUNBOOK_LINKS[rule.id] }
+  })
 }
 
 function flattenHealthChecks(payload) {
@@ -839,6 +961,7 @@ function operationRuleSetMarkup() {
         <li><code>/ready startupDiagnostics.ok</code> must be true (when present).</li>
         <li><code>/api/ops/diagnostics startup.runtime.ok</code> must be true.</li>
       </ul>
+      <p class="muted compact">Token guidance: set <code>KLIENT_OPS_TOKEN_ACTIVE</code> for current checks and keep <code>KLIENT_OPS_TOKEN_PREVIOUS</code> only during rotation windows.</p>
       <p class="muted compact">If a release uses tuned thresholds, set <code>RELEASE_POSTDEPLOY_MAX_QUEUE_*</code> env vars in the command block before running postdeploy.</p>
     </details>
   `
@@ -2958,7 +3081,8 @@ function operationsCommandBlock() {
   return [
     'export RELEASE_ID=<release-id>',
     'export KLIENT_BASE_URL=https://<env-host>',
-    'export KLIENT_OPS_TOKEN=<ops-token>',
+    'export KLIENT_OPS_TOKEN_ACTIVE=<ops-token-active>',
+    'export KLIENT_OPS_TOKEN_PREVIOUS=<ops-token-previous-during-rotation>',
     'export RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED=0',
     'export RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER=0',
     'export RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE=0',
@@ -2992,6 +3116,27 @@ async function renderOperations() {
     { key: 'diagnostics', title: '/api/ops/diagnostics', data: snapshot.diagnostics }
   ]
 
+  const releaseRules = evaluateReleaseReadinessRules(snapshot)
+  const releaseRuleCards = releaseRules
+    .map((rule) => {
+      const remediationMarkup =
+        rule.level === 'FAIL'
+          ? `<p class="muted compact"><strong>Remediation:</strong> ${escapeHtml(rule.remediation)}</p>`
+          : ''
+      return `<article class="ops-card">
+        <div class="row between">
+          <strong><code>${escapeHtml(rule.id)}</code></strong>
+          <span class="ops-badge ${rule.level.toLowerCase()}">${rule.level}</span>
+        </div>
+        <p class="muted compact"><strong>${escapeHtml(rule.title)}</strong></p>
+        <p class="muted compact">Threshold: <code>${escapeHtml(rule.threshold)}</code></p>
+        <p class="muted compact">Observed: ${escapeHtml(rule.note)}</p>
+        ${remediationMarkup}
+        <p class="muted compact"><a href="${escapeHtml(rule.runbookHref)}">Runbook section</a></p>
+      </article>`
+    })
+    .join('')
+
   const statusCards = cards
     .map(({ key, title, data }) => {
       const status = deriveOpsCardStatus(key, data)
@@ -3022,14 +3167,20 @@ async function renderOperations() {
         <button type="button" data-ops-copy-json>Copy JSON</button>
         <button type="button" class="tiny secondary" data-ops-copy-commands>Copy command block</button>
         <button type="button" class="tiny secondary" data-ops-download-commands>Download command block</button>
-        <a href="/docs/release-ready-checklist.md#deterministic-command-flows-operator-runbook">Runbook: deterministic checks</a>
-        <a href="/docs/release-ready-checklist.md#objective-passfail-criteria">Runbook: go/no-go grid</a>
+        <a href="/docs/deployment-quick-reference.md#0-one-time-shell-setup-for-the-release-window">Runbook: token + env setup</a>
+        <a href="/docs/deployment-quick-reference.md#3-postdeploy-validation-run-in-this-phase-after-deploy">Runbook: postdeploy checks</a>
+        <a href="/docs/deployment-quick-reference.md#common-failure-signatures-diagnostics-keyed">Runbook: failure signatures</a>
       </div>
       <p class="muted compact" data-ops-action-feedback role="status" aria-live="polite" aria-atomic="true">${escapeHtml(state.operations.feedback || '')}</p>
       ${operationRuleSetMarkup()}
+      <section class="section-card" aria-labelledby="ops-release-readiness-heading">
+        <h3 id="ops-release-readiness-heading">Release readiness summary (postdeploy rule IDs)</h3>
+        <p class="muted compact">Primary decision surface aligned to <code>scripts/release-go-no-go.mjs</code> rule IDs.</p>
+        <div class="ops-grid">${releaseRuleCards}</div>
+      </section>
       <div class="ops-grid">${statusCards}</div>
-      <details open>
-        <summary>Diagnostics payload</summary>
+      <details>
+        <summary>Advanced details (JSON payload)</summary>
         <pre class="ops-diagnostics-block">${payloadPreview}</pre>
       </details>
     </section>
