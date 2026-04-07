@@ -145,6 +145,9 @@ For production release execution, use one source of truth: `docs/deployment-quic
 That runbook defines preflight, deploy, postdeploy, and restore/restore-drill commands plus diagnostics interpretation.
 Use `docs/release-ready-checklist.md` for pass/fail policy and approval gates, not for alternate command ordering.
 
+`npm run release:go-no-go -- --release-id "$RELEASE_ID"` now automatically packages the default approver artifact at `artifacts/release-evidence/<release-id>/approval-bundle/` and prints the exact bundle path in command completion output.
+Use that bundle directory (with `bundle-manifest.json`) as the primary file set for GO/NO-GO review circulation.
+
 ## Health checks
 ```bash
 curl http://localhost:3000/health
