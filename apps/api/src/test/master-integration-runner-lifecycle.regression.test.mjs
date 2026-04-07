@@ -5,7 +5,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const testDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(testDir, '../../../..')
-const { runChildProcess } = await import(pathToFileURL(resolve(repoRoot, 'scripts/runner-lifecycle.mjs')).href)
+const { runChildProcess, runCommandProcess } = await import(
+  pathToFileURL(resolve(repoRoot, 'scripts/runner-lifecycle.mjs')).href
+)
 
 test('aggregate runner resolves only after child process lifecycle completes', async () => {
   const fixturePath = resolve(testDir, 'fixtures/runner-lifecycle/lifecycle-fixture.mjs')
@@ -79,6 +81,26 @@ test('master integration aggregate completes end-to-end for export suite in arti
   assert(elapsed < 180000, `expected aggregate runner completion before timeout, got ${elapsed}ms`)
 })
 
+test('npm test:integration exits cleanly when filtered to integration-exports suite', async () => {
+  const start = Date.now()
+  const result = await runCommandProcess({
+    command: 'npm',
+    args: ['run', 'test:integration'],
+    label: 'npm-test-integration-exports-only',
+    stdio: 'inherit',
+    timeoutMs: 180000,
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      INTEGRATION_SUITES: 'integration-exports.mjs'
+    }
+  })
+
+  const elapsed = Date.now() - start
+  assert.equal(result.code, 0)
+  assert(elapsed < 180000, `expected npm test:integration completion before timeout, got ${elapsed}ms`)
+})
+
 test('validate master exits cleanly after integration success in artifact-style flow', async () => {
   const masterValidatePath = resolve(repoRoot, 'scripts/master-validate.mjs')
   const start = Date.now()
@@ -92,11 +114,11 @@ test('validate master exits cleanly after integration success in artifact-style 
     env: {
       ...process.env,
       VALIDATE_MASTER_STEPS: 'integration-suites',
-      INTEGRATION_SUITES: 'integration-csrf.mjs'
+      INTEGRATION_SUITES: 'integration-exports.mjs'
     }
   })
 
   const elapsed = Date.now() - start
   assert.equal(result.code, 0)
-  assert(elapsed < 120000, `expected validate:master completion before timeout, got ${elapsed}ms`)
+  assert(elapsed < 180000, `expected validate:master completion before timeout, got ${elapsed}ms`)
 })
