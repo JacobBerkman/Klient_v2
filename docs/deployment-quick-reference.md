@@ -52,6 +52,15 @@ Core outputs by phase:
 | Restore (live rollback) | `restore.json` with `executionMode=live-restore`. |
 | Restore drill (verify-only) | `restore-drill.json` with `executionMode=verify-only-drill`. |
 
+## Admin shell operations panel quick links
+The admin shell includes an **Operations / Launch readiness** panel that mirrors this runbook and is intended as a fast triage surface.
+
+- `/health`: direct process/dependency health signal used in GO/NO-GO.
+- `/ready`: readiness contract including `checks.*` dependency booleans.
+- `/api/ops/diagnostics`: startup/runtime diagnostics bundle for configuration/security triage.
+- `/api/ops/exports/queue`: export queue saturation/stall/dead-letter diagnostics.
+- Release evidence convention: keep all release artifacts under `artifacts/release-evidence/<release-id>/` and refresh postdeploy evidence in place during hypercare checkpoints.
+
 Manifest semantics for phase-only runs:
 - `--phase restore` and `--phase restore-drill` both report under `phaseStatuses.restore`.
 - `phaseStatuses.restore.status` is always terminal (`passed` or `failed`) when the command exits; it is never left as `pending`.
