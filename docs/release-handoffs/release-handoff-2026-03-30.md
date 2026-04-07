@@ -34,7 +34,9 @@ Record whether each required key is set in the deployment target (do not paste s
 | `LOG_LEVEL` | Y | `info` |
 | `ENABLE_DEMO_MODE` | Y | `false` |
 | `KLIENT_BASE_URL` | Y | Public production URL configured |
-| `KLIENT_OPS_TOKEN` | Y | Rotated token injected from secret store |
+| `KLIENT_OPS_TOKEN_ACTIVE` | Y | Active token version injected from secret manager (`ops-token-v42`) |
+| `KLIENT_OPS_TOKEN_PREVIOUS` | Y | Prior token retained for overlap until `2026-03-30 16:00 UTC` |
+| `KLIENT_OPS_TOKEN` (legacy fallback) | N | Not used; rotation-safe vars are configured |
 | `PII_KEY_PROVIDER` | Y | `kms` |
 | `PII_ACTIVE_KEY_ID` (if `PII_KEY_PROVIDER=env`) | N/A | Not required for KMS mode |
 | `PII_KEYRING` (if `PII_KEY_PROVIDER=env`) | N/A | Not required for KMS mode |
@@ -61,6 +63,17 @@ Use `artifacts/release-evidence/<release-id>/startup-failfast.json` as the defau
 | Invalid production config blocks startup (`server.startup.blocked`) | PASS | `artifacts/release-evidence/release-20260330-1400/startup-failfast.json` (`checks.startupBlockedLogged=true`) |
 | Error payload lists startup validation issues | PASS | `artifacts/release-evidence/release-20260330-1400/startup-failfast.json` (`checks.startupIssuesPresent=true`) |
 | Startup is blocked before bind/listen | PASS | `artifacts/release-evidence/release-20260330-1400/startup-failfast.json` (`checks.listenPrevented=true`) |
+
+## 2c) Ops token rotation handoff checklist (deployment window)
+Record rotation details so postdeploy checks can run while active/previous token overlap is in place.
+
+| Check | Result | Evidence path / notes |
+|---|---|---|
+| Rotation timestamp (UTC) captured | PASS | Secret cutover completed at `2026-03-30 14:05 UTC` |
+| Rotation owner recorded | PASS | Priya Natarajan (SRE) |
+| Active token var (`KLIENT_OPS_TOKEN_ACTIVE`) confirmed | PASS | Secret manager ref `prod/klient/ops-token-active@v42` |
+| Previous token overlap window documented (`KLIENT_OPS_TOKEN_PREVIOUS`) | PASS | Overlap window `2026-03-30 14:05-16:00 UTC` |
+| Previous token expiry/removal expectation recorded | PASS | Removal SLA: within 2 hours; tracked in `OPS-1842` |
 
 ## 3) Evidence artifact links
 Attach links or paths to the objective release evidence.
@@ -89,6 +102,7 @@ Optional per-file links (if needed for review):
 - `artifacts/release-evidence/<release-id>/postdeploy-ready.json`
 - `artifacts/release-evidence/<release-id>/postdeploy-exports-queue.json`
 - `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json`
+- `artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json` (postdeploy enforced rule summary: `status=passed`, every rule `passed=true`, thresholds match release-time env vars)
 
 ## 4) Rollback readiness
 - **Pre-release backup artifact ID**: `backup-20260330-133015`

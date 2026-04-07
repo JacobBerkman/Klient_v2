@@ -35,7 +35,9 @@ Record whether each required key is set in the deployment target (do not paste s
 | `LOG_LEVEL` | `<Y/N>` | `<expected value>` |
 | `ENABLE_DEMO_MODE` | `<Y/N>` | `<expected value>` |
 | `KLIENT_BASE_URL` | `<Y/N>` | `<public url validated>` |
-| `KLIENT_OPS_TOKEN` | `<Y/N>` | `<rotation/secret source note>` |
+| `KLIENT_OPS_TOKEN_ACTIVE` | `<Y/N>` | `<active token secret/version reference>` |
+| `KLIENT_OPS_TOKEN_PREVIOUS` | `<Y/N/N/A>` | `<overlap window + planned removal timestamp>` |
+| `KLIENT_OPS_TOKEN` (legacy fallback) | `<Y/N/N/A>` | `<only when rotation-safe vars are unavailable>` |
 | `PII_KEY_PROVIDER` | `<Y/N>` | `<env|kms>` |
 | `PII_ACTIVE_KEY_ID` (if `PII_KEY_PROVIDER=env`) | `<Y/N/N/A>` | `<details>` |
 | `PII_KEYRING` (if `PII_KEY_PROVIDER=env`) | `<Y/N/N/A>` | `<details>` |
@@ -100,6 +102,7 @@ Optional per-file links (if needed for review):
 - `artifacts/release-evidence/<release-id>/postdeploy-ready.json`
 - `artifacts/release-evidence/<release-id>/postdeploy-exports-queue.json`
 - `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json`
+- `artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json` (postdeploy enforced rule summary: `status=passed`, every rule `passed=true`, thresholds match release-time env vars)
 
 ## 4) Rollback readiness
 - **Pre-release backup artifact ID**: `<backup-id>`
