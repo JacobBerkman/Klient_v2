@@ -131,3 +131,17 @@ test('launch ops panel contract keeps admin gating, read-only copy, and diagnost
   assert.match(appJs, /title: 'Exports queue',[\s\S]*href: routes\.exportsQueueHealth\(\)/)
   assert.match(appJs, /data-launch-ops-open/)
 })
+
+test('forms draft sharing contract exposes panel controls, live-region feedback, and role gating rules', () => {
+  assert.match(appJs, /data-open-draft-share-panel="\$\{draft\.id\}" aria-expanded="\$\{panelVisible \? 'true' : 'false'\}" aria-controls="\$\{panelId\}"/)
+  assert.match(appJs, /data-draft-share-panel="\$\{draft\.id\}"/)
+  assert.match(appJs, /data-add-draft-collaborator="\$\{draft\.id\}"/)
+  assert.match(appJs, /data-remove-draft-collaborator="\$\{draft\.id\}"/)
+  assert.match(appJs, /data-draft-share-feedback="\$\{draft\.id\}" role="status" aria-live="polite" aria-atomic="true"/)
+  assert.match(appJs, /function canManageDraftCollaborators\(draft\)/)
+  assert.match(appJs, /function draftCollaboratorDeniedMessage\(draft\)/)
+  assert.match(appJs, /Readonly role: collaborator updates are disabled\./)
+  assert.match(appJs, /Only the draft owner can manage collaborators\./)
+  assert.match(appJs, /routes\.formDraftCollaborators\(draftId\)/)
+  assert.match(appJs, /routes\.formDraftCollaborator\(draftId, userId\)/)
+})
