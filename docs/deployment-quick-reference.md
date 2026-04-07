@@ -50,6 +50,11 @@ Core outputs by phase:
 | Restore (live rollback) | `restore.json` with `executionMode=live-restore`. |
 | Restore drill (verify-only) | `restore-drill.json` with `executionMode=verify-only-drill`. |
 
+Manifest semantics for phase-only runs:
+- `--phase restore` and `--phase restore-drill` both report under `phaseStatuses.restore`.
+- `phaseStatuses.restore.status` is always terminal (`passed` or `failed`) when the command exits; it is never left as `pending`.
+- `phaseStatuses.restore.artifacts` contains whichever restore evidence file was produced by that run (`restore.json` for live restore, `restore-drill.json` for verify-only drill).
+
 ## Canonical operator flow (exact command sequence)
 
 ### 0) One-time shell setup for the release window
@@ -112,6 +117,7 @@ npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --r
 Decision rule (must match artifact + mode):
 - Live rollback evidence: `restore.json` and `executionMode=live-restore`.
 - Drill evidence only: `restore-drill.json` and `executionMode=verify-only-drill`.
+- In `manifest.json`, both commands update `phaseStatuses.restore` status to `passed|failed` and list the generated restore artifact path for that run.
 - Never mark a live rollback as complete based on `restore-drill.json`.
 
 ## Common failure signatures (diagnostics-keyed)
