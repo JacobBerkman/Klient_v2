@@ -59,3 +59,41 @@ test('updateProfile rejects invalid extension value type based on schema metadat
     /Invalid extension field type/
   )
 })
+
+test('admin can create and update firm custom field schema entries', async () => {
+  const store = await loadStore()
+  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+
+  const created = store.createProfileCustomField(admin, {
+    key: 'risk_tolerance',
+    type: 'text',
+    label: 'Risk Tolerance',
+    required: true,
+    metadata: { group: 'planning' }
+  })
+  assert.equal(created.key, 'risk_tolerance')
+  assert.equal(created.type, 'text')
+  assert.equal(created.required, true)
+
+  const updated = store.updateProfileCustomField(admin, 'risk_tolerance', {
+    type: 'number',
+    required: false
+  })
+  assert.equal(updated.type, 'number')
+  assert.equal(updated.required, false)
+
+  const schema = store.getProfileCustomFieldSchema(admin)
+  assert.equal(schema.fields.length, 1)
+  assert.equal(schema.fields[0].key, 'risk_tolerance')
+  assert.equal(schema.fields[0].type, 'number')
+})
+
+test('custom field schema rejects invalid field type payloads', async () => {
+  const store = await loadStore()
+  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+
+  assert.throws(
+    () => store.createProfileCustomField(admin, { key: 'unsupported_field', type: 'object' }),
+    /Custom field type must be one of/
+  )
+})

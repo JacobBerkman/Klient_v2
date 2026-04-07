@@ -260,3 +260,34 @@ test('preview returns blocking schema issues for missing mapping paths before pu
   assert.ok(preview.issues[0].meta?.issueId)
   assert.equal(preview.issues[0].blocking, true)
 })
+
+test('mapping validation accepts firm custom field paths and enforces target type', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  store.createProfileCustomField(user, {
+    key: 'household_score',
+    type: 'number',
+    label: 'Household Score'
+  })
+
+  const template = store.createDocumentTemplate(user, {
+    name: 'Custom path mapping',
+    mappings: [{ pdfField: 'hh_score', sourcePath: 'profile.extensions.values.household_score', targetType: 'number' }]
+  })
+  assert.equal(template.mappings[0].sourcePath, 'profile.extensions.values.household_score')
+
+  assert.throws(
+    () =>
+      store.updateTemplateMappings(user, template.id, [
+        { pdfField: 'hh_score', sourcePath: 'profile.extensions.values.household_score', targetType: 'text' }
+      ]),
+    (error) => {
+      assert.equal(error.code, 'SCHEMA_VALIDATION_FAILED')
+      const issueText = JSON.stringify(error.details.issues)
+      assert.match(issueText, /target_type_mismatch/)
+      assert.match(issueText, /source type \\"number\\"/)
+      return true
+    }
+  )
+})
