@@ -167,9 +167,17 @@ test('pipeline stage config routes are transport-only and call pipelineStages mo
   const address = await listen(server)
   const base = `http://${address.address}:${address.port}`
   const cookie = '__Host-klient-session=token'
-  const csrfBootstrap = await fetch(`${base}/api/csrf`, { headers: { cookie } })
-  const csrfPayload = await csrfBootstrap.json()
-  const csrfToken = csrfPayload.csrfToken
+  const issueHeaders = async (json = false) => {
+    const bootstrap = await fetch(`${base}/api/csrf`, { headers: { cookie } })
+    const payload = await bootstrap.json()
+    return {
+      cookie,
+      ...(json ? { 'content-type': 'application/json' } : {}),
+      'x-csrf-token': payload.csrfToken,
+      origin: base,
+      referer: `${base}/`
+    }
+  }
 
   const listRes = await fetch(`${base}/api/pipeline/stages`, { headers: { cookie } })
   const listBody = await listRes.json()
@@ -192,6 +200,71 @@ test('pipeline stage config routes are transport-only and call pipelineStages mo
   assert.equal(createBody.id, 'stage-1')
   assert.deepEqual(calls, ['list:u1', { op: 'create', user: 'u1', payload: { key: 'new_stage', label: 'New Stage' } }])
 
+  await close(server)
+})
+
+test('custom field schema routes enforce admin guard and forward payloads', async () => {
+  const calls = []
+  const fakeUser = { id: 'u1', firmId: 'f1', role: 'admin' }
+  const modules = {
+    auth: { requireUser: () => fakeUser },
+    policy: { requireGuard: (user, guard) => calls.push(`policy:${user.id}:${guard}`) },
+    profiles: {
+      getCustomFieldSchema: (user) => (calls.push(`get:${user.id}`), { fields: [] }),
+      createCustomField: (user, payload) => (calls.push({ op: 'create', user: user.id, payload }), { ...payload }),
+      updateCustomField: (user, fieldKey, payload) =>
+        (calls.push({ op: 'update', user: user.id, fieldKey, payload }), { key: fieldKey, ...payload }),
+      deleteCustomField: (user, fieldKey) => (calls.push({ op: 'delete', user: user.id, fieldKey }), { ok: true })
+    }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+  const cookie = '__Host-klient-session=token'
+  const issueHeaders = async (json = false) => {
+    const bootstrap = await fetch(`${base}/api/csrf`, { headers: { cookie } })
+    const payload = await bootstrap.json()
+    return {
+      cookie,
+      ...(json ? { 'content-type': 'application/json' } : {}),
+      'x-csrf-token': payload.csrfToken,
+      origin: base,
+      referer: `${base}/`
+    }
+  }
+
+  const listRes = await fetch(`${base}/api/profiles/custom-fields/schema`, { headers: { cookie } })
+  assert.equal(listRes.status, 200)
+
+  const createRes = await fetch(`${base}/api/profiles/custom-fields/schema`, {
+    method: 'POST',
+    headers: await issueHeaders(true),
+    body: JSON.stringify({ key: 'risk_tolerance', type: 'text' })
+  })
+  assert.equal(createRes.status, 201)
+
+  const updateRes = await fetch(`${base}/api/profiles/custom-fields/schema/risk_tolerance`, {
+    method: 'PATCH',
+    headers: await issueHeaders(true),
+    body: JSON.stringify({ required: true })
+  })
+  assert.equal(updateRes.status, 200)
+
+  const deleteRes = await fetch(`${base}/api/profiles/custom-fields/schema/risk_tolerance`, {
+    method: 'DELETE',
+    headers: await issueHeaders(false)
+  })
+  assert.equal(deleteRes.status, 200)
+  assert.deepEqual(calls, [
+    'policy:u1:canReadProfiles',
+    'get:u1',
+    'policy:u1:canManageUsers',
+    { op: 'create', user: 'u1', payload: { key: 'risk_tolerance', type: 'text' } },
+    'policy:u1:canManageUsers',
+    { op: 'update', user: 'u1', fieldKey: 'risk_tolerance', payload: { required: true } },
+    'policy:u1:canManageUsers',
+    { op: 'delete', user: 'u1', fieldKey: 'risk_tolerance' }
+  ])
   await close(server)
 })
 

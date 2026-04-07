@@ -187,6 +187,7 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
     },
     acquireDraftLock(user, draftId, input = {}) {
       policy.requireGuard(user, 'canWriteForms')
+      policy.requireGuard(user, 'canWriteDraftCollaborator')
       const result = store.acquireDraftLock(createFirmContext(user), draftId, input)
       if (!result?.ok && result?.conflict) {
         throwDraftConflict(result, draftId, {
@@ -198,10 +199,12 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
     },
     releaseDraftLock(user, draftId, leaseId = '') {
       policy.requireGuard(user, 'canWriteForms')
+      policy.requireGuard(user, 'canWriteDraftCollaborator')
       return store.releaseDraftLock(createFirmContext(user), draftId, leaseId)
     },
     reviseDraftSubmission(user, draftId, input = {}) {
       policy.requireGuard(user, 'canWriteForms')
+      policy.requireGuard(user, 'canWriteDraftCollaborator')
       const result = store.reviseDraftSubmission(createFirmContext(user), draftId, input)
       if (!result?.ok && result?.conflict) {
         throwDraftConflict(result, draftId, {
@@ -210,6 +213,18 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
         })
       }
       return result
+    },
+    listDraftCollaborators(user, draftId) {
+      policy.requireGuard(user, 'canManageDraftSharing')
+      return store.listDraftCollaborators(createFirmContext(user), draftId)
+    },
+    addDraftCollaborator(user, draftId, input = {}) {
+      policy.requireGuard(user, 'canManageDraftSharing')
+      return store.addDraftCollaborator(createFirmContext(user), draftId, input)
+    },
+    removeDraftCollaborator(user, draftId, collaboratorUserId) {
+      policy.requireGuard(user, 'canManageDraftSharing')
+      return store.removeDraftCollaborator(createFirmContext(user), draftId, collaboratorUserId)
     },
     updateSubmission(user, submissionId, patch) {
       policy.requireGuard(user, 'canWriteForms')
