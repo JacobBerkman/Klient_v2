@@ -56,6 +56,22 @@ export class StoreProfileRepository extends ProfileRepository {
     const context = requireFirmContext(firmContext, { method: 'profiles.getMaskedSensitiveData' })
     return this.store.getMaskedSensitiveData(context, profileId, options)
   }
+  getCustomFieldSchema(firmContext) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.getCustomFieldSchema' })
+    return this.store.getProfileCustomFieldSchema(context)
+  }
+  createCustomField(firmContext, input) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.createCustomField' })
+    return this.store.createProfileCustomField(context, input)
+  }
+  updateCustomField(firmContext, fieldKey, patch) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.updateCustomField' })
+    return this.store.updateProfileCustomField(context, fieldKey, patch)
+  }
+  deleteCustomField(firmContext, fieldKey) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.deleteCustomField' })
+    return this.store.deleteProfileCustomField(context, fieldKey)
+  }
 }
 
 export class StoreTemplateRepository extends TemplateRepository {

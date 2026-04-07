@@ -281,6 +281,50 @@ function normalizeExtensions(extensions = {}) {
   return { schemaVersion, schema, values }
 }
 
+const CUSTOM_FIELD_TYPES = new Set(['text', 'number', 'boolean', 'date'])
+
+function normalizeCustomFieldType(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+  if (normalized === 'string') return 'text'
+  return normalized
+}
+
+function normalizeCustomFieldSchema(schema = {}) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    return { fields: [], updatedAt: now() }
+  }
+  const seen = new Set()
+  const fields = Array.isArray(schema.fields)
+    ? schema.fields
+        .map((field) => {
+          const key = String(field?.key || field?.fieldKey || '')
+            .trim()
+            .replace(/[^a-zA-Z0-9_]+/g, '_')
+          if (!key || seen.has(key)) return null
+          const type = normalizeCustomFieldType(field?.type)
+          if (!CUSTOM_FIELD_TYPES.has(type)) return null
+          seen.add(key)
+          return {
+            key,
+            type,
+            label: String(field?.label || key).trim() || key,
+            required: Boolean(field?.required),
+            metadata:
+              field?.metadata && typeof field.metadata === 'object' && !Array.isArray(field.metadata)
+                ? { ...field.metadata }
+                : {}
+          }
+        })
+        .filter(Boolean)
+    : []
+  return {
+    fields,
+    updatedAt: schema.updatedAt || now()
+  }
+}
+
 function normalizeFinancialSummary(input = {}, extensions = {}) {
   const extensionValues = extensions.values || {}
   const investableAssets = toFiniteNumber(input.investableAssets ?? extensionValues.investableAssets) || 0
@@ -504,6 +548,18 @@ function profileSourcePaths() {
   ])
 }
 
+function profileSourcePathsForFirm(firm) {
+  const paths = profileSourcePaths()
+  const fields = Array.isArray(firm?.customFieldSchema?.fields) ? firm.customFieldSchema.fields : []
+  for (const field of fields) {
+    const key = String(field?.key || '').trim()
+    const type = normalizeCustomFieldType(field?.type)
+    if (!key || !CUSTOM_FIELD_TYPES.has(type)) continue
+    paths.set(`profile.extensions.values.${key}`, { source: 'profileCustomField', type })
+  }
+  return paths
+}
+
 
 function migrateTemplateSystems(state) {
   state.templateAggregates ||= []
@@ -570,7 +626,8 @@ function migrateProspectOrdering(state) {
 function migrateFirmStageConfig(state) {
   state.firms = (state.firms || []).map((firm) => ({
     ...firm,
-    stageConfig: normalizeFirmStageConfig(firm?.stageConfig)
+    stageConfig: normalizeFirmStageConfig(firm?.stageConfig),
+    customFieldSchema: normalizeCustomFieldSchema(firm?.customFieldSchema)
   }))
 }
 
@@ -1643,6 +1700,80 @@ export function createStore({
       persist()
       return profile
     },
+    getProfileCustomFieldSchema(user) {
+      requirePermission(user, 'profiles:read')
+      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      if (!firm) throw new Error('Firm not found.')
+      firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
+      return deepClone(firm.customFieldSchema)
+    },
+    createProfileCustomField(user, input = {}) {
+      requirePermission(user, 'users:manage')
+      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      if (!firm) throw new Error('Firm not found.')
+      firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
+      const key = String(input?.key || '')
+        .trim()
+        .replace(/[^a-zA-Z0-9_]+/g, '_')
+      if (!key) throw new Error('Custom field key is required.')
+      if (firm.customFieldSchema.fields.some((field) => field.key === key)) {
+        throw new Error('Custom field key already exists.')
+      }
+      const type = normalizeCustomFieldType(input?.type)
+      if (!CUSTOM_FIELD_TYPES.has(type)) {
+        throw new Error('Custom field type must be one of: text, number, boolean, date.')
+      }
+      const field = {
+        key,
+        type,
+        label: String(input?.label || key).trim() || key,
+        required: Boolean(input?.required),
+        metadata:
+          input?.metadata && typeof input.metadata === 'object' && !Array.isArray(input.metadata)
+            ? { ...input.metadata }
+            : {}
+      }
+      firm.customFieldSchema.fields.push(field)
+      firm.customFieldSchema.updatedAt = now()
+      persist()
+      return deepClone(field)
+    },
+    updateProfileCustomField(user, fieldKey, patch = {}) {
+      requirePermission(user, 'users:manage')
+      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      if (!firm) throw new Error('Firm not found.')
+      firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
+      const field = firm.customFieldSchema.fields.find((entry) => entry.key === fieldKey)
+      if (!field) throw new Error('Custom field not found.')
+      if ('type' in patch) {
+        const nextType = normalizeCustomFieldType(patch.type)
+        if (!CUSTOM_FIELD_TYPES.has(nextType)) {
+          throw new Error('Custom field type must be one of: text, number, boolean, date.')
+        }
+        field.type = nextType
+      }
+      if ('label' in patch) field.label = String(patch.label || field.key).trim() || field.key
+      if ('required' in patch) field.required = Boolean(patch.required)
+      if ('metadata' in patch) {
+        field.metadata =
+          patch.metadata && typeof patch.metadata === 'object' && !Array.isArray(patch.metadata) ? { ...patch.metadata } : {}
+      }
+      firm.customFieldSchema.updatedAt = now()
+      persist()
+      return deepClone(field)
+    },
+    deleteProfileCustomField(user, fieldKey) {
+      requirePermission(user, 'users:manage')
+      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      if (!firm) throw new Error('Firm not found.')
+      firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
+      const before = firm.customFieldSchema.fields.length
+      firm.customFieldSchema.fields = firm.customFieldSchema.fields.filter((entry) => entry.key !== fieldKey)
+      if (firm.customFieldSchema.fields.length === before) throw new Error('Custom field not found.')
+      firm.customFieldSchema.updatedAt = now()
+      persist()
+      return { ok: true }
+    },
     listPipelineStages(firmContext) {
       const context = requireFirmContext(firmContext, { method: 'store.listPipelineStages' })
       requirePermission(context.user || context, 'pipeline:read')
@@ -2393,7 +2524,7 @@ export function createStore({
       requirePermission(user, 'templates:write')
       const createdAt = now()
       const formSchemaResult = validateFormDefinitionSchema(input.formSchema || { sections: [] }, { contextPath: '/formSchema' })
-      const allowedSourcePaths = profileSourcePaths()
+      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
       const mappings = validateMappingRules(input.mappings || [], {
         contextPath: '/mappings',
@@ -2450,7 +2581,7 @@ export function createStore({
       )
       if (!template) throw new Error('Template not found.')
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
-      const allowedSourcePaths = profileSourcePaths()
+      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
       const normalizedMappings = validateMappingRules(mappings || [], {
         contextPath: '/mappings',
@@ -2517,7 +2648,7 @@ export function createStore({
         submission
       })
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
-      const allowedSourcePaths = profileSourcePaths()
+      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
       let issues = []
       try {
@@ -2576,7 +2707,7 @@ export function createStore({
       )
       const previousState = normalizeTemplateState(template.publishState || 'draft')
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
-      const allowedSourcePaths = profileSourcePaths()
+      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
       validateMappingRules(template.mappings || [], {
         contextPath: '/mappings',

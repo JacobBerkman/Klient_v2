@@ -20,4 +20,16 @@ export class ProfileRepository {
   getMaskedSensitiveData(_firmContext, _profileId, _options = {}) {
     throw new Error('ProfileRepository.getMaskedSensitiveData not implemented')
   }
+  getCustomFieldSchema(_firmContext) {
+    throw new Error('ProfileRepository.getCustomFieldSchema not implemented')
+  }
+  createCustomField(_firmContext, _input) {
+    throw new Error('ProfileRepository.createCustomField not implemented')
+  }
+  updateCustomField(_firmContext, _fieldKey, _patch) {
+    throw new Error('ProfileRepository.updateCustomField not implemented')
+  }
+  deleteCustomField(_firmContext, _fieldKey) {
+    throw new Error('ProfileRepository.deleteCustomField not implemented')
+  }
 }

@@ -990,6 +990,36 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
+      if (pathname === '/api/profiles/custom-fields/schema' && req.method === 'GET') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadProfiles')
+        const result = modules.profiles.getCustomFieldSchema(user)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/profiles/custom-fields/schema' && req.method === 'POST') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageUsers')
+        const result = modules.profiles.createCustomField(user, await parseBody(req))
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/profiles/custom-fields/schema/') && req.method === 'PATCH') {
+        const fieldKey = pathname.split('/')[5]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageUsers')
+        const result = modules.profiles.updateCustomField(user, fieldKey, await parseBody(req))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/profiles/custom-fields/schema/') && req.method === 'DELETE') {
+        const fieldKey = pathname.split('/')[5]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageUsers')
+        const result = modules.profiles.deleteCustomField(user, fieldKey)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage-history') && req.method === 'GET') {
         const id = pathname.split('/')[3]
         const user = requireUser()
