@@ -1,7 +1,7 @@
 # Release Handoff — `<release-id>`
 
 Use this handoff package for every production release so engineering, SRE, and approvers review one consistent record.
-For exact operator commands and diagnostics triage, use the canonical operator flow in `docs/deployment-quick-reference.md`.
+For exact operator commands and diagnostics triage, use the canonical operator flow in `docs/deployment-quick-reference.md#canonical-operator-flow-exact-command-sequence`.
 For a filled historical example, see `docs/release-handoffs/release-handoff-2026-03-30.md`.
 
 Architecture note: this release process assumes the existing single-process **Node + SQLite + static web** deployment model (no split app-tier/database migration in this template).
@@ -79,6 +79,7 @@ Record rotation details so postdeploy checks can run while active/previous token
 Attach links or paths to the objective release evidence.
 
 Use one canonical manifest link for approvers; include optional direct links only when a reviewer asks for a specific file.
+Canonical required bundle contents are defined at `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
 
 | Evidence package | Artifact link or path |
 |---|---|
@@ -91,25 +92,9 @@ Checkpoint citation guidance (required when multiple postdeploy runs exist):
 - Use `postdeploy-checkpoints.json` (or `manifest.json` `postdeployCheckpoints.history`) to cite historical checkpoint timestamps and artifact paths in UTC.
 - Include at least one explicit checkpoint timestamp in Section 7 rationale when mitigations or transient failures occurred.
 
-Optional per-file links (if needed for review):
-- `artifacts/release-evidence/<release-id>/validate-master-summary.json`
-- `artifacts/release-evidence/<release-id>/api-contract-summary.json`
-- `artifacts/release-evidence/<release-id>/integration-summary.json`
-- `artifacts/release-evidence/<release-id>/migration-summary.json`
-- `artifacts/release-evidence/<release-id>/smoke-summary.json`
-- `artifacts/release-evidence/<release-id>/e2e-summary.json`
-- `artifacts/release-evidence/<release-id>/security-summary.json`
-- `artifacts/release-evidence/<release-id>/branch-parity.txt`
-- `artifacts/release-evidence/<release-id>/backup.json`
-- `artifacts/release-evidence/<release-id>/startup-failfast.json`
-- `artifacts/release-evidence/<release-id>/startup-failfast.txt`
-- `artifacts/release-evidence/<release-id>/restore.json`
-- `artifacts/release-evidence/<release-id>/restore-drill.json`
-- `artifacts/release-evidence/<release-id>/postdeploy-health.json`
-- `artifacts/release-evidence/<release-id>/postdeploy-ready.json`
-- `artifacts/release-evidence/<release-id>/postdeploy-exports-queue.json`
-- `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json`
-- `artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json` (postdeploy enforced rule summary: `status=passed`, every rule `passed=true`, thresholds match release-time env vars)
+Optional per-file links (if a reviewer requests drill-down):
+- Use the canonical required artifact list in `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
+- Add any additional per-phase links relevant to this release (for example: `branch-parity.txt`, `backup.json`, `startup-failfast.json`, `restore.json`, `restore-drill.json`, `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`).
 
 ## 4) Rollback readiness
 - **Pre-release backup artifact ID**: `<backup-id>`

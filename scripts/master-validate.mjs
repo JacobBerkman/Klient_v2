@@ -39,7 +39,7 @@ const gateSteps = [
     evidenceFile: resolve(defaultEvidenceDir, 'smoke-summary.json')
   },
   {
-    name: 'E2E suite',
+    name: 'E2E checks',
     command: 'npm',
     args: ['run', 'test:e2e'],
     evidenceFile: resolve(defaultEvidenceDir, 'e2e-summary.json')
@@ -86,7 +86,7 @@ function envForStep(step) {
   if (step.evidenceFile && step.name === 'Integration suites') env.RELEASE_EVIDENCE_INTEGRATION_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Migration order checks') env.RELEASE_EVIDENCE_MIGRATION_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Smoke test') env.RELEASE_EVIDENCE_SMOKE_FILE = step.evidenceFile
-  if (step.evidenceFile && step.name === 'E2E suite') env.RELEASE_EVIDENCE_E2E_FILE = step.evidenceFile
+  if (step.evidenceFile && step.name === 'E2E checks') env.RELEASE_EVIDENCE_E2E_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Security checks') env.RELEASE_EVIDENCE_SECURITY_FILE = step.evidenceFile
   return env
 }

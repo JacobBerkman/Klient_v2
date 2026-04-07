@@ -144,6 +144,7 @@ npm run test:integration
 For production release execution, use one source of truth: `docs/deployment-quick-reference.md#canonical-operator-flow-exact-command-sequence`.
 That runbook defines preflight, deploy, postdeploy, and restore/restore-drill commands plus diagnostics interpretation.
 Use `docs/release-ready-checklist.md` for pass/fail policy and approval gates, not for alternate command ordering.
+Use `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts` as the only source of truth for required evidence bundle contents and gate summary filenames.
 
 `npm run release:go-no-go -- --release-id "$RELEASE_ID"` now automatically packages the default approver artifact at `artifacts/release-evidence/<release-id>/approval-bundle/` and prints the exact bundle path in command completion output.
 Use that bundle directory (with `bundle-manifest.json`) as the primary file set for GO/NO-GO review circulation.

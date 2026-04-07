@@ -32,7 +32,9 @@
     "test:smoke": "node scripts/smoke-test.mjs",
     "validate:master": "node scripts/master-validate.mjs",
     "validate:release-evidence": "node scripts/validate-release-evidence.mjs",
-    "worker": "node scripts/export-worker.mjs"
+    "release:bundle-evidence": "node scripts/package-release-evidence.mjs",
+    "test:e2e": "node scripts/e2e-test.mjs",
+    "check:release-docs": "node scripts/check-release-doc-consistency.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
