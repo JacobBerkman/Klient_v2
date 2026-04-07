@@ -329,6 +329,21 @@ textarea {
   gap: 8px;
   align-items: center;
 }
+.ops-quickstart {
+  border: 1px solid #334155;
+  border-radius: 10px;
+  padding: 10px;
+  background: #0b1220;
+}
+.ops-quickstart-list {
+  margin: 0;
+  padding-left: 20px;
+  display: grid;
+  gap: 6px;
+}
+.ops-quickstart-list a {
+  color: #93c5fd;
+}
 .ops-actions a {
   color: #93c5fd;
   font-size: 13px;

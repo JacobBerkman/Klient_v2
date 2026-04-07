@@ -3157,11 +3157,22 @@ async function renderOperations() {
     <section class="section-card">
       <div class="row between">
         <div>
-          <h2 id="operations-heading">Operations</h2>
+          <h2 id="operations-heading">Operations / Launch readiness</h2>
           <p class="muted compact">Operator snapshot of readiness, health, exports queue, and diagnostics.</p>
         </div>
         <span class="badge subtle">${state.operations.lastUpdatedAt ? `Updated ${new Date(state.operations.lastUpdatedAt).toLocaleString()}` : 'Not yet updated'}</span>
       </div>
+      <section class="ops-quickstart" aria-labelledby="ops-quickstart-heading">
+        <h3 id="ops-quickstart-heading">Quickstart links and evidence conventions</h3>
+        <ul class="ops-quickstart-list">
+          <li><a href="/health"><code>/health</code></a> — immediate service health check (must be healthy for GO).</li>
+          <li><a href="/ready"><code>/ready</code></a> — dependency readiness + <code>checks.*</code> contract (must all be true).</li>
+          <li><a href="/api/ops/diagnostics"><code>/api/ops/diagnostics</code></a> — runtime/startup diagnostics for release blocker triage.</li>
+          <li><a href="/api/ops/exports/queue"><code>/api/ops/exports/queue</code></a> — queue stalled/dead-letter/retryable trend checks.</li>
+          <li><a href="/docs/deployment-quick-reference.md#expected-artifact-outputs-and-locations">Release evidence directory convention: <code>artifacts/release-evidence/&lt;release-id&gt;/</code>.</a></li>
+          <li><a href="/docs/deployment-quick-reference.md#admin-shell-operations-panel-quick-links">Operator runbook details for this panel.</a></li>
+        </ul>
+      </section>
       <div class="ops-actions">
         <button type="button" data-ops-refresh>${state.operations.busy ? 'Refreshing…' : 'Refresh'}</button>
         <button type="button" data-ops-copy-json>Copy JSON</button>
