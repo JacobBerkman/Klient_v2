@@ -183,19 +183,61 @@ function validateHandoffDoc(handoffFile) {
     fail(`Handoff file not found: ${handoffFile}`)
   }
   const content = readFileSync(absolute, 'utf8')
-  const placeholderPatterns = [
-    /\|\s*Release Manager\s*\|[^\n]*<GO\/NO-GO>/i,
-    /\|\s*SRE\s*\/\s*On-call\s*\|[^\n]*<GO\/NO-GO>/i,
-    /\|\s*QA Lead\s*\|[^\n]*<GO\/NO-GO>/i,
-    /\|\s*Security Owner\s*\|[^\n]*<GO\/NO-GO>/i,
-    /\|\s*Engineering Manager\s*\|[^\n]*<GO\/NO-GO>/i,
-    /-\s*\*\*Decision\*\*:\s*<GO\/NO-GO>/i,
-    /-\s*\*\*Decision timestamp \(UTC\)\*\*:\s*<YYYY-MM-DD HH:MM>/i
-  ]
+  const unresolvedCategories = []
 
-  const unresolved = placeholderPatterns.filter((pattern) => pattern.test(content))
-  if (unresolved.length > 0) {
-    fail(`Handoff document still contains placeholder approval decisions/timestamps: ${handoffFile}`)
+  const unresolvedByCategory = {
+    approverDecisions: [
+      /\|\s*Release Manager\s*\|[^\n]*<GO\/NO-GO>/i,
+      /\|\s*SRE\s*\/\s*On-call\s*\|[^\n]*<GO\/NO-GO>/i,
+      /\|\s*QA Lead\s*\|[^\n]*<GO\/NO-GO>/i,
+      /\|\s*Security Owner\s*\|[^\n]*<GO\/NO-GO>/i,
+      /\|\s*Engineering Manager\s*\|[^\n]*<GO\/NO-GO>/i
+    ],
+    releaseIdentity: [
+      /-\s*\*\*Release ID\*\*:\s*<release-id>/i,
+      /-\s*\*\*Environment\*\*:\s*<staging\|production>/i,
+      /-\s*\*\*Commit\s*\/\s*tag\*\*:\s*<git-sha>\s*\/\s*<tag-or-none>/i
+    ],
+    placeholdersInRequiredEvidencePaths: [/artifacts\/release-evidence\/<release-id>\//i],
+    unresolvedSignerNames: [
+      /\|\s*Release Manager\s*\|\s*<name>\s*\|/i,
+      /\|\s*SRE\s*\/\s*On-call\s*\|\s*<name>\s*\|/i,
+      /\|\s*QA Lead\s*\|\s*<name>\s*\|/i,
+      /\|\s*Security Owner\s*\|\s*<name>\s*\|/i,
+      /\|\s*Engineering Manager\s*\|\s*<name>\s*\|/i
+    ],
+    unresolvedTimestamps: [
+      /-\s*\*\*Deployment window \(UTC\)\*\*:\s*<YYYY-MM-DD HH:MM[^>]*>/i,
+      /\|\s*Release Manager\s*\|[^\n]*<YYYY-MM-DD HH:MM[^>]*>/i,
+      /\|\s*SRE\s*\/\s*On-call\s*\|[^\n]*<YYYY-MM-DD HH:MM[^>]*>/i,
+      /\|\s*QA Lead\s*\|[^\n]*<YYYY-MM-DD HH:MM[^>]*>/i,
+      /\|\s*Security Owner\s*\|[^\n]*<YYYY-MM-DD HH:MM[^>]*>/i,
+      /\|\s*Engineering Manager\s*\|[^\n]*<YYYY-MM-DD HH:MM[^>]*>/i,
+      /-\s*\*\*Decision timestamp \(UTC\)\*\*:\s*<YYYY-MM-DD HH:MM[^>]*>/i
+    ],
+    unresolvedDecisionFields: [/^-\s*\*\*Decision\*\*:\s*<GO\/NO-GO>\s*$/im]
+  }
+
+  for (const [category, patterns] of Object.entries(unresolvedByCategory)) {
+    if (patterns.some((pattern) => pattern.test(content))) {
+      unresolvedCategories.push(category)
+    }
+  }
+
+  const finalDecisionMatch = content.match(/^-\s*\*\*Decision\*\*:\s*(.+?)\s*$/im)
+  if (!finalDecisionMatch) {
+    unresolvedCategories.push('finalDecisionMissing')
+  } else {
+    const decisionValue = finalDecisionMatch[1].replace(/[`*_]/g, '').trim().toUpperCase()
+    if (decisionValue !== 'GO' && decisionValue !== 'NO-GO') {
+      unresolvedCategories.push('finalDecisionNotConcrete')
+    }
+  }
+
+  if (unresolvedCategories.length > 0) {
+    fail(
+      `Handoff document has unresolved template content (${unresolvedCategories.join(', ')}): ${handoffFile}`
+    )
   }
 }
 
