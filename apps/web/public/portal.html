@@ -41,8 +41,8 @@
       <section class="card">
         <h2>Upload a Document</h2>
         <p class="muted">Track what has already been uploaded and share missing files securely.</p>
-        <p id="portal-upload-status" class="muted compact" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></p>
-        <p id="portal-upload-error" class="hidden" role="alert" aria-live="assertive" aria-atomic="true" tabindex="-1"></p>
+        <p id="portal-upload-status" class="muted compact" role="status" aria-live="polite" aria-atomic="true" tabindex="-1" data-e2e="portal-upload-status"></p>
+        <p id="portal-upload-error" class="hidden" role="alert" aria-live="assertive" aria-atomic="true" tabindex="-1" data-e2e="portal-upload-error"></p>
         <form id="portal-upload-form" class="grid two">
           <label>
             <span>File</span>
@@ -75,16 +75,16 @@
             <h2>Complete a Form</h2>
             <p class="muted">Choose a shared template, save a draft, or submit when you are ready.</p>
           </div>
-          <span id="portal-status" class="badge subtle">Awaiting template</span>
+          <span id="portal-status" class="badge subtle" data-e2e="portal-status-badge">Awaiting template</span>
         </div>
-        <p id="portal-form-status" class="muted compact" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></p>
+        <p id="portal-form-status" class="muted compact" role="status" aria-live="polite" aria-atomic="true" tabindex="-1" data-e2e="portal-form-status"></p>
         <p id="portal-template-announcement" class="sr-only" role="status" aria-live="polite" aria-atomic="true"></p>
-        <p id="portal-form-error" class="hidden" role="alert" aria-live="assertive" aria-atomic="true" tabindex="-1"></p>
+        <p id="portal-form-error" class="hidden" role="alert" aria-live="assertive" aria-atomic="true" tabindex="-1" data-e2e="portal-form-error"></p>
 
         <div class="grid two">
           <label>
             <span>Template</span>
-            <select id="template-picker"></select>
+            <select id="template-picker" data-e2e="template-picker"></select>
           </label>
           <div class="item compact">
             <strong>Instructions</strong>
@@ -92,11 +92,11 @@
           </div>
         </div>
 
-        <form id="portal-form" class="stack gap-md">
+        <form id="portal-form" class="stack gap-md" data-e2e="portal-form">
           <div id="portal-fields" class="stack gap-md"></div>
           <div class="actions-row">
-            <button type="submit" data-status="submitted">Submit Form</button>
-            <button type="button" data-save-draft>Save Draft</button>
+            <button type="submit" data-status="submitted" data-e2e="portal-submit">Submit Form</button>
+            <button type="button" data-save-draft data-e2e="portal-save-draft">Save Draft</button>
           </div>
         </form>
       </section>
