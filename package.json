@@ -8,7 +8,7 @@
     "bootstrap:dev": "npm install && node -e \"const fs=require('fs');if(!fs.existsSync('.env')&&fs.existsSync('.env.example')){fs.copyFileSync('.env.example','.env');console.log('Created .env from .env.example');}else{console.log('.env already exists or .env.example is missing');}\"",
     "check": "git diff --check",
     "check:conflicts": "node scripts/check-conflict-markers.mjs",
-    "check:syntax": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/api-contract-test.mjs && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/integration-csrf.mjs && node --check scripts/master-integration.mjs && node --check scripts/master-validate.mjs && node --check scripts/migration-order-check.mjs && node --check scripts/reencrypt-pii.mjs && node --check scripts/reset-test-data.mjs && node --check scripts/restore-db.mjs && node --check scripts/security-checks.mjs && node --check scripts/smoke-test.mjs && node --check scripts/release-go-no-go.mjs",
+    "check:syntax": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/api-contract-test.mjs && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/integration-csrf.mjs && node --check scripts/master-integration.mjs && node --check scripts/master-validate.mjs && node --check scripts/migration-order-check.mjs && node --check scripts/reencrypt-pii.mjs && node --check scripts/reset-test-data.mjs && node --check scripts/restore-db.mjs && node --check scripts/security-checks.mjs && node --check scripts/smoke-test.mjs && node --check scripts/release-go-no-go.mjs && node --check scripts/validate-release-evidence.mjs",
     "check:merge-main": "bash scripts/verify-main-merge.sh",
     "check:main-parity": "bash scripts/sync-main-and-report.sh",
     "dev": "node apps/api/src/server.mjs",
@@ -29,7 +29,8 @@
     "reset:test-data": "node scripts/reset-test-data.mjs",
     "lint": "eslint \"apps/api/**/*.mjs\" \"apps/web/public/**/*.js\" \"scripts/**/*.mjs\"",
     "format:check": "prettier --check \"apps/api/**/*.mjs\" \"apps/web/public/**/*.{js,css,html}\" \"scripts/**/*.mjs\"",
-    "release:go-no-go": "node scripts/release-go-no-go.mjs"
+    "release:go-no-go": "node scripts/release-go-no-go.mjs",
+    "validate:release-evidence": "node scripts/validate-release-evidence.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -119,6 +119,20 @@ function parseJsonFile(file, label) {
   }
 }
 
+async function validateReleaseEvidence() {
+  const args = ['scripts/validate-release-evidence.mjs', '--release-id', options.releaseId, '--phase', executionPhase]
+  if (String(process.env.RELEASE_VALIDATE_HANDOFF_PLACEHOLDERS || '').toLowerCase() === 'true') {
+    args.push('--check-handoff-placeholders')
+    if (process.env.RELEASE_HANDOFF_DOC) args.push('--handoff-file', process.env.RELEASE_HANDOFF_DOC)
+  }
+
+  await runStep({
+    name: 'Flow Z Evidence completeness validator',
+    command: 'node',
+    args
+  })
+}
+
 const POSTDEPLOY_THRESHOLDS = {
   maxQueueStalled: Number.parseInt(process.env.RELEASE_POSTDEPLOY_MAX_QUEUE_STALLED || '0', 10),
   maxQueueDeadLetter: Number.parseInt(process.env.RELEASE_POSTDEPLOY_MAX_QUEUE_DEAD_LETTER || '0', 10),
@@ -425,14 +439,17 @@ if (!options.releaseId) {
   fail('Missing release id. Pass --release-id <release-id> or set RELEASE_ID.')
 }
 
+const executionPhase = options.phase === 'restore' && options.restoreVerifyOnly ? 'restore-drill' : options.phase
+
 const evidenceDir = resolve(process.cwd(), 'artifacts/release-evidence', options.releaseId)
 mkdirSync(evidenceDir, { recursive: true })
 process.stdout.write(`Using evidence directory: ${evidenceDir}\n`)
 
 const phaseReports = {
-  preflight: initializePhaseReport(options.phase === 'all' || options.phase === 'preflight' ? 'pending' : 'skipped'),
-  restore: initializePhaseReport(options.phase === 'restore' ? 'pending' : 'skipped'),
-  postdeploy: initializePhaseReport(options.phase === 'all' || options.phase === 'postdeploy' ? 'pending' : 'skipped')
+  preflight: initializePhaseReport(executionPhase === 'all' || executionPhase === 'preflight' ? 'pending' : 'skipped'),
+  postdeploy: initializePhaseReport(executionPhase === 'all' || executionPhase === 'postdeploy' ? 'pending' : 'skipped'),
+  restore: initializePhaseReport(executionPhase === 'restore' ? 'pending' : 'skipped'),
+  'restore-drill': initializePhaseReport(executionPhase === 'restore-drill' ? 'pending' : 'skipped')
 }
 
 const preflight = async () => {
@@ -596,13 +613,13 @@ async function runPhase(phaseName, runner) {
 }
 
 try {
-  if (options.phase === 'preflight') {
+  if (executionPhase === 'preflight') {
     await runPhase('preflight', preflight)
-  } else if (options.phase === 'restore') {
-    await restoreValidation({ verifyOnly: options.restoreVerifyOnly })
-  } else if (options.phase === 'restore-drill') {
-    await restoreValidation({ verifyOnly: true })
-  } else if (options.phase === 'postdeploy') {
+  } else if (executionPhase === 'restore') {
+    await runPhase('restore', () => restoreValidation({ verifyOnly: false }))
+  } else if (executionPhase === 'restore-drill') {
+    await runPhase('restore-drill', () => restoreValidation({ verifyOnly: true }))
+  } else if (executionPhase === 'postdeploy') {
     await runPhase('postdeploy', postdeploy)
   } else {
     await runPhase('preflight', preflight)
@@ -614,6 +631,7 @@ try {
     phaseReports,
     generatedAt: new Date().toISOString()
   })
+  await validateReleaseEvidence()
   process.stdout.write('\n✅ release-go-no-go completed successfully.\n')
 } catch (error) {
   writeManifest({
