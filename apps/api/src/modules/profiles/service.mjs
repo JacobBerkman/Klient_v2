@@ -62,6 +62,22 @@ export function createProfilesService({ profileRepository, policy }) {
     getMaskedSensitiveData(user, profileId) {
       policy.requireGuard(user, 'canReadSensitiveProfileData')
       return profileRepository.getMaskedSensitiveData(createFirmContext(user), profileId)
+    },
+    getCustomFieldSchema(user) {
+      policy.requireGuard(user, 'canReadProfiles')
+      return profileRepository.getCustomFieldSchema(createFirmContext(user))
+    },
+    createCustomField(user, input) {
+      policy.requireGuard(user, 'canManageUsers')
+      return profileRepository.createCustomField(createFirmContext(user), input)
+    },
+    updateCustomField(user, fieldKey, patch) {
+      policy.requireGuard(user, 'canManageUsers')
+      return profileRepository.updateCustomField(createFirmContext(user), fieldKey, patch)
+    },
+    deleteCustomField(user, fieldKey) {
+      policy.requireGuard(user, 'canManageUsers')
+      return profileRepository.deleteCustomField(createFirmContext(user), fieldKey)
     }
   }
 }

@@ -189,6 +189,33 @@ function parseIso(value) {
   return Number.isFinite(time) ? time : 0
 }
 
+function normalizeDraftCollaborators(entry, fallbackUserId = '') {
+  const seed = []
+  if (fallbackUserId) {
+    seed.push({ userId: fallbackUserId, permission: 'write' })
+  }
+  if (entry?.createdByUserId) {
+    seed.push({ userId: entry.createdByUserId, permission: 'write' })
+  }
+  if (Array.isArray(entry?.collaborators)) {
+    seed.push(...entry.collaborators)
+  }
+  const byUser = new Map()
+  seed.forEach((item) => {
+    const userId = String(item?.userId || '').trim()
+    if (!userId) return
+    const permission = String(item?.permission || '').toLowerCase() === 'write' ? 'write' : 'read'
+    if (!byUser.has(userId) || permission === 'write') {
+      byUser.set(userId, { userId, permission })
+    }
+  })
+  return Array.from(byUser.values())
+}
+
+function resolveUserId(user) {
+  return String(user?.id || user?.userId || user?.user?.id || '').trim()
+}
+
 function profileOrderIndex(profile) {
   const raw = profile?.orderIndex ?? profile?.stageOrderIndex ?? null
   const numeric = Number(raw)
@@ -281,6 +308,50 @@ function normalizeExtensions(extensions = {}) {
   return { schemaVersion, schema, values }
 }
 
+const CUSTOM_FIELD_TYPES = new Set(['text', 'number', 'boolean', 'date'])
+
+function normalizeCustomFieldType(value) {
+  const normalized = String(value || '')
+    .trim()
+    .toLowerCase()
+  if (normalized === 'string') return 'text'
+  return normalized
+}
+
+function normalizeCustomFieldSchema(schema = {}) {
+  if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
+    return { fields: [], updatedAt: now() }
+  }
+  const seen = new Set()
+  const fields = Array.isArray(schema.fields)
+    ? schema.fields
+        .map((field) => {
+          const key = String(field?.key || field?.fieldKey || '')
+            .trim()
+            .replace(/[^a-zA-Z0-9_]+/g, '_')
+          if (!key || seen.has(key)) return null
+          const type = normalizeCustomFieldType(field?.type)
+          if (!CUSTOM_FIELD_TYPES.has(type)) return null
+          seen.add(key)
+          return {
+            key,
+            type,
+            label: String(field?.label || key).trim() || key,
+            required: Boolean(field?.required),
+            metadata:
+              field?.metadata && typeof field.metadata === 'object' && !Array.isArray(field.metadata)
+                ? { ...field.metadata }
+                : {}
+          }
+        })
+        .filter(Boolean)
+    : []
+  return {
+    fields,
+    updatedAt: schema.updatedAt || now()
+  }
+}
+
 function normalizeFinancialSummary(input = {}, extensions = {}) {
   const extensionValues = extensions.values || {}
   const investableAssets = toFiniteNumber(input.investableAssets ?? extensionValues.investableAssets) || 0
@@ -371,7 +442,7 @@ function createTemplateVersion(template, event, overrides = {}) {
   const mappings = deepClone(overrides.mappings || template.mappings || [])
   const formSchema = deepClone(overrides.formSchema || template.formSchema || { sections: [] })
   const extractedFields = deepClone(overrides.extractedFields || template.extractedFields || [])
-  const extraction = deepClone(overrides.extraction || template.extraction || { status: 'completed', reasonCode: null })
+  const extraction = deepClone(overrides.extraction || template.extraction || { status: 'completed', reasonCode: null, error: null })
   return {
     version: (template.versions?.length || 0) + 1,
     event,
@@ -408,7 +479,7 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
     mappings,
     mappingRules: mappings,
     extractedFields: template.extractedFields || [],
-    extraction: template.extraction || { status: 'completed', reasonCode: null },
+    extraction: template.extraction || { status: 'completed', reasonCode: null, error: null },
     publishState,
     status: publishState, // deprecated internal alias for compatibility payloads
     versions: (template.versions || []).map((entry, index) => ({
@@ -418,7 +489,7 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
       mappings: deepClone(entry.mappings || mappings),
       formSchema: deepClone(entry.formSchema || formSchema),
       extractedFields: deepClone(entry.extractedFields || template.extractedFields || []),
-      extraction: deepClone(entry.extraction || template.extraction || { status: 'completed', reasonCode: null }),
+      extraction: deepClone(entry.extraction || template.extraction || { status: 'completed', reasonCode: null, error: null }),
       publishState: entry.publishState || publishState,
       immutable: entry.immutable === true,
       changelog: entry.changelog || null,
@@ -466,6 +537,7 @@ function documentTemplateAdapter(entry) {
     formSchema: deepClone(entry.formSchema || { sections: [] }),
     mappings: deepClone(entry.mappings || []),
     extractedFields: deepClone(entry.extractedFields || []),
+    extraction: deepClone(entry.extraction || { status: 'completed', reasonCode: null, error: null }),
     versions: deepClone(entry.versions || []),
     status: entry.publishState || 'draft',
     publishState: entry.publishState || 'draft',
@@ -502,6 +574,19 @@ function profileSourcePaths() {
     ['profile.source.sourceVenue', { source: 'profile', type: 'text' }],
     ['profile.source.sourceDate', { source: 'profile', type: 'date' }]
   ])
+}
+
+function extractedFieldName(entry) {
+  if (entry && typeof entry === 'object' && !Array.isArray(entry)) return String(entry.fieldName || '').trim()
+  return String(entry || '').trim()
+}
+
+function normalizeRequiredPdfFields(input = []) {
+  return Array.from(new Set((Array.isArray(input) ? input : []).map((entry) => extractedFieldName(entry)).filter(Boolean)))
+}
+
+function normalizeExtractedFields(input = []) {
+  return Array.isArray(input) ? deepClone(input) : []
 }
 
 
@@ -570,7 +655,8 @@ function migrateProspectOrdering(state) {
 function migrateFirmStageConfig(state) {
   state.firms = (state.firms || []).map((firm) => ({
     ...firm,
-    stageConfig: normalizeFirmStageConfig(firm?.stageConfig)
+    stageConfig: normalizeFirmStageConfig(firm?.stageConfig),
+    customFieldSchema: normalizeCustomFieldSchema(firm?.customFieldSchema)
   }))
 }
 
@@ -1643,6 +1729,80 @@ export function createStore({
       persist()
       return profile
     },
+    getProfileCustomFieldSchema(user) {
+      requirePermission(user, 'profiles:read')
+      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      if (!firm) throw new Error('Firm not found.')
+      firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
+      return deepClone(firm.customFieldSchema)
+    },
+    createProfileCustomField(user, input = {}) {
+      requirePermission(user, 'users:manage')
+      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      if (!firm) throw new Error('Firm not found.')
+      firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
+      const key = String(input?.key || '')
+        .trim()
+        .replace(/[^a-zA-Z0-9_]+/g, '_')
+      if (!key) throw new Error('Custom field key is required.')
+      if (firm.customFieldSchema.fields.some((field) => field.key === key)) {
+        throw new Error('Custom field key already exists.')
+      }
+      const type = normalizeCustomFieldType(input?.type)
+      if (!CUSTOM_FIELD_TYPES.has(type)) {
+        throw new Error('Custom field type must be one of: text, number, boolean, date.')
+      }
+      const field = {
+        key,
+        type,
+        label: String(input?.label || key).trim() || key,
+        required: Boolean(input?.required),
+        metadata:
+          input?.metadata && typeof input.metadata === 'object' && !Array.isArray(input.metadata)
+            ? { ...input.metadata }
+            : {}
+      }
+      firm.customFieldSchema.fields.push(field)
+      firm.customFieldSchema.updatedAt = now()
+      persist()
+      return deepClone(field)
+    },
+    updateProfileCustomField(user, fieldKey, patch = {}) {
+      requirePermission(user, 'users:manage')
+      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      if (!firm) throw new Error('Firm not found.')
+      firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
+      const field = firm.customFieldSchema.fields.find((entry) => entry.key === fieldKey)
+      if (!field) throw new Error('Custom field not found.')
+      if ('type' in patch) {
+        const nextType = normalizeCustomFieldType(patch.type)
+        if (!CUSTOM_FIELD_TYPES.has(nextType)) {
+          throw new Error('Custom field type must be one of: text, number, boolean, date.')
+        }
+        field.type = nextType
+      }
+      if ('label' in patch) field.label = String(patch.label || field.key).trim() || field.key
+      if ('required' in patch) field.required = Boolean(patch.required)
+      if ('metadata' in patch) {
+        field.metadata =
+          patch.metadata && typeof patch.metadata === 'object' && !Array.isArray(patch.metadata) ? { ...patch.metadata } : {}
+      }
+      firm.customFieldSchema.updatedAt = now()
+      persist()
+      return deepClone(field)
+    },
+    deleteProfileCustomField(user, fieldKey) {
+      requirePermission(user, 'users:manage')
+      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      if (!firm) throw new Error('Firm not found.')
+      firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
+      const before = firm.customFieldSchema.fields.length
+      firm.customFieldSchema.fields = firm.customFieldSchema.fields.filter((entry) => entry.key !== fieldKey)
+      if (firm.customFieldSchema.fields.length === before) throw new Error('Custom field not found.')
+      firm.customFieldSchema.updatedAt = now()
+      persist()
+      return { ok: true }
+    },
     listPipelineStages(firmContext) {
       const context = requireFirmContext(firmContext, { method: 'store.listPipelineStages' })
       requirePermission(context.user || context, 'pipeline:read')
@@ -2107,15 +2267,22 @@ export function createStore({
     },
     listFormSubmissions(user, status = null) {
       requirePermission(user, 'forms:read')
+      const actorUserId = resolveUserId(user)
       const currentTime = Date.now()
       return state.formSubmissions
         .filter((entry) => entry.firmId === user.firmId)
+        .filter((entry) => {
+          if (entry.status !== 'draft') return true
+          const collaborators = normalizeDraftCollaborators(entry)
+          return collaborators.some((item) => item.userId === actorUserId)
+        })
         .filter((entry) => !status || entry.status === status)
         .map((entry) => {
+          const collaborators = normalizeDraftCollaborators(entry)
           if (entry.lock && parseIso(entry.lock.expiresAt) <= currentTime) {
-            return { ...entry, lock: null }
+            return { ...entry, lock: null, collaborators }
           }
-          return entry
+          return { ...entry, collaborators }
         })
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
@@ -2244,6 +2411,7 @@ export function createStore({
     },
     createFormSubmission(user, input) {
       requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
       const status = input.status || 'draft'
       const createdAt = now()
       const submission = {
@@ -2253,11 +2421,12 @@ export function createStore({
         templateId: input.templateId,
         status,
         data: input.data || {},
-        createdByUserId: user.id,
+        createdByUserId: actorUserId || null,
         createdAt,
         updatedAt: createdAt,
         revisionId: status === 'draft' ? 1 : null,
-        lock: null
+        lock: null,
+        collaborators: status === 'draft' ? normalizeDraftCollaborators(input, actorUserId) : []
       }
       state.formSubmissions.push(submission)
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', {
@@ -2269,10 +2438,14 @@ export function createStore({
     },
     acquireDraftLock(user, submissionId, input = {}) {
       requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
       const submission = state.formSubmissions.find(
         (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
       )
       if (!submission) throw new Error('Draft submission not found.')
+      submission.collaborators = normalizeDraftCollaborators(submission)
+      const permission = submission.collaborators.find((entry) => entry.userId === actorUserId)?.permission || null
+      if (permission !== 'write') throw new Error('Draft collaborator access denied: write permission is required.')
 
       const nowTime = Date.now()
       const leaseMs = Math.max(5_000, Math.min(120_000, Number(input.leaseMs || 30_000)))
@@ -2291,7 +2464,7 @@ export function createStore({
 
       const lock = {
         leaseId: randomUUID(),
-        holderUserId: user.id,
+        holderUserId: actorUserId,
         acquiredAt: now(),
         expiresAt: new Date(nowTime + leaseMs).toISOString(),
         leaseMs
@@ -2307,13 +2480,14 @@ export function createStore({
     },
     releaseDraftLock(user, submissionId, leaseId = '') {
       requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
       const submission = state.formSubmissions.find(
         (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
       )
       if (!submission) throw new Error('Draft submission not found.')
       const existing = submission.lock
       if (!existing) return { ok: true, released: false }
-      if (existing.holderUserId !== user.id && leaseId && existing.leaseId !== leaseId) {
+      if (existing.holderUserId !== actorUserId && leaseId && existing.leaseId !== leaseId) {
         throw new Error('Cannot release lock held by another advisor.')
       }
       submission.lock = null
@@ -2324,10 +2498,14 @@ export function createStore({
     },
     reviseDraftSubmission(user, submissionId, input = {}) {
       requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
       const submission = state.formSubmissions.find(
         (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
       )
       if (!submission) throw new Error('Draft submission not found.')
+      submission.collaborators = normalizeDraftCollaborators(submission)
+      const permission = submission.collaborators.find((entry) => entry.userId === actorUserId)?.permission || null
+      if (permission !== 'write') throw new Error('Draft collaborator access denied: write permission is required.')
 
       const currentRevision = Number(submission.revisionId || 1)
       const expectedRevision = Number(input.expectedRevisionId || 0)
@@ -2337,7 +2515,7 @@ export function createStore({
 
       const lock = submission.lock
       const lockActive = lock && parseIso(lock.expiresAt) > Date.now()
-      if (!lockActive || lock.holderUserId !== user.id || lock.leaseId !== input.leaseId) {
+      if (!lockActive || lock.holderUserId !== actorUserId || lock.leaseId !== input.leaseId) {
         return {
           ok: false,
           conflict: true,
@@ -2386,6 +2564,52 @@ export function createStore({
       persist()
       return { ok: true, submission }
     },
+    listDraftCollaborators(user, submissionId) {
+      requirePermission(user, 'forms:read')
+      const actorUserId = resolveUserId(user)
+      const submission = state.formSubmissions.find(
+        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
+      )
+      if (!submission) throw new Error('Draft submission not found.')
+      submission.collaborators = normalizeDraftCollaborators(submission)
+      if (!submission.collaborators.some((entry) => entry.userId === actorUserId))
+        throw new Error('Draft collaborator access denied.')
+      return submission.collaborators
+    },
+    addDraftCollaborator(user, submissionId, input = {}) {
+      requirePermission(user, 'forms:write')
+      const submission = state.formSubmissions.find(
+        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
+      )
+      if (!submission) throw new Error('Draft submission not found.')
+      const userId = String(input.userId || '').trim()
+      if (!userId) throw new Error('Collaborator userId is required.')
+      const permission = String(input.permission || '').toLowerCase() === 'write' ? 'write' : 'read'
+      submission.collaborators = normalizeDraftCollaborators(submission)
+      const existingUser = state.users.find((entry) => entry.id === userId && entry.firmId === user.firmId)
+      if (!existingUser) throw new Error('Collaborator user not found.')
+      submission.collaborators = normalizeDraftCollaborators(
+        { ...submission, collaborators: [...submission.collaborators, { userId, permission }] },
+        submission.createdByUserId
+      )
+      submission.updatedAt = now()
+      persist()
+      return submission.collaborators
+    },
+    removeDraftCollaborator(user, submissionId, collaboratorUserId) {
+      requirePermission(user, 'forms:write')
+      const submission = state.formSubmissions.find(
+        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
+      )
+      if (!submission) throw new Error('Draft submission not found.')
+      submission.collaborators = normalizeDraftCollaborators(submission)
+      const targetUserId = String(collaboratorUserId || '').trim()
+      submission.collaborators = submission.collaborators.filter((entry) => entry.userId !== targetUserId)
+      submission.collaborators = normalizeDraftCollaborators(submission, submission.createdByUserId)
+      submission.updatedAt = now()
+      persist()
+      return submission.collaborators
+    },
     listDocumentTemplates(user) {
       return this.listTemplateAggregates(user, { kind: 'document' }).map(documentTemplateAdapter)
     },
@@ -2393,12 +2617,14 @@ export function createStore({
       requirePermission(user, 'templates:write')
       const createdAt = now()
       const formSchemaResult = validateFormDefinitionSchema(input.formSchema || { sections: [] }, { contextPath: '/formSchema' })
-      const allowedSourcePaths = profileSourcePaths()
+      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      const normalizedExtractedFields = normalizeExtractedFields(input.extractedFields || input.requiredPdfFields || [])
+      const requiredPdfFields = normalizeRequiredPdfFields(normalizedExtractedFields)
       const mappings = validateMappingRules(input.mappings || [], {
         contextPath: '/mappings',
         repeaterPaths: formSchemaResult.repeaterPaths,
-        requiredPdfFields: input.requiredPdfFields || [],
+        requiredPdfFields,
         allowedSourcePaths,
         enforceKnownSourcePaths: input.enforceKnownSourcePaths === true
       })
@@ -2412,8 +2638,9 @@ export function createStore({
           documentMetadata: { fileName: input.fileName || 'template.pdf' },
           blueprint: input.blueprint || { sections: [] },
           mappings,
-          extractedFields: deepClone(input.requiredPdfFields || []),
+          extractedFields: normalizedExtractedFields,
           formSchema: formSchemaResult.schema,
+          extraction: deepClone(input.extraction || { status: 'completed', reasonCode: null, error: null }),
           publishState: 'draft',
           versions: [
             {
@@ -2421,9 +2648,10 @@ export function createStore({
               event: 'created',
               blueprint: input.blueprint || { sections: [] },
               mappings,
-              extractedFields: deepClone(input.requiredPdfFields || []),
+              extractedFields: normalizedExtractedFields,
               formSchema: formSchemaResult.schema,
               publishState: 'draft',
+              extraction: deepClone(input.extraction || { status: 'completed', reasonCode: null, error: null }),
               createdAt,
               actorUserId: user.id
             }
@@ -2450,12 +2678,13 @@ export function createStore({
       )
       if (!template) throw new Error('Template not found.')
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
-      const allowedSourcePaths = profileSourcePaths()
+      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      const requiredPdfFields = normalizeRequiredPdfFields(input.requiredPdfFields || template.extractedFields || [])
       const normalizedMappings = validateMappingRules(mappings || [], {
         contextPath: '/mappings',
         repeaterPaths: formSchemaResult.repeaterPaths,
-        requiredPdfFields: input.requiredPdfFields || template.extractedFields || [],
+        requiredPdfFields,
         allowedSourcePaths,
         enforceKnownSourcePaths: input.enforceKnownSourcePaths === true
       })
@@ -2472,7 +2701,7 @@ export function createStore({
       template.mappings = normalizedMappings
       template.mappingRules = template.mappings
       if (Array.isArray(input.requiredPdfFields)) {
-        template.extractedFields = input.requiredPdfFields.map((value) => String(value || '').trim()).filter(Boolean)
+        template.extractedFields = normalizeExtractedFields(input.requiredPdfFields)
       }
       template.versions.push(
         createTemplateVersion(template, 'mappings_updated', {
@@ -2517,14 +2746,14 @@ export function createStore({
         submission
       })
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
-      const allowedSourcePaths = profileSourcePaths()
+      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
       let issues = []
       try {
         validateMappingRules(template.mappings || [], {
           contextPath: '/mappings',
           repeaterPaths: formSchemaResult.repeaterPaths,
-          requiredPdfFields: template.extractedFields || [],
+          requiredPdfFields: normalizeRequiredPdfFields(template.extractedFields || []),
           allowedSourcePaths,
           enforceKnownSourcePaths: true
         })
@@ -2576,15 +2805,56 @@ export function createStore({
       )
       const previousState = normalizeTemplateState(template.publishState || 'draft')
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
-      const allowedSourcePaths = profileSourcePaths()
+      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
       validateMappingRules(template.mappings || [], {
         contextPath: '/mappings',
         repeaterPaths: formSchemaResult.repeaterPaths,
-        requiredPdfFields: template.extractedFields || [],
+        requiredPdfFields: normalizeRequiredPdfFields(template.extractedFields || []),
         allowedSourcePaths,
         enforceKnownSourcePaths: input.enforceKnownSourcePaths === true
       })
+      const preflightClientId = String(input.clientId || '').trim()
+      const preflightSubmissionId = String(input.submissionId || '').trim()
+      if (preflightClientId && preflightSubmissionId) {
+        const profile = validateTenantEntityOwnership(
+          firmContext,
+          state.profiles.find((entry) => entry.id === preflightClientId),
+          { entityName: 'Profile' }
+        )
+        const submission = validateTenantEntityOwnership(
+          firmContext,
+          state.formSubmissions.find((entry) => entry.id === preflightSubmissionId),
+          { entityName: 'Submission' }
+        )
+        const preflight = resolveExportData({
+          mappings: template.mappings || [],
+          profile,
+          submission
+        })
+        const blockingIssues = (preflight.rows || []).flatMap((row) =>
+          (row.warnings || [])
+            .filter((warning) => warning?.blocking === true)
+            .map((warning) => ({
+              code: String(warning.code || 'preview_blocking_warning').toLowerCase(),
+              path: `/mappings/${row.rowIndex}/sourcePath`,
+              field: 'sourcePath',
+              rowIndex: row.rowIndex,
+              message: String(warning.message || 'Blocking preview warning'),
+              meta: {
+                issueId: `${warning.code || 'preview_blocking_warning'}:${row.rowIndex}:sourcePath`,
+                rowId: row.rowId || null
+              }
+            }))
+        )
+        if (blockingIssues.length) {
+          const error = new Error('Publish blocked: preview contains unresolved required mappings.')
+          error.statusCode = 400
+          error.code = 'SCHEMA_VALIDATION_FAILED'
+          error.details = { issues: blockingIssues }
+          throw error
+        }
+      }
       if (!input.versionBump || !String(input.versionBump).trim()) {
         throw new Error('Publish requires versionBump.')
       }
@@ -2665,7 +2935,7 @@ export function createStore({
       template.mappings = deepClone(target.mappings || [])
       template.mappingRules = template.mappings
       template.extractedFields = deepClone(target.extractedFields || [])
-      template.extraction = deepClone(target.extraction || { status: 'completed', reasonCode: null })
+      template.extraction = deepClone(target.extraction || { status: 'completed', reasonCode: null, error: null })
       template.publishState = normalizeTemplateState(target.publishState || 'draft')
       template.status = template.publishState
       template.versions.push(
@@ -2998,6 +3268,16 @@ export function createStore({
             : null
       const extraction = extractTemplateFieldsFromPdfBytes(pdfBytes)
       const extractedFieldNames = extraction.fields.map((entry) => entry.fieldName)
+      const uniqueMappings = []
+      const seenPdfFields = new Set()
+      extractedFieldNames.forEach((field) => {
+        if (seenPdfFields.has(field)) return
+        seenPdfFields.add(field)
+        uniqueMappings.push({
+          pdfField: field,
+          sourcePath: field.replace(/\s+/g, '_').toLowerCase()
+        })
+      })
       const sections = extractedFieldNames.reduce((acc, field) => {
         const sectionKey = String(field).split('.')[0] || 'general'
         acc[sectionKey] ||= []
@@ -3008,14 +3288,12 @@ export function createStore({
         name: input.name,
         fileName: input.fileName || 'uploaded.pdf',
         blueprint: { sections },
-        mappings: extractedFieldNames.map((field) => ({
-          pdfField: field,
-          sourcePath: field.replace(/\s+/g, '_').toLowerCase()
-        })),
+        mappings: uniqueMappings,
         extractedFields: extraction.fields,
         extraction: {
           status: extraction.status,
-          reasonCode: extraction.reasonCode
+          reasonCode: extraction.reasonCode,
+          error: extraction.error || null
         }
       })
     },

@@ -31,6 +31,11 @@ const state = {
   templateMappingFilterByTemplateId: {},
   templateInspectorFocusRequestByTemplateId: {},
   templateJumpHighlightByTemplateId: {},
+  formsUi: {
+    activeDraftSharePanelId: '',
+    collaboratorsByDraftId: {},
+    shareFeedbackByDraftId: {}
+  },
   workflowStatusMessage: '',
   operations: {
     busy: false,
@@ -705,6 +710,23 @@ function canMutateProfiles() {
   return roleAllowed('admin,advisor')
 }
 
+function isDraftOwner(draft) {
+  return Boolean(draft?.createdByUserId) && draft.createdByUserId === state.user?.id
+}
+
+function canManageDraftCollaborators(draft) {
+  if (!state.user) return false
+  if (state.user.role === 'admin') return true
+  if (state.user.role !== 'advisor') return false
+  return isDraftOwner(draft)
+}
+
+function draftCollaboratorDeniedMessage(draft) {
+  if (state.user?.role === 'readonly') return 'Readonly role: collaborator updates are disabled.'
+  if (state.user?.role === 'advisor' && !isDraftOwner(draft)) return 'Only the draft owner can manage collaborators.'
+  return 'You do not have access to manage draft collaborators.'
+}
+
 function canReadDiagnostics() {
   const operationsViewRoles = document.querySelector('[data-view="operations"]')?.dataset.roles || 'admin,advisor'
   return roleAllowed(operationsViewRoles)
@@ -1258,7 +1280,14 @@ async function renderForms() {
   const repeaterSections = Object.entries(selectedSubmission?.data || {}).filter(([, value]) => Array.isArray(value))
   const rows = drafts
     .map(
-      (draft) => `
+      (draft) => {
+        const panelVisible = state.formsUi.activeDraftSharePanelId === draft.id
+        const panelId = `draft-share-panel-${draft.id}`
+        const list = state.formsUi.collaboratorsByDraftId[draft.id]
+        const canManage = canManageDraftCollaborators(draft)
+        const deniedMessage = draftCollaboratorDeniedMessage(draft)
+        const shareFeedback = state.formsUi.shareFeedbackByDraftId[draft.id] || ''
+        return `
     <tr>
       <td>${escapeHtml(draft.id)}</td>
       <td>${escapeHtml(draft.templateId)}</td>
@@ -1268,9 +1297,52 @@ async function renderForms() {
         <a href="#${appRoutes.clientFormSubmission(draft.clientId, draft.id)}">Edit from profile</a>
         <button data-lock="${draft.id}">${pendingLabel(`lock-${draft.id}`, 'Acquire lock', 'Acquiring…')}</button>
         <button data-save="${draft.id}">${pendingLabel(`draft-save-${draft.id}`, 'Save revision', 'Saving…')}</button>
+        <button data-open-draft-share-panel="${draft.id}" aria-expanded="${panelVisible ? 'true' : 'false'}" aria-controls="${panelId}">
+          ${panelVisible ? 'Hide sharing' : 'Share draft'}
+        </button>
+      </td>
+    </tr>
+    <tr id="${panelId}" data-draft-share-panel="${draft.id}" ${panelVisible ? '' : 'hidden'}>
+      <td colspan="5">
+        <div class="item compact">
+          <h4>Draft sharing</h4>
+          <p class="muted compact">Owner: <code>${escapeHtml(draft.createdByUserId || 'unknown')}</code></p>
+          <form data-add-draft-collaborator="${draft.id}">
+            <label>Add collaborator (user id)
+              <input name="userId" placeholder="advisor-user-id" ${canManage ? '' : 'disabled'} />
+            </label>
+            <button type="submit" ${canManage ? '' : 'disabled'}>${pendingLabel(`draft-share-add-${draft.id}`, 'Add', 'Adding…')}</button>
+          </form>
+          <p class="muted compact" data-draft-share-feedback="${draft.id}" role="status" aria-live="polite" aria-atomic="true">
+            ${escapeHtml(shareFeedback || (!canManage ? deniedMessage : ''))}
+          </p>
+          ${
+            Array.isArray(list)
+              ? list.length
+                ? `<ul>${list
+                    .map(
+                      (collaborator) => `<li>
+                    <code>${escapeHtml(collaborator.userId || collaborator.id || '')}</code>
+                    <button data-remove-draft-collaborator="${draft.id}" data-collaborator-user-id="${escapeHtml(collaborator.userId || collaborator.id || '')}" ${
+                      canManage ? '' : 'disabled'
+                    }>
+                      ${pendingLabel(
+                        `draft-share-remove-${draft.id}-${collaborator.userId || collaborator.id || ''}`,
+                        'Remove',
+                        'Removing…'
+                      )}
+                    </button>
+                  </li>`
+                    )
+                    .join('')}</ul>`
+                : '<p class="muted compact">No collaborators added.</p>'
+              : '<p class="muted compact">Load draft sharing to manage collaborators.</p>'
+          }
+        </div>
       </td>
     </tr>
   `
+      }
     )
     .join('')
 
@@ -1414,6 +1486,106 @@ async function renderForms() {
     })
   })
 
+  document.querySelectorAll('[data-open-draft-share-panel]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const draftId = button.dataset.openDraftSharePanel
+      const isOpen = state.formsUi.activeDraftSharePanelId === draftId
+      state.formsUi.activeDraftSharePanelId = isOpen ? '' : draftId
+      if (isOpen) {
+        await renderForms()
+        return
+      }
+      const draft = drafts.find((entry) => entry.id === draftId)
+      if (!canManageDraftCollaborators(draft)) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = draftCollaboratorDeniedMessage(draft)
+        await renderForms()
+        return
+      }
+      const actionKey = `draft-share-fetch-${draftId}`
+      setActionPending(actionKey, 'pending')
+      try {
+        const collaborators = await request(routes.formDraftCollaborators(draftId))
+        state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators) ? collaborators : collaborators?.collaborators || []
+        state.formsUi.shareFeedbackByDraftId[draftId] = 'Collaborators loaded.'
+      } catch (error) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'load draft collaborators')
+        reportActionError('Forms', error)
+      } finally {
+        clearActionPending(actionKey)
+      }
+      await renderForms()
+    })
+  })
+
+  document.querySelectorAll('form[data-add-draft-collaborator]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const draftId = form.dataset.addDraftCollaborator
+      const draft = drafts.find((entry) => entry.id === draftId)
+      if (!canManageDraftCollaborators(draft)) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = draftCollaboratorDeniedMessage(draft)
+        await renderForms()
+        return
+      }
+      const userId = String(new FormData(form).get('userId') || '').trim()
+      if (!userId) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = 'Provide a collaborator user id.'
+        await renderForms()
+        return
+      }
+      const actionKey = `draft-share-add-${draftId}`
+      setActionPending(actionKey, 'pending')
+      try {
+        await request(routes.formDraftCollaborators(draftId), {
+          method: 'POST',
+          body: JSON.stringify({ userId })
+        })
+        const collaborators = await request(routes.formDraftCollaborators(draftId))
+        state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators)
+          ? collaborators
+          : collaborators?.collaborators || []
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Collaborator ${userId} added.`
+        reportActionSuccess('Forms', `Collaborator ${userId} added to draft ${draftId}.`)
+      } catch (error) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'add a draft collaborator')
+        reportActionError('Forms', error)
+      } finally {
+        clearActionPending(actionKey)
+      }
+      await renderForms()
+    })
+  })
+
+  document.querySelectorAll('[data-remove-draft-collaborator]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const draftId = button.dataset.removeDraftCollaborator
+      const userId = button.dataset.collaboratorUserId
+      const draft = drafts.find((entry) => entry.id === draftId)
+      if (!canManageDraftCollaborators(draft)) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = draftCollaboratorDeniedMessage(draft)
+        await renderForms()
+        return
+      }
+      const actionKey = `draft-share-remove-${draftId}-${userId}`
+      setActionPending(actionKey, 'pending')
+      try {
+        await request(routes.formDraftCollaborator(draftId, userId), { method: 'DELETE' })
+        const collaborators = await request(routes.formDraftCollaborators(draftId))
+        state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators)
+          ? collaborators
+          : collaborators?.collaborators || []
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Collaborator ${userId} removed.`
+        reportActionSuccess('Forms', `Collaborator ${userId} removed from draft ${draftId}.`)
+      } catch (error) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'remove a draft collaborator')
+        reportActionError('Forms', error)
+      } finally {
+        clearActionPending(actionKey)
+      }
+      await renderForms()
+    })
+  })
+
   document.querySelectorAll('form[data-repeater-update]').forEach((form) => {
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
@@ -1552,7 +1724,9 @@ function previewWarningMarkup(warnings = []) {
   return warnings
     .map((warning) => {
       const title = escapeHtml(warning.message || warning.code || 'Warning')
-      return `<span class="badge" title="${title}">${escapeHtml(warning.code || 'warning')}</span>`
+      const badgeClass = warning.blocking ? 'error-badge' : 'badge'
+      const suffix = warning.blocking ? ' (blocking)' : ''
+      return `<span class="${badgeClass}" title="${title}">${escapeHtml((warning.code || 'warning') + suffix)}</span>`
     })
     .join(' ')
 }
@@ -1651,6 +1825,25 @@ async function renderTemplates() {
       .filter((value) => Number.isFinite(value))
   )
   const previewIssueRows = new Set((preview?.issues || []).map((issue) => Number(issue.rowIndex)).filter((value) => Number.isFinite(value)))
+  const remediationRows = [
+    ...(preview?.rows || [])
+      .flatMap((row) =>
+        (row.warnings || []).map((warning) => ({
+          rowIndex: Number(row.rowIndex),
+          rowId: row.rowId || '',
+          blocking: warning.blocking === true,
+          code: warning.code || 'warning',
+          message: warning.message || 'Preview warning'
+        }))
+      ),
+    ...preflightIssues.map((issue) => ({
+      rowIndex: Number(issue.rowIndex),
+      rowId: issue?.meta?.rowId || '',
+      blocking: true,
+      code: issue.errorCode || issue.code || 'issue',
+      message: issue.errorMessage || issue.message || 'Preflight validation issue'
+    }))
+  ].filter((entry) => Number.isFinite(entry.rowIndex))
   const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
   const hasBlockingPreviewWarnings =
     Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
@@ -1820,6 +2013,7 @@ async function renderTemplates() {
             ? `
           <div class="muted">mappingVersionHash: <code>${escapeHtml(preview.mappingVersionHash || '')}</code></div>
           <div class="muted">warnings: ${escapeHtml(String(preview.warningsCount || 0))}</div>
+          <div class="muted">blocking warnings: ${escapeHtml(String(preview.blockingWarningsCount || 0))}</div>
           ${preview.issues?.length ? `<div class="muted">issues: ${escapeHtml(String(preview.issues.length))}</div>` : ''}
           <table><thead><tr><th>PDF field</th><th>Source path</th><th>Resolved value</th><th>Warnings</th></tr></thead><tbody>
             ${(preview.rows || [])
@@ -1834,7 +2028,7 @@ async function renderTemplates() {
                 hasWarnings
                   ? `<button class="tiny secondary" data-jump-rowindex="${rowIndex}" data-focus-inspector="sourcePath">Jump to row ${rowIndex + 1}</button>`
                   : `<span class="muted">Row ${rowIndex + 1}</span>`
-              } ${previewWarningMarkup(row.warnings || [])}</td>
+              } <span class="muted">id:<code>${escapeHtml(row.rowId || '')}</code></span> ${previewWarningMarkup(row.warnings || [])}</td>
             </tr>`
               })
               .join('')}
@@ -1863,6 +2057,16 @@ async function renderTemplates() {
                 })
                 .join('')}</ul>`
             : '<p class="muted">Run preflight to surface publish-time schema validation (unknown source paths, required mappings, and transform issues) before attempting publish.</p>'
+        }
+        ${
+          remediationRows.length
+            ? `<h4>Row-level remediation</h4><ul>${remediationRows
+                .map(
+                  (item) =>
+                    `<li><button class="tiny secondary" data-remediate-rowindex="${item.rowIndex}" data-focus-inspector="sourcePath">Row ${item.rowIndex + 1}</button> · <code>${escapeHtml(item.code)}</code> · ${escapeHtml(item.message)}${item.rowId ? ` · rowId <code>${escapeHtml(item.rowId)}</code>` : ''}${item.blocking ? ' · <strong>blocking</strong>' : ' · non-blocking'}</li>`
+                )
+                .join('')}</ul>`
+            : ''
         }
       </section>
       <section class="item">
@@ -2116,6 +2320,12 @@ async function renderTemplates() {
       await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
     })
   })
+  document.querySelectorAll('[data-remediate-rowindex]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const rowIndex = Number(button.dataset.remediateRowindex)
+      await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
+    })
+  })
 
   const pendingInspectorFocusField = template ? state.templateInspectorFocusRequestByTemplateId[template.id] : ''
   if (pendingInspectorFocusField) {
@@ -2154,7 +2364,13 @@ async function renderTemplates() {
       if (hasBlockingWarnings) throw new Error('Publish blocked: preview contains blocking warnings/issues.')
       await request(routes.documentTemplatePublish(template.id), {
         method: 'POST',
-        body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Publish template mapping updates.', enforceKnownSourcePaths: true })
+        body: JSON.stringify({
+          versionBump: '1.0.0',
+          changelog: 'Publish template mapping updates.',
+          enforceKnownSourcePaths: true,
+          clientId,
+          submissionId
+        })
       })
       state.templatePublishPreflightByTemplateId[template.id] = { checkedAt: new Date().toISOString(), issues: [] }
       reportActionSuccess('Templates', 'Template published.')

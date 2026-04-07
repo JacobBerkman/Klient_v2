@@ -38,6 +38,12 @@ This matrix documents the runtime path for each guarded API route: HTTP endpoint
 | POST `/api/forms/templates` | `canWriteForms` | `forms:write` |
 | GET `/api/forms/submissions` | `canReadForms` | `forms:read` |
 | GET `/api/forms/drafts` | `canReadForms` | `forms:read` |
+| POST `/api/forms/drafts/:id/lock` | `canWriteForms` + `canWriteDraftCollaborator` | `forms:write` + draft collaborator `write` permission |
+| DELETE `/api/forms/drafts/:id/lock` | `canWriteForms` + `canWriteDraftCollaborator` | `forms:write` + draft collaborator `write` permission |
+| PATCH `/api/forms/drafts/:id` | `canWriteForms` + `canWriteDraftCollaborator` | `forms:write` + draft collaborator `write` permission |
+| GET `/api/forms/drafts/:id/collaborators` | `canManageDraftSharing` | `forms:read` + draft collaborator visibility |
+| POST `/api/forms/drafts/:id/collaborators` | `canManageDraftSharing` | `forms:write` |
+| DELETE `/api/forms/drafts/:id/collaborators/:userId` | `canManageDraftSharing` | `forms:write` |
 | POST `/api/forms/submissions` | `canWriteForms` | `forms:write` |
 | PATCH `/api/forms/submissions/:id` | `canWriteForms` | `forms:write` + tenant ownership validation |
 | DELETE `/api/forms/submissions/:id` | `canWriteForms` | `forms:write` + tenant ownership validation |

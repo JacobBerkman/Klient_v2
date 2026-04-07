@@ -49,7 +49,7 @@
         <section class="auth-panel card">
           <h2>Authenticate</h2>
           <div class="grid two">
-            <form id="register-form" class="card inner" aria-describedby="register-feedback">
+            <form id="register-form" class="card inner" aria-describedby="register-feedback" data-e2e="register-form">
               <h3 id="register-heading">Register Firm Admin</h3>
               <input name="firmName" placeholder="Firm name" required />
               <input name="firstName" placeholder="First name" required />
@@ -59,16 +59,16 @@
               <button type="submit">Register</button>
               <p id="register-feedback" class="muted compact" data-form-feedback role="status" aria-live="polite"></p>
             </form>
-            <form id="login-form" class="card inner" aria-describedby="login-feedback demo-credentials">
+            <form id="login-form" class="card inner" aria-describedby="login-feedback demo-credentials" data-e2e="login-form">
               <h3 id="login-heading">Sign In</h3>
               <input name="email" type="email" placeholder="Email" required />
               <input name="password" type="password" placeholder="Password" required />
-              <button type="submit">Sign In</button>
+              <button type="submit" data-e2e="login-submit">Sign In</button>
               <p id="login-feedback" class="muted compact" data-form-feedback role="status" aria-live="polite"></p>
               <p id="demo-credentials" class="muted" hidden>Demo login: admin@demo.test / ChangeMe123!</p>
             </form>
           </div>
-          <pre id="auth-status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1"></pre>
+          <pre id="auth-status" role="status" aria-live="polite" aria-atomic="true" tabindex="-1" data-e2e="auth-status"></pre>
           <section id="mfa-panel" class="card inner">
             <h3>Multi-Factor Authentication</h3>
             <p id="mfa-hint" class="muted" role="status" aria-live="polite">Sign in to enroll MFA, or complete an MFA challenge during login.</p>
@@ -122,7 +122,7 @@
         </section>
 
         <section class="actions grid two" data-requires-role="admin,advisor">
-          <form id="profile-form" class="card">
+          <form id="profile-form" class="card" data-e2e="profile-form">
             <h3>Create Prospect / Client</h3>
             <select name="kind">
               <option value="prospect">Prospect</option>
@@ -182,7 +182,7 @@
         </section>
 
         <section class="actions grid two" data-requires-role="admin,advisor">
-          <form id="portal-form" class="card">
+          <form id="portal-form" class="card" data-e2e="portal-link-form">
             <h3>Create Portal Link</h3>
             <select name="profileId" required></select>
             <button type="submit">Create Link</button>

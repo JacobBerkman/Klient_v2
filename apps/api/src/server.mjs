@@ -990,6 +990,36 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
+      if (pathname === '/api/profiles/custom-fields/schema' && req.method === 'GET') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadProfiles')
+        const result = modules.profiles.getCustomFieldSchema(user)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/profiles/custom-fields/schema' && req.method === 'POST') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageUsers')
+        const result = modules.profiles.createCustomField(user, await parseBody(req))
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/profiles/custom-fields/schema/') && req.method === 'PATCH') {
+        const fieldKey = pathname.split('/')[5]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageUsers')
+        const result = modules.profiles.updateCustomField(user, fieldKey, await parseBody(req))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/profiles/custom-fields/schema/') && req.method === 'DELETE') {
+        const fieldKey = pathname.split('/')[5]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageUsers')
+        const result = modules.profiles.deleteCustomField(user, fieldKey)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/stage-history') && req.method === 'GET') {
         const id = pathname.split('/')[3]
         const user = requireUser()
@@ -1167,6 +1197,7 @@ export function createHttpServer({ modules }) {
         const [, draftId] = draftLockMatch
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
+        modules.policy.requireGuard(user, 'canWriteDraftCollaborator')
         const result = modules.forms.acquireDraftLock(user, decodeURIComponent(draftId), await parseBody(req))
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -1175,8 +1206,39 @@ export function createHttpServer({ modules }) {
         const [, draftId] = draftLockMatch
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
+        modules.policy.requireGuard(user, 'canWriteDraftCollaborator')
         const body = await parseBody(req)
         const result = modules.forms.releaseDraftLock(user, decodeURIComponent(draftId), body?.leaseId || '')
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      const draftCollaboratorsMatch = pathname.match(/^\/api\/forms\/drafts\/([^/]+)\/collaborators$/)
+      if (draftCollaboratorsMatch && req.method === 'GET') {
+        const [, draftId] = draftCollaboratorsMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageDraftSharing')
+        const result = modules.forms.listDraftCollaborators(user, decodeURIComponent(draftId))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (draftCollaboratorsMatch && req.method === 'POST') {
+        const [, draftId] = draftCollaboratorsMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageDraftSharing')
+        const result = modules.forms.addDraftCollaborator(user, decodeURIComponent(draftId), await parseBody(req))
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      const draftCollaboratorDeleteMatch = pathname.match(/^\/api\/forms\/drafts\/([^/]+)\/collaborators\/([^/]+)$/)
+      if (draftCollaboratorDeleteMatch && req.method === 'DELETE') {
+        const [, draftId, collaboratorUserId] = draftCollaboratorDeleteMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageDraftSharing')
+        const result = modules.forms.removeDraftCollaborator(
+          user,
+          decodeURIComponent(draftId),
+          decodeURIComponent(collaboratorUserId)
+        )
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -1185,6 +1247,7 @@ export function createHttpServer({ modules }) {
         const [, draftId] = draftMatch
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
+        modules.policy.requireGuard(user, 'canWriteDraftCollaborator')
         const result = modules.forms.reviseDraftSubmission(user, decodeURIComponent(draftId), await parseBody(req))
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })

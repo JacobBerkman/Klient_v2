@@ -56,6 +56,22 @@ export class StoreProfileRepository extends ProfileRepository {
     const context = requireFirmContext(firmContext, { method: 'profiles.getMaskedSensitiveData' })
     return this.store.getMaskedSensitiveData(context, profileId, options)
   }
+  getCustomFieldSchema(firmContext) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.getCustomFieldSchema' })
+    return this.store.getProfileCustomFieldSchema(context)
+  }
+  createCustomField(firmContext, input) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.createCustomField' })
+    return this.store.createProfileCustomField(context, input)
+  }
+  updateCustomField(firmContext, fieldKey, patch) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.updateCustomField' })
+    return this.store.updateProfileCustomField(context, fieldKey, patch)
+  }
+  deleteCustomField(firmContext, fieldKey) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.deleteCustomField' })
+    return this.store.deleteProfileCustomField(context, fieldKey)
+  }
 }
 
 export class StoreTemplateRepository extends TemplateRepository {
@@ -186,6 +202,15 @@ export class StoreFormsRepository extends FormsRepository {
   }
   reviseDraftSubmission(user, submissionId, input) {
     return this.store.reviseDraftSubmission(user, submissionId, input)
+  }
+  listDraftCollaborators(user, submissionId) {
+    return this.store.listDraftCollaborators(user, submissionId)
+  }
+  addDraftCollaborator(user, submissionId, input) {
+    return this.store.addDraftCollaborator(user, submissionId, input)
+  }
+  removeDraftCollaborator(user, submissionId, collaboratorUserId) {
+    return this.store.removeDraftCollaborator(user, submissionId, collaboratorUserId)
   }
   updateSubmission(user, submissionId, patch) {
     return this.store.updateSubmission(user, submissionId, patch)

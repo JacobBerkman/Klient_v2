@@ -67,6 +67,33 @@ test('template change announcements are exposed for app and portal workflows', (
   assert.match(portalHtml, /renderTemplateFields\(\{ silentAnnouncement: false \}\)/)
 })
 
+
+test('e2e selectors stay stable for auth, advisor workflows, and portal submission controls', () => {
+  assert.match(html, /id="register-form"[^>]*data-e2e="register-form"/)
+  assert.match(html, /id="login-form"[^>]*data-e2e="login-form"/)
+  assert.match(html, /data-e2e="login-submit"/)
+  assert.match(html, /id="auth-status"[^>]*data-e2e="auth-status"/)
+  assert.match(html, /id="profile-form"[^>]*data-e2e="profile-form"/)
+  assert.match(html, /id="portal-form"[^>]*data-e2e="portal-link-form"/)
+  assert.match(portalHtml, /id="template-picker"[^>]*data-e2e="template-picker"/)
+  assert.match(portalHtml, /id="portal-form"[^>]*data-e2e="portal-form"/)
+  assert.match(portalHtml, /data-e2e="portal-save-draft"/)
+  assert.match(portalHtml, /data-e2e="portal-submit"/)
+  assert.match(portalHtml, /id="portal-status"[^>]*data-e2e="portal-status-badge"/)
+})
+
+test('portal failure states preserve focus and live-region semantics for alerts and statuses', () => {
+  assert.match(portalHtml, /function updateRegion\(region, message, \{ error = false, focus = false \} = \{\}\)/)
+  assert.match(portalHtml, /if \(focus && message\) region\.focus\(\)/)
+  assert.match(portalHtml, /setFormFeedback\('Please select a template\.', \{ error: true, focus: true \}\)/)
+  assert.match(portalHtml, /Please complete \$\{field\.label \|\| field\.key\}\./)
+  assert.match(portalHtml, /focusFirstInvalidField\(\)/)
+  assert.match(portalHtml, /id="portal-form-status"[^>]*role="status"[^>]*data-e2e="portal-form-status"/)
+  assert.match(portalHtml, /id="portal-form-error"[^>]*role="alert"[^>]*data-e2e="portal-form-error"/)
+  assert.match(portalHtml, /id="portal-upload-status"[^>]*role="status"[^>]*data-e2e="portal-upload-status"/)
+  assert.match(portalHtml, /id="portal-upload-error"[^>]*role="alert"[^>]*data-e2e="portal-upload-error"/)
+})
+
 test('exports workflow includes keyboard-friendly selection labels and live-region updates', () => {
   assert.match(appJs, /id="exports-live-region"[\s\S]*role="status"[\s\S]*aria-live="polite"/)
   assert.match(appJs, /<table aria-describedby="exports-live-region">/)
@@ -130,4 +157,18 @@ test('launch ops panel contract keeps admin gating, read-only copy, and diagnost
   assert.match(appJs, /title: '\/ready', href: '\/ready'/)
   assert.match(appJs, /title: 'Exports queue',[\s\S]*href: routes\.exportsQueueHealth\(\)/)
   assert.match(appJs, /data-launch-ops-open/)
+})
+
+test('forms draft sharing contract exposes panel controls, live-region feedback, and role gating rules', () => {
+  assert.match(appJs, /data-open-draft-share-panel="\$\{draft\.id\}" aria-expanded="\$\{panelVisible \? 'true' : 'false'\}" aria-controls="\$\{panelId\}"/)
+  assert.match(appJs, /data-draft-share-panel="\$\{draft\.id\}"/)
+  assert.match(appJs, /data-add-draft-collaborator="\$\{draft\.id\}"/)
+  assert.match(appJs, /data-remove-draft-collaborator="\$\{draft\.id\}"/)
+  assert.match(appJs, /data-draft-share-feedback="\$\{draft\.id\}" role="status" aria-live="polite" aria-atomic="true"/)
+  assert.match(appJs, /function canManageDraftCollaborators\(draft\)/)
+  assert.match(appJs, /function draftCollaboratorDeniedMessage\(draft\)/)
+  assert.match(appJs, /Readonly role: collaborator updates are disabled\./)
+  assert.match(appJs, /Only the draft owner can manage collaborators\./)
+  assert.match(appJs, /routes\.formDraftCollaborators\(draftId\)/)
+  assert.match(appJs, /routes\.formDraftCollaborator\(draftId, userId\)/)
 })
