@@ -36,6 +36,11 @@ const integrationSuites = [
     invariant: 'Analytics endpoints remain queryable with authenticated data-scoped responses.'
   },
   {
+    script: 'integration-e2e-workflows.mjs',
+    invariant:
+      'Critical end-to-end workflows (bootstrap/login, advisor draft conflicts, template-to-submission, portal draft+submit) remain deterministic.'
+  },
+  {
     script: 'integration-csrf.mjs',
     invariant: 'CSRF protection is enforced for protected methods while exempt routes remain functional.'
   },

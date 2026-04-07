@@ -19,6 +19,7 @@
     "test:csrf": "node scripts/integration-csrf.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
     "test:integration": "node scripts/master-integration.mjs",
+    "test:e2e": "node scripts/integration-e2e-workflows.mjs",
     "test:security": "node scripts/security-checks.mjs",
     "check:migrations": "node scripts/migration-order-check.mjs",
     "validate:master": "node scripts/master-validate.mjs",
