@@ -3089,7 +3089,8 @@ function operationsCommandBlock() {
     'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight',
     'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy',
     'export RESTORE_BACKUP_PATH=data/backup-<timestamp>.db',
-    'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"'
+    'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"',
+    'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"'
   ].join('\n')
 }
 
@@ -3163,13 +3164,14 @@ async function renderOperations() {
         <span class="badge subtle">${state.operations.lastUpdatedAt ? `Updated ${new Date(state.operations.lastUpdatedAt).toLocaleString()}` : 'Not yet updated'}</span>
       </div>
       <section class="ops-quickstart" aria-labelledby="ops-quickstart-heading">
-        <h3 id="ops-quickstart-heading">Quickstart links and evidence conventions</h3>
+        <h3 id="ops-quickstart-heading">Quickstart links and canonical release references</h3>
         <ul class="ops-quickstart-list">
           <li><a href="/health"><code>/health</code></a> — immediate service health check (must be healthy for GO).</li>
           <li><a href="/ready"><code>/ready</code></a> — dependency readiness + <code>checks.*</code> contract (must all be true).</li>
           <li><a href="/api/ops/diagnostics"><code>/api/ops/diagnostics</code></a> — runtime/startup diagnostics for release blocker triage.</li>
           <li><a href="/api/ops/exports/queue"><code>/api/ops/exports/queue</code></a> — queue stalled/dead-letter/retryable trend checks.</li>
           <li><a href="/docs/deployment-quick-reference.md#expected-artifact-outputs-and-locations">Release evidence directory convention: <code>artifacts/release-evidence/&lt;release-id&gt;/</code>.</a></li>
+          <li><a href="/docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts">Canonical release evidence bundle (required artifacts + gate summaries).</a></li>
           <li><a href="/docs/deployment-quick-reference.md#admin-shell-operations-panel-quick-links">Operator runbook details for this panel.</a></li>
         </ul>
       </section>

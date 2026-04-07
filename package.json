@@ -31,7 +31,9 @@
     "format:check": "prettier --check \"apps/api/**/*.mjs\" \"apps/web/public/**/*.{js,css,html}\" \"scripts/**/*.mjs\"",
     "release:go-no-go": "node scripts/release-go-no-go.mjs",
     "validate:release-evidence": "node scripts/validate-release-evidence.mjs",
-    "release:bundle-evidence": "node scripts/package-release-evidence.mjs"
+    "release:bundle-evidence": "node scripts/package-release-evidence.mjs",
+    "test:e2e": "node scripts/e2e-test.mjs",
+    "check:release-docs": "node scripts/check-release-doc-consistency.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

@@ -47,10 +47,28 @@ Core outputs by phase:
 
 | Phase | Expected outputs |
 |---|---|
-| Preflight | `preflight-env-summary.json`, `backup.json`, `branch-parity.txt`, `validate-master-summary.json`, plus gate summaries (`api-contract-summary.json`, `integration-summary.json`, `migration-summary.json`, `smoke-summary.json`, `security-summary.json`). |
+| Preflight | `preflight-env-summary.json`, `backup.json`, `branch-parity.txt`, `validate-master-summary.json`, plus gate summaries (`api-contract-summary.json`, `integration-summary.json`, `migration-summary.json`, `smoke-summary.json`, `security-summary.json`, `e2e-summary.json`). |
 | Postdeploy | `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`. |
 | Restore (live rollback) | `restore.json` with `executionMode=live-restore`. |
 | Restore drill (verify-only) | `restore-drill.json` with `executionMode=verify-only-drill`. |
+
+
+## Canonical release evidence bundle (required artifacts)
+Use this section as the single source of truth for required evidence bundle contents referenced by README/checklist/handoff.
+
+Required gate summaries:
+- `validate-master-summary.json`
+- `api-contract-summary.json`
+- `integration-summary.json`
+- `migration-summary.json`
+- `smoke-summary.json`
+- `security-summary.json`
+- `e2e-summary.json`
+
+Required manifest + approval artifacts:
+- `manifest.json`
+- `approval-bundle/`
+- `approval-bundle/bundle-manifest.json`
 
 ## Admin shell operations panel quick links
 The admin shell includes an **Operations / Launch readiness** panel that mirrors this runbook and is intended as a fast triage surface.
