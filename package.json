@@ -30,7 +30,8 @@
     "lint": "eslint \"apps/api/**/*.mjs\" \"apps/web/public/**/*.js\" \"scripts/**/*.mjs\"",
     "format:check": "prettier --check \"apps/api/**/*.mjs\" \"apps/web/public/**/*.{js,css,html}\" \"scripts/**/*.mjs\"",
     "release:go-no-go": "node scripts/release-go-no-go.mjs",
-    "validate:release-evidence": "node scripts/validate-release-evidence.mjs"
+    "validate:release-evidence": "node scripts/validate-release-evidence.mjs",
+    "release:bundle-evidence": "node scripts/package-release-evidence.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
