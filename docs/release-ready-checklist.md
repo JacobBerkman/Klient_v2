@@ -18,7 +18,8 @@ npm run release:go-no-go -- --release-id "$RELEASE_ID"
 
 This command runs, in exact order: Flow A (backup -> parity -> hard gate) and deterministic post-deploy checks (health -> ready -> exports queue -> diagnostics).
 All evidence is written under `artifacts/release-evidence/<release-id>`.
-The GO/NO-GO evidence package is complete only when `artifacts/release-evidence/<release-id>/manifest.json` is present and includes phase statuses plus SHA-256 metadata for produced artifacts.
+The default approver review artifact is `artifacts/release-evidence/<release-id>/approval-bundle/` (directory-manifest format) produced automatically by `release:go-no-go`.
+The GO/NO-GO evidence package is complete only when both `artifacts/release-evidence/<release-id>/manifest.json` and `artifacts/release-evidence/<release-id>/approval-bundle/bundle-manifest.json` are present.
 
 Required environment variables:
 - `RELEASE_ID` (or pass `--release-id`) for artifact scoping.
@@ -100,6 +101,7 @@ Use only `docs/deployment-quick-reference.md#canonical-operator-flow-exact-comma
 | Telemetry/runtime diagnostics | Observability Owner | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-telemetry-bundle.json`, `artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json` | `/api/ops/diagnostics startup.runtime.ok` is true (and `/ready` remains minimal/public-safe). | **SEV-1** | Roll back if telemetry indicates sustained SLO breach for **>10 minutes** or unresolved critical/high alerts. |
 | Post-deploy enforced rule summary | Release Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy` | `artifacts/release-evidence/<release-id>/postdeploy-evaluation-summary.json` | Summary has `status=passed`; every rule entry has `passed=true`; threshold values match release-time env var settings. | **SEV-1** | NO-GO if summary is missing or has any failed rule. |
 | Evidence manifest | Release Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID"` | `artifacts/release-evidence/<release-id>/manifest.json` | Manifest exists and includes release id, per-phase status, generation timestamp, and SHA-256 metadata for produced artifact files. | **SEV-1** | Block GO/NO-GO decision until manifest is generated and attached to release handoff. |
+| Evidence approval bundle (default review artifact) | Release Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID"` | `artifacts/release-evidence/<release-id>/approval-bundle/` and `artifacts/release-evidence/<release-id>/approval-bundle/bundle-manifest.json` | Bundle exists, contains all mandatory checklist evidence for executed phases plus `manifest.json`, and `bundle-manifest.json` has SHA-256 metadata for bundled files. | **SEV-1** | Block GO/NO-GO approval until approvers receive a complete bundle path and manifest-backed file inventory. |
 
 ## Deterministic post-deploy validation sequence
 Execute in this exact order and stop on first failure:
@@ -115,7 +117,7 @@ Execute in this exact order and stop on first failure:
 - Use `/api/ops/exports/queue` with `KLIENT_OPS_TOKEN` for queue threshold remediation details.
 
 ## Release decision rubric
-- **GO**: `npm run release:go-no-go -- --release-id "$RELEASE_ID"` passes and every required row above is PASS with captured command output, evidence files, and `manifest.json`.
+- **GO**: `npm run release:go-no-go -- --release-id "$RELEASE_ID"` passes and every required row above is PASS with captured command output, evidence files, `manifest.json`, and the default approver bundle at `artifacts/release-evidence/<release-id>/approval-bundle/`.
 - **NO-GO**: Any row FAILS, is skipped, or has inconclusive evidence.
 
 ## Restore evidence decision rules

@@ -769,7 +769,17 @@ try {
     generatedAt: new Date().toISOString()
   })
   await validateReleaseEvidence()
-  process.stdout.write('\n✅ release-go-no-go completed successfully.\n')
+  const bundleResult = await runStep({
+    name: 'Flow Z.1 Evidence approval bundle packaging',
+    command: 'node',
+    args: ['scripts/package-release-evidence.mjs', '--release-id', options.releaseId, '--evidence-dir', evidenceDir]
+  })
+  const bundlePathLine = String(bundleResult.stdout || '')
+    .split(/\r?\n/)
+    .find((line) => line.startsWith('BUNDLE_PATH='))
+  const bundlePath = bundlePathLine ? bundlePathLine.slice('BUNDLE_PATH='.length).trim() : relative(process.cwd(), resolve(evidenceDir, 'approval-bundle'))
+
+  process.stdout.write(`\n✅ release-go-no-go completed successfully.\n📦 Approver evidence bundle: ${bundlePath}\n`)
 } catch (error) {
   writeManifest({
     releaseId: options.releaseId,
