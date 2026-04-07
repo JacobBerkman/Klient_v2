@@ -23,12 +23,14 @@ Set these before running flows (never commit secret values):
 |---|---|---|
 | `APP_SECRET` | always in production | must be explicitly set and meet minimum strength requirements. |
 | `AUTH_PROVIDER` | always in production | must be explicitly set; `local` requires `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true` or startup is blocked. |
+| `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS` | only for approved incidents where `AUTH_PROVIDER=local` in production | temporary break-glass override; emits warning and should be removed immediately after mitigation. |
 | `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI` | `AUTH_PROVIDER=oidc` | all required; issuer + redirect must be HTTPS; client secret must be >= 16 chars. |
 | `SAML_ENTRY_POINT`, `SAML_ISSUER`, `SAML_CERT` | `AUTH_PROVIDER=saml` | all required; entry point must be HTTPS; cert must contain `BEGIN CERTIFICATE`. |
 | `PII_KEY_PROVIDER` | always in production | provider selector (`env` or `kms`). |
 | `PII_ACTIVE_KEY_ID`, `PII_KEYRING` | `PII_KEY_PROVIDER=env` | both required; `PII_KEYRING` must be JSON and include `PII_ACTIVE_KEY_ID`. |
 | `PII_KMS_KEYRING` + (`PII_KMS_ACTIVE_KEY_ID` or `PII_ACTIVE_KEY_ID`) | `PII_KEY_PROVIDER=kms` | keyring required and must be JSON; active key id required. |
-| `KLIENT_OPS_TOKEN` | always in production | required and must be at least 24 characters. |
+| `KLIENT_OPS_TOKEN_ACTIVE`, `KLIENT_OPS_TOKEN_PREVIOUS`, `KLIENT_OPS_TOKENS`, `KLIENT_OPS_TOKEN` | always in production (at least one token required) | rotation-safe token set; startup fails if none are set; each provided token must be at least 24 characters. |
+| `STORAGE_PROVIDER` | always in production | storage provider selector (`local` or `s3`). |
 | `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY` | `STORAGE_PROVIDER=s3` | required together when S3 storage is selected. |
 
 ## Deployment contract consistency
@@ -49,6 +51,11 @@ Core outputs by phase:
 | Postdeploy | `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`. |
 | Restore (live rollback) | `restore.json` with `executionMode=live-restore`. |
 | Restore drill (verify-only) | `restore-drill.json` with `executionMode=verify-only-drill`. |
+
+Manifest semantics for phase-only runs:
+- `--phase restore` and `--phase restore-drill` both report under `phaseStatuses.restore`.
+- `phaseStatuses.restore.status` is always terminal (`passed` or `failed`) when the command exits; it is never left as `pending`.
+- `phaseStatuses.restore.artifacts` contains whichever restore evidence file was produced by that run (`restore.json` for live restore, `restore-drill.json` for verify-only drill).
 
 ## Canonical operator flow (exact command sequence)
 
@@ -112,6 +119,7 @@ npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --r
 Decision rule (must match artifact + mode):
 - Live rollback evidence: `restore.json` and `executionMode=live-restore`.
 - Drill evidence only: `restore-drill.json` and `executionMode=verify-only-drill`.
+- In `manifest.json`, both commands update `phaseStatuses.restore` status to `passed|failed` and list the generated restore artifact path for that run.
 - Never mark a live rollback as complete based on `restore-drill.json`.
 
 ## Common failure signatures (diagnostics-keyed)

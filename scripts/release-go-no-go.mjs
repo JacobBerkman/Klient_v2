@@ -115,7 +115,7 @@ function parseJsonFile(file, label) {
   try {
     return JSON.parse(readFileSync(file, 'utf8'))
   } catch (error) {
-    fail(`${label} is not valid JSON at ${file}: ${error.message}`)
+    throw new Error(`${label} is not valid JSON at ${file}: ${error.message}`)
   }
 }
 
@@ -312,7 +312,7 @@ function ensureRestoreEvidence(restoreFile, expectedMode = 'live-restore') {
     report.checks?.sha256Match === true
 
   if (!valid) {
-    fail(
+    throw new Error(
       `Restore evidence validation failed at ${restoreFile}. Expected ok=true, status=succeeded, executionMode=${expectedMode}, source/restoreTarget sqliteQuickCheck=ok, and checks.sizeMatch/checks.sha256Match=true`
     )
   }
@@ -536,7 +536,7 @@ const preflight = async () => {
 const restoreValidation = async ({ verifyOnly = false } = {}) => {
   const restorePath = options.restorePath || process.env.RESTORE_BACKUP_PATH
   if (!restorePath) {
-    fail('Restore flow requires --restore-path <backup-file> or RESTORE_BACKUP_PATH.')
+    throw new Error('Restore flow requires --restore-path <backup-file> or RESTORE_BACKUP_PATH.')
   }
 
   const restoreFile = resolve(evidenceDir, verifyOnly ? 'restore-drill.json' : 'restore.json')
