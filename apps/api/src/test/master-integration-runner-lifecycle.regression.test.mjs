@@ -61,7 +61,7 @@ test('aggregate runner does not stall waiting on inherited stdio held by grandch
 })
 
 
-test('master integration aggregate completes with test-harness piped server stdio in artifact-style execution', async () => {
+test('master integration aggregate completes with test-harness piped server stdio in artifact-style execution', { concurrency: false }, async () => {
   const masterIntegrationPath = resolve(repoRoot, 'scripts/master-integration.mjs')
   const start = Date.now()
 
@@ -82,7 +82,30 @@ test('master integration aggregate completes with test-harness piped server stdi
   assert(elapsed < 180000, `expected aggregate runner completion before timeout, got ${elapsed}ms`)
 })
 
-test('npm test:integration exits cleanly when filtered to integration-exports suite', async () => {
+
+
+test('master integration hands off cleanly from exports suite to subsequent suite in artifact-style flow', { concurrency: false }, async () => {
+  const masterIntegrationPath = resolve(repoRoot, 'scripts/master-integration.mjs')
+  const start = Date.now()
+
+  const result = await runChildProcess({
+    scriptPath: masterIntegrationPath,
+    label: 'master-integration-exports-handoff',
+    stdio: 'inherit',
+    timeoutMs: 240000,
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      INTEGRATION_SUITES: 'integration-exports.mjs,integration-portal-lifecycle.mjs'
+    }
+  })
+
+  const elapsed = Date.now() - start
+  assert.equal(result.code, 0)
+  assert(elapsed < 240000, `expected handoff after exports suite to complete before timeout, got ${elapsed}ms`)
+})
+
+test('npm test:integration exits cleanly when filtered to integration-exports suite', { concurrency: false }, async () => {
   const start = Date.now()
   const result = await runCommandProcess({
     command: 'npm',
@@ -102,7 +125,7 @@ test('npm test:integration exits cleanly when filtered to integration-exports su
   assert(elapsed < 180000, `expected npm test:integration completion before timeout, got ${elapsed}ms`)
 })
 
-test('validate master exits cleanly after integration success in artifact-style flow', async () => {
+test('validate master exits cleanly after integration success in artifact-style flow', { concurrency: false }, async () => {
   const masterValidatePath = resolve(repoRoot, 'scripts/master-validate.mjs')
   const start = Date.now()
 
