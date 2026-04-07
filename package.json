@@ -27,7 +27,7 @@
     "test:csrf": "node scripts/integration-csrf.mjs",
     "test:e2e": "node scripts/e2e-test.mjs",
     "test:integration": "node scripts/master-integration.mjs",
-    "test:runtime-contract": "node --test apps/api/src/test/runtime-contract.test.mjs",
+    "test:e2e": "node scripts/integration-e2e-workflows.mjs",
     "test:security": "node scripts/security-checks.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
     "validate:master": "node scripts/master-validate.mjs",
