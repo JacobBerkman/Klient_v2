@@ -121,7 +121,9 @@ function parseJsonFile(file, label) {
 
 async function validateReleaseEvidence() {
   const args = ['scripts/validate-release-evidence.mjs', '--release-id', options.releaseId, '--phase', executionPhase]
-  if (String(process.env.RELEASE_VALIDATE_HANDOFF_PLACEHOLDERS || '').toLowerCase() === 'true') {
+  const strictHandoffValidationEnabled =
+    String(process.env.RELEASE_VALIDATE_HANDOFF_PLACEHOLDERS || '').toLowerCase() === 'true'
+  if (strictHandoffValidationEnabled) {
     args.push('--check-handoff-placeholders')
     if (process.env.RELEASE_HANDOFF_DOC) args.push('--handoff-file', process.env.RELEASE_HANDOFF_DOC)
   }
