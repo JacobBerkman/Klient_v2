@@ -1167,6 +1167,7 @@ export function createHttpServer({ modules }) {
         const [, draftId] = draftLockMatch
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
+        modules.policy.requireGuard(user, 'canWriteDraftCollaborator')
         const result = modules.forms.acquireDraftLock(user, decodeURIComponent(draftId), await parseBody(req))
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -1175,8 +1176,39 @@ export function createHttpServer({ modules }) {
         const [, draftId] = draftLockMatch
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
+        modules.policy.requireGuard(user, 'canWriteDraftCollaborator')
         const body = await parseBody(req)
         const result = modules.forms.releaseDraftLock(user, decodeURIComponent(draftId), body?.leaseId || '')
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      const draftCollaboratorsMatch = pathname.match(/^\/api\/forms\/drafts\/([^/]+)\/collaborators$/)
+      if (draftCollaboratorsMatch && req.method === 'GET') {
+        const [, draftId] = draftCollaboratorsMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageDraftSharing')
+        const result = modules.forms.listDraftCollaborators(user, decodeURIComponent(draftId))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (draftCollaboratorsMatch && req.method === 'POST') {
+        const [, draftId] = draftCollaboratorsMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageDraftSharing')
+        const result = modules.forms.addDraftCollaborator(user, decodeURIComponent(draftId), await parseBody(req))
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      const draftCollaboratorDeleteMatch = pathname.match(/^\/api\/forms\/drafts\/([^/]+)\/collaborators\/([^/]+)$/)
+      if (draftCollaboratorDeleteMatch && req.method === 'DELETE') {
+        const [, draftId, collaboratorUserId] = draftCollaboratorDeleteMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canManageDraftSharing')
+        const result = modules.forms.removeDraftCollaborator(
+          user,
+          decodeURIComponent(draftId),
+          decodeURIComponent(collaboratorUserId)
+        )
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -1185,6 +1217,7 @@ export function createHttpServer({ modules }) {
         const [, draftId] = draftMatch
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteForms')
+        modules.policy.requireGuard(user, 'canWriteDraftCollaborator')
         const result = modules.forms.reviseDraftSubmission(user, decodeURIComponent(draftId), await parseBody(req))
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
