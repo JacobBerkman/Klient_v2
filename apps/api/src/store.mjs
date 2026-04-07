@@ -576,6 +576,22 @@ function profileSourcePaths() {
   ])
 }
 
+function profileSourcePathsForFirm(firm) {
+  const allowedSourcePaths = profileSourcePaths()
+  const customFieldSchema = normalizeCustomFieldSchema(firm?.customFieldSchema)
+  const sortedFields = [...customFieldSchema.fields].sort((a, b) => String(a.key).localeCompare(String(b.key)))
+  for (const field of sortedFields) {
+    const key = String(field?.key || '').trim()
+    if (!key) continue
+    allowedSourcePaths.set(`profile.extensions.values.${key}`, {
+      source: 'profile_custom_field',
+      type: field.type,
+      customFieldKey: key
+    })
+  }
+  return allowedSourcePaths
+}
+
 function extractedFieldName(entry) {
   if (entry && typeof entry === 'object' && !Array.isArray(entry)) return String(entry.fieldName || '').trim()
   return String(entry || '').trim()
