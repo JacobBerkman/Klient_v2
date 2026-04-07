@@ -97,6 +97,7 @@ Optional per-file links (if needed for review):
 - `artifacts/release-evidence/<release-id>/integration-summary.json`
 - `artifacts/release-evidence/<release-id>/migration-summary.json`
 - `artifacts/release-evidence/<release-id>/smoke-summary.json`
+- `artifacts/release-evidence/<release-id>/e2e-summary.json`
 - `artifacts/release-evidence/<release-id>/security-summary.json`
 - `artifacts/release-evidence/<release-id>/branch-parity.txt`
 - `artifacts/release-evidence/<release-id>/backup.json`
