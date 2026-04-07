@@ -120,6 +120,8 @@ Execute in this exact order and stop on first failure:
 ## Restore evidence decision rules
 - Live rollback evidence: `restore.json` and `executionMode=live-restore`.
 - Drill evidence only: `restore-drill.json` and `executionMode=verify-only-drill`.
+- `manifest.json` records both restore command modes under `phaseStatuses.restore` with terminal `status` (`passed` or `failed`) and whichever restore artifact was produced in that execution.
+- A restore-only command completion must not leave any phase in `pending`; restore phase state is terminal when the process exits.
 - Never mark a live rollback as complete based on `restore-drill.json`.
 
 

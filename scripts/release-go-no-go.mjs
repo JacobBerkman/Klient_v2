@@ -115,7 +115,7 @@ function parseJsonFile(file, label) {
   try {
     return JSON.parse(readFileSync(file, 'utf8'))
   } catch (error) {
-    fail(`${label} is not valid JSON at ${file}: ${error.message}`)
+    throw new Error(`${label} is not valid JSON at ${file}: ${error.message}`)
   }
 }
 
@@ -298,7 +298,7 @@ function ensureRestoreEvidence(restoreFile, expectedMode = 'live-restore') {
     report.checks?.sha256Match === true
 
   if (!valid) {
-    fail(
+    throw new Error(
       `Restore evidence validation failed at ${restoreFile}. Expected ok=true, status=succeeded, executionMode=${expectedMode}, source/restoreTarget sqliteQuickCheck=ok, and checks.sizeMatch/checks.sha256Match=true`
     )
   }
@@ -431,7 +431,9 @@ process.stdout.write(`Using evidence directory: ${evidenceDir}\n`)
 
 const phaseReports = {
   preflight: initializePhaseReport(options.phase === 'all' || options.phase === 'preflight' ? 'pending' : 'skipped'),
-  restore: initializePhaseReport(options.phase === 'restore' ? 'pending' : 'skipped'),
+  restore: initializePhaseReport(
+    options.phase === 'restore' || options.phase === 'restore-drill' ? 'pending' : 'skipped'
+  ),
   postdeploy: initializePhaseReport(options.phase === 'all' || options.phase === 'postdeploy' ? 'pending' : 'skipped')
 }
 
@@ -519,7 +521,7 @@ const preflight = async () => {
 const restoreValidation = async ({ verifyOnly = false } = {}) => {
   const restorePath = options.restorePath || process.env.RESTORE_BACKUP_PATH
   if (!restorePath) {
-    fail('Restore flow requires --restore-path <backup-file> or RESTORE_BACKUP_PATH.')
+    throw new Error('Restore flow requires --restore-path <backup-file> or RESTORE_BACKUP_PATH.')
   }
 
   const restoreFile = resolve(evidenceDir, verifyOnly ? 'restore-drill.json' : 'restore.json')
@@ -599,9 +601,13 @@ try {
   if (options.phase === 'preflight') {
     await runPhase('preflight', preflight)
   } else if (options.phase === 'restore') {
-    await restoreValidation({ verifyOnly: options.restoreVerifyOnly })
+    await runPhase('restore', async () => {
+      await restoreValidation({ verifyOnly: options.restoreVerifyOnly })
+    })
   } else if (options.phase === 'restore-drill') {
-    await restoreValidation({ verifyOnly: true })
+    await runPhase('restore', async () => {
+      await restoreValidation({ verifyOnly: true })
+    })
   } else if (options.phase === 'postdeploy') {
     await runPhase('postdeploy', postdeploy)
   } else {
