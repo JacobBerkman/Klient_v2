@@ -110,6 +110,20 @@ function addWarning(warnings, code, message, options = {}) {
   })
 }
 
+function buildRowId(rule = {}, index = 0) {
+  return createHash('sha1')
+    .update(
+      stableSerialize({
+        index,
+        pdfField: String(rule.pdfField || '').trim(),
+        sourcePath: String(rule.sourcePath || '').trim(),
+        fieldLabel: String(rule.fieldLabel || '').trim()
+      })
+    )
+    .digest('hex')
+    .slice(0, 12)
+}
+
 export function canonicalizeMappings(inputMappings = []) {
   return convertLegacyMappingRules(inputMappings).map((rule) => ({ ...rule }))
 }
@@ -126,14 +140,19 @@ export function resolveExportData({ mappings = [], profile = null, submission = 
     const transformed = applyTransform(rawValue, rule?.transform || null)
     const value = normalizeResolvedValue(rule, rawValue)
     const warnings = []
+    const isRequired = rule?.required === true
     if (sourcePath && rawValue === undefined) {
-      addWarning(warnings, 'UNRESOLVED_SOURCE_PATH', `No value found for source path "${sourcePath}".`)
+      addWarning(warnings, 'UNRESOLVED_SOURCE_PATH', `No value found for source path "${sourcePath}".`, {
+        blocking: isRequired
+      })
     }
     if ((transformed === null || transformed === undefined || transformed === '') && Object.hasOwn(rule || {}, 'defaultValue')) {
       addWarning(warnings, 'FALLBACK_DEFAULT_APPLIED', 'Default value applied after transform.')
     }
     if (rawValue != null && (transformed === null || transformed === undefined || transformed === '')) {
-      addWarning(warnings, 'NULL_AFTER_TRANSFORM', 'Transform produced an empty value from a non-empty source.')
+      addWarning(warnings, 'NULL_AFTER_TRANSFORM', 'Transform produced an empty value from a non-empty source.', {
+        blocking: isRequired
+      })
     }
     const targetType = String(rule.targetType || '').trim()
     if (targetType && value != null) {
@@ -148,6 +167,7 @@ export function resolveExportData({ mappings = [], profile = null, submission = 
       }
     }
     return {
+      rowId: buildRowId(rule, index),
       rowIndex: index,
       pdfField: String(rule.pdfField || '').trim(),
       sourcePath,
@@ -155,7 +175,12 @@ export function resolveExportData({ mappings = [], profile = null, submission = 
       transform: summarizeTransform(rule?.transform || null),
       value,
       rawValue: rawValue === undefined ? null : rawValue,
-      warnings
+      warnings,
+      warningSummary: {
+        total: warnings.length,
+        blocking: warnings.filter((warning) => warning.blocking).length,
+        nonBlocking: warnings.filter((warning) => !warning.blocking).length
+      }
     }
   })
   const warningsCount = rows.reduce((count, row) => count + row.warnings.length, 0)

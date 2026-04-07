@@ -45,8 +45,9 @@ test('autoBuildTemplate extracts AcroForm metadata and snapshots it in versions'
 
   assert.equal(template.extraction.status, 'completed')
   assert.equal(template.extraction.reasonCode, null)
+  assert.equal(template.extraction.error, null)
   assert.equal(template.extractedFields.length, 4)
-  assert.equal(template.mappings.length, 4)
+  assert.equal(template.mappings.length, 3)
 
   const textField = template.extractedFields.find((entry) => entry.fieldName === 'client_name')
   assert.deepEqual(textField, {
@@ -84,6 +85,8 @@ test('autoBuildTemplate returns failed extraction status for non-form pdf', asyn
 
   assert.equal(template.extraction.status, 'failed')
   assert.equal(template.extraction.reasonCode, 'no_acroform')
+  assert.equal(template.extraction.error.code, 'TEMPLATE_INGESTION_NO_ACROFORM')
+  assert.match(template.extraction.error.message, /AcroForm/i)
   assert.equal(template.extractedFields.length, 0)
   assert.equal(template.mappings.length, 0)
 })
@@ -101,5 +104,7 @@ test('autoBuildTemplate returns failed extraction status for malformed files', a
 
   assert.equal(template.extraction.status, 'failed')
   assert.equal(template.extraction.reasonCode, 'malformed_pdf')
+  assert.equal(template.extraction.error.code, 'TEMPLATE_INGESTION_MALFORMED_PDF')
+  assert.match(template.extraction.error.message, /valid AcroForm PDF/i)
   assert.equal(template.extractedFields.length, 0)
 })
