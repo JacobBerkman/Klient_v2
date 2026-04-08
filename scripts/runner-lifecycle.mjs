@@ -28,6 +28,18 @@ export function runCommandProcess({
 
     const child = spawn(command, args, { stdio, cwd, env, shell })
 
+    const isPiped = (value) => value === 'pipe'
+    const shouldDrainStdout = stdio === 'pipe' || (Array.isArray(stdio) && isPiped(stdio[1]))
+    const shouldDrainStderr = stdio === 'pipe' || (Array.isArray(stdio) && isPiped(stdio[2]))
+
+    // Prevent child processes from stalling when callers use piped stdio but do not actively consume it.
+    if (shouldDrainStdout && child.stdout) {
+      child.stdout.resume()
+    }
+    if (shouldDrainStderr && child.stderr) {
+      child.stderr.resume()
+    }
+
     let settled = false
     let timeoutId = null
 
