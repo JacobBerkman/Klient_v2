@@ -1,10 +1,22 @@
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
+import { spawnSync } from 'node:child_process'
 import { runCommandProcess } from './runner-lifecycle.mjs'
 
 const defaultEvidenceDir = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_DIR || 'artifacts/release-evidence')
 
-const gateSteps = [
+function isGitCheckout(cwd = process.cwd()) {
+  return existsSync(resolve(cwd, '.git'))
+}
+
+function shouldIncludeMergeParityStep() {
+  if (process.env.VALIDATE_MASTER_FORCE_MERGE_PARITY === '1') return true
+  if (!isGitCheckout()) return false
+  const branchCheck = spawnSync('git', ['rev-parse', '--verify', 'main'], { stdio: 'ignore' })
+  return branchCheck.status === 0
+}
+
+const baseGateSteps = [
   { name: 'Static syntax checks', command: 'npm', args: ['run', 'check:syntax'], evidenceFile: null },
   { name: 'Conflict marker guard', command: 'npm', args: ['run', 'check:conflicts'], evidenceFile: null },
   {
@@ -49,9 +61,20 @@ const gateSteps = [
     command: 'npm',
     args: ['run', 'test:security'],
     evidenceFile: resolve(defaultEvidenceDir, 'security-summary.json')
-  },
-  { name: 'Merge/main parity check', command: 'npm', args: ['run', 'check:merge-main'], evidenceFile: null }
+  }
 ]
+
+const includeMergeParityStep = shouldIncludeMergeParityStep()
+
+const gateSteps = includeMergeParityStep
+  ? [...baseGateSteps, { name: 'Merge/main parity check', command: 'npm', args: ['run', 'check:merge-main'], evidenceFile: null }]
+  : baseGateSteps
+
+if (!includeMergeParityStep) {
+  process.stdout.write(
+    '\nℹ️ Skipping merge/main parity check because this workspace is missing required git metadata (no .git or no local main branch).\n'
+  )
+}
 
 
 function resolveGateStepsFromEnv() {

@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { dirname, resolve } from 'node:path'
+import { cp, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 const testDir = dirname(fileURLToPath(import.meta.url))
@@ -145,4 +147,38 @@ test('validate master exits cleanly after integration success in artifact-style 
   const elapsed = Date.now() - start
   assert.equal(result.code, 0)
   assert(elapsed < 180000, `expected validate:master completion before timeout, got ${elapsed}ms`)
+})
+
+test('validate master skips merge parity and completes from unpacked zip-style artifact', { concurrency: false }, async () => {
+  const artifactRoot = await mkdtemp(resolve(tmpdir(), 'klient-artifact-'))
+  const unpackedRoot = resolve(artifactRoot, 'unpacked')
+
+  await cp(repoRoot, unpackedRoot, {
+    recursive: true,
+    filter(sourcePath) {
+      return !sourcePath.includes('/.git')
+    }
+  })
+
+  const start = Date.now()
+  try {
+    const result = await runChildProcess({
+      scriptPath: resolve(unpackedRoot, 'scripts/master-validate.mjs'),
+      label: 'master-validate-unpacked-artifact',
+      stdio: 'inherit',
+      timeoutMs: 300000,
+      cwd: unpackedRoot,
+      env: {
+        ...process.env,
+        VALIDATE_MASTER_STEPS: 'integration-suites',
+        INTEGRATION_SUITES: 'integration-exports.mjs,integration-portal-lifecycle.mjs'
+      }
+    })
+
+    const elapsed = Date.now() - start
+    assert.equal(result.code, 0)
+    assert(elapsed < 300000, `expected artifact validate completion before timeout, got ${elapsed}ms`)
+  } finally {
+    await rm(artifactRoot, { recursive: true, force: true })
+  }
 })
