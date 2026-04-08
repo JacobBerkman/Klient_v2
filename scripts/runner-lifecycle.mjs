@@ -42,6 +42,8 @@ export function runCommandProcess({
 
     let settled = false
     let timeoutId = null
+    let closeFallbackId = null
+    let exitResult = null
 
     const cleanup = () => {
       child.removeListener('error', onError)
@@ -50,6 +52,10 @@ export function runCommandProcess({
       if (timeoutId) {
         clearTimeout(timeoutId)
         timeoutId = null
+      }
+      if (closeFallbackId) {
+        clearTimeout(closeFallbackId)
+        closeFallbackId = null
       }
     }
 
@@ -64,7 +70,7 @@ export function runCommandProcess({
       settle(reject, new Error(`${displayLabel} failed to start: ${error.message}`))
     }
 
-    const handleCompletion = (eventName, code, signal) => {
+    const finalizeCompletion = (eventName, code, signal) => {
       if (settled) return
 
       const durationMs = Date.now() - start
@@ -81,16 +87,30 @@ export function runCommandProcess({
       settle(resolve, { durationMs, code })
     }
 
+    const shouldPreferClose = shouldDrainStdout || shouldDrainStderr
+
     const onExit = (code, signal) => {
-      handleCompletion('exit', code, signal)
+      if (!shouldPreferClose) {
+        finalizeCompletion('exit', code, signal)
+        return
+      }
+
+      exitResult = { code, signal }
+      if (!closeFallbackId) {
+        closeFallbackId = setTimeout(() => {
+          finalizeCompletion('exit', code, signal)
+        }, 1000)
+        closeFallbackId.unref()
+      }
     }
 
     const onClose = (code, signal) => {
-      handleCompletion('close', code, signal)
+      const completion = exitResult ?? { code, signal }
+      finalizeCompletion('close', completion.code, completion.signal)
     }
 
-    // Prefer `exit` so we do not wait on inherited stdio held by descendants.
-    // Keep `close` as a fallback for environments where only stream-closure is emitted.
+    // Prefer `exit` for inherited stdio so descendants cannot pin completion.
+    // For piped stdio, prefer `close` so stream buffers fully drain before handoff.
     child.once('error', onError)
     child.once('exit', onExit)
     child.once('close', onClose)
