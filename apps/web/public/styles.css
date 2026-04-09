@@ -54,9 +54,9 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid #93c5fd;
+  outline: 2px solid #bfdbfe;
   outline-offset: 2px;
-  box-shadow: 0 0 0 3px rgba(30, 64, 175, 0.25);
+  box-shadow: 0 0 0 4px rgba(59, 130, 246, 0.3);
 }
 
 [tabindex='-1']:focus-visible {
@@ -353,6 +353,21 @@ textarea {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 10px;
 }
+.ops-action-plan {
+  border: 1px solid #7c2d12;
+  background: #1c1917;
+  border-radius: 10px;
+  padding: 10px;
+}
+.ops-action-list {
+  margin: 8px 0;
+  padding-left: 18px;
+  display: grid;
+  gap: 8px;
+}
+.ops-action-list a {
+  color: #93c5fd;
+}
 .ops-card {
   border: 1px solid #334155;
   border-radius: 10px;
@@ -446,6 +461,7 @@ textarea {
 .mapping-row-item.is-selected {
   outline: 1px solid #60a5fa;
   outline-offset: -1px;
+  background: rgba(30, 58, 138, 0.18);
 }
 
 .mapping-row-item.is-jumped {
@@ -493,6 +509,39 @@ textarea {
   margin-top: 8px;
   color: #fbbf24;
   font-size: 13px;
+}
+.publish-blockers {
+  border: 1px solid #92400e;
+  background: #1f2937;
+  border-radius: 10px;
+  padding: 8px 10px;
+}
+.publish-blockers ul {
+  margin: 6px 0 0;
+  display: grid;
+  gap: 6px;
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+}
+th,
+td {
+  border-bottom: 1px solid #1e293b;
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+}
+thead th {
+  color: #cbd5e1;
+  background: rgba(15, 23, 42, 0.7);
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+tbody tr:nth-child(even) {
+  background: rgba(15, 23, 42, 0.35);
 }
 
 button[disabled].publish-action,

@@ -1713,10 +1713,62 @@ function formatSchemaIssue(issue = {}) {
 }
 
 function mappingSaveStateLabel(saveState = {}) {
+  const savedAt = saveState.savedAt ? new Date(saveState.savedAt).toLocaleTimeString() : ''
   if (saveState.status === 'saving') return 'Saving…'
+  if (saveState.status === 'dirty') return 'Unsaved edits · autosave pending'
   if (saveState.status === 'error') return `Error (${saveState.message || 'retry'})`
-  if (saveState.status === 'recovered') return 'Recovered'
-  return 'Saved'
+  if (saveState.status === 'recovered') return savedAt ? `Recovered · saved ${savedAt}` : 'Recovered'
+  if (saveState.status === 'saved') return savedAt ? `Saved ${savedAt}` : 'Saved'
+  return 'Ready'
+}
+
+function publishBlockersMarkup({ hasLocalMappingErrors, hasBlockingPreviewWarnings, preflightIssues = [], preflightIssueRows = new Set() }) {
+  const blockers = []
+  if (hasLocalMappingErrors) {
+    blockers.push(
+      '<li><strong>Local mapping validation failed.</strong> Fix rows marked in <em>Local validation</em>, then run <em>Save Now</em> to clear this blocker.</li>'
+    )
+  }
+  if (hasBlockingPreviewWarnings) {
+    blockers.push(
+      '<li><strong>Preview reported blocking warnings/issues.</strong> Use the row jump buttons in Preview/Remediation, correct the source path or transform, then rerun Preview.</li>'
+    )
+  }
+  if (preflightIssues.length) {
+    blockers.push(
+      `<li><strong>Publish preflight failed.</strong> ${preflightIssues.length} schema issue(s) across ${preflightIssueRows.size || 0} row(s). Resolve listed issue IDs and rerun preflight.</li>`
+    )
+  }
+  if (!blockers.length) return ''
+  return `<div class="publish-blockers" role="status" aria-live="polite"><p class="publish-disabled-reason"><strong>Publish blocked:</strong></p><ul>${blockers.join('')}</ul></div>`
+}
+
+function operationsQueueActionPlanMarkup(snapshot = {}) {
+  const queuePayload = snapshot?.queue?.payload
+  const queue = queuePayload?.queue || queuePayload || {}
+  const stalled = toOpsNumber(queue.stalled)
+  const deadLetter = toOpsNumber(queue.machineState?.deadLetter?.count ?? queue.deadLetter)
+  const retryable = toOpsNumber(queue.failedRetryable)
+  const actions = []
+  if (stalled > RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueStalled) {
+    actions.push(
+      `<li><span class="ops-badge fail">STALLED</span> ${stalled} stalled job(s). <strong>Next step:</strong> inspect worker lease contention and restart stuck workers safely. <a href="/docs/deployment-quick-reference.md#common-failure-signatures-diagnostics-keyed">Runbook</a></li>`
+    )
+  }
+  if (deadLetter > RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueDeadLetter) {
+    actions.push(
+      `<li><span class="ops-badge fail">DEAD-LETTER</span> ${deadLetter} dead-letter job(s). <strong>Next step:</strong> triage root cause per failed export, patch the cause, then retry only validated jobs. <a href="/docs/deployment-quick-reference.md#common-failure-signatures-diagnostics-keyed">Runbook</a></li>`
+    )
+  }
+  if (retryable > RELEASE_POSTDEPLOY_GUIDANCE_THRESHOLDS.maxQueueFailedRetryable) {
+    actions.push(
+      `<li><span class="ops-badge warn">RETRYABLE</span> ${retryable} retryable failure(s). <strong>Next step:</strong> fix transient dependencies and confirm backlog drains before GO.</li>`
+    )
+  }
+  if (!actions.length) {
+    return '<p class="muted compact">Queue action plan: no actionable queue blockers detected for stalled/dead-letter/retryable thresholds.</p>'
+  }
+  return `<section class="ops-action-plan" aria-labelledby="ops-action-plan-heading"><h3 id="ops-action-plan-heading">Actionable queue states</h3><ul class="ops-action-list">${actions.join('')}</ul><p class="muted compact">Proceed to GO only after each state returns to threshold and diagnostics evidence is recaptured.</p></section>`
 }
 
 function previewWarningMarkup(warnings = []) {
@@ -1901,7 +1953,7 @@ async function renderTemplates() {
           <span class="badge">Mapped ${draftMappings.filter((entry) => entry.enabled !== false && String(entry.pdfField || '').trim()).length}</span>
           <span class="badge subtle">Unmapped ${Math.max(0, extractedFields.length - mappedExtractedCount)}</span>
           <span class="badge ${hasLocalMappingErrors ? 'error-badge' : 'warning-badge'}">Validation ${hasLocalMappingErrors ? 'Needs fixes' : 'Ready'}</span>
-          <span class="badge subtle">Save state: ${escapeHtml(mappingSaveStateLabel(saveState))}</span>
+          <span class="badge subtle">Autosave: ${escapeHtml(mappingSaveStateLabel(saveState))}</span>
         </div>
       </section>
       <section class="item">
@@ -2043,8 +2095,7 @@ async function renderTemplates() {
           <button id="run-publish-preflight" class="tiny secondary">Run Publish Preflight</button>
           <button id="publish-template" class="tiny publish-action" ${publishDisabled ? 'disabled' : ''}>Publish</button>
         </div>
-        ${hasLocalMappingErrors ? '<p class="publish-disabled-reason">Publish is blocked until local mapping errors are resolved.</p>' : ''}
-        ${hasBlockingPreviewWarnings ? '<p class="publish-disabled-reason">Publish is blocked by preview validation issues. Resolve highlighted rows first.</p>' : ''}
+        ${publishBlockersMarkup({ hasLocalMappingErrors, hasBlockingPreviewWarnings, preflightIssues, preflightIssueRows })}
         ${
           preflightIssues.length
             ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s) across ${preflightIssueRows.size || 0} mapped row(s).</p><ul>${preflightIssues
@@ -2176,9 +2227,10 @@ async function renderTemplates() {
 
   const selectTemplateRow = async (rowIndex, { focusInspector = false, focusField = 'sourcePath', highlightRow = false } = {}) => {
     if (!template) return
-    state.templateInspector[template.id] = { rowIndex: Number(rowIndex) }
+    const normalizedRowIndex = Number(rowIndex)
+    state.templateInspector[template.id] = { rowIndex: normalizedRowIndex }
     state.templateInspectorFocusRequestByTemplateId[template.id] = focusInspector ? focusField : ''
-    state.templateJumpHighlightByTemplateId[template.id] = highlightRow ? Number(rowIndex) : NaN
+    state.templateJumpHighlightByTemplateId[template.id] = highlightRow ? normalizedRowIndex : NaN
     await renderTemplates()
   }
 
@@ -2195,7 +2247,7 @@ async function renderTemplates() {
   document.querySelectorAll('[data-mapping-filter]').forEach((button) => {
     button.addEventListener('click', async () => {
       if (!template) return
-      state.templateInspector[template.id] = { rowIndex: Number(row.dataset.selectRow) }
+      state.templateMappingFilterByTemplateId[template.id] = String(button.dataset.mappingFilter || 'all')
       await rerenderTemplates()
     })
   })
@@ -2217,6 +2269,7 @@ async function renderTemplates() {
       enabled: Boolean(document.querySelector('#inspector-enabled')?.checked)
     }
     state.templateMappingDrafts[template.id] = nextDraft
+    state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
     if (state.templateAutosaveTimers[template.id]) clearTimeout(state.templateAutosaveTimers[template.id])
     state.templateAutosaveTimers[template.id] = setTimeout(async () => {
       try {
@@ -2330,14 +2383,14 @@ async function renderTemplates() {
   const pendingInspectorFocusField = template ? state.templateInspectorFocusRequestByTemplateId[template.id] : ''
   if (pendingInspectorFocusField) {
     const inspectorEl = document.querySelector(`#inspector-${pendingInspectorFocusField}`)
-    inspectorEl?.focus()
+    inspectorEl?.focus({ preventScroll: true })
     state.templateInspectorFocusRequestByTemplateId[template.id] = ''
   }
   const pendingJumpRow = template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
   if (Number.isFinite(pendingJumpRow)) {
     const target = document.querySelector(`#mapping-row-${pendingJumpRow}`)
     target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    target?.focus()
+    target?.focus({ preventScroll: true })
     setTimeout(() => {
       if (template) state.templateJumpHighlightByTemplateId[template.id] = NaN
       renderTemplates()
@@ -3369,6 +3422,7 @@ async function renderOperations() {
     .join('')
 
   const payloadPreview = escapeHtml(operationsPayloadJson())
+  const queueActionPlan = operationsQueueActionPlanMarkup(snapshot)
   viewEl.innerHTML = `
     ${flashMarkup()}
     <section class="section-card">
@@ -3401,6 +3455,7 @@ async function renderOperations() {
         <a href="/docs/deployment-quick-reference.md#common-failure-signatures-diagnostics-keyed">Runbook: failure signatures</a>
       </div>
       <p class="muted compact" data-ops-action-feedback role="status" aria-live="polite" aria-atomic="true">${escapeHtml(state.operations.feedback || '')}</p>
+      ${queueActionPlan}
       ${operationRuleSetMarkup()}
       <section class="section-card" aria-labelledby="ops-release-readiness-heading">
         <h3 id="ops-release-readiness-heading">Release readiness summary (postdeploy rule IDs)</h3>
