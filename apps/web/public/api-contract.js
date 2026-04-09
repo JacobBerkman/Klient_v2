@@ -47,6 +47,7 @@ export const routes = {
   formDraftCollaborators: (draftId) => joinPath(API_PREFIX, 'forms', 'drafts', draftId, 'collaborators'),
   formDraftCollaborator: (draftId, userId) => joinPath(API_PREFIX, 'forms', 'drafts', draftId, 'collaborators', userId),
   documentTemplates: () => joinPath(API_PREFIX, 'templates'),
+  documentTemplateAutoBuild: () => joinPath(API_PREFIX, 'templates', 'auto-build'),
   documentTemplateMappings: (templateId) => joinPath(API_PREFIX, 'templates', templateId, 'mappings'),
   documentTemplateMappingsPreview: (templateId) => joinPath(API_PREFIX, 'templates', templateId, 'mappings', 'preview'),
   documentTemplatePublish: (templateId) => joinPath(API_PREFIX, 'templates', templateId, 'publish'),
