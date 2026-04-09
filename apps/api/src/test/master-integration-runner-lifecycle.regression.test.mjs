@@ -4,12 +4,25 @@ import { dirname, resolve } from 'node:path'
 import { cp, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
+import { execFileSync } from 'node:child_process'
 
 const testDir = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(testDir, '../../../..')
 const { runChildProcess, runCommandProcess } = await import(
   pathToFileURL(resolve(repoRoot, 'scripts/runner-lifecycle.mjs')).href
 )
+
+function listServerProcessIds(cwd = repoRoot) {
+  const psOutput = execFileSync('ps', ['-eo', 'pid=,args='], { cwd, encoding: 'utf8' })
+  return psOutput
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .filter((line) => line.includes('apps/api/src/server.mjs') && line.includes(cwd))
+    .map((line) => Number.parseInt(line.split(/\s+/, 1)[0], 10))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b)
+}
 
 test('aggregate runner resolves only after child process lifecycle completes', async () => {
   const fixturePath = resolve(testDir, 'fixtures/runner-lifecycle/lifecycle-fixture.mjs')
@@ -147,6 +160,34 @@ test('validate master exits cleanly after integration success in artifact-style 
   const elapsed = Date.now() - start
   assert.equal(result.code, 0)
   assert(elapsed < 180000, `expected validate:master completion before timeout, got ${elapsed}ms`)
+})
+
+test('integration aggregate leaves no orphaned API server handles after exports suite', { concurrency: false }, async () => {
+  const before = listServerProcessIds()
+  const start = Date.now()
+
+  const result = await runCommandProcess({
+    command: 'npm',
+    args: ['run', 'test:integration'],
+    label: 'npm-test-integration-exports-orphan-check',
+    stdio: 'inherit',
+    timeoutMs: 240000,
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      INTEGRATION_SUITES: 'integration-exports.mjs'
+    }
+  })
+
+  const elapsed = Date.now() - start
+  assert.equal(result.code, 0)
+  assert(elapsed < 240000, `expected integration aggregate completion before timeout, got ${elapsed}ms`)
+
+  // Allow the OS scheduler to flush process exit bookkeeping before snapshotting process table.
+  await new Promise((resolveWait) => setTimeout(resolveWait, 200))
+
+  const after = listServerProcessIds()
+  assert.deepEqual(after, before, `expected no orphaned API server process; before=${before.join(',')} after=${after.join(',')}`)
 })
 
 test('validate master skips merge parity and completes from unpacked zip-style artifact', { concurrency: false }, async () => {
