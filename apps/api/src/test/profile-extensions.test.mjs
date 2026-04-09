@@ -97,3 +97,49 @@ test('custom field schema rejects invalid field type payloads', async () => {
     /Custom field type must be one of/
   )
 })
+
+test('custom field schema store blocks readonly users from schema mutation', async () => {
+  const store = await loadStore()
+  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const readonlyInvite = store.inviteUser(admin, { email: `readonly-custom-${Date.now()}@example.com`, role: 'readonly' })
+  const readonlySession = store.acceptInvite({
+    token: readonlyInvite.token,
+    firstName: 'Readonly',
+    lastName: 'Custom',
+    password: 'ReadonlyPass123!'
+  })
+  const readonly = readonlySession.user
+
+  assert.throws(
+    () => store.createProfileCustomField(readonly, { key: 'readonly_blocked', type: 'text' }),
+    /Missing permission/
+  )
+  assert.throws(() => store.deleteProfileCustomField(readonly, 'risk_tolerance'), /Missing permission/)
+})
+
+test('custom field schema remains tenant-isolated across firms', async () => {
+  const store = await loadStore()
+  const adminA = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const firmBSession = store.register({
+    firmName: 'Other Firm',
+    firstName: 'Second',
+    lastName: 'Admin',
+    email: `firm-b-admin-${Date.now()}@example.com`,
+    password: 'FirmBPass123!'
+  })
+  const adminB = firmBSession.user
+
+  store.createProfileCustomField(adminA, {
+    key: 'firm_a_only',
+    type: 'text',
+    label: 'Firm A Only',
+    required: false
+  })
+
+  const schemaA = store.getProfileCustomFieldSchema(adminA)
+  const schemaB = store.getProfileCustomFieldSchema(adminB)
+  assert.equal(schemaA.fields.some((field) => field.key === 'firm_a_only'), true)
+  assert.equal(schemaB.fields.some((field) => field.key === 'firm_a_only'), false)
+  assert.throws(() => store.updateProfileCustomField(adminB, 'firm_a_only', { label: 'Blocked' }), /not found/i)
+  assert.throws(() => store.deleteProfileCustomField(adminB, 'firm_a_only'), /not found/i)
+})
