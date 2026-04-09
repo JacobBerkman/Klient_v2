@@ -10,6 +10,27 @@ function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
 }
 
+function isRetryableNetworkError(error) {
+  const code = error?.cause?.code || error?.code
+  return code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EPIPE'
+}
+
+async function fetchWithLifecycleRetry(url, options = {}, { retries = 8, retryDelayMs = 125 } = {}) {
+  let lastError = null
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await fetch(url, options)
+    } catch (error) {
+      if (!isRetryableNetworkError(error) || attempt === retries) {
+        throw error
+      }
+      lastError = error
+      await wait(retryDelayMs)
+    }
+  }
+  throw lastError
+}
+
 function waitForChildExit(child, timeoutMs) {
   return new Promise((resolveExit) => {
     if (child.exitCode !== null || child.signalCode !== null) {
@@ -104,7 +125,7 @@ function createSessionClient(port) {
       if (!this.sessionCookie) {
         throw new Error('Cannot bootstrap CSRF token without session cookie.')
       }
-      const csrfResponse = await fetch(`http://127.0.0.1:${port}/api/csrf`, {
+      const csrfResponse = await fetchWithLifecycleRetry(`http://127.0.0.1:${port}/api/csrf`, {
         headers: { Cookie: this.sessionCookie }
       })
       const csrfData = await csrfResponse.json()
@@ -148,7 +169,7 @@ function createSessionClient(port) {
         }
       }
 
-      const response = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers })
+      const response = await fetchWithLifecycleRetry(`http://127.0.0.1:${port}${path}`, { ...options, headers })
       let data
       try {
         data = await response.json()
@@ -184,7 +205,7 @@ function createSessionClient(port) {
           headers.Referer = headers.Referer || `http://127.0.0.1:${port}/`
         }
       }
-      const response = await fetch(`http://127.0.0.1:${port}${path}`, { ...options, headers })
+      const response = await fetchWithLifecycleRetry(`http://127.0.0.1:${port}${path}`, { ...options, headers })
       const data = await response.json()
       this.updateStateFromResponse(response)
       const acceptedStatuses = Array.isArray(expectedStatus)
@@ -203,7 +224,7 @@ function createSessionClient(port) {
       return { 'Content-Type': 'application/json' }
     },
     async login(email = 'admin@demo.test', password = 'ChangeMe123!') {
-      const response = await fetch(`http://127.0.0.1:${port}/api/login`, {
+      const response = await fetchWithLifecycleRetry(`http://127.0.0.1:${port}/api/login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email, password })
@@ -265,7 +286,7 @@ export async function createTestContext(name) {
 
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
-      const response = await fetch(`http://127.0.0.1:${port}/ready`)
+      const response = await fetchWithLifecycleRetry(`http://127.0.0.1:${port}/ready`, {}, { retries: 1, retryDelayMs: 50 })
       if (response.ok) {
         const sessions = new Map()
         const getSession = (name = 'default') => {
