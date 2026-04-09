@@ -50,6 +50,16 @@ async function terminateChild(
   await waitForChildExit(child, killMs)
 }
 
+function releaseChildStdio(child) {
+  for (const stream of [child.stdout, child.stderr]) {
+    if (!stream) continue
+    stream.removeAllListeners('data')
+    if (!stream.destroyed) {
+      stream.destroy()
+    }
+  }
+}
+
 function isCsrfExemptPath(path) {
   return [
     '/api/login',
@@ -292,9 +302,13 @@ export async function createTestContext(name) {
             return getSession(sessionName).login(email, password)
           },
           async shutdown() {
-            await terminateChild(server)
-            if (resetBehavior === 'isolated') {
-              await rm(testCwd, { recursive: true, force: true })
+            try {
+              await terminateChild(server)
+            } finally {
+              releaseChildStdio(server)
+              if (resetBehavior === 'isolated') {
+                await rm(testCwd, { recursive: true, force: true })
+              }
             }
           }
         }
@@ -325,6 +339,7 @@ export async function createTestContext(name) {
   }
 
   await terminateChild(server)
+  releaseChildStdio(server)
   if (resetBehavior === 'isolated') {
     await rm(testCwd, { recursive: true, force: true })
   }
