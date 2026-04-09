@@ -242,3 +242,6 @@ mkdirSync(dirname(evidenceFile), { recursive: true })
 writeFileSync(evidenceFile, JSON.stringify(summary, null, 2))
 process.stdout.write(`\nRelease evidence summary written to ${evidenceFile}\n`)
 process.stdout.write(`RELEASE_EVIDENCE_JSON=${evidenceFile}\n`)
+
+// Ensure aggregate validation terminates deterministically in packed/unpacked environments.
+process.exit(process.exitCode ?? 0)

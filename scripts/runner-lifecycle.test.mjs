@@ -32,3 +32,20 @@ test('runCommandProcess drains piped integration-style output and cleanly hands 
   assert.equal(typeof handoffResult.durationMs, 'number')
   assert.ok(handoffResult.durationMs >= 0)
 })
+
+test('aggregate integration runner exits after integration-exports suite completes', { timeout: 240000 }, async () => {
+  const result = await runCommandProcess({
+    command: nodeBin,
+    args: ['scripts/master-integration.mjs'],
+    label: 'master-integration(integration-exports)',
+    stdio: 'pipe',
+    timeoutMs: 210000,
+    env: {
+      ...process.env,
+      INTEGRATION_SUITES: 'integration-exports.mjs'
+    }
+  })
+
+  assert.equal(typeof result.durationMs, 'number')
+  assert.ok(result.durationMs >= 0)
+})
