@@ -12,14 +12,26 @@ function wait(ms) {
 
 function isRetryableNetworkError(error) {
   const code = error?.cause?.code || error?.code
-  return code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EPIPE'
+  if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EPIPE') return true
+  if (error?.name === 'TimeoutError') return true
+  if (error?.cause?.name === 'TimeoutError') return true
+  return false
 }
 
-async function fetchWithLifecycleRetry(url, options = {}, { retries = 8, retryDelayMs = 125 } = {}) {
+async function fetchWithLifecycleRetry(
+  url,
+  options = {},
+  { retries = 8, retryDelayMs = 125, requestTimeoutMs = Number.parseInt(process.env.TEST_REQUEST_TIMEOUT_MS || '30000', 10) } = {}
+) {
   let lastError = null
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {
-      return await fetch(url, options)
+      const hasSignal = Boolean(options?.signal)
+      const timeoutSignal =
+        !hasSignal && Number.isFinite(requestTimeoutMs) && requestTimeoutMs > 0
+          ? AbortSignal.timeout(requestTimeoutMs)
+          : undefined
+      return await fetch(url, { ...options, ...(timeoutSignal ? { signal: timeoutSignal } : {}) })
     } catch (error) {
       if (!isRetryableNetworkError(error) || attempt === retries) {
         throw error
