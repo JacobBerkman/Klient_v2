@@ -63,12 +63,31 @@ async function terminateChild(
 ) {
   if (child.exitCode !== null || child.signalCode !== null) return
 
-  child.kill(gracefulSignal)
+  const killChild = (signal) => {
+    // Ensure process groups started by the API server are terminated together so worker descendants
+    // cannot keep aggregate integration runners alive after handoff to the next suite.
+    if (process.platform !== 'win32' && Number.isInteger(child.pid)) {
+      try {
+        process.kill(-child.pid, signal)
+        return
+      } catch (error) {
+        if (error?.code !== 'ESRCH') {
+          throw error
+        }
+      }
+    }
+    child.kill(signal)
+  }
+
+  killChild(gracefulSignal)
   const exitedGracefully = await waitForChildExit(child, graceMs)
   if (exitedGracefully) return
 
-  child.kill('SIGKILL')
-  await waitForChildExit(child, killMs)
+  killChild('SIGKILL')
+  const exitedAfterForceKill = await waitForChildExit(child, killMs)
+  if (!exitedAfterForceKill) {
+    throw new Error(`Failed to terminate child process ${child.pid ?? '<unknown>'}`)
+  }
 }
 
 function releaseChildStdio(child) {
@@ -257,6 +276,7 @@ export async function createTestContext(name) {
   const opsToken = process.env.KLIENT_OPS_TOKEN || 'ops-token-abcdefghijklmnopqrstuvwxyz'
   const server = spawn(process.execPath, [serverEntrypoint], {
     cwd: testCwd,
+    detached: process.platform !== 'win32',
     env: {
       ...process.env,
       NODE_ENV: process.env.NODE_ENV || 'test',

@@ -12,7 +12,8 @@ await runCommandProcess({
     ...process.env,
     INTEGRATION_SUITES: suites.join(',')
   },
-  stdio: 'inherit'
+  stdio: 'inherit',
+  timeoutMs: 180_000
 })
 
 console.log(JSON.stringify({ suite: 'integration-aggregate-exports-handoff', executed: suites }, null, 2))
