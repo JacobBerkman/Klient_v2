@@ -53,3 +53,24 @@ test('profiles service strips expectedUpdatedAt before repository update', async
   assert.equal(updated.expectedUpdatedAt, undefined)
   assert.deepEqual(calls.updatePatch, { firstName: 'Morgan' })
 })
+
+test('custom field schema mutations require canManageUsers (admin only)', async () => {
+  const calls = []
+  const profileRepository = {
+    createCustomField: (_ctx, payload) => (calls.push({ op: 'create', payload }), payload),
+    updateCustomField: (_ctx, fieldKey, patch) => (calls.push({ op: 'update', fieldKey, patch }), patch),
+    deleteCustomField: (_ctx, fieldKey) => (calls.push({ op: 'delete', fieldKey }), { ok: true })
+  }
+  const service = createProfilesService({ profileRepository, policy: createPolicy() })
+  const admin = { id: 'admin-1', role: 'admin', firmId: 'firm-1' }
+  const advisor = { id: 'advisor-1', role: 'advisor', firmId: 'firm-1' }
+  const readonly = { id: 'readonly-1', role: 'readonly', firmId: 'firm-1' }
+
+  assert.throws(() => service.createCustomField(advisor, { key: 'risk', type: 'text' }), /Missing permission/)
+  assert.throws(() => service.updateCustomField(advisor, 'risk', { label: 'Risk' }), /Missing permission/)
+  assert.throws(() => service.deleteCustomField(readonly, 'risk'), /Missing permission/)
+
+  const created = await service.createCustomField(admin, { key: 'risk', type: 'text' })
+  assert.equal(created.key, 'risk')
+  assert.deepEqual(calls, [{ op: 'create', payload: { key: 'risk', type: 'text' } }])
+})

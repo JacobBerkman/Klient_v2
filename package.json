@@ -12,6 +12,7 @@
     "check:main-parity": "bash scripts/sync-main-and-report.sh",
     "check:merge-main": "bash scripts/verify-main-merge.sh",
     "check:migrations": "node scripts/migration-order-check.mjs",
+    "check:release-docs": "node scripts/check-release-doc-consistency.mjs",
     "check:syntax": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/web/public/app.js && node --check scripts/api-contract-test.mjs && node --check scripts/backup-db.mjs && node --check scripts/export-worker.mjs && node --check scripts/integration-aggregate-exports-handoff.mjs && node --check scripts/integration-csrf.mjs && node --check scripts/master-integration.mjs && node --check scripts/master-validate.mjs && node --check scripts/migration-order-check.mjs && node --check scripts/reencrypt-pii.mjs && node --check scripts/reset-test-data.mjs && node --check scripts/restore-db.mjs && node --check scripts/security-checks.mjs && node --check scripts/smoke-test.mjs && node --check scripts/release-go-no-go.mjs && node --check scripts/validate-release-evidence.mjs && node --check scripts/e2e-test.mjs && node --check playwright.config.mjs",
     "dev": "node apps/api/src/server.mjs",
     "format:check": "prettier --check \"apps/api/**/*.mjs\" \"apps/web/public/**/*.{js,css,html}\" \"scripts/**/*.mjs\"",
@@ -26,16 +27,14 @@
     "test:contract": "node scripts/api-contract-test.mjs",
     "test:csrf": "node scripts/integration-csrf.mjs",
     "test:e2e": "node scripts/e2e-test.mjs",
+    "test:e2e:browser": "node scripts/e2e-test.mjs",
     "test:integration": "node scripts/master-integration.mjs",
     "test:integration:handoff": "node scripts/integration-aggregate-exports-handoff.mjs",
-    "test:e2e": "node scripts/integration-e2e-workflows.mjs",
     "test:security": "node scripts/security-checks.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
+    "test:ui-contract": "node --test apps/web/public/ui-contract.test.mjs",
     "validate:master": "node scripts/master-validate.mjs",
-    "validate:release-evidence": "node scripts/validate-release-evidence.mjs",
-    "release:bundle-evidence": "node scripts/package-release-evidence.mjs",
-    "test:e2e": "node scripts/e2e-test.mjs",
-    "check:release-docs": "node scripts/check-release-doc-consistency.mjs"
+    "validate:release-evidence": "node scripts/validate-release-evidence.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
