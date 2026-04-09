@@ -32,6 +32,9 @@ export const routes = {
   dashboard: () => joinPath(API_PREFIX, 'dashboard'),
   profiles: (query = {}) => withQuery(joinPath(API_PREFIX, 'profiles'), query),
   profileDetail: (profileId) => joinPath(API_PREFIX, 'profiles', profileId),
+  profileCustomFieldSchema: () => joinPath(API_PREFIX, 'profiles', 'custom-fields', 'schema'),
+  profileCustomFieldSchemaField: (fieldKey) =>
+    joinPath(API_PREFIX, 'profiles', 'custom-fields', 'schema', fieldKey),
   profileStage: (profileId) => joinPath(API_PREFIX, 'profiles', profileId, 'stage'),
   profileNotes: (profileId) => joinPath(API_PREFIX, 'profiles', profileId, 'notes'),
   households: () => joinPath(API_PREFIX, 'households'),

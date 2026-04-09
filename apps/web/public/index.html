@@ -30,6 +30,9 @@
           <button type="button" data-view="forms" data-roles="admin,advisor,readonly" aria-controls="view">Forms</button>
           <button type="button" data-view="templates" data-roles="admin,advisor" aria-controls="view">Templates</button>
           <button type="button" data-view="exports" data-roles="admin,advisor" aria-controls="view">Exports</button>
+          <button type="button" data-view="custom-fields" data-roles="admin,advisor,readonly" aria-controls="view">
+            Custom Fields
+          </button>
           <button
             type="button"
             data-view="operations"
@@ -138,6 +141,10 @@
             <input name="cityOrLocation" placeholder="Source city/location" />
             <input name="venue" placeholder="Source venue" />
             <input name="occurredOn" type="date" placeholder="Source date" />
+            <div id="profile-custom-fields" class="item compact">
+              <h4>Firm Custom Fields</h4>
+              <p class="muted compact">Loading custom field schema…</p>
+            </div>
             <button type="submit">Create Profile</button>
             <p class="muted compact" data-form-feedback aria-live="polite"></p>
           </form>

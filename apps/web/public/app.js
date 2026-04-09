@@ -31,7 +31,13 @@ const state = {
   templateMappingFilterByTemplateId: {},
   templateInspectorFocusRequestByTemplateId: {},
   templateJumpHighlightByTemplateId: {},
-  templateWizardStepByTemplateId: {},
+  customFieldSchema: {
+    fetched: false,
+    loading: false,
+    fields: [],
+    updatedAt: '',
+    lastError: ''
+  },
   formsUi: {
     activeDraftSharePanelId: '',
     collaboratorsByDraftId: {},
@@ -59,6 +65,7 @@ const profileStageEl = document.querySelector('#profile-stage-select')
 const householdPrimaryEl = document.querySelector('select[name="primaryClientId"]')
 const portalProfileEl = document.querySelector('select[name="profileId"]')
 const profileCreateFormEl = document.querySelector('#profile-form')
+const profileCustomFieldsEl = document.querySelector('#profile-custom-fields')
 const householdFormEl = document.querySelector('#household-form')
 const formTemplateFormEl = document.querySelector('#form-template-form')
 const docTemplateFormEl = document.querySelector('#doc-template-form')
@@ -398,13 +405,129 @@ function findBoardColumn(board, stage) {
   return board?.columns?.find((column) => column.stage === stage) || null
 }
 
+function canManageCustomFieldSchema() {
+  return roleAllowed('admin')
+}
+
+function normalizeCustomFieldDefinitions(fields = []) {
+  return (Array.isArray(fields) ? fields : [])
+    .map((field) => ({
+      key: String(field?.key || '')
+        .trim()
+        .replace(/[^a-zA-Z0-9_]+/g, '_'),
+      type: String(field?.type || 'text')
+        .trim()
+        .toLowerCase(),
+      label: String(field?.label || field?.key || '').trim(),
+      required: Boolean(field?.required),
+      metadata: field?.metadata && typeof field.metadata === 'object' && !Array.isArray(field.metadata) ? field.metadata : {}
+    }))
+    .filter((field) => field.key)
+}
+
+async function ensureCustomFieldSchema(force = false) {
+  if (!state.user || state.user.role === 'client') {
+    state.customFieldSchema = { fetched: true, loading: false, fields: [], updatedAt: '', lastError: '' }
+    return state.customFieldSchema.fields
+  }
+  if (!force && state.customFieldSchema.fetched) return state.customFieldSchema.fields
+  state.customFieldSchema.loading = true
+  try {
+    const schema = await request(routes.profileCustomFieldSchema())
+    state.customFieldSchema.fields = normalizeCustomFieldDefinitions(schema?.fields || [])
+    state.customFieldSchema.updatedAt = String(schema?.updatedAt || '')
+    state.customFieldSchema.lastError = ''
+  } catch (error) {
+    state.customFieldSchema.fields = []
+    state.customFieldSchema.lastError = normalizeApiError(error, 'load custom field schema')
+  } finally {
+    state.customFieldSchema.loading = false
+    state.customFieldSchema.fetched = true
+  }
+  return state.customFieldSchema.fields
+}
+
+function customFieldInputName(key = '') {
+  return `customField__${key}`
+}
+
+function parseCustomFieldInputValue(field, rawValue) {
+  const value = String(rawValue ?? '').trim()
+  if (!value) return null
+  if (field.type === 'number') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  if (field.type === 'boolean') return value === 'true'
+  return value
+}
+
+function customFieldControlMarkup(field, value = '', { disabled = false, idPrefix = 'profile-custom' } = {}) {
+  const name = customFieldInputName(field.key)
+  const elementId = `${idPrefix}-${field.key}`
+  if (field.type === 'boolean') {
+    return `<label for="${escapeHtml(elementId)}">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
+      <select id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" ${disabled ? 'disabled' : ''}>
+        <option value="">Not set</option>
+        <option value="true" ${String(value) === 'true' ? 'selected' : ''}>True</option>
+        <option value="false" ${String(value) === 'false' ? 'selected' : ''}>False</option>
+      </select>
+    </label>`
+  }
+  const inputType = field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text'
+  return `<label for="${escapeHtml(elementId)}">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
+    <input id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" type="${inputType}" value="${escapeHtml(value || '')}" ${
+      disabled ? 'disabled' : ''
+    } ${field.required ? 'required' : ''} />
+  </label>`
+}
+
+function customFieldCreateFormMarkup() {
+  if (!profileCustomFieldsEl) return
+  const fields = state.customFieldSchema.fields || []
+  if (state.customFieldSchema.loading) {
+    profileCustomFieldsEl.innerHTML = '<h4>Firm Custom Fields</h4><p class="muted compact">Loading custom field schema…</p>'
+    return
+  }
+  if (state.customFieldSchema.lastError) {
+    profileCustomFieldsEl.innerHTML = `<h4>Firm Custom Fields</h4><p class="error-banner">${escapeHtml(state.customFieldSchema.lastError)}</p>`
+    return
+  }
+  if (!fields.length) {
+    profileCustomFieldsEl.innerHTML =
+      '<h4>Firm Custom Fields</h4><p class="muted compact">No custom fields are configured for this firm.</p>'
+    return
+  }
+  profileCustomFieldsEl.innerHTML = `<h4>Firm Custom Fields</h4><div class="grid two">${fields
+    .map((field) => customFieldControlMarkup(field, ''))
+    .join('')}</div>`
+}
+
+function collectCustomFieldValues(formEl, fields = []) {
+  const values = {}
+  fields.forEach((field) => {
+    const inputName = customFieldInputName(field.key)
+    const raw = formEl?.elements?.namedItem?.(inputName)?.value ?? ''
+    const parsed = parseCustomFieldInputValue(field, raw)
+    if (parsed !== null) values[field.key] = parsed
+  })
+  return values
+}
+
 function editableProfileFieldsFromCard(card = {}) {
-  return {
+  const fields = {
     firstName: card.firstName || '',
     lastName: card.lastName || '',
     email: card.email || '',
     phone: card.phone || ''
   }
+  ;(state.customFieldSchema.fields || []).forEach((field) => {
+    const sourceValue = card?.extensions?.values?.[field.key]
+    if (sourceValue == null) fields[customFieldInputName(field.key)] = ''
+    else if (field.type === 'boolean') fields[customFieldInputName(field.key)] = sourceValue ? 'true' : 'false'
+    else fields[customFieldInputName(field.key)] = String(sourceValue)
+  })
+  return fields
 }
 
 function boardKeyForKind(kind) {
@@ -773,8 +896,13 @@ function updateViewNavState() {
 }
 
 async function refreshSelects() {
-  if (!state.user || state.user.role === 'client') return
+  if (!state.user || state.user.role === 'client') {
+    state.customFieldSchema = { fetched: true, loading: false, fields: [], updatedAt: '', lastError: '' }
+    customFieldCreateFormMarkup()
+    return
+  }
   await ensureStageConfig()
+  await ensureCustomFieldSchema()
   const clients = await request(routes.profiles({ kind: 'client' }))
   const profiles = await request(routes.profiles())
   householdPrimaryEl.innerHTML = clients
@@ -790,6 +918,7 @@ async function refreshSelects() {
     )
     .join('')
   renderProfileStageSelect()
+  customFieldCreateFormMarkup()
 }
 
 function metricCard(label, value) {
@@ -2606,6 +2735,23 @@ function boardCardMarkup(card, kind) {
         </div>
         <input name="email" type="email" value="${escapeHtml(inlineState.draft.email || '')}" placeholder="Email" />
         <input name="phone" value="${escapeHtml(inlineState.draft.phone || '')}" placeholder="Phone" />
+        ${
+          state.customFieldSchema.fields.length
+            ? `<div class="item compact">
+              <h4>Custom Fields</h4>
+              <div class="grid two">
+                ${state.customFieldSchema.fields
+                  .map((field) =>
+                    customFieldControlMarkup(field, inlineState.draft[customFieldInputName(field.key)] || '', {
+                      disabled: !canEdit,
+                      idPrefix: `profile-edit-${card.id}`
+                    })
+                  )
+                  .join('')}
+              </div>
+            </div>`
+            : ''
+        }
         <div class="actions-row">
           <button type="submit" class="tiny" ${canEdit && inlineState.dirty && !inlineState.saving ? '' : 'disabled'}>${inlineState.saving ? 'Saving…' : 'Save'}</button>
           <button type="button" class="secondary tiny" data-cancel-edit="${card.id}" ${canEdit && !inlineState.saving ? '' : 'disabled'}>Cancel</button>
@@ -2795,15 +2941,32 @@ function wireBoardInteractions(kind) {
   })
   document.querySelectorAll('[data-edit-form]').forEach((form) => {
     const profileId = form.dataset.editForm
-    form.querySelectorAll('input').forEach((input) => {
+    form.querySelectorAll('input, select, textarea').forEach((input) => {
       input.addEventListener('input', () => {
+        setInlineDraftField(kind, profileId, input.name, input.value)
+      })
+      input.addEventListener('change', () => {
         setInlineDraftField(kind, profileId, input.name, input.value)
       })
     })
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
       const inlineState = ensureInlineProfileState(kind, profileId)
-      const payload = { ...inlineState.draft }
+      const payload = {
+        firstName: inlineState.draft.firstName || '',
+        lastName: inlineState.draft.lastName || '',
+        email: inlineState.draft.email || '',
+        phone: inlineState.draft.phone || ''
+      }
+      const extensionValues = {}
+      state.customFieldSchema.fields.forEach((field) => {
+        const parsed = parseCustomFieldInputValue(field, inlineState.draft[customFieldInputName(field.key)] || '')
+        if (parsed !== null) extensionValues[field.key] = parsed
+      })
+      payload.extensions = {
+        schemaVersion: '1.0.0',
+        values: extensionValues
+      }
       const submitButton = form.querySelector('button[type="submit"]')
       const feedbackEl = form.querySelector('[data-inline-feedback]')
       if (submitButton) {
@@ -2937,6 +3100,7 @@ function wireBoardInteractions(kind) {
 
 async function renderBoard(kind) {
   try {
+    await ensureCustomFieldSchema()
     if (kind === 'prospect') {
       state.board = await request(routes.board())
       const boardStageDefinitions = stageDefinitionsFromBoard(state.board)
@@ -2976,7 +3140,9 @@ function roleAccessMatrixMarkup() {
     ['Forms', ['admin', 'advisor', 'readonly']],
     ['Templates', ['admin', 'advisor']],
     ['Exports', ['admin', 'advisor']],
-    ['Analytics', ['admin', 'advisor', 'readonly']]
+    ['Analytics', ['admin', 'advisor', 'readonly']],
+    ['Custom Fields (view)', ['admin', 'advisor', 'readonly']],
+    ['Custom Fields (mutate)', ['admin']]
   ]
   return `<table><thead><tr><th>Action/View</th><th>admin</th><th>advisor</th><th>readonly</th></tr></thead><tbody>
     ${matrix.map(([name, roles]) => `<tr><td>${name}</td><td>${roles.includes('admin') ? '✅' : '—'}</td><td>${roles.includes('advisor') ? '✅' : '—'}</td><td>${roles.includes('readonly') ? '✅' : '—'}</td></tr>`).join('')}
@@ -3380,6 +3546,177 @@ async function renderExports() {
   focusWithinView('#exports-heading')
 }
 
+function customFieldReadonlyMessage() {
+  if (state.user?.role === 'advisor') {
+    return 'Advisor role is read-only for schema changes (backend guard: canManageUsers).'
+  }
+  if (state.user?.role === 'readonly') {
+    return 'Readonly role can view schema only; create/update/delete are forbidden by policy.'
+  }
+  return ''
+}
+
+async function renderCustomFieldsAdmin() {
+  await ensureCustomFieldSchema()
+  const canManage = canManageCustomFieldSchema()
+  const readonlyMessage = !canManage ? customFieldReadonlyMessage() : ''
+  const fields = state.customFieldSchema.fields || []
+  viewEl.innerHTML = `
+    ${flashMarkup()}
+    ${alertMarkup()}
+    <div class="section-header">
+      <div>
+        <h2 id="custom-fields-heading">Custom Field Schema</h2>
+        <p class="muted">Manage firm-level profile custom fields (key, type, label, required, metadata).</p>
+      </div>
+      <span class="badge subtle">${state.customFieldSchema.updatedAt ? `Updated ${new Date(state.customFieldSchema.updatedAt).toLocaleString()}` : 'No updates yet'}</span>
+    </div>
+    ${
+      readonlyMessage
+        ? `<p class="error-banner" role="status" aria-live="polite">${escapeHtml(readonlyMessage)}</p>`
+        : '<p class="muted">Admin can create, update, and delete schema fields.</p>'
+    }
+    ${
+      state.customFieldSchema.lastError
+        ? `<p class="error-banner">${escapeHtml(state.customFieldSchema.lastError)}</p>`
+        : ''
+    }
+    <section class="item">
+      <h3>Create Field</h3>
+      <form id="custom-field-create-form" class="grid two">
+        <input name="key" placeholder="field_key" ${canManage ? '' : 'disabled'} />
+        <select name="type" ${canManage ? '' : 'disabled'}>
+          <option value="text">text</option>
+          <option value="number">number</option>
+          <option value="boolean">boolean</option>
+          <option value="date">date</option>
+        </select>
+        <input name="label" placeholder="Display label" ${canManage ? '' : 'disabled'} />
+        <label><input name="required" type="checkbox" ${canManage ? '' : 'disabled'} /> Required</label>
+        <input name="metadata" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
+        <button type="submit" ${canManage ? '' : 'disabled'}>Create Field</button>
+        <p class="muted compact" data-form-feedback aria-live="polite"></p>
+      </form>
+    </section>
+    <section class="item">
+      <h3>Current Fields</h3>
+      <table><thead><tr><th>Key</th><th>Type</th><th>Label</th><th>Required</th><th>Metadata</th><th>Actions</th></tr></thead><tbody>
+      ${
+        fields.length
+          ? fields
+              .map(
+                (field) => `<tr>
+            <td><code>${escapeHtml(field.key)}</code></td>
+            <td>${escapeHtml(field.type)}</td>
+            <td>${escapeHtml(field.label || field.key)}</td>
+            <td>${field.required ? 'Yes' : 'No'}</td>
+            <td><code>${escapeHtml(JSON.stringify(field.metadata || {}))}</code></td>
+            <td>
+              <form data-custom-field-update="${escapeHtml(field.key)}" class="grid two">
+                <input name="label" value="${escapeHtml(field.label || '')}" placeholder="Label" ${canManage ? '' : 'disabled'} />
+                <select name="type" ${canManage ? '' : 'disabled'}>
+                  <option value="text" ${field.type === 'text' ? 'selected' : ''}>text</option>
+                  <option value="number" ${field.type === 'number' ? 'selected' : ''}>number</option>
+                  <option value="boolean" ${field.type === 'boolean' ? 'selected' : ''}>boolean</option>
+                  <option value="date" ${field.type === 'date' ? 'selected' : ''}>date</option>
+                </select>
+                <label><input name="required" type="checkbox" ${field.required ? 'checked' : ''} ${canManage ? '' : 'disabled'} /> Required</label>
+                <input name="metadata" value="${escapeHtml(JSON.stringify(field.metadata || {}))}" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
+                <div class="actions-row">
+                  <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Update</button>
+                  <button type="button" class="tiny secondary" data-custom-field-delete="${escapeHtml(field.key)}" ${canManage ? '' : 'disabled'}>Delete</button>
+                </div>
+                <p class="muted compact" data-form-feedback aria-live="polite"></p>
+              </form>
+            </td>
+          </tr>`
+              )
+              .join('')
+          : '<tr><td colspan="6">No custom fields configured.</td></tr>'
+      }
+      </tbody></table>
+    </section>
+  `
+
+  const parseMetadataJson = (raw) => {
+    const text = String(raw || '').trim()
+    if (!text) return {}
+    return JSON.parse(text)
+  }
+
+  document.querySelector('#custom-field-create-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    if (!canManage) return
+    const form = event.currentTarget
+    clearFormFeedback(form)
+    try {
+      const formData = new FormData(form)
+      await request(routes.profileCustomFieldSchema(), {
+        method: 'POST',
+        body: JSON.stringify({
+          key: String(formData.get('key') || '').trim(),
+          type: String(formData.get('type') || 'text').trim(),
+          label: String(formData.get('label') || '').trim(),
+          required: Boolean(formData.get('required')),
+          metadata: parseMetadataJson(formData.get('metadata'))
+        })
+      })
+      setFlash('success', 'Custom field created.')
+      state.customFieldSchema.fetched = false
+      await refreshSelects()
+      await renderCustomFieldsAdmin()
+    } catch (error) {
+      setFormFeedback(form, normalizeApiError(error, 'create custom field schema'))
+    }
+  })
+
+  document.querySelectorAll('[data-custom-field-update]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      if (!canManage) return
+      clearFormFeedback(form)
+      const fieldKey = form.dataset.customFieldUpdate
+      try {
+        const formData = new FormData(form)
+        await request(routes.profileCustomFieldSchemaField(fieldKey), {
+          method: 'PATCH',
+          body: JSON.stringify({
+            label: String(formData.get('label') || '').trim(),
+            type: String(formData.get('type') || '').trim(),
+            required: Boolean(formData.get('required')),
+            metadata: parseMetadataJson(formData.get('metadata'))
+          })
+        })
+        setFlash('success', `Custom field ${fieldKey} updated.`)
+        state.customFieldSchema.fetched = false
+        await refreshSelects()
+        await renderCustomFieldsAdmin()
+      } catch (error) {
+        setFormFeedback(form, normalizeApiError(error, `update custom field ${fieldKey}`))
+      }
+    })
+  })
+
+  document.querySelectorAll('[data-custom-field-delete]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!canManage) return
+      const fieldKey = button.dataset.customFieldDelete
+      try {
+        await request(routes.profileCustomFieldSchemaField(fieldKey), { method: 'DELETE' })
+        setFlash('success', `Custom field ${fieldKey} deleted.`)
+        state.customFieldSchema.fetched = false
+        await refreshSelects()
+        await renderCustomFieldsAdmin()
+      } catch (error) {
+        setFlash('error', normalizeApiError(error, `delete custom field ${fieldKey}`))
+        await renderCustomFieldsAdmin()
+      }
+    })
+  })
+
+  focusWithinView('#custom-fields-heading')
+}
+
 function operationsPayloadJson() {
   return JSON.stringify(
     {
@@ -3573,6 +3910,7 @@ async function renderCurrentView() {
     forms: '#forms-heading',
     templates: '#templates-heading',
     exports: '#exports-heading',
+    'custom-fields': '#custom-fields-heading',
     operations: '#operations-heading',
     prospects: '#board-heading',
     clients: '#board-heading'
@@ -3582,6 +3920,7 @@ async function renderCurrentView() {
   else if (state.view === 'forms') await renderForms()
   else if (state.view === 'templates') await renderTemplates()
   else if (state.view === 'exports') await renderExports()
+  else if (state.view === 'custom-fields') await renderCustomFieldsAdmin()
   else if (state.view === 'operations') await renderOperations()
   else if (state.view === 'prospects') await renderBoard('prospect')
   else if (state.view === 'clients') await renderBoard('client')
@@ -3698,6 +4037,7 @@ profileCreateFormEl.addEventListener('submit', async (event) => {
   }
   try {
     const payload = validateRequiredFields(formEl, ['firstName', 'lastName'])
+    const extensionValues = collectCustomFieldValues(formEl, state.customFieldSchema.fields || [])
     const source = payload.cityOrLocation
       ? { cityOrLocation: payload.cityOrLocation, venue: payload.venue, occurredOn: payload.occurredOn }
       : null
@@ -3710,7 +4050,11 @@ profileCreateFormEl.addEventListener('submit', async (event) => {
         email: payload.email,
         phone: payload.phone,
         stage: payload.stage,
-        source
+        source,
+        extensions: {
+          schemaVersion: '1.0.0',
+          values: extensionValues
+        }
       })
     })
     formEl.reset()
