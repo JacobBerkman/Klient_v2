@@ -223,3 +223,19 @@ test('validate master skips merge parity and completes from unpacked zip-style a
     await rm(artifactRoot, { recursive: true, force: true })
   }
 })
+
+test('aggregate exports handoff regression runner exits cleanly', { concurrency: false }, async () => {
+  const start = Date.now()
+  const result = await runCommandProcess({
+    command: 'npm',
+    args: ['run', 'test:integration:handoff'],
+    label: 'npm-test-integration-handoff',
+    stdio: 'inherit',
+    timeoutMs: 240000,
+    cwd: repoRoot
+  })
+
+  const elapsed = Date.now() - start
+  assert.equal(result.code, 0)
+  assert(elapsed < 240000, `expected aggregate handoff regression completion before timeout, got ${elapsed}ms`)
+})
