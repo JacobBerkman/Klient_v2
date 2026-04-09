@@ -26,6 +26,19 @@ const canonicalCommandLabels = [
   'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"'
 ]
 
+const canonicalHardGateSequence = [
+  'npm run check:syntax',
+  'npm run check:conflicts',
+  'npm run test:contract',
+  'node scripts/integration-rbac.mjs',
+  'node scripts/integration-tenancy.mjs',
+  'npm run test:integration',
+  'npm run check:migrations',
+  'npm run test:smoke',
+  'npm run test:e2e',
+  'npm run test:security'
+]
+
 function fail(message) {
   process.stderr.write(`❌ ${message}\n`)
   process.exit(1)
@@ -33,6 +46,20 @@ function fail(message) {
 
 function assertContains(content, needle, label) {
   if (!content.includes(needle)) fail(`${label} is missing required text: ${needle}`)
+}
+
+function assertContainsInOrder(content, orderedNeedles, label) {
+  let previousIndex = -1
+  for (const needle of orderedNeedles) {
+    const index = content.indexOf(needle)
+    if (index === -1) {
+      fail(`${label} is missing required ordered text: ${needle}`)
+    }
+    if (index < previousIndex) {
+      fail(`${label} has out-of-order gate sequence text: ${needle}`)
+    }
+    previousIndex = index
+  }
 }
 
 const contentByKey = Object.fromEntries(
@@ -48,6 +75,8 @@ for (const command of canonicalCommandLabels) {
   assertContains(contentByKey.quickRef, command, filesToRead.quickRef)
   assertContains(contentByKey.operationsUi, command, filesToRead.operationsUi)
 }
+
+assertContainsInOrder(contentByKey.quickRef, canonicalHardGateSequence, filesToRead.quickRef)
 
 assertContains(
   contentByKey.readme,

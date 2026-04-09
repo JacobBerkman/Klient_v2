@@ -49,3 +49,19 @@ test('aggregate integration runner exits after integration-exports suite complet
   assert.equal(typeof result.durationMs, 'number')
   assert.ok(result.durationMs >= 0)
 })
+
+test('runCommandProcess completes deterministically for piped stdio tuple across repeated handoffs', async () => {
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    const result = await runCommandProcess({
+      command: nodeBin,
+      args: ['-e', `process.stdout.write("iteration-${iteration}\\n")`],
+      label: `tuple-pipe-handoff-${iteration}`,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeoutMs: 5000
+    })
+
+    assert.equal(typeof result.durationMs, 'number')
+    assert.ok(result.durationMs >= 0)
+    assert.equal(result.code, 0)
+  }
+})
