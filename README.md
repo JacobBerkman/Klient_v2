@@ -113,7 +113,7 @@ Prepare dependencies and local environment defaults:
 npm run bootstrap:dev
 ```
 
-Run the full master-aligned validation chain (syntax checks, runtime contract tests, smoke test, integration suites, and merge/main parity check):
+Run the full master-aligned validation chain (syntax/conflict guards, API contract tests, integration suites, migration checks, smoke test, UI contract checks, browser E2E checks, security checks, and merge/main parity check when available):
 
 ```bash
 npm run validate:master

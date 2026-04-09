@@ -246,6 +246,16 @@ function withTrimmedFormData(form) {
   )
 }
 
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+  }
+  return btoa(binary)
+}
+
 function validateRequiredFields(form, requiredKeys = []) {
   const payload = withTrimmedFormData(form)
   requiredKeys.forEach((key) => {
@@ -1861,6 +1871,50 @@ function previewWarningMarkup(warnings = []) {
     .join(' ')
 }
 
+function normalizedExtractedFields(template = {}) {
+  if (!Array.isArray(template?.extractedFields)) return []
+  return template.extractedFields
+    .map((field, index) => {
+      if (typeof field === 'string') {
+        return {
+          id: field,
+          fieldName: field,
+          fieldType: 'text',
+          pageIndex: null,
+          required: false,
+          readOnly: false,
+          index
+        }
+      }
+      const fieldName = String(field?.fieldName || field?.name || field?.pdfField || '').trim()
+      if (!fieldName) return null
+      return {
+        id: `${fieldName}-${index}`,
+        fieldName,
+        fieldType: String(field?.fieldType || field?.type || 'text'),
+        pageIndex: Number.isInteger(field?.pageIndex) ? field.pageIndex : null,
+        required: field?.required === true,
+        readOnly: field?.readOnly === true,
+        index
+      }
+    })
+    .filter(Boolean)
+}
+
+function templateIngestionRecoveryMessage(extraction = {}) {
+  const reasonCode = String(extraction?.reasonCode || '').trim()
+  if (reasonCode === 'malformed_pdf') {
+    return 'The uploaded file could not be parsed as a valid PDF. Re-export the document from the source system, verify it opens locally, then upload again.'
+  }
+  if (reasonCode === 'no_acroform') {
+    return 'No AcroForm metadata was found. Use a fillable PDF with AcroForm fields, or continue with manual template creation and add mappings yourself.'
+  }
+  if (reasonCode === 'no_fields') {
+    return 'AcroForm metadata exists, but no fillable fields were detected. Confirm fields are interactive inputs (not flattened text), then re-upload.'
+  }
+  return extraction?.error?.message || 'Template ingestion failed. Review the PDF and retry upload, or continue with manual mappings.'
+}
+
 async function renderTemplates() {
   let templates = []
   let clients = []
@@ -1992,8 +2046,15 @@ async function renderTemplates() {
   const selectedMapping = draftMappings[safeSelectedRowIndex] || mappingDraftFromServer({})
 
   const mappedFieldSet = new Set(draftMappings.map((entry) => String(entry.pdfField || '').trim()).filter(Boolean))
-  const extractedFields = template?.extractedFields || []
-  const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field)).length
+  const extractedFields = normalizedExtractedFields(template)
+  const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field.fieldName)).length
+  const extraction = template?.extraction || {}
+  const wizardSteps = ['upload', 'extraction', 'mapping', 'preview', 'publish']
+  const defaultWizardStep = extraction?.status === 'failed' ? 'extraction' : extractedFields.length ? 'mapping' : 'upload'
+  const activeWizardStep = wizardSteps.includes(state.templateWizardStepByTemplateId?.[template?.id])
+    ? state.templateWizardStepByTemplateId[template.id]
+    : defaultWizardStep
+  if (template) state.templateWizardStepByTemplateId[template.id] = activeWizardStep
   const saveState = state.templateSaveStateByTemplateId[template?.id] || { status: 'idle', message: '' }
 
   const sampleProfile = clients[0] || {}
@@ -2026,6 +2087,31 @@ async function renderTemplates() {
       template
         ? `
       <section class="item">
+        <h3>Template Builder Flow</h3>
+        <div class="row gap-sm wrap">
+          ${wizardSteps
+            .map((step, index) => {
+              const label = `${index + 1}. ${step.charAt(0).toUpperCase() + step.slice(1)}`
+              return `<button type="button" class="tiny ${activeWizardStep === step ? '' : 'secondary'}" data-template-wizard-step="${step}" aria-pressed="${activeWizardStep === step ? 'true' : 'false'}">${label}</button>`
+            })
+            .join('')}
+        </div>
+      </section>
+      <section class="item" data-template-wizard-section="upload" ${activeWizardStep === 'upload' ? '' : 'hidden'}>
+        <h3>Step 1 · Upload</h3>
+        <p class="muted">Use the Create Document Template form to upload a fillable PDF and auto-build mappings, or continue manually without upload.</p>
+      </section>
+      <section class="item" data-template-wizard-section="extraction" ${activeWizardStep === 'extraction' ? '' : 'hidden'}>
+        <h3>Step 2 · Extraction Summary</h3>
+        <p class="muted">Status: <span class="badge ${extraction?.status === 'failed' ? 'error-badge' : 'subtle'}">${escapeHtml(extraction?.status || 'unknown')}</span></p>
+        <p class="muted">Reason code: <code>${escapeHtml(extraction?.reasonCode || 'none')}</code></p>
+        ${
+          extraction?.status === 'failed'
+            ? `<p class="error-banner">${escapeHtml(templateIngestionRecoveryMessage(extraction))}</p>`
+            : '<p class="muted">Extraction completed. Review mapped/unmapped fields before editing mappings.</p>'
+        }
+      </section>
+      <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mapping Health</h3>
         <div class="row wrap gap-sm">
           <span class="badge">Mapped ${draftMappings.filter((entry) => entry.enabled !== false && String(entry.pdfField || '').trim()).length}</span>
@@ -2034,12 +2120,12 @@ async function renderTemplates() {
           <span class="badge subtle">Save state: ${escapeHtml(mappingSaveStateLabel(saveState))}</span>
         </div>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Extracted AcroForm Fields</h3>
         <ul>${extractedFields
-          .map((field, index) => {
-            const mapped = mappedFieldSet.has(field)
-            return `<li>${escapeHtml(field)} <span class="badge ${mapped ? 'subtle' : ''}">${mapped ? 'Mapped' : 'Unmapped'}</span><button data-remove-extracted="${index}" class="secondary tiny">Remove</button></li>`
+          .map((field) => {
+            const mapped = mappedFieldSet.has(field.fieldName)
+            return `<li><strong>${escapeHtml(field.fieldName)}</strong> <span class="badge">${escapeHtml(field.fieldType)}</span>${field.required ? ' <span class="badge warning-badge">Required</span>' : ''}${field.readOnly ? ' <span class="badge subtle">Read-only</span>' : ''}${field.pageIndex != null ? ` <span class="badge subtle">Page ${field.pageIndex + 1}</span>` : ''} <span class="badge ${mapped ? 'subtle' : ''}">${mapped ? 'Mapped' : 'Unmapped'}</span><button data-remove-extracted="${field.index}" class="secondary tiny">Remove</button></li>`
           })
           .join('') || '<li class="muted">No extracted fields yet.</li>'}</ul>
         <div class="row gap-sm">
@@ -2047,13 +2133,13 @@ async function renderTemplates() {
           <button id="add-extracted-field" class="tiny">Add</button>
         </div>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Source Path Discovery</h3>
         <div class="muted">Known paths from profile + form schema: ${[...knownPaths.keys()]
           .map((path) => `<code>${escapeHtml(path)}</code>`)
           .join(', ')}</div>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mappings</h3>
         <div class="row gap-sm wrap"><button id="add-mapping-row" class="tiny">Add Mapping</button><button id="save-mappings" class="tiny">Save Now</button></div>
         <div class="row gap-sm wrap top-gap">
@@ -2100,7 +2186,7 @@ async function renderTemplates() {
             .join('') || '<tr><td colspan="8" class="muted">No mappings match this filter.</td></tr>'}
         </tbody></table>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Field Inspector</h3>
         <div class="muted">Selected row ${safeSelectedRowIndex + 1} of ${Math.max(1, draftMappings.length)}${selectedMapping.enabled === false ? ' (disabled)' : ''}</div>
         <datalist id="source-path-options">${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}</datalist>
@@ -2121,7 +2207,7 @@ async function renderTemplates() {
           <label><input type="checkbox" id="inspector-enabled" ${selectedMapping.enabled !== false ? 'checked' : ''} /> Mapping Enabled</label>
         </div>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="preview" ${activeWizardStep === 'preview' ? '' : 'hidden'}>
         <h3>Mapping Preview</h3>
         <div class="row gap-sm wrap">
           <select id="preview-client">${clients
@@ -2167,7 +2253,7 @@ async function renderTemplates() {
             : 'Run preview to validate mapping output against real data. Sample values shown in the mapping table are non-blocking hints.'
         }</div>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="publish" ${activeWizardStep === 'publish' ? '' : 'hidden'}>
         <h3>Publish</h3>
         <div class="row gap-sm wrap">
           <button id="run-publish-preflight" class="tiny secondary">Run Publish Preflight</button>
@@ -2250,10 +2336,11 @@ async function renderTemplates() {
     if (autosave) setActionPending(actionKey, 'saving')
     state.templateSaveStateByTemplateId[template.id] = { status: 'saving' }
     const mappings = (state.templateMappingDrafts[template.id] || []).map((mapping) => normalizeMappingDraft(mapping))
+    const requiredPdfFields = normalizedExtractedFields(template).map((field) => field.fieldName)
     try {
       await request(routes.documentTemplateMappings(template.id), {
         method: 'POST',
-        body: JSON.stringify({ mappings, requiredPdfFields: template.extractedFields || [] })
+        body: JSON.stringify({ mappings, requiredPdfFields })
       })
       state.templateSaveStateByTemplateId[template.id] =
         previousSaveStatus === 'error'
@@ -2279,9 +2366,16 @@ async function renderTemplates() {
     }
     await rerenderTemplates()
   })
+  document.querySelectorAll('[data-template-wizard-step]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!template) return
+      state.templateWizardStepByTemplateId[template.id] = button.dataset.templateWizardStep || 'mapping'
+      await rerenderTemplates()
+    })
+  })
   document.querySelectorAll('[data-remove-extracted]').forEach((button) => {
     button.addEventListener('click', async () => {
-      const next = [...(template.extractedFields || [])]
+      const next = normalizedExtractedFields(template).map((field) => field.fieldName)
       next.splice(Number(button.dataset.removeExtracted), 1)
       await request(routes.documentTemplateMappings(template.id), {
         method: 'POST',
@@ -2295,7 +2389,7 @@ async function renderTemplates() {
     const input = document.querySelector('#new-extracted-field')
     const value = String(input?.value || '').trim()
     if (!value) return
-    const next = Array.from(new Set([...(template.extractedFields || []), value]))
+    const next = Array.from(new Set([...normalizedExtractedFields(template).map((field) => field.fieldName), value]))
     await request(routes.documentTemplateMappings(template.id), {
       method: 'POST',
       body: JSON.stringify({ mappings: (state.templateMappingDrafts[template.id] || []).map((entry) => normalizeMappingDraft(entry)), requiredPdfFields: next })
@@ -2325,7 +2419,7 @@ async function renderTemplates() {
   document.querySelectorAll('[data-mapping-filter]').forEach((button) => {
     button.addEventListener('click', async () => {
       if (!template) return
-      state.templateInspector[template.id] = { rowIndex: Number(row.dataset.selectRow) }
+      state.templateMappingFilterByTemplateId[template.id] = button.dataset.mappingFilter || 'all'
       await rerenderTemplates()
     })
   })
@@ -2404,6 +2498,7 @@ async function renderTemplates() {
         body: JSON.stringify({ clientId, submissionId })
       })
       state.templatePreviewByTemplateId[template.id] = nextPreview
+      state.templateWizardStepByTemplateId[template.id] = 'preview'
       await rerenderTemplates()
     } catch (error) {
       setFlash('error', error.message)
@@ -2426,6 +2521,7 @@ async function renderTemplates() {
         warningsCount: nextPreview.warningsCount || 0,
         blockingWarningsCount: nextPreview.blockingWarningsCount || 0
       }
+      state.templateWizardStepByTemplateId[template.id] = 'publish'
       if ((nextPreview.issues || []).length) {
         setFlash('error', `Publish preflight found ${(nextPreview.issues || []).length} schema issue(s).`)
       } else {
@@ -2503,6 +2599,7 @@ async function renderTemplates() {
         })
       })
       state.templatePublishPreflightByTemplateId[template.id] = { checkedAt: new Date().toISOString(), issues: [] }
+      state.templateWizardStepByTemplateId[template.id] = 'publish'
       reportActionSuccess('Templates', 'Template published.')
     } catch (error) {
       if (Array.isArray(error?.details?.issues)) {
@@ -4058,17 +4155,43 @@ docTemplateFormEl.addEventListener('submit', async (event) => {
     submitButton.textContent = pendingLabel(actionKey, 'Create Template', 'Creating…')
   }
   try {
-    const payload = {
-      ...validateRequiredFields(formEl, ['name']),
-      blueprint: { sections: [] },
-      mappings: []
+    const payload = validateRequiredFields(formEl, ['name'])
+    const useAutoBuild = Boolean(formEl.elements?.namedItem?.('useAutoBuild')?.checked)
+    const uploadFile = formEl.elements?.namedItem?.('templatePdf')?.files?.[0] || null
+    if (useAutoBuild) {
+      if (!uploadFile) throw new Error('Choose a PDF file to use auto-build.')
+      const buffer = await uploadFile.arrayBuffer()
+      const autoBuilt = await request(routes.documentTemplateAutoBuild(), {
+        method: 'POST',
+        body: JSON.stringify({
+          name: payload.name,
+          fileName: uploadFile.name || payload.fileName || 'template.pdf',
+          fileBytesBase64: arrayBufferToBase64(buffer)
+        })
+      })
+      state.view = 'templates'
+      state.selectedTemplateId = autoBuilt.id
+      reportActionSuccess('Templates', `Auto-build finished with extraction status: ${autoBuilt?.extraction?.status || 'unknown'}.`)
+    } else {
+      await request(routes.documentTemplates(), {
+        method: 'POST',
+        body: JSON.stringify({
+          ...payload,
+          blueprint: { sections: [] },
+          mappings: []
+        })
+      })
+      reportActionSuccess('Templates', 'Document template created.')
     }
-    await request(routes.documentTemplates(), { method: 'POST', body: JSON.stringify(payload) })
     formEl.reset()
-    reportActionSuccess('Templates', 'Document template created.')
     await renderCurrentView()
   } catch (error) {
-    setFormFeedback(formEl, error.message)
+    const ingestionReason = String(error?.details?.reasonCode || error?.body?.error?.details?.reasonCode || '')
+    if (ingestionReason) {
+      setFormFeedback(formEl, templateIngestionRecoveryMessage({ reasonCode: ingestionReason, error }))
+    } else {
+      setFormFeedback(formEl, error.message)
+    }
     reportActionError('Templates', error)
     await renderCurrentView()
   } finally {

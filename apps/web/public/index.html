@@ -169,6 +169,11 @@
             <h3>Create Document Template</h3>
             <input name="name" placeholder="Document template name" required />
             <input name="fileName" placeholder="File name" value="template.pdf" />
+            <label class="muted compact">
+              <input type="checkbox" name="useAutoBuild" />
+              Auto-build mappings from uploaded PDF
+            </label>
+            <input name="templatePdf" type="file" accept="application/pdf,.pdf" />
             <button type="submit">Create Template</button>
             <p class="muted compact" data-form-feedback aria-live="polite"></p>
           </form>
