@@ -22,7 +22,6 @@ const REQUIRED_SUMMARY_FILES = [
   'integration-summary.json',
   'migration-summary.json',
   'smoke-summary.json',
-    'e2e-summary.json',
   'security-summary.json',
   'e2e-summary.json',
   'postdeploy-evaluation-summary.json'

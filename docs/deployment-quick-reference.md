@@ -208,6 +208,24 @@ If running the complete workflow (preflight + postdeploy in deterministic order)
 npm run release:go-no-go -- --release-id "$RELEASE_ID"
 ```
 
+## Canonical hard gate sequence (validate:master exact execution order)
+
+When running `npm run validate:master`, the hard gate executes these commands in this exact order:
+
+1. `npm run check:syntax`
+2. `npm run check:conflicts`
+3. `npm run test:contract`
+4. `node scripts/integration-rbac.mjs`
+5. `node scripts/integration-tenancy.mjs`
+6. `npm run test:integration`
+7. `npm run check:migrations`
+8. `npm run test:smoke`
+9. `npm run test:e2e`
+10. `npm run test:security`
+
+Conditional final step:
+- `npm run check:merge-main` runs after step 10 only when the workspace has git metadata and a local `main` branch (or when `VALIDATE_MASTER_FORCE_MERGE_PARITY=1`).
+
 
 ## Documentation freshness owner
 - **Owner:** Release Operations (Release Manager + SRE primary)
