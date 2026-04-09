@@ -131,6 +131,12 @@ try {
     })
     process.exit(1)
   }
+)
+
+child.on('exit', async (code, signal) => {
+  try {
+    const reportExists = existsSync(playwrightReportFile)
+    const report = reportExists ? JSON.parse(readFileSync(playwrightReportFile, 'utf8')) : null
 
   evidence.finalize({
     status: 'passed',

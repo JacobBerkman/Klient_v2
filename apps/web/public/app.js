@@ -31,6 +31,13 @@ const state = {
   templateMappingFilterByTemplateId: {},
   templateInspectorFocusRequestByTemplateId: {},
   templateJumpHighlightByTemplateId: {},
+  customFieldSchema: {
+    fetched: false,
+    loading: false,
+    fields: [],
+    updatedAt: '',
+    lastError: ''
+  },
   formsUi: {
     activeDraftSharePanelId: '',
     collaboratorsByDraftId: {},
@@ -58,6 +65,7 @@ const profileStageEl = document.querySelector('#profile-stage-select')
 const householdPrimaryEl = document.querySelector('select[name="primaryClientId"]')
 const portalProfileEl = document.querySelector('select[name="profileId"]')
 const profileCreateFormEl = document.querySelector('#profile-form')
+const profileCustomFieldsEl = document.querySelector('#profile-custom-fields')
 const householdFormEl = document.querySelector('#household-form')
 const formTemplateFormEl = document.querySelector('#form-template-form')
 const docTemplateFormEl = document.querySelector('#doc-template-form')
@@ -238,6 +246,16 @@ function withTrimmedFormData(form) {
   )
 }
 
+function arrayBufferToBase64(buffer) {
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let i = 0; i < bytes.length; i += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
+  }
+  return btoa(binary)
+}
+
 function validateRequiredFields(form, requiredKeys = []) {
   const payload = withTrimmedFormData(form)
   requiredKeys.forEach((key) => {
@@ -387,13 +405,129 @@ function findBoardColumn(board, stage) {
   return board?.columns?.find((column) => column.stage === stage) || null
 }
 
+function canManageCustomFieldSchema() {
+  return roleAllowed('admin')
+}
+
+function normalizeCustomFieldDefinitions(fields = []) {
+  return (Array.isArray(fields) ? fields : [])
+    .map((field) => ({
+      key: String(field?.key || '')
+        .trim()
+        .replace(/[^a-zA-Z0-9_]+/g, '_'),
+      type: String(field?.type || 'text')
+        .trim()
+        .toLowerCase(),
+      label: String(field?.label || field?.key || '').trim(),
+      required: Boolean(field?.required),
+      metadata: field?.metadata && typeof field.metadata === 'object' && !Array.isArray(field.metadata) ? field.metadata : {}
+    }))
+    .filter((field) => field.key)
+}
+
+async function ensureCustomFieldSchema(force = false) {
+  if (!state.user || state.user.role === 'client') {
+    state.customFieldSchema = { fetched: true, loading: false, fields: [], updatedAt: '', lastError: '' }
+    return state.customFieldSchema.fields
+  }
+  if (!force && state.customFieldSchema.fetched) return state.customFieldSchema.fields
+  state.customFieldSchema.loading = true
+  try {
+    const schema = await request(routes.profileCustomFieldSchema())
+    state.customFieldSchema.fields = normalizeCustomFieldDefinitions(schema?.fields || [])
+    state.customFieldSchema.updatedAt = String(schema?.updatedAt || '')
+    state.customFieldSchema.lastError = ''
+  } catch (error) {
+    state.customFieldSchema.fields = []
+    state.customFieldSchema.lastError = normalizeApiError(error, 'load custom field schema')
+  } finally {
+    state.customFieldSchema.loading = false
+    state.customFieldSchema.fetched = true
+  }
+  return state.customFieldSchema.fields
+}
+
+function customFieldInputName(key = '') {
+  return `customField__${key}`
+}
+
+function parseCustomFieldInputValue(field, rawValue) {
+  const value = String(rawValue ?? '').trim()
+  if (!value) return null
+  if (field.type === 'number') {
+    const parsed = Number(value)
+    return Number.isFinite(parsed) ? parsed : null
+  }
+  if (field.type === 'boolean') return value === 'true'
+  return value
+}
+
+function customFieldControlMarkup(field, value = '', { disabled = false, idPrefix = 'profile-custom' } = {}) {
+  const name = customFieldInputName(field.key)
+  const elementId = `${idPrefix}-${field.key}`
+  if (field.type === 'boolean') {
+    return `<label for="${escapeHtml(elementId)}">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
+      <select id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" ${disabled ? 'disabled' : ''}>
+        <option value="">Not set</option>
+        <option value="true" ${String(value) === 'true' ? 'selected' : ''}>True</option>
+        <option value="false" ${String(value) === 'false' ? 'selected' : ''}>False</option>
+      </select>
+    </label>`
+  }
+  const inputType = field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text'
+  return `<label for="${escapeHtml(elementId)}">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
+    <input id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" type="${inputType}" value="${escapeHtml(value || '')}" ${
+      disabled ? 'disabled' : ''
+    } ${field.required ? 'required' : ''} />
+  </label>`
+}
+
+function customFieldCreateFormMarkup() {
+  if (!profileCustomFieldsEl) return
+  const fields = state.customFieldSchema.fields || []
+  if (state.customFieldSchema.loading) {
+    profileCustomFieldsEl.innerHTML = '<h4>Firm Custom Fields</h4><p class="muted compact">Loading custom field schema…</p>'
+    return
+  }
+  if (state.customFieldSchema.lastError) {
+    profileCustomFieldsEl.innerHTML = `<h4>Firm Custom Fields</h4><p class="error-banner">${escapeHtml(state.customFieldSchema.lastError)}</p>`
+    return
+  }
+  if (!fields.length) {
+    profileCustomFieldsEl.innerHTML =
+      '<h4>Firm Custom Fields</h4><p class="muted compact">No custom fields are configured for this firm.</p>'
+    return
+  }
+  profileCustomFieldsEl.innerHTML = `<h4>Firm Custom Fields</h4><div class="grid two">${fields
+    .map((field) => customFieldControlMarkup(field, ''))
+    .join('')}</div>`
+}
+
+function collectCustomFieldValues(formEl, fields = []) {
+  const values = {}
+  fields.forEach((field) => {
+    const inputName = customFieldInputName(field.key)
+    const raw = formEl?.elements?.namedItem?.(inputName)?.value ?? ''
+    const parsed = parseCustomFieldInputValue(field, raw)
+    if (parsed !== null) values[field.key] = parsed
+  })
+  return values
+}
+
 function editableProfileFieldsFromCard(card = {}) {
-  return {
+  const fields = {
     firstName: card.firstName || '',
     lastName: card.lastName || '',
     email: card.email || '',
     phone: card.phone || ''
   }
+  ;(state.customFieldSchema.fields || []).forEach((field) => {
+    const sourceValue = card?.extensions?.values?.[field.key]
+    if (sourceValue == null) fields[customFieldInputName(field.key)] = ''
+    else if (field.type === 'boolean') fields[customFieldInputName(field.key)] = sourceValue ? 'true' : 'false'
+    else fields[customFieldInputName(field.key)] = String(sourceValue)
+  })
+  return fields
 }
 
 function boardKeyForKind(kind) {
@@ -762,8 +896,13 @@ function updateViewNavState() {
 }
 
 async function refreshSelects() {
-  if (!state.user || state.user.role === 'client') return
+  if (!state.user || state.user.role === 'client') {
+    state.customFieldSchema = { fetched: true, loading: false, fields: [], updatedAt: '', lastError: '' }
+    customFieldCreateFormMarkup()
+    return
+  }
   await ensureStageConfig()
+  await ensureCustomFieldSchema()
   const clients = await request(routes.profiles({ kind: 'client' }))
   const profiles = await request(routes.profiles())
   householdPrimaryEl.innerHTML = clients
@@ -779,6 +918,7 @@ async function refreshSelects() {
     )
     .join('')
   renderProfileStageSelect()
+  customFieldCreateFormMarkup()
 }
 
 function metricCard(label, value) {
@@ -1731,6 +1871,50 @@ function previewWarningMarkup(warnings = []) {
     .join(' ')
 }
 
+function normalizedExtractedFields(template = {}) {
+  if (!Array.isArray(template?.extractedFields)) return []
+  return template.extractedFields
+    .map((field, index) => {
+      if (typeof field === 'string') {
+        return {
+          id: field,
+          fieldName: field,
+          fieldType: 'text',
+          pageIndex: null,
+          required: false,
+          readOnly: false,
+          index
+        }
+      }
+      const fieldName = String(field?.fieldName || field?.name || field?.pdfField || '').trim()
+      if (!fieldName) return null
+      return {
+        id: `${fieldName}-${index}`,
+        fieldName,
+        fieldType: String(field?.fieldType || field?.type || 'text'),
+        pageIndex: Number.isInteger(field?.pageIndex) ? field.pageIndex : null,
+        required: field?.required === true,
+        readOnly: field?.readOnly === true,
+        index
+      }
+    })
+    .filter(Boolean)
+}
+
+function templateIngestionRecoveryMessage(extraction = {}) {
+  const reasonCode = String(extraction?.reasonCode || '').trim()
+  if (reasonCode === 'malformed_pdf') {
+    return 'The uploaded file could not be parsed as a valid PDF. Re-export the document from the source system, verify it opens locally, then upload again.'
+  }
+  if (reasonCode === 'no_acroform') {
+    return 'No AcroForm metadata was found. Use a fillable PDF with AcroForm fields, or continue with manual template creation and add mappings yourself.'
+  }
+  if (reasonCode === 'no_fields') {
+    return 'AcroForm metadata exists, but no fillable fields were detected. Confirm fields are interactive inputs (not flattened text), then re-upload.'
+  }
+  return extraction?.error?.message || 'Template ingestion failed. Review the PDF and retry upload, or continue with manual mappings.'
+}
+
 async function renderTemplates() {
   let templates = []
   let clients = []
@@ -1862,8 +2046,15 @@ async function renderTemplates() {
   const selectedMapping = draftMappings[safeSelectedRowIndex] || mappingDraftFromServer({})
 
   const mappedFieldSet = new Set(draftMappings.map((entry) => String(entry.pdfField || '').trim()).filter(Boolean))
-  const extractedFields = template?.extractedFields || []
-  const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field)).length
+  const extractedFields = normalizedExtractedFields(template)
+  const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field.fieldName)).length
+  const extraction = template?.extraction || {}
+  const wizardSteps = ['upload', 'extraction', 'mapping', 'preview', 'publish']
+  const defaultWizardStep = extraction?.status === 'failed' ? 'extraction' : extractedFields.length ? 'mapping' : 'upload'
+  const activeWizardStep = wizardSteps.includes(state.templateWizardStepByTemplateId?.[template?.id])
+    ? state.templateWizardStepByTemplateId[template.id]
+    : defaultWizardStep
+  if (template) state.templateWizardStepByTemplateId[template.id] = activeWizardStep
   const saveState = state.templateSaveStateByTemplateId[template?.id] || { status: 'idle', message: '' }
 
   const sampleProfile = clients[0] || {}
@@ -1896,6 +2087,31 @@ async function renderTemplates() {
       template
         ? `
       <section class="item">
+        <h3>Template Builder Flow</h3>
+        <div class="row gap-sm wrap">
+          ${wizardSteps
+            .map((step, index) => {
+              const label = `${index + 1}. ${step.charAt(0).toUpperCase() + step.slice(1)}`
+              return `<button type="button" class="tiny ${activeWizardStep === step ? '' : 'secondary'}" data-template-wizard-step="${step}" aria-pressed="${activeWizardStep === step ? 'true' : 'false'}">${label}</button>`
+            })
+            .join('')}
+        </div>
+      </section>
+      <section class="item" data-template-wizard-section="upload" ${activeWizardStep === 'upload' ? '' : 'hidden'}>
+        <h3>Step 1 · Upload</h3>
+        <p class="muted">Use the Create Document Template form to upload a fillable PDF and auto-build mappings, or continue manually without upload.</p>
+      </section>
+      <section class="item" data-template-wizard-section="extraction" ${activeWizardStep === 'extraction' ? '' : 'hidden'}>
+        <h3>Step 2 · Extraction Summary</h3>
+        <p class="muted">Status: <span class="badge ${extraction?.status === 'failed' ? 'error-badge' : 'subtle'}">${escapeHtml(extraction?.status || 'unknown')}</span></p>
+        <p class="muted">Reason code: <code>${escapeHtml(extraction?.reasonCode || 'none')}</code></p>
+        ${
+          extraction?.status === 'failed'
+            ? `<p class="error-banner">${escapeHtml(templateIngestionRecoveryMessage(extraction))}</p>`
+            : '<p class="muted">Extraction completed. Review mapped/unmapped fields before editing mappings.</p>'
+        }
+      </section>
+      <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mapping Health</h3>
         <div class="row wrap gap-sm">
           <span class="badge">Mapped ${draftMappings.filter((entry) => entry.enabled !== false && String(entry.pdfField || '').trim()).length}</span>
@@ -1904,12 +2120,12 @@ async function renderTemplates() {
           <span class="badge subtle">Save state: ${escapeHtml(mappingSaveStateLabel(saveState))}</span>
         </div>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Extracted AcroForm Fields</h3>
         <ul>${extractedFields
-          .map((field, index) => {
-            const mapped = mappedFieldSet.has(field)
-            return `<li>${escapeHtml(field)} <span class="badge ${mapped ? 'subtle' : ''}">${mapped ? 'Mapped' : 'Unmapped'}</span><button data-remove-extracted="${index}" class="secondary tiny">Remove</button></li>`
+          .map((field) => {
+            const mapped = mappedFieldSet.has(field.fieldName)
+            return `<li><strong>${escapeHtml(field.fieldName)}</strong> <span class="badge">${escapeHtml(field.fieldType)}</span>${field.required ? ' <span class="badge warning-badge">Required</span>' : ''}${field.readOnly ? ' <span class="badge subtle">Read-only</span>' : ''}${field.pageIndex != null ? ` <span class="badge subtle">Page ${field.pageIndex + 1}</span>` : ''} <span class="badge ${mapped ? 'subtle' : ''}">${mapped ? 'Mapped' : 'Unmapped'}</span><button data-remove-extracted="${field.index}" class="secondary tiny">Remove</button></li>`
           })
           .join('') || '<li class="muted">No extracted fields yet.</li>'}</ul>
         <div class="row gap-sm">
@@ -1917,13 +2133,13 @@ async function renderTemplates() {
           <button id="add-extracted-field" class="tiny">Add</button>
         </div>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Source Path Discovery</h3>
         <div class="muted">Known paths from profile + form schema: ${[...knownPaths.keys()]
           .map((path) => `<code>${escapeHtml(path)}</code>`)
           .join(', ')}</div>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mappings</h3>
         <div class="row gap-sm wrap"><button id="add-mapping-row" class="tiny">Add Mapping</button><button id="save-mappings" class="tiny">Save Now</button></div>
         <div class="row gap-sm wrap top-gap">
@@ -1970,7 +2186,7 @@ async function renderTemplates() {
             .join('') || '<tr><td colspan="8" class="muted">No mappings match this filter.</td></tr>'}
         </tbody></table>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Field Inspector</h3>
         <div class="muted">Selected row ${safeSelectedRowIndex + 1} of ${Math.max(1, draftMappings.length)}${selectedMapping.enabled === false ? ' (disabled)' : ''}</div>
         <datalist id="source-path-options">${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}</datalist>
@@ -1991,7 +2207,7 @@ async function renderTemplates() {
           <label><input type="checkbox" id="inspector-enabled" ${selectedMapping.enabled !== false ? 'checked' : ''} /> Mapping Enabled</label>
         </div>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="preview" ${activeWizardStep === 'preview' ? '' : 'hidden'}>
         <h3>Mapping Preview</h3>
         <div class="row gap-sm wrap">
           <select id="preview-client">${clients
@@ -2037,7 +2253,7 @@ async function renderTemplates() {
             : 'Run preview to validate mapping output against real data. Sample values shown in the mapping table are non-blocking hints.'
         }</div>
       </section>
-      <section class="item">
+      <section class="item" data-template-wizard-section="publish" ${activeWizardStep === 'publish' ? '' : 'hidden'}>
         <h3>Publish</h3>
         <div class="row gap-sm wrap">
           <button id="run-publish-preflight" class="tiny secondary">Run Publish Preflight</button>
@@ -2120,10 +2336,11 @@ async function renderTemplates() {
     if (autosave) setActionPending(actionKey, 'saving')
     state.templateSaveStateByTemplateId[template.id] = { status: 'saving' }
     const mappings = (state.templateMappingDrafts[template.id] || []).map((mapping) => normalizeMappingDraft(mapping))
+    const requiredPdfFields = normalizedExtractedFields(template).map((field) => field.fieldName)
     try {
       await request(routes.documentTemplateMappings(template.id), {
         method: 'POST',
-        body: JSON.stringify({ mappings, requiredPdfFields: template.extractedFields || [] })
+        body: JSON.stringify({ mappings, requiredPdfFields })
       })
       state.templateSaveStateByTemplateId[template.id] =
         previousSaveStatus === 'error'
@@ -2149,9 +2366,16 @@ async function renderTemplates() {
     }
     await rerenderTemplates()
   })
+  document.querySelectorAll('[data-template-wizard-step]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!template) return
+      state.templateWizardStepByTemplateId[template.id] = button.dataset.templateWizardStep || 'mapping'
+      await rerenderTemplates()
+    })
+  })
   document.querySelectorAll('[data-remove-extracted]').forEach((button) => {
     button.addEventListener('click', async () => {
-      const next = [...(template.extractedFields || [])]
+      const next = normalizedExtractedFields(template).map((field) => field.fieldName)
       next.splice(Number(button.dataset.removeExtracted), 1)
       await request(routes.documentTemplateMappings(template.id), {
         method: 'POST',
@@ -2165,7 +2389,7 @@ async function renderTemplates() {
     const input = document.querySelector('#new-extracted-field')
     const value = String(input?.value || '').trim()
     if (!value) return
-    const next = Array.from(new Set([...(template.extractedFields || []), value]))
+    const next = Array.from(new Set([...normalizedExtractedFields(template).map((field) => field.fieldName), value]))
     await request(routes.documentTemplateMappings(template.id), {
       method: 'POST',
       body: JSON.stringify({ mappings: (state.templateMappingDrafts[template.id] || []).map((entry) => normalizeMappingDraft(entry)), requiredPdfFields: next })
@@ -2195,7 +2419,7 @@ async function renderTemplates() {
   document.querySelectorAll('[data-mapping-filter]').forEach((button) => {
     button.addEventListener('click', async () => {
       if (!template) return
-      state.templateInspector[template.id] = { rowIndex: Number(row.dataset.selectRow) }
+      state.templateMappingFilterByTemplateId[template.id] = button.dataset.mappingFilter || 'all'
       await rerenderTemplates()
     })
   })
@@ -2274,6 +2498,7 @@ async function renderTemplates() {
         body: JSON.stringify({ clientId, submissionId })
       })
       state.templatePreviewByTemplateId[template.id] = nextPreview
+      state.templateWizardStepByTemplateId[template.id] = 'preview'
       await rerenderTemplates()
     } catch (error) {
       setFlash('error', error.message)
@@ -2296,6 +2521,7 @@ async function renderTemplates() {
         warningsCount: nextPreview.warningsCount || 0,
         blockingWarningsCount: nextPreview.blockingWarningsCount || 0
       }
+      state.templateWizardStepByTemplateId[template.id] = 'publish'
       if ((nextPreview.issues || []).length) {
         setFlash('error', `Publish preflight found ${(nextPreview.issues || []).length} schema issue(s).`)
       } else {
@@ -2373,6 +2599,7 @@ async function renderTemplates() {
         })
       })
       state.templatePublishPreflightByTemplateId[template.id] = { checkedAt: new Date().toISOString(), issues: [] }
+      state.templateWizardStepByTemplateId[template.id] = 'publish'
       reportActionSuccess('Templates', 'Template published.')
     } catch (error) {
       if (Array.isArray(error?.details?.issues)) {
@@ -2508,6 +2735,23 @@ function boardCardMarkup(card, kind) {
         </div>
         <input name="email" type="email" value="${escapeHtml(inlineState.draft.email || '')}" placeholder="Email" />
         <input name="phone" value="${escapeHtml(inlineState.draft.phone || '')}" placeholder="Phone" />
+        ${
+          state.customFieldSchema.fields.length
+            ? `<div class="item compact">
+              <h4>Custom Fields</h4>
+              <div class="grid two">
+                ${state.customFieldSchema.fields
+                  .map((field) =>
+                    customFieldControlMarkup(field, inlineState.draft[customFieldInputName(field.key)] || '', {
+                      disabled: !canEdit,
+                      idPrefix: `profile-edit-${card.id}`
+                    })
+                  )
+                  .join('')}
+              </div>
+            </div>`
+            : ''
+        }
         <div class="actions-row">
           <button type="submit" class="tiny" ${canEdit && inlineState.dirty && !inlineState.saving ? '' : 'disabled'}>${inlineState.saving ? 'Saving…' : 'Save'}</button>
           <button type="button" class="secondary tiny" data-cancel-edit="${card.id}" ${canEdit && !inlineState.saving ? '' : 'disabled'}>Cancel</button>
@@ -2697,15 +2941,32 @@ function wireBoardInteractions(kind) {
   })
   document.querySelectorAll('[data-edit-form]').forEach((form) => {
     const profileId = form.dataset.editForm
-    form.querySelectorAll('input').forEach((input) => {
+    form.querySelectorAll('input, select, textarea').forEach((input) => {
       input.addEventListener('input', () => {
+        setInlineDraftField(kind, profileId, input.name, input.value)
+      })
+      input.addEventListener('change', () => {
         setInlineDraftField(kind, profileId, input.name, input.value)
       })
     })
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
       const inlineState = ensureInlineProfileState(kind, profileId)
-      const payload = { ...inlineState.draft }
+      const payload = {
+        firstName: inlineState.draft.firstName || '',
+        lastName: inlineState.draft.lastName || '',
+        email: inlineState.draft.email || '',
+        phone: inlineState.draft.phone || ''
+      }
+      const extensionValues = {}
+      state.customFieldSchema.fields.forEach((field) => {
+        const parsed = parseCustomFieldInputValue(field, inlineState.draft[customFieldInputName(field.key)] || '')
+        if (parsed !== null) extensionValues[field.key] = parsed
+      })
+      payload.extensions = {
+        schemaVersion: '1.0.0',
+        values: extensionValues
+      }
       const submitButton = form.querySelector('button[type="submit"]')
       const feedbackEl = form.querySelector('[data-inline-feedback]')
       if (submitButton) {
@@ -2839,6 +3100,7 @@ function wireBoardInteractions(kind) {
 
 async function renderBoard(kind) {
   try {
+    await ensureCustomFieldSchema()
     if (kind === 'prospect') {
       state.board = await request(routes.board())
       const boardStageDefinitions = stageDefinitionsFromBoard(state.board)
@@ -2878,7 +3140,9 @@ function roleAccessMatrixMarkup() {
     ['Forms', ['admin', 'advisor', 'readonly']],
     ['Templates', ['admin', 'advisor']],
     ['Exports', ['admin', 'advisor']],
-    ['Analytics', ['admin', 'advisor', 'readonly']]
+    ['Analytics', ['admin', 'advisor', 'readonly']],
+    ['Custom Fields (view)', ['admin', 'advisor', 'readonly']],
+    ['Custom Fields (mutate)', ['admin']]
   ]
   return `<table><thead><tr><th>Action/View</th><th>admin</th><th>advisor</th><th>readonly</th></tr></thead><tbody>
     ${matrix.map(([name, roles]) => `<tr><td>${name}</td><td>${roles.includes('admin') ? '✅' : '—'}</td><td>${roles.includes('advisor') ? '✅' : '—'}</td><td>${roles.includes('readonly') ? '✅' : '—'}</td></tr>`).join('')}
@@ -3282,6 +3546,177 @@ async function renderExports() {
   focusWithinView('#exports-heading')
 }
 
+function customFieldReadonlyMessage() {
+  if (state.user?.role === 'advisor') {
+    return 'Advisor role is read-only for schema changes (backend guard: canManageUsers).'
+  }
+  if (state.user?.role === 'readonly') {
+    return 'Readonly role can view schema only; create/update/delete are forbidden by policy.'
+  }
+  return ''
+}
+
+async function renderCustomFieldsAdmin() {
+  await ensureCustomFieldSchema()
+  const canManage = canManageCustomFieldSchema()
+  const readonlyMessage = !canManage ? customFieldReadonlyMessage() : ''
+  const fields = state.customFieldSchema.fields || []
+  viewEl.innerHTML = `
+    ${flashMarkup()}
+    ${alertMarkup()}
+    <div class="section-header">
+      <div>
+        <h2 id="custom-fields-heading">Custom Field Schema</h2>
+        <p class="muted">Manage firm-level profile custom fields (key, type, label, required, metadata).</p>
+      </div>
+      <span class="badge subtle">${state.customFieldSchema.updatedAt ? `Updated ${new Date(state.customFieldSchema.updatedAt).toLocaleString()}` : 'No updates yet'}</span>
+    </div>
+    ${
+      readonlyMessage
+        ? `<p class="error-banner" role="status" aria-live="polite">${escapeHtml(readonlyMessage)}</p>`
+        : '<p class="muted">Admin can create, update, and delete schema fields.</p>'
+    }
+    ${
+      state.customFieldSchema.lastError
+        ? `<p class="error-banner">${escapeHtml(state.customFieldSchema.lastError)}</p>`
+        : ''
+    }
+    <section class="item">
+      <h3>Create Field</h3>
+      <form id="custom-field-create-form" class="grid two">
+        <input name="key" placeholder="field_key" ${canManage ? '' : 'disabled'} />
+        <select name="type" ${canManage ? '' : 'disabled'}>
+          <option value="text">text</option>
+          <option value="number">number</option>
+          <option value="boolean">boolean</option>
+          <option value="date">date</option>
+        </select>
+        <input name="label" placeholder="Display label" ${canManage ? '' : 'disabled'} />
+        <label><input name="required" type="checkbox" ${canManage ? '' : 'disabled'} /> Required</label>
+        <input name="metadata" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
+        <button type="submit" ${canManage ? '' : 'disabled'}>Create Field</button>
+        <p class="muted compact" data-form-feedback aria-live="polite"></p>
+      </form>
+    </section>
+    <section class="item">
+      <h3>Current Fields</h3>
+      <table><thead><tr><th>Key</th><th>Type</th><th>Label</th><th>Required</th><th>Metadata</th><th>Actions</th></tr></thead><tbody>
+      ${
+        fields.length
+          ? fields
+              .map(
+                (field) => `<tr>
+            <td><code>${escapeHtml(field.key)}</code></td>
+            <td>${escapeHtml(field.type)}</td>
+            <td>${escapeHtml(field.label || field.key)}</td>
+            <td>${field.required ? 'Yes' : 'No'}</td>
+            <td><code>${escapeHtml(JSON.stringify(field.metadata || {}))}</code></td>
+            <td>
+              <form data-custom-field-update="${escapeHtml(field.key)}" class="grid two">
+                <input name="label" value="${escapeHtml(field.label || '')}" placeholder="Label" ${canManage ? '' : 'disabled'} />
+                <select name="type" ${canManage ? '' : 'disabled'}>
+                  <option value="text" ${field.type === 'text' ? 'selected' : ''}>text</option>
+                  <option value="number" ${field.type === 'number' ? 'selected' : ''}>number</option>
+                  <option value="boolean" ${field.type === 'boolean' ? 'selected' : ''}>boolean</option>
+                  <option value="date" ${field.type === 'date' ? 'selected' : ''}>date</option>
+                </select>
+                <label><input name="required" type="checkbox" ${field.required ? 'checked' : ''} ${canManage ? '' : 'disabled'} /> Required</label>
+                <input name="metadata" value="${escapeHtml(JSON.stringify(field.metadata || {}))}" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
+                <div class="actions-row">
+                  <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Update</button>
+                  <button type="button" class="tiny secondary" data-custom-field-delete="${escapeHtml(field.key)}" ${canManage ? '' : 'disabled'}>Delete</button>
+                </div>
+                <p class="muted compact" data-form-feedback aria-live="polite"></p>
+              </form>
+            </td>
+          </tr>`
+              )
+              .join('')
+          : '<tr><td colspan="6">No custom fields configured.</td></tr>'
+      }
+      </tbody></table>
+    </section>
+  `
+
+  const parseMetadataJson = (raw) => {
+    const text = String(raw || '').trim()
+    if (!text) return {}
+    return JSON.parse(text)
+  }
+
+  document.querySelector('#custom-field-create-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    if (!canManage) return
+    const form = event.currentTarget
+    clearFormFeedback(form)
+    try {
+      const formData = new FormData(form)
+      await request(routes.profileCustomFieldSchema(), {
+        method: 'POST',
+        body: JSON.stringify({
+          key: String(formData.get('key') || '').trim(),
+          type: String(formData.get('type') || 'text').trim(),
+          label: String(formData.get('label') || '').trim(),
+          required: Boolean(formData.get('required')),
+          metadata: parseMetadataJson(formData.get('metadata'))
+        })
+      })
+      setFlash('success', 'Custom field created.')
+      state.customFieldSchema.fetched = false
+      await refreshSelects()
+      await renderCustomFieldsAdmin()
+    } catch (error) {
+      setFormFeedback(form, normalizeApiError(error, 'create custom field schema'))
+    }
+  })
+
+  document.querySelectorAll('[data-custom-field-update]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      if (!canManage) return
+      clearFormFeedback(form)
+      const fieldKey = form.dataset.customFieldUpdate
+      try {
+        const formData = new FormData(form)
+        await request(routes.profileCustomFieldSchemaField(fieldKey), {
+          method: 'PATCH',
+          body: JSON.stringify({
+            label: String(formData.get('label') || '').trim(),
+            type: String(formData.get('type') || '').trim(),
+            required: Boolean(formData.get('required')),
+            metadata: parseMetadataJson(formData.get('metadata'))
+          })
+        })
+        setFlash('success', `Custom field ${fieldKey} updated.`)
+        state.customFieldSchema.fetched = false
+        await refreshSelects()
+        await renderCustomFieldsAdmin()
+      } catch (error) {
+        setFormFeedback(form, normalizeApiError(error, `update custom field ${fieldKey}`))
+      }
+    })
+  })
+
+  document.querySelectorAll('[data-custom-field-delete]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!canManage) return
+      const fieldKey = button.dataset.customFieldDelete
+      try {
+        await request(routes.profileCustomFieldSchemaField(fieldKey), { method: 'DELETE' })
+        setFlash('success', `Custom field ${fieldKey} deleted.`)
+        state.customFieldSchema.fetched = false
+        await refreshSelects()
+        await renderCustomFieldsAdmin()
+      } catch (error) {
+        setFlash('error', normalizeApiError(error, `delete custom field ${fieldKey}`))
+        await renderCustomFieldsAdmin()
+      }
+    })
+  })
+
+  focusWithinView('#custom-fields-heading')
+}
+
 function operationsPayloadJson() {
   return JSON.stringify(
     {
@@ -3475,6 +3910,7 @@ async function renderCurrentView() {
     forms: '#forms-heading',
     templates: '#templates-heading',
     exports: '#exports-heading',
+    'custom-fields': '#custom-fields-heading',
     operations: '#operations-heading',
     prospects: '#board-heading',
     clients: '#board-heading'
@@ -3484,6 +3920,7 @@ async function renderCurrentView() {
   else if (state.view === 'forms') await renderForms()
   else if (state.view === 'templates') await renderTemplates()
   else if (state.view === 'exports') await renderExports()
+  else if (state.view === 'custom-fields') await renderCustomFieldsAdmin()
   else if (state.view === 'operations') await renderOperations()
   else if (state.view === 'prospects') await renderBoard('prospect')
   else if (state.view === 'clients') await renderBoard('client')
@@ -3600,6 +4037,7 @@ profileCreateFormEl.addEventListener('submit', async (event) => {
   }
   try {
     const payload = validateRequiredFields(formEl, ['firstName', 'lastName'])
+    const extensionValues = collectCustomFieldValues(formEl, state.customFieldSchema.fields || [])
     const source = payload.cityOrLocation
       ? { cityOrLocation: payload.cityOrLocation, venue: payload.venue, occurredOn: payload.occurredOn }
       : null
@@ -3612,7 +4050,11 @@ profileCreateFormEl.addEventListener('submit', async (event) => {
         email: payload.email,
         phone: payload.phone,
         stage: payload.stage,
-        source
+        source,
+        extensions: {
+          schemaVersion: '1.0.0',
+          values: extensionValues
+        }
       })
     })
     formEl.reset()
@@ -3713,17 +4155,43 @@ docTemplateFormEl.addEventListener('submit', async (event) => {
     submitButton.textContent = pendingLabel(actionKey, 'Create Template', 'Creating…')
   }
   try {
-    const payload = {
-      ...validateRequiredFields(formEl, ['name']),
-      blueprint: { sections: [] },
-      mappings: []
+    const payload = validateRequiredFields(formEl, ['name'])
+    const useAutoBuild = Boolean(formEl.elements?.namedItem?.('useAutoBuild')?.checked)
+    const uploadFile = formEl.elements?.namedItem?.('templatePdf')?.files?.[0] || null
+    if (useAutoBuild) {
+      if (!uploadFile) throw new Error('Choose a PDF file to use auto-build.')
+      const buffer = await uploadFile.arrayBuffer()
+      const autoBuilt = await request(routes.documentTemplateAutoBuild(), {
+        method: 'POST',
+        body: JSON.stringify({
+          name: payload.name,
+          fileName: uploadFile.name || payload.fileName || 'template.pdf',
+          fileBytesBase64: arrayBufferToBase64(buffer)
+        })
+      })
+      state.view = 'templates'
+      state.selectedTemplateId = autoBuilt.id
+      reportActionSuccess('Templates', `Auto-build finished with extraction status: ${autoBuilt?.extraction?.status || 'unknown'}.`)
+    } else {
+      await request(routes.documentTemplates(), {
+        method: 'POST',
+        body: JSON.stringify({
+          ...payload,
+          blueprint: { sections: [] },
+          mappings: []
+        })
+      })
+      reportActionSuccess('Templates', 'Document template created.')
     }
-    await request(routes.documentTemplates(), { method: 'POST', body: JSON.stringify(payload) })
     formEl.reset()
-    reportActionSuccess('Templates', 'Document template created.')
     await renderCurrentView()
   } catch (error) {
-    setFormFeedback(formEl, error.message)
+    const ingestionReason = String(error?.details?.reasonCode || error?.body?.error?.details?.reasonCode || '')
+    if (ingestionReason) {
+      setFormFeedback(formEl, templateIngestionRecoveryMessage({ reasonCode: ingestionReason, error }))
+    } else {
+      setFormFeedback(formEl, error.message)
+    }
     reportActionError('Templates', error)
     await renderCurrentView()
   } finally {

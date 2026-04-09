@@ -67,6 +67,30 @@ test('template change announcements are exposed for app and portal workflows', (
   assert.match(portalHtml, /renderTemplateFields\(\{ silentAnnouncement: false \}\)/)
 })
 
+test('template builder auto-build + wizard flow keeps upload and publish-preflight controls stable', () => {
+  assert.match(html, /id="doc-template-form"[\s\S]*name="useAutoBuild"/)
+  assert.match(html, /id="doc-template-form"[\s\S]*name="templatePdf" type="file" accept="application\/pdf,.pdf"/)
+  assert.match(appJs, /function templateIngestionRecoveryMessage\(extraction = \{\}\)/)
+  assert.match(appJs, /reasonCode === 'malformed_pdf'/)
+  assert.match(appJs, /reasonCode === 'no_acroform'/)
+  assert.match(appJs, /reasonCode === 'no_fields'/)
+  assert.match(appJs, /const wizardSteps = \['upload', 'extraction', 'mapping', 'preview', 'publish'\]/)
+  assert.match(appJs, /data-template-wizard-step="\$\{step\}"/)
+  assert.match(appJs, /document\.querySelectorAll\('\[data-template-wizard-step\]'\)/)
+  assert.match(appJs, /id="run-publish-preflight"/)
+  assert.match(appJs, /id="publish-template"/)
+})
+
+test('template versioning and publish preflight controls remain wired in builder workflow', () => {
+  assert.match(appJs, /routes\.documentTemplateMappingsPreview\(template\.id\)/)
+  assert.match(appJs, /state\.templatePublishPreflightByTemplateId\[template\.id\]/)
+  assert.match(appJs, /routes\.documentTemplatePublish\(template\.id\)/)
+  assert.match(appJs, /routes\.documentTemplateCompare\(template\.id, \{ baseVersion, targetVersion \}\)/)
+  assert.match(appJs, /routes\.documentTemplateRevert\(template\.id\)/)
+  assert.match(appJs, /id="compare-template-versions"/)
+  assert.match(appJs, /id="revert-template-version"/)
+})
+
 
 test('e2e selectors stay stable for auth, advisor workflows, and portal submission controls', () => {
   assert.match(html, /id="register-form"[^>]*data-e2e="register-form"/)
