@@ -135,6 +135,7 @@ export async function gatePlaywrightReportOrFail({ reportPath, evidenceRecorder 
   return validation
 }
 
+<<<<<<< codex/tighten-post-playwright-validation
 export async function main() {
   const context = await createTestContext('e2e-browser-suite')
 
@@ -203,6 +204,16 @@ export async function main() {
       process.exit(1)
       return
     }
+=======
+  const uiContractResult = await runCommand(process.execPath, ['--test', ...uiContractSuites], baseEnv)
+  if (uiContractResult.signal || uiContractResult.code !== 0) {
+    throw new Error(
+      uiContractResult.signal
+        ? `UI contract checks terminated by signal ${uiContractResult.signal}`
+        : `UI contract checks failed with exit code ${uiContractResult.code}`
+    )
+  }
+>>>>>>> main
 
     const reportValidation = await gatePlaywrightReportOrFail({ reportPath: playwrightReportPath, uiContractStatus: { status: 'passed', exitCode: 0 } })
     if (!reportValidation.ok) {
@@ -210,6 +221,7 @@ export async function main() {
       return
     }
 
+<<<<<<< codex/tighten-post-playwright-validation
     evidence.finalize({
       status: 'passed',
       details: {
@@ -241,4 +253,51 @@ export async function writeTempReport(content) {
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
   await main()
+=======
+  if (playwrightResult.signal || playwrightResult.code !== 0) {
+    throw new Error(
+      playwrightResult.signal
+        ? `Playwright browser suite terminated by signal ${playwrightResult.signal}`
+        : `Playwright browser suite failed with exit code ${playwrightResult.code}`
+    )
+  }
+
+  evidence.finalize({
+    status: 'passed',
+    details: {
+      suites: {
+        uiContract: uiContractSuites,
+        browser: playwrightMetadata.suiteNames.length ? playwrightMetadata.suiteNames : [browserSuitePattern]
+      },
+      artifacts: {
+        playwrightJsonReport: playwrightMetadata.artifact
+      },
+      uiContract: { status: 'passed', exitCode: 0 },
+      browser: { status: 'passed', exitCode: 0 }
+    }
+  })
+} catch (error) {
+  const playwrightMetadata = await buildPlaywrightMetadata()
+  const message = error instanceof Error ? error.message : String(error)
+  const uiContractFailed = message.startsWith('UI contract checks')
+
+  evidence.finalize({
+    status: 'failed',
+    error,
+    details: {
+      suites: {
+        uiContract: uiContractSuites,
+        browser: playwrightMetadata.suiteNames.length ? playwrightMetadata.suiteNames : [browserSuitePattern]
+      },
+      artifacts: {
+        playwrightJsonReport: playwrightMetadata.artifact
+      },
+      uiContract: uiContractFailed ? { status: 'failed' } : { status: 'passed', exitCode: 0 },
+      browser: uiContractFailed ? { status: 'skipped' } : { status: 'failed' }
+    }
+  })
+  process.exitCode = 1
+} finally {
+  await context.shutdown()
+>>>>>>> main
 }
