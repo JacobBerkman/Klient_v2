@@ -123,6 +123,55 @@ function parseJsonFile(file, label) {
   }
 }
 
+function parseBooleanSignal(value) {
+  if (typeof value === 'boolean') return value
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false
+  return null
+}
+
+function isReleaseRefEnvironment(env) {
+  const githubRef = String(env.GITHUB_REF || '').trim()
+  const githubRefName = String(env.GITHUB_REF_NAME || '').trim()
+  const gitlabTag = String(env.CI_COMMIT_TAG || '').trim()
+  const gitlabRefName = String(env.CI_COMMIT_REF_NAME || '').trim()
+
+  if (githubRef.startsWith('refs/tags/')) return true
+  if (githubRef.startsWith('refs/heads/release/') || githubRef.startsWith('refs/heads/release-')) return true
+  if (githubRefName.startsWith('release/') || githubRefName.startsWith('release-')) return true
+  if (gitlabTag) return true
+  if (gitlabRefName.startsWith('release/') || gitlabRefName.startsWith('release-')) return true
+  return false
+}
+
+function determineStrictE2EMode(env) {
+  const override = parseBooleanSignal(env.RELEASE_E2E_STRICT_MODE)
+  if (override !== null) return override
+  return isReleaseRefEnvironment(env)
+}
+
+function emitE2EModeSummary(evidenceDir) {
+  const e2eSummary = parseJsonFile(resolve(evidenceDir, 'e2e-summary.json'), 'E2E summary')
+  const mode = e2eSummary?.executionMode || 'unknown'
+  const strictMode = determineStrictE2EMode(process.env)
+  process.stdout.write(`\nℹ E2E execution mode: ${mode} (strict mode: ${strictMode ? 'required' : 'not required'})\n`)
+
+  const warnings = Array.isArray(e2eSummary?.details?.downgradeWarnings)
+    ? e2eSummary.details.downgradeWarnings
+    : []
+  if (warnings.length > 0) {
+    for (const warning of warnings) {
+      process.stdout.write(`⚠ E2E downgrade warning: ${warning}\n`)
+    }
+  }
+
+  if (!strictMode && mode === 'fallback') {
+    process.stdout.write('⚠ E2E ran in fallback mode because strict mode is not required for this ref.\n')
+  }
+}
+
 async function validateReleaseEvidence() {
   const args = ['scripts/validate-release-evidence.mjs', '--release-id', options.releaseId, '--phase', executionPhase]
   const strictHandoffValidationEnabled =
@@ -769,6 +818,7 @@ try {
     generatedAt: new Date().toISOString()
   })
   await validateReleaseEvidence()
+  emitE2EModeSummary(evidenceDir)
   const bundleResult = await runStep({
     name: 'Flow Z.1 Evidence approval bundle packaging',
     command: 'node',

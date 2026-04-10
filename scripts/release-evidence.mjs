@@ -65,10 +65,11 @@ export function createEvidenceRecorder({
 
   return {
     evidenceFile,
-    finalize({ status, details = {}, error = null }) {
+    finalize({ status, details = {}, error = null, fields = {} }) {
       const finishedAtMs = Date.now()
       const payload = {
         ...basePayload,
+        ...fields,
         status,
         finishedAt: toIsoTimestamp(finishedAtMs),
         durationMs: finishedAtMs - startedAtMs,

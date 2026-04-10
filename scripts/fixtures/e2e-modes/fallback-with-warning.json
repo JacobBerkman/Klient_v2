@@ -1,0 +1,8 @@
+{
+  "executionMode": "fallback",
+  "details": {
+    "downgradeWarnings": [
+      "Playwright browser launch failed; downgraded to fallback verification set"
+    ]
+  }
+}
