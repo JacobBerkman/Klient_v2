@@ -214,3 +214,7 @@ Run `node scripts/reencrypt-pii.mjs` to re-encrypt stored PII fields using the a
 ## Documentation freshness owner
 - **Owner:** Release Operations (Release Manager + SRE primary).
 - **Expectation:** update README links whenever release runbook command flow or runtime validation evidence requirements change.
+
+## Repository extension points
+
+- For repository interface scaffolding vs runtime adapter wiring, see `docs/repository-extension-points.md`.

@@ -1,35 +1,37 @@
+import { throwRepositoryScaffoldError } from '../shared/repository-scaffold.mjs'
+
 export class ProfileRepository {
   listProfiles(_firmContext, _query) {
-    throw new Error('ProfileRepository.listProfiles not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'listProfiles')
   }
   getProfileDetail(_firmContext, _profileId) {
-    throw new Error('ProfileRepository.getProfileDetail not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'getProfileDetail')
   }
   createProfile(_firmContext, _input) {
-    throw new Error('ProfileRepository.createProfile not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'createProfile')
   }
   updateProfile(_firmContext, _profileId, _patch) {
-    throw new Error('ProfileRepository.updateProfile not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'updateProfile')
   }
   listNotes(_firmContext, _profileId) {
-    throw new Error('ProfileRepository.listNotes not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'listNotes')
   }
   addNote(_firmContext, _profileId, _body) {
-    throw new Error('ProfileRepository.addNote not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'addNote')
   }
   getMaskedSensitiveData(_firmContext, _profileId, _options = {}) {
-    throw new Error('ProfileRepository.getMaskedSensitiveData not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'getMaskedSensitiveData')
   }
   getCustomFieldSchema(_firmContext) {
-    throw new Error('ProfileRepository.getCustomFieldSchema not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'getCustomFieldSchema')
   }
   createCustomField(_firmContext, _input) {
-    throw new Error('ProfileRepository.createCustomField not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'createCustomField')
   }
   updateCustomField(_firmContext, _fieldKey, _patch) {
-    throw new Error('ProfileRepository.updateCustomField not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'updateCustomField')
   }
   deleteCustomField(_firmContext, _fieldKey) {
-    throw new Error('ProfileRepository.deleteCustomField not implemented')
+    throwRepositoryScaffoldError('ProfileRepository', 'deleteCustomField')
   }
 }
