@@ -44,7 +44,11 @@ test('custom field admin and profile edit flows expose validation feedback, roll
   assert.match(appJs, /Metadata must be valid JSON\./)
   assert.match(appJs, /state\.customFieldSchema = previousSchema/)
   assert.match(appJs, /No custom fields configured yet for this firm\./)
+  assert.match(appJs, /No custom fields configured\. Create your first field to enable profile extensions\./)
   assert.match(appJs, /data-inline-custom-field-errors="\$\{card\.id\}"/)
+  assert.match(appJs, /Custom fields validated successfully\./)
+  assert.match(appJs, /data-field-error="metadata"/)
+  assert.match(appJs, /Field type help:/)
   assert.match(appJs, /type="checkbox" value="true"/)
 })
 

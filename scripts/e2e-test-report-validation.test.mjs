@@ -39,8 +39,6 @@ test('gatePlaywrightReportOrFail finalizes failed evidence with report reason', 
   const tempDir = await mkdtemp(resolve(tmpdir(), 'e2e-gate-'))
   const missingPath = resolve(tempDir, 'nope.json')
 
-  const previousExitCode = process.exitCode
-  process.exitCode = 0
   const validation = await gatePlaywrightReportOrFail({
     reportPath: missingPath,
     evidenceRecorder: fakeEvidence,
@@ -48,12 +46,10 @@ test('gatePlaywrightReportOrFail finalizes failed evidence with report reason', 
   })
 
   assert.equal(validation.ok, false)
-  assert.equal(process.exitCode, 1)
   assert.equal(evidenceFinalizeCalls.length, 1)
   assert.equal(evidenceFinalizeCalls[0].status, 'failed')
   assert.match(evidenceFinalizeCalls[0].details.artifacts.playwrightJsonReport.reason, /Missing Playwright JSON report/)
 
-  process.exitCode = previousExitCode
   await rm(tempDir, { recursive: true, force: true })
 })
 

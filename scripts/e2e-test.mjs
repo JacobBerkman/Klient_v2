@@ -29,14 +29,25 @@ const playwrightReportPath = resolve(
   process.env.RELEASE_E2E_PLAYWRIGHT_REPORT || process.env.PLAYWRIGHT_JSON_REPORT || resolve(releaseEvidenceDir, 'playwright-report.json')
 )
 
-function runCommand(command, args, env) {
+function runCommand(command, args, env, timeoutMs = 0) {
   return new Promise((resolveRun) => {
     const child = spawn(command, args, {
       stdio: 'inherit',
-      env
+      env,
+      shell: process.platform === 'win32'
     })
+    let timeoutId = null
+    if (timeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        child.kill('SIGTERM')
+      }, timeoutMs)
+      timeoutId.unref()
+    }
     child.on('exit', (code, signal) => resolveRun({ code: code ?? 1, signal }))
     child.on('error', (error) => resolveRun({ code: 1, signal: null, error }))
+    child.on('close', () => {
+      if (timeoutId) clearTimeout(timeoutId)
+    })
   })
 }
 
@@ -169,8 +180,17 @@ export async function gatePlaywrightReportOrFail({ reportPath, evidenceRecorder 
     }
   })
 
-  process.exitCode = 1
   return validation
+}
+
+function finalizeFailure(error, details = {}) {
+  evidence.finalize({
+    status: 'failed',
+    fields: { executionMode },
+    error,
+    details
+  })
+  return 1
 }
 
 export async function main() {
@@ -189,28 +209,59 @@ export async function main() {
       TEST_RESET_BEHAVIOR: process.env.TEST_RESET_BEHAVIOR || 'isolated'
     }
 
-    const uiContractResult = await runCommand(process.execPath, ['--test', ...uiContractSuites], baseEnv)
+    const uiContractResult = await runCommand(process.execPath, ['--test', ...uiContractSuites], baseEnv, 4 * 60_000)
     if (uiContractResult.signal || uiContractResult.code !== 0) {
       const error = new Error(
         uiContractResult.signal
           ? `UI contract checks terminated by signal ${uiContractResult.signal}`
           : `UI contract checks failed with exit code ${uiContractResult.code}`
       )
-      evidence.finalize({
-        status: 'failed',
-        fields: { executionMode },
-        error,
-        details: {
+      return finalizeFailure(error, {
+        suites: {
+          uiContract: uiContractSuites,
+          browser: [browserSuitePattern]
+        },
+        downgradeWarnings: [],
+        uiContract: { status: 'failed', exitCode: uiContractResult.code }
+      })
+    }
+
+    const browserInstalled = await hasInstalledPlaywrightBrowser()
+    if (!browserInstalled) {
+      if (!fallback.enabled) {
+        const error = new Error(
+          `Playwright browser binaries are missing and strict mode is enabled (${browserFallbackEnvFlag}=1 to allow local fallback).`
+        )
+        return finalizeFailure(error, {
           suites: {
             uiContract: uiContractSuites,
             browser: [browserSuitePattern]
           },
           downgradeWarnings: [],
-          uiContract: { status: 'failed', exitCode: uiContractResult.code }
+          uiContract: { status: 'passed', exitCode: 0 },
+          browser: { status: 'failed', exitCode: 1 }
+        })
+      }
+
+      await writeFallbackPlaywrightReport(playwrightReportPath)
+      const fallbackValidation = await validatePlaywrightJsonReport(playwrightReportPath)
+      evidence.finalize({
+        status: 'passed',
+        fields: { executionMode: 'fallback' },
+        details: {
+          suites: {
+            uiContract: uiContractSuites,
+            browser: fallbackValidation.suiteNames
+          },
+          artifacts: {
+            playwrightJsonReport: fallbackValidation.artifact
+          },
+          downgradeWarnings: [fallback.reason],
+          uiContract: { status: 'passed', exitCode: 0 },
+          browser: { status: 'skipped', exitCode: 0 }
         }
       })
-      process.exitCode = 1
-      return
+      return 0
     }
 
     const browserInstalled = await hasInstalledPlaywrightBrowser()
@@ -254,7 +305,7 @@ export async function main() {
           details: {
             suites: {
               uiContract: uiContractSuites,
-              browser: [browserSuitePattern]
+              browser: fallbackValidation.suiteNames
             },
             artifacts: {
               playwrightJsonReport: {
@@ -355,5 +406,6 @@ export async function writeTempReport(content) {
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
-  await main()
+  const exitCode = await main()
+  process.exitCode = Number.isInteger(exitCode) ? exitCode : 1
 }

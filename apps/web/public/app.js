@@ -2105,6 +2105,50 @@ function mappingAutoMatchScore(sourceLabel = '', candidatePath = '') {
   return tokenScore * 0.75
 }
 
+function normalizeTransformDraftFromMapping(mapping = {}) {
+  const legacyTransform = mapping?.formatter || mapping?.format || ''
+  const transformInput = mapping?.transform ?? legacyTransform
+  if (typeof transformInput === 'string') {
+    const transformType = transformInput === 'custom' ? 'expression' : transformInput
+    return {
+      transformType: String(transformType || ''),
+      transformExpression: String(mapping?.expression || ''),
+      transformCurrency: ''
+    }
+  }
+  const transformType = String(transformInput?.type || '').trim()
+  return {
+    transformType: transformType === 'custom' ? 'expression' : transformType,
+    transformExpression: String(transformInput?.expression || mapping?.expression || ''),
+    transformCurrency: String(transformInput?.currency || '')
+  }
+}
+
+function mappingDraftFromAnyShape(mapping = {}) {
+  const transformDraft = normalizeTransformDraftFromMapping(mapping)
+  return {
+    pdfField: String(mapping.pdfField || mapping.targetField || mapping.field || mapping.key || ''),
+    fieldLabel: String(mapping.fieldLabel || mapping.label || mapping.fieldName || ''),
+    sourcePath: String(mapping.sourcePath || mapping.path || mapping.source || ''),
+    defaultValue: mapping.defaultValue == null ? '' : String(mapping.defaultValue),
+    targetType: String(mapping.targetType || 'text'),
+    required: mapping.required === true,
+    enabled: mapping.enabled !== false,
+    ...transformDraft
+  }
+}
+
+function mappingConfidenceBadge(mapping = {}, knownPathIndex) {
+  const sourcePath = String(mapping.sourcePath || '').trim()
+  if (!sourcePath) return { tone: 'low', label: 'Unmapped' }
+  if (!knownPathIndex.byPath.has(sourcePath)) return { tone: 'low', label: 'Low confidence' }
+  const sourceLabel = String(mapping.fieldLabel || mapping.pdfField || '').trim()
+  const score = mappingAutoMatchScore(sourceLabel, sourcePath)
+  if (score >= 0.95) return { tone: 'high', label: 'High confidence' }
+  if (score >= 0.75) return { tone: 'medium', label: 'Medium confidence' }
+  return { tone: 'low', label: 'Low confidence' }
+}
+
 function templateIngestionRecoveryMessage(extraction = {}) {
   const reasonCode = String(extraction?.reasonCode || '').trim()
   if (reasonCode === 'malformed_pdf') {
@@ -2150,18 +2194,7 @@ async function renderTemplates() {
   if (!state.templateInspectorFocusRequestByTemplateId) state.templateInspectorFocusRequestByTemplateId = {}
   if (!state.templateJumpHighlightByTemplateId) state.templateJumpHighlightByTemplateId = {}
 
-  const mappingDraftFromServer = (mapping = {}) => ({
-    pdfField: String(mapping.pdfField || ''),
-    fieldLabel: String(mapping.fieldLabel || mapping.label || ''),
-    sourcePath: String(mapping.sourcePath || ''),
-    defaultValue: mapping.defaultValue == null ? '' : String(mapping.defaultValue),
-    targetType: String(mapping.targetType || 'text'),
-    required: mapping.required === true,
-    enabled: mapping.enabled !== false,
-    transformType: String(mapping?.transform?.type || ''),
-    transformExpression: String(mapping?.transform?.expression || ''),
-    transformCurrency: String(mapping?.transform?.currency || '')
-  })
+  const mappingDraftFromServer = (mapping = {}) => mappingDraftFromAnyShape(mapping)
   const normalizeMappingDraft = (draft = {}) => {
     const sourcePath = String(draft.sourcePath || '').trim()
     const transformType = String(draft.transformType || '').trim()
@@ -2379,7 +2412,7 @@ async function renderTemplates() {
             )
             .join('')}
         </div>
-        <table><thead><tr><th>#</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
+        <table><thead><tr><th>#</th><th>State</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Confidence</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
           ${draftMappings
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
@@ -2399,23 +2432,54 @@ async function renderTemplates() {
               const rowClasses = ['mapping-row-item']
               if (index === safeSelectedRowIndex) rowClasses.push('is-selected')
               if (index === rowJumpHighlight) rowClasses.push('is-jumped')
+              const confidence = mappingConfidenceBadge(mapping, knownPathIndex)
+              const stateBadge =
+                mapping.enabled === false
+                  ? '<span class="badge subtle">Disabled</span>'
+                  : issues.length || serverPreflightIssues.length
+                    ? '<span class="error-badge">Needs fix</span>'
+                    : !String(mapping.sourcePath || '').trim()
+                      ? '<span class="warning-badge">Missing source</span>'
+                      : '<span class="badge subtle">Ready</span>'
               return `<tr id="mapping-row-${index}" class="${rowClasses.join(' ')}" data-select-row="${index}" data-row-id="${escapeHtml(rowId)}" tabindex="0">
                 <td>${index + 1}</td>
+                <td>${stateBadge}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
                 <td>${escapeHtml(mapping.fieldLabel || '')}</td>
-                <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span>` : '<span class="muted">OK</span>'}</td>
+                <td><span class="badge subtle">${escapeHtml(confidence.label)}</span></td>
+                <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span><div class="muted">Hint: update Source Path using known paths and rerun Save Now.</div>` : '<span class="muted">OK</span>'}</td>
                 <td>${serverPreflightIssues.length ? `<span class="error-badge">${escapeHtml(serverPreflightIssues.map((issue) => issue.code || issue.message || 'issue').join(', '))}</span>` : '<span class="muted">None</span>'}</td>
                 <td>${hasPreviewWarnings ? '<span class="warning-badge">Preview warning</span>' : '<span class="muted">OK</span>'}</td>
                 <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
               </tr>`
             })
-            .join('') || '<tr><td colspan="8" class="muted">No mappings match this filter.</td></tr>'}
+            .join('') || '<tr><td colspan="10" class="muted">No mappings match this filter.</td></tr>'}
         </tbody></table>
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Field Inspector</h3>
         <div class="muted">Selected row ${safeSelectedRowIndex + 1} of ${Math.max(1, draftMappings.length)}${selectedMapping.enabled === false ? ' (disabled)' : ''}</div>
+        <div class="row wrap gap-sm">
+          ${
+            selectedMapping.enabled === false
+              ? '<span class="badge subtle">State: disabled</span>'
+              : '<span class="badge subtle">State: enabled</span>'
+          }
+          ${
+            (mappingIssuesByIndex.get(safeSelectedRowIndex) || []).length
+              ? `<span class="error-badge">Local issues: ${escapeHtml((mappingIssuesByIndex.get(safeSelectedRowIndex) || []).join('; '))}</span>`
+              : '<span class="badge subtle">Local validation: OK</span>'
+          }
+          ${
+            (preflightIssuesByRowIndex.get(safeSelectedRowIndex) || []).length
+              ? `<span class="error-badge">Preflight issues: ${escapeHtml(
+                  (preflightIssuesByRowIndex.get(safeSelectedRowIndex) || []).map((issue) => issue.code || issue.message || 'issue').join(', ')
+                )}</span>`
+              : '<span class="badge subtle">Preflight: clear</span>'
+          }
+        </div>
+        <p class="muted">Validation hints: ensure PDF Field + Source Path are filled, Source Path exists in known paths, and expression transforms include an expression.</p>
         <datalist id="source-path-options">${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}</datalist>
         <div class="grid two">
           <label>PDF Field<input id="inspector-pdfField" value="${escapeHtml(selectedMapping.pdfField || '')}" /></label>
@@ -3065,6 +3129,7 @@ function boardCardMarkup(card, kind) {
                   )
                   .join('')}
               </div>
+              <p class="muted compact">Tip: text supports freeform values, number requires numeric values, date requires YYYY-MM-DD.</p>
               <p class="muted compact" data-inline-custom-field-errors="${card.id}" aria-live="polite"></p>
             </div>`
             : '<p class="muted compact">No custom fields configured yet for this firm.</p>'
@@ -3280,16 +3345,31 @@ function wireBoardInteractions(kind) {
       }
       const extensionValues = {}
       const extensionErrors = []
+      const extensionErrorsByInput = {}
       state.customFieldSchema.fields.forEach((field) => {
+        const inputName = customFieldInputName(field.key)
         const { value: parsed, error } = parseCustomFieldInputValueStrict(
           field,
-          inlineState.draft[customFieldInputName(field.key)] || ''
+          inlineState.draft[inputName] || ''
         )
         if (error) extensionErrors.push(error)
+        if (error) extensionErrorsByInput[inputName] = error
         if (parsed !== null) extensionValues[field.key] = parsed
       })
       const customErrorEl = form.querySelector(`[data-inline-custom-field-errors="${profileId}"]`)
-      if (customErrorEl) customErrorEl.textContent = extensionErrors.join(' ')
+      state.customFieldSchema.fields.forEach((field) => {
+        const input = form.elements?.namedItem?.(customFieldInputName(field.key))
+        if (input?.setAttribute) {
+          input.setAttribute('aria-invalid', extensionErrorsByInput[customFieldInputName(field.key)] ? 'true' : 'false')
+        }
+      })
+      if (customErrorEl) {
+        customErrorEl.textContent = extensionErrors.length
+          ? extensionErrors.join(' ')
+          : 'Custom fields validated successfully.'
+        customErrorEl.classList.remove('error-banner', 'success-banner')
+        customErrorEl.classList.add(extensionErrors.length ? 'error-banner' : 'success-banner')
+      }
       if (extensionErrors.length) {
         if (feedbackEl) feedbackEl.textContent = extensionErrors[0]
         setAlert('error', extensionErrors[0])
@@ -3887,6 +3967,13 @@ function customFieldReadonlyMessage() {
   return ''
 }
 
+function customFieldTypeHelpText(type = 'text') {
+  if (type === 'number') return 'Numbers only (decimals allowed). Leave blank to store no value.'
+  if (type === 'date') return 'Use YYYY-MM-DD format.'
+  if (type === 'boolean') return 'Stores true/false and renders as a toggle in profile edit.'
+  return 'Plain text value.'
+}
+
 async function renderCustomFieldsAdmin() {
   await ensureCustomFieldSchema()
   const canManage = canManageCustomFieldSchema()
@@ -3925,6 +4012,12 @@ async function renderCustomFieldsAdmin() {
         <input name="label" placeholder="Display label" ${canManage ? '' : 'disabled'} />
         <label><input name="required" type="checkbox" ${canManage ? '' : 'disabled'} /> Required</label>
         <input name="metadata" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
+        <p class="muted compact">Key uses letters, numbers, and underscores only.</p>
+        <p class="muted compact" data-type-help>Field type help: Plain text value.</p>
+        <p class="muted compact">Metadata is optional JSON object used for grouping and UI hints.</p>
+        <p class="field-error-text" data-field-error="key" role="alert" aria-live="polite"></p>
+        <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
+        <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
         <button type="submit" ${canManage ? '' : 'disabled'}>Create Field</button>
         <p class="muted compact" data-form-feedback aria-live="polite"></p>
       </form>
@@ -3953,6 +4046,9 @@ async function renderCustomFieldsAdmin() {
                 </select>
                 <label><input name="required" type="checkbox" ${field.required ? 'checked' : ''} ${canManage ? '' : 'disabled'} /> Required</label>
                 <input name="metadata" value="${escapeHtml(JSON.stringify(field.metadata || {}))}" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
+                <p class="muted compact" data-type-help>Field type help: ${escapeHtml(customFieldTypeHelpText(field.type))}</p>
+                <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
+                <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
                 <div class="actions-row">
                   <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Update</button>
                   <button type="button" class="tiny secondary" data-custom-field-delete="${escapeHtml(field.key)}" ${canManage ? '' : 'disabled'}>Delete</button>
@@ -3963,7 +4059,7 @@ async function renderCustomFieldsAdmin() {
           </tr>`
               )
               .join('')
-          : '<tr><td colspan="6">No custom fields configured.</td></tr>'
+          : '<tr><td colspan="6"><p class="empty-state" role="status">No custom fields configured. Create your first field to enable profile extensions.</p></td></tr>'
       }
       </tbody></table>
     </section>
@@ -3973,9 +4069,16 @@ async function renderCustomFieldsAdmin() {
     const field = form?.elements?.namedItem?.(fieldName)
     if (!field) return
     field.setAttribute('aria-invalid', message ? 'true' : 'false')
+    const errorEl = form?.querySelector(`[data-field-error="${fieldName}"]`)
+    if (errorEl) errorEl.textContent = message || ''
   }
   const applyFieldErrors = (form, fieldErrors = {}) => {
     ;['key', 'type', 'metadata'].forEach((fieldName) => markFieldError(form, fieldName, fieldErrors[fieldName] || ''))
+  }
+  const updateTypeHelp = (form) => {
+    const type = String(form?.elements?.namedItem?.('type')?.value || 'text').toLowerCase()
+    const helpEl = form?.querySelector('[data-type-help]')
+    if (helpEl) helpEl.textContent = `Field type help: ${customFieldTypeHelpText(type)}`
   }
   const parseMetadataJson = (raw) => {
     const text = String(raw || '').trim()
@@ -4055,8 +4158,15 @@ async function renderCustomFieldsAdmin() {
       setFormFeedback(form, normalizeApiError(error, 'create custom field schema'))
     }
   })
+  const createForm = document.querySelector('#custom-field-create-form')
+  if (createForm) {
+    updateTypeHelp(createForm)
+    createForm.elements?.namedItem?.('type')?.addEventListener('change', () => updateTypeHelp(createForm))
+  }
 
   document.querySelectorAll('[data-custom-field-update]').forEach((form) => {
+    updateTypeHelp(form)
+    form.elements?.namedItem?.('type')?.addEventListener('change', () => updateTypeHelp(form))
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
       if (!canManage) return

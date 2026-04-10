@@ -28,13 +28,15 @@
     "test:csrf": "node scripts/integration-csrf.mjs",
     "test:e2e": "node scripts/e2e-test.mjs",
     "test:e2e:browser": "node scripts/e2e-test.mjs",
+    "test:e2e:release-blocking": "E2E_GREP='@release-blocking' node scripts/e2e-test.mjs",
     "test:integration": "node scripts/master-integration.mjs",
     "test:integration:handoff": "node scripts/integration-aggregate-exports-handoff.mjs",
     "test:security": "node scripts/security-checks.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",
     "test:ui-contract": "node --test apps/web/public/ui-contract.test.mjs",
     "validate:master": "node scripts/master-validate.mjs",
-    "validate:release-evidence": "node scripts/validate-release-evidence.mjs"
+    "validate:release-evidence": "node scripts/validate-release-evidence.mjs",
+    "check:release-gate-commands": "node scripts/check-release-gate-commands.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
