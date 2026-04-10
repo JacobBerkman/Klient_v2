@@ -57,6 +57,7 @@ Core outputs by phase:
 Use this section as the single source of truth for required evidence bundle contents referenced by README/checklist/handoff.
 
 Required gate summaries:
+- `preflight-env-summary.json`
 - `validate-master-summary.json`
 - `api-contract-summary.json`
 - `integration-summary.json`
@@ -104,7 +105,13 @@ Rotation-safe note:
 - Keep both `KLIENT_OPS_TOKEN_ACTIVE` and `KLIENT_OPS_TOKEN_PREVIOUS` set during deploy cutover.
 - After postdeploy checks pass with the new active token, remove `KLIENT_OPS_TOKEN_PREVIOUS` per your secret-removal SLA.
 
-### 1) Preflight (must pass before deploy)
+### 1) Gate/documentation parity precheck (must pass before preflight)
+```bash
+npm run check:release-docs
+npm run check:release-gate-commands
+```
+
+### 2) Preflight (must pass before deploy)
 ```bash
 npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight
 ```
@@ -115,12 +122,12 @@ Behavior notes for this command:
 - Artifact intentionally includes only state booleans/mode + missing variable names (no secret values).
 - Fails the preflight phase when required env keys are missing for the selected auth/PII/storage modes or when no ops token variable is present.
 
-### 2) Deploy
+### 3) Deploy
 ```bash
 docker compose --env-file .env up --build -d
 ```
 
-### 3) Postdeploy validation (run in this phase after deploy)
+### 4) Postdeploy validation (run in this phase after deploy)
 ```bash
 npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy
 ```
@@ -145,7 +152,7 @@ Postdeploy checkpoint retention (every postdeploy execution):
 - `postdeploy-checkpoints.json` tracks chronological checkpoint timestamps and per-artifact paths.
 - `manifest.json` includes `postdeployCheckpoints` with `latestCheckpoint`, `latestArtifacts`, and full `history` so approvers can review both current and prior checkpoint evidence without path guessing.
 
-### 4) Restore / rollback drill (or recovery)
+### 5) Restore / rollback drill (or recovery)
 ```bash
 export RESTORE_BACKUP_PATH=data/backup-<timestamp>.db
 npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"
@@ -223,11 +230,12 @@ When running `npm run validate:master`, the hard gate executes these commands in
 6. `npm run test:integration`
 7. `npm run check:migrations`
 8. `npm run test:smoke`
-9. `npm run test:e2e`
-10. `npm run test:security`
+9. `npm run test:ui-contract`
+10. `npm run test:e2e`
+11. `npm run test:security`
 
 Conditional final step:
-- `npm run check:merge-main` runs after step 10 only when the workspace has git metadata and a local `main` branch (or when `VALIDATE_MASTER_FORCE_MERGE_PARITY=1`).
+- `npm run check:merge-main` runs after step 11 only when the workspace has git metadata and a local `main` branch (or when `VALIDATE_MASTER_FORCE_MERGE_PARITY=1`).
 
 
 ## Documentation freshness owner
