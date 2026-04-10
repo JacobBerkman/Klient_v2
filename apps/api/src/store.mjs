@@ -2761,6 +2761,11 @@ export function createStore({
         profile,
         submission
       })
+      const rowIdByIndex = new Map(
+        (resolved.rows || [])
+          .map((row) => [Number(row.rowIndex), String(row.rowId || '').trim()])
+          .filter(([rowIndex, rowId]) => Number.isFinite(rowIndex) && rowId)
+      )
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
@@ -2783,6 +2788,7 @@ export function createStore({
           const sourceMeta = issue?.meta && typeof issue.meta === 'object' ? issue.meta : {}
           const rowIndex = rowIndexMatch ? Number(rowIndexMatch[1]) : null
           const issueId = sourceMeta.issueId || [code, rowIndex ?? 'global', field || path || 'mapping'].join(':')
+          const rowId = Number.isFinite(rowIndex) ? rowIdByIndex.get(rowIndex) || null : null
           return {
             code,
             path,
@@ -2791,9 +2797,11 @@ export function createStore({
             severity: 'error',
             blocking: true,
             rowIndex,
+            ...(rowId ? { rowId } : {}),
             meta: {
               ...sourceMeta,
               issueId,
+              ...(rowId ? { rowId } : {}),
               fieldPath: sourceMeta.fieldPath || path,
               fieldKey: sourceMeta.fieldKey || field || path || 'mapping'
             }

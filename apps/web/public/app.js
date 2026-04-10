@@ -1953,6 +1953,40 @@ function normalizedExtractedFields(template = {}) {
     .filter(Boolean)
 }
 
+function normalizedKnownPathIndex(knownPaths = new Map()) {
+  const entries = [...knownPaths.entries()].map(([path, type]) => {
+    const normalizedPath = String(path || '').trim()
+    const leaf = normalizedPath.split('.').pop() || normalizedPath
+    return {
+      path: normalizedPath,
+      type: String(type || 'text'),
+      leaf,
+      normalizedLeaf: leaf.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    }
+  })
+  return {
+    entries,
+    byPath: new Map(entries.map((entry) => [entry.path, entry]))
+  }
+}
+
+function mappingAutoMatchScore(sourceLabel = '', candidatePath = '') {
+  const left = String(sourceLabel || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  const rightLeaf = String(candidatePath || '')
+    .split('.')
+    .pop()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+  if (!left || !rightLeaf) return 0
+  if (left === rightLeaf) return 1
+  if (left.includes(rightLeaf) || rightLeaf.includes(left)) return 0.85
+  const leftTokens = new Set(String(sourceLabel || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
+  const rightTokens = new Set(String(candidatePath || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
+  const overlap = [...leftTokens].filter((token) => rightTokens.has(token)).length
+  const tokenScore = overlap / Math.max(1, leftTokens.size, rightTokens.size)
+  return tokenScore * 0.75
+}
+
 function templateIngestionRecoveryMessage(extraction = {}) {
   const reasonCode = String(extraction?.reasonCode || '').trim()
   if (reasonCode === 'malformed_pdf') {
@@ -2053,16 +2087,29 @@ async function renderTemplates() {
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
   const preflight = template ? state.templatePublishPreflightByTemplateId[template.id] : null
   const preflightIssues = Array.isArray(preflight?.issues) ? preflight.issues : []
+  const preflightIssuesByRowIndex = new Map()
+  const preflightIssuesByRowId = new Map()
+  preflightIssues.forEach((issue) => {
+    const rowIndex = Number(issue.rowIndex)
+    const rowId = String(issue?.rowId || issue?.meta?.rowId || '').trim()
+    if (Number.isFinite(rowIndex)) {
+      const list = preflightIssuesByRowIndex.get(rowIndex) || []
+      list.push(issue)
+      preflightIssuesByRowIndex.set(rowIndex, list)
+    }
+    if (rowId) {
+      const list = preflightIssuesByRowId.get(rowId) || []
+      list.push(issue)
+      preflightIssuesByRowId.set(rowId, list)
+    }
+  })
   const preflightIssueRows = new Set(preflightIssues.map((issue) => Number(issue.rowIndex)).filter((value) => Number.isFinite(value)))
-  const previewWarningRows = new Set(
-    (preview?.rows || [])
-      .filter((row) => Array.isArray(row.warnings) && row.warnings.length)
-      .map((row) => Number(row.rowIndex))
-      .filter((value) => Number.isFinite(value))
-  )
+  const previewRows = Array.isArray(preview?.rows) ? preview.rows : []
+  const previewRowsByIndex = new Map(previewRows.map((row) => [Number(row.rowIndex), row]).filter(([index]) => Number.isFinite(index)))
+  const previewWarningRows = new Set(previewRows.filter((row) => Array.isArray(row.warnings) && row.warnings.length).map((row) => Number(row.rowIndex)).filter((value) => Number.isFinite(value)))
   const previewIssueRows = new Set((preview?.issues || []).map((issue) => Number(issue.rowIndex)).filter((value) => Number.isFinite(value)))
   const remediationRows = [
-    ...(preview?.rows || [])
+    ...previewRows
       .flatMap((row) =>
         (row.warnings || []).map((warning) => ({
           rowIndex: Number(row.rowIndex),
@@ -2085,7 +2132,7 @@ async function renderTemplates() {
     Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
   const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings || preflightIssues.length > 0
   const templateFilter = state.templateMappingFilterByTemplateId[template?.id] || 'all'
-  const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unmapped', 'preview-warning'])
+  const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unmapped', 'preview-warning', 'required-only'])
   const activeTemplateFilter = allowedTemplateFilters.has(templateFilter) ? templateFilter : 'all'
   if (template && activeTemplateFilter !== templateFilter) state.templateMappingFilterByTemplateId[template.id] = activeTemplateFilter
   const rowJumpHighlight = template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
@@ -2099,6 +2146,7 @@ async function renderTemplates() {
 
   const mappedFieldSet = new Set(draftMappings.map((entry) => String(entry.pdfField || '').trim()).filter(Boolean))
   const extractedFields = normalizedExtractedFields(template)
+  const knownPathIndex = normalizedKnownPathIndex(knownPaths)
   const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field.fieldName)).length
   const extraction = template?.extraction || {}
   const wizardSteps = ['upload', 'extraction', 'mapping', 'preview', 'publish']
@@ -2193,13 +2241,19 @@ async function renderTemplates() {
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mappings</h3>
-        <div class="row gap-sm wrap"><button id="add-mapping-row" class="tiny">Add Mapping</button><button id="save-mappings" class="tiny">Save Now</button></div>
+        <div class="row gap-sm wrap">
+          <button id="add-mapping-row" class="tiny">Add Mapping</button>
+          <button id="save-mappings" class="tiny">Save Now</button>
+          <button id="auto-map-similar" class="tiny secondary">Auto-map similar names</button>
+          <button id="clear-unresolved-rows" class="tiny secondary">Clear unresolved rows</button>
+        </div>
         <div class="row gap-sm wrap top-gap">
           ${[
             { value: 'all', label: `All (${draftMappings.length})` },
             { value: 'needs-fix', label: `Needs fix (${draftMappings.filter((_, index) => (mappingIssuesByIndex.get(index) || []).length > 0 || preflightIssues.some((issue) => Number(issue.rowIndex) === index)).length})` },
             { value: 'unmapped', label: `Unmapped (${draftMappings.filter((mapping) => !String(mapping.pdfField || '').trim()).length})` },
-            { value: 'preview-warning', label: `Preview warning (${draftMappings.filter((_, index) => previewWarningRows.has(index) || previewIssueRows.has(index)).length})` }
+            { value: 'preview-warning', label: `Preview warning (${draftMappings.filter((_, index) => previewWarningRows.has(index) || previewIssueRows.has(index)).length})` },
+            { value: 'required-only', label: `Required only (${draftMappings.filter((mapping) => mapping.required === true).length})` }
           ]
             .map(
               (filter) =>
@@ -2212,19 +2266,22 @@ async function renderTemplates() {
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
               const hasPreviewWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
-              const serverPreflightIssues = preflightIssues.filter((issue) => Number(issue.rowIndex) === index)
+              const previewRow = previewRowsByIndex.get(index)
+              const rowId = String(previewRow?.rowId || '').trim()
+              const serverPreflightIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
               const isUnmapped = !String(mapping.pdfField || '').trim()
               const showRow =
                 activeTemplateFilter === 'all' ||
                 (activeTemplateFilter === 'needs-fix' && (issues.length > 0 || serverPreflightIssues.length > 0)) ||
                 (activeTemplateFilter === 'unmapped' && isUnmapped) ||
-                (activeTemplateFilter === 'preview-warning' && hasPreviewWarnings)
+                (activeTemplateFilter === 'preview-warning' && hasPreviewWarnings) ||
+                (activeTemplateFilter === 'required-only' && mapping.required === true)
               if (!showRow) return ''
               const sampleValue = resolveSampleValue(mapping.sourcePath)
               const rowClasses = ['mapping-row-item']
               if (index === safeSelectedRowIndex) rowClasses.push('is-selected')
               if (index === rowJumpHighlight) rowClasses.push('is-jumped')
-              return `<tr id="mapping-row-${index}" class="${rowClasses.join(' ')}" data-select-row="${index}" tabindex="0">
+              return `<tr id="mapping-row-${index}" class="${rowClasses.join(' ')}" data-select-row="${index}" data-row-id="${escapeHtml(rowId)}" tabindex="0">
                 <td>${index + 1}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
@@ -2294,7 +2351,7 @@ async function renderTemplates() {
               <td>${escapeHtml(row.value == null ? '' : String(row.value))}</td>
               <td>${
                 hasWarnings
-                  ? `<button class="tiny secondary" data-jump-rowindex="${rowIndex}" data-focus-inspector="sourcePath">Jump to row ${rowIndex + 1}</button>`
+                  ? `<button class="tiny secondary" data-jump-rowindex="${rowIndex}" data-jump-rowid="${escapeHtml(row.rowId || '')}" data-focus-inspector="sourcePath">Jump to row ${rowIndex + 1}</button>`
                   : `<span class="muted">Row ${rowIndex + 1}</span>`
               } <span class="muted">id:<code>${escapeHtml(row.rowId || '')}</code></span> ${previewWarningMarkup(row.warnings || [])}</td>
             </tr>`
@@ -2317,8 +2374,9 @@ async function renderTemplates() {
             ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s) across ${preflightIssueRows.size || 0} mapped row(s).</p><ul>${preflightIssues
                 .map((issue) => {
                   const rowIndex = Number(issue.rowIndex)
+                  const rowId = String(issue?.rowId || issue?.meta?.rowId || '').trim()
                   const rowCta = Number.isFinite(rowIndex)
-                    ? `<button class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-focus-inspector="sourcePath">Row ${rowIndex + 1}</button> · `
+                    ? `<button class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="sourcePath">Row ${rowIndex + 1}</button> · `
                     : ''
                   return `<li>${rowCta}<code>${escapeHtml(issue?.meta?.issueId || issue.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`
                 })
@@ -2330,7 +2388,7 @@ async function renderTemplates() {
             ? `<h4>Row-level remediation</h4><ul>${remediationRows
                 .map(
                   (item) =>
-                    `<li><button class="tiny secondary" data-remediate-rowindex="${item.rowIndex}" data-focus-inspector="sourcePath">Row ${item.rowIndex + 1}</button> · <code>${escapeHtml(item.code)}</code> · ${escapeHtml(item.message)}${item.rowId ? ` · rowId <code>${escapeHtml(item.rowId)}</code>` : ''}${item.blocking ? ' · <strong>blocking</strong>' : ' · non-blocking'}</li>`
+                    `<li><button class="tiny secondary" data-remediate-rowindex="${item.rowIndex}" data-remediate-rowid="${escapeHtml(item.rowId || '')}" data-focus-inspector="sourcePath">Row ${item.rowIndex + 1}</button> · <code>${escapeHtml(item.code)}</code> · ${escapeHtml(item.message)}${item.rowId ? ` · rowId <code>${escapeHtml(item.rowId)}</code>` : ''}${item.blocking ? ' · <strong>blocking</strong>' : ' · non-blocking'}</li>`
                 )
                 .join('')}</ul>`
             : ''
@@ -2452,10 +2510,32 @@ async function renderTemplates() {
   const selectTemplateRow = async (rowIndex, { focusInspector = false, focusField = 'sourcePath', highlightRow = false } = {}) => {
     if (!template) return
     const normalizedRowIndex = Number(rowIndex)
+    if (!Number.isFinite(normalizedRowIndex)) return
     state.templateInspector[template.id] = { rowIndex: normalizedRowIndex }
     state.templateInspectorFocusRequestByTemplateId[template.id] = focusInspector ? focusField : ''
     state.templateJumpHighlightByTemplateId[template.id] = highlightRow ? normalizedRowIndex : NaN
     await renderTemplates()
+  }
+
+  const selectTemplateRowFromIssue = async (
+    rowIndex,
+    rowId,
+    { focusInspector = false, focusField = 'sourcePath', highlightRow = true } = {}
+  ) => {
+    const numericRowIndex = Number(rowIndex)
+    if (Number.isFinite(numericRowIndex)) {
+      await selectTemplateRow(numericRowIndex, { focusInspector, focusField, highlightRow })
+      return
+    }
+    const normalizedRowId = String(rowId || '').trim()
+    if (!normalizedRowId) return
+    const mappedRowIndex = Number(
+      [...(state.templatePreviewByTemplateId?.[template.id]?.rows || [])].find((row) => String(row?.rowId || '').trim() === normalizedRowId)
+        ?.rowIndex
+    )
+    if (Number.isFinite(mappedRowIndex)) {
+      await selectTemplateRow(mappedRowIndex, { focusInspector, focusField, highlightRow })
+    }
   }
 
   document.querySelectorAll('[data-select-row]').forEach((row) => {
@@ -2534,6 +2614,55 @@ async function renderTemplates() {
     await rerenderTemplates()
   })
 
+  document.querySelector('#auto-map-similar')?.addEventListener('click', async () => {
+    if (!template) return
+    const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+    let updates = 0
+    nextDraft.forEach((mapping, index) => {
+      const currentPath = String(mapping.sourcePath || '').trim()
+      const currentIssues = mappingIssuesByIndex.get(index) || []
+      const needsMapping = !currentPath || currentIssues.includes('Unknown source path')
+      if (!needsMapping) return
+      const sourceLabel = String(mapping.fieldLabel || mapping.pdfField || '').trim()
+      if (!sourceLabel) return
+      const bestMatch = knownPathIndex.entries
+        .map((candidate) => ({ candidate, score: mappingAutoMatchScore(sourceLabel, candidate.path) }))
+        .sort((a, b) => b.score - a.score)[0]
+      if (!bestMatch || bestMatch.score < 0.8) return
+      nextDraft[index] = { ...mapping, sourcePath: bestMatch.candidate.path }
+      updates += 1
+    })
+    if (!updates) {
+      setFlash('error', 'No unresolved rows matched known source paths by name similarity.')
+      return
+    }
+    state.templateMappingDrafts[template.id] = nextDraft
+    state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
+    state.templateWizardStepByTemplateId[template.id] = 'mapping'
+    setFlash('success', `Auto-mapped ${updates} row(s) by name similarity.`)
+    await rerenderTemplates()
+  })
+
+  document.querySelector('#clear-unresolved-rows')?.addEventListener('click', async () => {
+    if (!template) return
+    const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+    let updates = 0
+    nextDraft.forEach((mapping, index) => {
+      const previewWarnings = previewRowsByIndex.get(index)?.warnings || []
+      const hasUnresolvedPreviewIssue = previewWarnings.some((warning) => String(warning.code || '') === 'UNRESOLVED_SOURCE_PATH')
+      const hasUnknownLocalPath = (mappingIssuesByIndex.get(index) || []).includes('Unknown source path')
+      if (!hasUnresolvedPreviewIssue && !hasUnknownLocalPath) return
+      if (!String(mapping.sourcePath || '').trim()) return
+      nextDraft[index] = { ...mapping, sourcePath: '' }
+      updates += 1
+    })
+    state.templateMappingDrafts[template.id] = nextDraft
+    state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
+    state.templateWizardStepByTemplateId[template.id] = 'mapping'
+    setFlash('success', `Cleared ${updates} unresolved row(s).`)
+    await rerenderTemplates()
+  })
+
   document.querySelector('#preview-client')?.addEventListener('change', (event) => {
     setWorkflowContext({ clientId: event.target.value })
   })
@@ -2590,19 +2719,34 @@ async function renderTemplates() {
   document.querySelectorAll('[data-jump-rowindex]').forEach((button) => {
     button.addEventListener('click', async () => {
       const rowIndex = Number(button.dataset.jumpRowindex)
-      await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
+      const rowId = String(button.dataset.jumpRowid || '').trim()
+      await selectTemplateRowFromIssue(rowIndex, rowId, {
+        focusInspector: true,
+        focusField: button.dataset.focusInspector || 'sourcePath',
+        highlightRow: true
+      })
     })
   })
   document.querySelectorAll('[data-preflight-rowindex]').forEach((button) => {
     button.addEventListener('click', async () => {
       const rowIndex = Number(button.dataset.preflightRowindex)
-      await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
+      const rowId = String(button.dataset.preflightRowid || '').trim()
+      await selectTemplateRowFromIssue(rowIndex, rowId, {
+        focusInspector: true,
+        focusField: button.dataset.focusInspector || 'sourcePath',
+        highlightRow: true
+      })
     })
   })
   document.querySelectorAll('[data-remediate-rowindex]').forEach((button) => {
     button.addEventListener('click', async () => {
       const rowIndex = Number(button.dataset.remediateRowindex)
-      await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
+      const rowId = String(button.dataset.remediateRowid || '').trim()
+      await selectTemplateRowFromIssue(rowIndex, rowId, {
+        focusInspector: true,
+        focusField: button.dataset.focusInspector || 'sourcePath',
+        highlightRow: true
+      })
     })
   })
 

@@ -51,7 +51,7 @@ test('admin bootstrap registration and login remain stable', async ({ page }, te
   await signInFromUi(page, email, password)
 })
 
-test('template auto-build payload and publish flow execute end-to-end', async ({ page }, testInfo) => {
+test('template upload/map/preflight/publish loop executes with issue remediation controls', async ({ page }, testInfo) => {
   const { email, password } = await registerAdmin(page, testInfo, 'template')
   await signInFromUi(page, email, password)
 
@@ -101,9 +101,39 @@ test('template auto-build payload and publish flow execute end-to-end', async ({
   expect(autoBuildResponse.status()).toBe(201)
   expect(autoBuiltTemplate.id).toBeTruthy()
 
+  const remediationTemplateResponse = await page.request.post('/api/templates', {
+    data: {
+      name: `Preflight Loop Template ${Date.now()}`,
+      extractedFields: ['firstName'],
+      mappings: [{ pdfField: 'firstName', fieldLabel: 'First Name', sourcePath: 'profile.unknownPath', required: true }]
+    }
+  })
+  const remediationTemplate = await remediationTemplateResponse.json()
+  expect(remediationTemplateResponse.status()).toBe(201)
+
   await page.goto('/')
   await page.getByRole('button', { name: 'Templates' }).click()
-  await page.locator('#template-select').selectOption(autoBuiltTemplate.id)
+  await page.locator('#template-select').selectOption(remediationTemplate.id)
+  await page.getByRole('button', { name: '3. Mapping' }).click()
+  await page.locator('[data-mapping-filter="required-only"]').click()
+  await expect(page.locator('#mapping-row-0')).toBeVisible()
+
+  await page.getByRole('button', { name: '5. Publish' }).click()
+  await page.locator('#run-publish-preflight').click()
+  await expect(page.getByText('Publish preflight found 1 schema issue(s).')).toBeVisible()
+  await page.locator('[data-preflight-rowindex="0"]').click()
+  await expect(page.locator('#inspector-sourcePath')).toBeFocused()
+  await expect(page.locator('#inspector-sourcePath')).toHaveValue('profile.unknownPath')
+
+  await page.getByRole('button', { name: '3. Mapping' }).click()
+  await page.locator('#clear-unresolved-rows').click()
+  await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
+  await page.locator('#auto-map-similar').click()
+  await expect(page.getByText('Auto-mapped 1 row(s) by name similarity.')).toBeVisible()
+  await expect(page.locator('#inspector-sourcePath')).toHaveValue('profile.firstName')
+  await page.locator('#save-mappings').click()
+
+  await page.getByRole('button', { name: '5. Publish' }).click()
   await page.locator('#run-publish-preflight').click()
   await expect(page.getByText('Publish preflight passed with no schema validation issues.')).toBeVisible()
   await page.locator('#publish-template').click()

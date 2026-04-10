@@ -319,6 +319,8 @@ test('preview returns blocking schema issues for missing mapping paths before pu
   assert.equal(preview.issues[0].code, 'unknown_source_path')
   assert.equal(preview.issues[0].field, 'sourcePath')
   assert.ok(preview.issues[0].meta?.issueId)
+  assert.ok(preview.issues[0].rowId)
+  assert.equal(preview.issues[0].meta?.rowId, preview.issues[0].rowId)
   assert.equal(preview.issues[0].blocking, true)
 })
 

@@ -25,6 +25,7 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
   const message = String(issue?.message || 'Validation issue')
   const sourceMeta = issue?.meta && typeof issue.meta === 'object' ? issue.meta : {}
   const issueId = sourceMeta.issueId || [code, rowIndex ?? 'global', field || path || index].join(':')
+  const rowId = String(issue?.rowId || sourceMeta.rowId || '').trim()
   return {
     code,
     errorCode: `TEMPLATE_VALIDATION_${code.toUpperCase()}`,
@@ -35,9 +36,11 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
     errorMessage: TEMPLATE_VALIDATION_MESSAGES[code] || message,
     severity: 'error',
     blocking: true,
+    ...(rowId ? { rowId } : {}),
     meta: {
       ...sourceMeta,
       issueId,
+      ...(rowId ? { rowId } : {}),
       fieldPath: sourceMeta.fieldPath || path,
       fieldKey: sourceMeta.fieldKey || field || path || 'mapping'
     }
