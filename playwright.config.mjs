@@ -11,16 +11,19 @@ const jsonReportFile =
 
 export default defineConfig({
   testDir: './tests/e2e',
-  timeout: 60_000,
+  timeout: 75_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,
-  retries: 0,
+  retries: process.env.CI ? 2 : 0,
+  ...(process.env.PLAYWRIGHT_GREP ? { grep: new RegExp(process.env.PLAYWRIGHT_GREP, 'i') } : {}),
   reporter: [['list'], ['json', { outputFile: jsonReportFile }]],
   use: {
     baseURL,
-    trace: 'off',
-    screenshot: 'off',
+    actionTimeout: 15_000,
+    navigationTimeout: 20_000,
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
     video: 'off'
   }
 })

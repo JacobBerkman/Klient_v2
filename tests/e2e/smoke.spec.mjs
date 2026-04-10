@@ -1,12 +1,12 @@
-import { test, expect } from '@playwright/test'
+import { test, expect, waitForAppReady } from './bootstrap.mjs'
 
-test('admin can sign in and land on dashboard', async ({ page }) => {
-  await page.goto('/')
+test('@release-blocking admin can sign in and land on dashboard', async ({ page }) => {
+  await waitForAppReady(page)
 
   await page.getByRole('textbox', { name: 'Email' }).fill('admin@demo.test')
   await page.getByRole('textbox', { name: 'Password' }).fill('ChangeMe123!')
-  await page.getByRole('button', { name: 'Sign In' }).click()
+  await page.getByTestId('login-submit').click()
 
-  await expect(page.locator('#auth-status')).toContainText('Signed in successfully.')
+  await expect(page.getByTestId('auth-status')).toContainText('Signed in successfully.')
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
 })

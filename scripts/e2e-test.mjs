@@ -9,8 +9,8 @@ import { createTestContext } from './test-harness.mjs'
 const uiContractSuites = ['apps/web/public/ui-contract.test.mjs']
 const browserSuitePattern = 'tests/e2e'
 const executionMode = 'browser'
-const browserFallbackEnvFlag = 'E2E_ALLOW_MISSING_BROWSER_FALLBACK'
-const fallbackSuite = 'playwright-browser-fallback'
+const browserFallbackEnvFlag = 'E2E_ALLOW_BROWSER_FALLBACK'
+const fallbackSuite = 'Playwright browser fallback (local only)'
 
 const evidence = createEvidenceRecorder({
   gate: 'e2e',
@@ -29,23 +29,25 @@ const playwrightReportPath = resolve(
   process.env.RELEASE_E2E_PLAYWRIGHT_REPORT || process.env.PLAYWRIGHT_JSON_REPORT || resolve(releaseEvidenceDir, 'playwright-report.json')
 )
 
-function runCommand(command, args, env) {
+function runCommand(command, args, env, timeoutMs = 0) {
   return new Promise((resolveRun) => {
     const child = spawn(command, args, {
       stdio: 'inherit',
       env,
       shell: process.platform === 'win32'
     })
-
-    let settled = false
-    const settle = (result) => {
-      if (settled) return
-      settled = true
-      resolveRun(result)
+    let timeoutId = null
+    if (timeoutMs > 0) {
+      timeoutId = setTimeout(() => {
+        child.kill('SIGTERM')
+      }, timeoutMs)
+      timeoutId.unref()
     }
-
-    child.on('error', (error) => settle({ code: 1, signal: null, error }))
-    child.on('close', (code, signal) => settle({ code: code ?? 1, signal }))
+    child.on('exit', (code, signal) => resolveRun({ code: code ?? 1, signal }))
+    child.on('error', (error) => resolveRun({ code: 1, signal: null, error }))
+    child.on('close', () => {
+      if (timeoutId) clearTimeout(timeoutId)
+    })
   })
 }
 
@@ -207,7 +209,7 @@ export async function main() {
       TEST_RESET_BEHAVIOR: process.env.TEST_RESET_BEHAVIOR || 'isolated'
     }
 
-    const uiContractResult = await runCommand(process.execPath, ['--test', ...uiContractSuites], baseEnv)
+    const uiContractResult = await runCommand(process.execPath, ['--test', ...uiContractSuites], baseEnv, 4 * 60_000)
     if (uiContractResult.signal || uiContractResult.code !== 0) {
       const error = new Error(
         uiContractResult.signal
@@ -262,55 +264,83 @@ export async function main() {
       return 0
     }
 
-    const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
-    const playwrightResult = await runCommand(command, ['playwright', 'test', browserSuitePattern], baseEnv)
-    if (playwrightResult.signal || playwrightResult.code !== 0) {
-      const errorMessage = playwrightResult.signal
-        ? `Playwright browser suite terminated by signal ${playwrightResult.signal}`
-        : `Playwright browser suite failed with exit code ${playwrightResult.code}`
-      if (fallback.enabled) {
-        await writeFallbackPlaywrightReport(playwrightReportPath)
-        const fallbackValidation = await validatePlaywrightJsonReport(playwrightReportPath)
+    const browserInstalled = await hasInstalledPlaywrightBrowser()
+    let browserExitCode = 0
+    if (browserInstalled) {
+      const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+      const playwrightArgs = ['playwright', 'test', browserSuitePattern]
+      if (process.env.E2E_GREP) {
+        playwrightArgs.push('--grep', process.env.E2E_GREP)
+      }
+      const playwrightResult = await runCommand(command, playwrightArgs, baseEnv, 8 * 60_000)
+      browserExitCode = playwrightResult.code
+
+      if (playwrightResult.signal || playwrightResult.code !== 0) {
+        const errorMessage = playwrightResult.signal
+          ? `Playwright browser suite terminated by signal ${playwrightResult.signal}`
+          : `Playwright browser suite failed with exit code ${playwrightResult.code}`
+        if (fallback.enabled) {
+          evidence.finalize({
+            status: 'passed',
+            details: {
+              suites: {
+                uiContract: uiContractSuites,
+                browser: [browserSuitePattern]
+              },
+              artifacts: {
+                playwrightJsonReport: {
+                  path: playwrightReportPath,
+                  valid: false,
+                  reason: `Local fallback accepted Playwright browser failure (${browserFallbackEnvFlag}=1)`
+                }
+              },
+              uiContract: { status: 'passed', exitCode: 0 },
+              browser: { status: 'skipped', exitCode: playwrightResult.code }
+            }
+          })
+          return
+        }
+
+        const error = new Error(errorMessage)
         evidence.finalize({
-          status: 'passed',
-          fields: { executionMode: 'fallback' },
+          status: 'failed',
+          fields: { executionMode },
+          error,
           details: {
             suites: {
               uiContract: uiContractSuites,
               browser: fallbackValidation.suiteNames
             },
             artifacts: {
-              playwrightJsonReport: fallbackValidation.artifact
+              playwrightJsonReport: {
+                path: playwrightReportPath,
+                valid: false,
+                reason: 'Playwright process failed before report validation'
+              },
+              playwrightExecution: {
+                strictMode: true,
+                fallbackEnabled: fallback.enabled,
+                fallbackReason: fallback.reason
+              }
             },
-            downgradeWarnings: [
-              `Local fallback accepted Playwright browser failure (${browserFallbackEnvFlag}=1): ${errorMessage}`
-            ],
+            downgradeWarnings: [],
             uiContract: { status: 'passed', exitCode: 0 },
-            browser: { status: 'skipped', exitCode: playwrightResult.code }
+            browser: { status: 'failed', exitCode: playwrightResult.code }
           }
         })
-        return 0
+        process.exit(1)
+        return
       }
-
-      return finalizeFailure(new Error(errorMessage), {
-        suites: {
-          uiContract: uiContractSuites,
-          browser: [browserSuitePattern]
-        },
-        artifacts: {
-          playwrightJsonReport: {
-            path: playwrightReportPath,
-            valid: false,
-            reason: 'Playwright process failed before report validation'
-          }
-        },
-        downgradeWarnings: [],
-        uiContract: { status: 'passed', exitCode: 0 },
-        browser: { status: 'failed', exitCode: playwrightResult.code }
-      })
+    } else if (fallback.enabled) {
+      await writeFallbackPlaywrightReport(playwrightReportPath)
+    } else {
+      throw new Error('Playwright browser binaries are not installed. Run "npx playwright install --with-deps chromium".')
     }
 
-    const reportValidation = await gatePlaywrightReportOrFail({ reportPath: playwrightReportPath, uiContractStatus: { status: 'passed', exitCode: 0 } })
+    const reportValidation = await gatePlaywrightReportOrFail({
+      reportPath: playwrightReportPath,
+      uiContractStatus: { status: 'passed', exitCode: 0 }
+    })
     if (!reportValidation.ok) {
       return 1
     }

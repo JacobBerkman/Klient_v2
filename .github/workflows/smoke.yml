@@ -91,19 +91,70 @@ jobs:
             snapshots/**
             tmp/**/snapshots/**
 
+  e2e_release_blocking:
+    name: 6) e2e release-blocking
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Run release-blocking E2E suite
+        run: |
+          mkdir -p artifacts/e2e-release-blocking
+          {
+            echo "# E2E release-blocking readiness summary"
+            echo "- suite: e2e release-blocking"
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/e2e-release-blocking/readiness-summary.md
+
+          E2E_GREP='@release-blocking' npm run test:e2e 2>&1 | tee artifacts/e2e-release-blocking/suite.log
+
+      - name: Upload failure artifacts (e2e release-blocking)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-release-blocking-failure-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/e2e-release-blocking/**
+            artifacts/release-evidence/**
+            test-results/**
+            playwright-report/**
+            snapshots/**
+            tmp/**/snapshots/**
+
   merge_gate:
     name: merge gate (required)
     runs-on: ubuntu-latest
     needs:
-      - docs_and_gate_config
-      - hard_release_gate
+      - syntax_lint
+      - smoke_runtime_contract
+      - api_contract
+      - full_integration
+      - migration_checks
+      - e2e_release_blocking
     if: always()
     steps:
       - name: Enforce green CI before merge
         run: |
           results=(
-            "${{ needs.docs_and_gate_config.result }}"
-            "${{ needs.hard_release_gate.result }}"
+            "${{ needs.syntax_lint.result }}"
+            "${{ needs.smoke_runtime_contract.result }}"
+            "${{ needs.api_contract.result }}"
+            "${{ needs.full_integration.result }}"
+            "${{ needs.migration_checks.result }}"
+            "${{ needs.e2e_release_blocking.result }}"
           )
 
           for result in "${results[@]}"; do
