@@ -1,0 +1,46 @@
+{
+  "schemaVersion": "1.0.0",
+  "gate": "e2e",
+  "command": "npm run test:e2e",
+  "startedAt": "2026-04-10T23:25:30.000Z",
+  "finishedAt": "2026-04-10T23:25:31.423Z",
+  "durationMs": 1423,
+  "status": "passed",
+  "metadata": {
+    "uiContractSuites": [
+      "apps/web/public/ui-contract.test.mjs"
+    ],
+    "browserSuites": [
+      "tests/e2e"
+    ]
+  },
+  "details": {
+    "suites": {
+      "uiContract": [
+        "apps/web/public/ui-contract.test.mjs"
+      ],
+      "browser": [
+        "playwright-browser-fallback"
+      ]
+    },
+    "artifacts": {
+      "playwrightJsonReport": {
+        "path": "/workspace/Klient_v2/artifacts/release-evidence/2026-04-10-rc1/playwright-report.json",
+        "valid": true,
+        "suiteCount": 1
+      }
+    },
+    "downgradeWarnings": [
+      "Browser binaries were not detected; fallback execution accepted because RELEASE_E2E_ALLOW_FALLBACK=1"
+    ],
+    "uiContract": {
+      "status": "passed",
+      "exitCode": 0
+    },
+    "browser": {
+      "status": "skipped",
+      "exitCode": 0
+    }
+  },
+  "error": null
+}

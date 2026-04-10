@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1.0.0",
+  "gate": "e2e",
+  "command": "node scripts/integration-e2e-workflows.mjs",
+  "startedAt": "2026-04-10T23:13:33.850Z",
+  "finishedAt": "2026-04-10T23:13:47.231Z",
+  "durationMs": 13381,
+  "status": "passed",
+  "metadata": {},
+  "details": {
+    "suite": "integration-e2e-workflows",
+    "users": {
+      "admin": "bootstrap.admin@e2e.test",
+      "advisor": "advisor.user@e2e.test"
+    },
+    "ids": {
+      "profileId": "00484fcb-fffd-4116-97d5-99745e72dbd6",
+      "formTemplateId": "2be068a7-d096-4d6f-9e79-b08c629c945b",
+      "documentTemplateId": "63f021ba-90c3-4b27-8e04-97689794c73a",
+      "advisorDraftId": "40d9203b-8ad5-454c-ab7d-52a4b1653901",
+      "advisorSubmissionId": "5185b024-dcc2-4979-a715-a75f1f249426",
+      "portalDraftId": "d8976426-305c-44b1-8310-dbb1980fc6b1",
+      "portalSubmissionId": "bb13c74e-6ad1-42aa-82aa-fd4f97f3339e"
+    }
+  },
+  "error": null
+}

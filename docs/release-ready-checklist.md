@@ -4,6 +4,7 @@ Use this checklist as a strict go/no-go control for production releases.
 A release is **ready** only when every check is an objective **PASS** with captured evidence artifacts.
 Capture the release package with the standard handoff template at `docs/release-handoff-template.md`.
 Use the canonical operator flow at `docs/deployment-quick-reference.md#canonical-operator-flow-exact-command-sequence` for exact preflight/deploy/postdeploy/restore commands and diagnostics triage.
+Use the preserved-flow mapping at `docs/release-flow-test-matrix.md` to ensure RC-critical journeys are validated with deterministic targeted tests before freeze.
 
 ## Primary operator command (GO/NO-GO)
 Run the operator workflow (fails fast, deterministic order):

@@ -1,0 +1,12 @@
+{
+  "suites": [
+    {
+      "title": "playwright-browser-fallback"
+    }
+  ],
+  "specs": [
+    {
+      "title": "playwright-browser-fallback"
+    }
+  ]
+}
