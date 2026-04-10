@@ -133,6 +133,64 @@ function validateTransform(rule, issues, path, rowIndex) {
       message: 'expression transform requires a non-empty expression.'
     })
   }
+  if (transformType === 'expression') {
+    const expression = String(transform.expression || '').trim()
+    if (!expression) return
+    const assignmentMatch = expression.match(/(^|[^=!<>])=($|[^=])/)
+    if (assignmentMatch) {
+      pushIssue(issues, {
+        code: 'expression_operator_assignment',
+        path: `${path}/transform/expression`,
+        rowIndex,
+        field: 'transform.expression',
+        message: 'Expression appears to use assignment (=). Use ==/=== for equality checks.',
+        meta: {
+          operator: '=',
+          suggestion: 'Replace assignment (=) with equality operator (== or ===).'
+        }
+      })
+    }
+    if (/\bAND\b|\bOR\b/.test(expression)) {
+      pushIssue(issues, {
+        code: 'expression_operator_textual_logic',
+        path: `${path}/transform/expression`,
+        rowIndex,
+        field: 'transform.expression',
+        message: 'Expression uses textual AND/OR. Use && and || logical operators.',
+        meta: {
+          suggestion: 'Replace AND with &&, and OR with ||.'
+        }
+      })
+    }
+    const openedParens = (expression.match(/\(/g) || []).length
+    const closedParens = (expression.match(/\)/g) || []).length
+    if (openedParens !== closedParens) {
+      pushIssue(issues, {
+        code: 'expression_unbalanced_parentheses',
+        path: `${path}/transform/expression`,
+        rowIndex,
+        field: 'transform.expression',
+        message: 'Expression has unbalanced parentheses.',
+        meta: {
+          openedParens,
+          closedParens,
+          suggestion: 'Balance opening and closing parentheses.'
+        }
+      })
+    }
+    if (expression.includes('?') && !expression.includes(':')) {
+      pushIssue(issues, {
+        code: 'expression_incomplete_ternary',
+        path: `${path}/transform/expression`,
+        rowIndex,
+        field: 'transform.expression',
+        message: 'Expression appears to start a ternary condition but is missing ":" branch.',
+        meta: {
+          suggestion: 'Use full ternary syntax: condition ? truthyValue : falsyValue.'
+        }
+      })
+    }
+  }
 }
 
 function normalizeAllowedSourcePaths(allowedSourcePaths = null) {
@@ -227,12 +285,36 @@ export function validateMappingRules(input, options = {}) {
       const repeaterPath = String(rule.repeaterPath || '').trim()
       const sourcePath = normalizePath(rule.sourcePath)
       if (enforceKnownSourcePaths && allowedSourcePaths && sourcePath && !allowedSourcePaths.has(sourcePath)) {
+        const sourceLeaf = sourcePath.split('.').pop() || sourcePath
+        const sourceLeafNormalized = sourceLeaf.toLowerCase().replace(/[^a-z0-9]+/g, '')
+        const candidateSuggestions = [...allowedSourcePaths.keys()]
+          .map((candidatePath) => {
+            const candidateLeaf = String(candidatePath || '').split('.').pop() || String(candidatePath || '')
+            const normalizedCandidateLeaf = candidateLeaf.toLowerCase().replace(/[^a-z0-9]+/g, '')
+            let score = 0
+            if (sourceLeafNormalized && normalizedCandidateLeaf) {
+              if (sourceLeafNormalized === normalizedCandidateLeaf) score = 1
+              else if (sourceLeafNormalized.includes(normalizedCandidateLeaf) || normalizedCandidateLeaf.includes(sourceLeafNormalized)) score = 0.82
+            }
+            return {
+              path: candidatePath,
+              score
+            }
+          })
+          .filter((entry) => entry.score >= 0.75)
+          .sort((left, right) => right.score - left.score)
+          .slice(0, 3)
         pushIssue(issues, {
           code: 'unknown_source_path',
           path: `${rulePath}/sourcePath`,
           rowIndex: index,
           field: 'sourcePath',
-          message: `sourcePath "${String(rule.sourcePath)}" is not a known profile/form schema path.`
+          message: `sourcePath "${String(rule.sourcePath)}" is not a known profile/form schema path.`,
+          meta: {
+            providedSourcePath: String(rule.sourcePath || ''),
+            normalizedSourcePath: sourcePath,
+            ...(candidateSuggestions.length ? { suggestedSourcePaths: candidateSuggestions } : {})
+          }
         })
       }
       const expectedTargetType = String(rule.targetType || '').trim()

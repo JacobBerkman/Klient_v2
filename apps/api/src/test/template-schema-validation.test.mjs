@@ -60,6 +60,37 @@ test('rejects invalid transform registry type with descriptive error path', asyn
   )
 })
 
+test('rejects common expression operator mistakes with actionable metadata', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  assert.throws(
+    () => {
+      store.createDocumentTemplate(user, {
+        name: 'Expression mistakes',
+        mappings: [
+          {
+            pdfField: 'eligibility',
+            sourcePath: 'profile.firstName',
+            transform: { type: 'expression', expression: '(value = "yes") AND (value ? "ok")' }
+          }
+        ]
+      })
+    },
+    (error) => {
+      assert.equal(error.code, 'SCHEMA_VALIDATION_FAILED')
+      const issueCodes = (error.details?.issues || []).map((issue) => issue.code)
+      assert.ok(issueCodes.includes('expression_operator_assignment'))
+      assert.ok(issueCodes.includes('expression_operator_textual_logic'))
+      assert.ok(issueCodes.includes('expression_incomplete_ternary'))
+      const assignmentIssue = (error.details?.issues || []).find((issue) => issue.code === 'expression_operator_assignment')
+      assert.equal(assignmentIssue?.field, 'transform.expression')
+      assert.match(String(assignmentIssue?.meta?.suggestion || ''), /equality/i)
+      return true
+    }
+  )
+})
+
 test('rejects repeater path mismatch when mapping source path leaves repeater boundary', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)
