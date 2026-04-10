@@ -10,18 +10,17 @@ function readE2eScript() {
   return readFileSync(e2eScriptPath, 'utf8')
 }
 
-test('e2e harness keeps one coherent async flow with try/catch/finally lifecycle', () => {
+test('e2e harness enforces strict CI browser runs and allows opt-in local fallback', () => {
   const content = readE2eScript()
 
-  assert.match(content, /const context = await createTestContext\('e2e-browser-suite'\)/)
-  assert.match(content, /try \{/)
-  assert.match(content, /const uiContractResult = await runCommand\(process\.execPath, \['--test', \.\.\.uiContractSuites\], baseEnv\)/)
-  assert.match(content, /const playwrightResult = await runCommand\(command, \['playwright', 'test', browserSuitePattern\], baseEnv\)/)
-  assert.match(content, /evidence\.finalize\(\{[\s\S]*status: 'passed'/)
-  assert.match(content, /\} catch \(error\) \{[\s\S]*evidence\.finalize\(\{[\s\S]*status: 'failed'/)
-  assert.match(content, /\} finally \{\s*await context\.shutdown\(\)/)
+  assert.match(content, /const browserFallbackEnvFlag = 'E2E_ALLOW_MISSING_BROWSER_FALLBACK'/)
+  assert.match(content, /export function browserFallbackMode\(env = process\.env\)/)
+  assert.match(content, /const fallback = browserFallbackMode\(\)/)
+  assert.match(content, /if \(fallback\.enabled\) \{/)
+  assert.match(content, /CI mode enforces strict browser execution/)
+  assert.match(content, /browser: reportValidation\.suiteNames/)
 
-  assert.doesNotMatch(content, /child\.on\('exit', async \(code, signal\)/)
+  assert.doesNotMatch(content, /<<<<<<<|>>>>>>>|=======/)
   assert.doesNotMatch(content, /playwrightReportFile/)
   assert.doesNotMatch(content, /existsSync\(/)
   assert.doesNotMatch(content, /readFileSync\(/)

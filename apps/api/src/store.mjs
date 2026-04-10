@@ -318,6 +318,14 @@ function normalizeCustomFieldType(value) {
   return normalized
 }
 
+function customFieldValidationError(message, fieldErrors = {}) {
+  const error = new Error(message)
+  error.statusCode = 422
+  error.code = 'CUSTOM_FIELD_VALIDATION'
+  error.details = { fieldErrors }
+  return error
+}
+
 function normalizeCustomFieldSchema(schema = {}) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
     return { fields: [], updatedAt: now() }
@@ -1760,13 +1768,20 @@ export function createStore({
       const key = String(input?.key || '')
         .trim()
         .replace(/[^a-zA-Z0-9_]+/g, '_')
-      if (!key) throw new Error('Custom field key is required.')
+      if (!key) throw customFieldValidationError('Custom field key is required.', { key: 'Key is required.' })
       if (firm.customFieldSchema.fields.some((field) => field.key === key)) {
-        throw new Error('Custom field key already exists.')
+        throw customFieldValidationError('Custom field key already exists.', { key: 'Key already exists.' })
       }
       const type = normalizeCustomFieldType(input?.type)
       if (!CUSTOM_FIELD_TYPES.has(type)) {
-        throw new Error('Custom field type must be one of: text, number, boolean, date.')
+        throw customFieldValidationError('Custom field type must be one of: text, number, boolean, date.', {
+          type: 'Type must be one of: text, number, boolean, date.'
+        })
+      }
+      if (input?.metadata != null && (typeof input.metadata !== 'object' || Array.isArray(input.metadata))) {
+        throw customFieldValidationError('Custom field metadata must be a JSON object.', {
+          metadata: 'Metadata must be a JSON object.'
+        })
       }
       const field = {
         key,
@@ -1793,13 +1808,20 @@ export function createStore({
       if ('type' in patch) {
         const nextType = normalizeCustomFieldType(patch.type)
         if (!CUSTOM_FIELD_TYPES.has(nextType)) {
-          throw new Error('Custom field type must be one of: text, number, boolean, date.')
+          throw customFieldValidationError('Custom field type must be one of: text, number, boolean, date.', {
+            type: 'Type must be one of: text, number, boolean, date.'
+          })
         }
         field.type = nextType
       }
       if ('label' in patch) field.label = String(patch.label || field.key).trim() || field.key
       if ('required' in patch) field.required = Boolean(patch.required)
       if ('metadata' in patch) {
+        if (patch.metadata != null && (typeof patch.metadata !== 'object' || Array.isArray(patch.metadata))) {
+          throw customFieldValidationError('Custom field metadata must be a JSON object.', {
+            metadata: 'Metadata must be a JSON object.'
+          })
+        }
         field.metadata =
           patch.metadata && typeof patch.metadata === 'object' && !Array.isArray(patch.metadata) ? { ...patch.metadata } : {}
       }
@@ -1814,7 +1836,13 @@ export function createStore({
       firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
       const before = firm.customFieldSchema.fields.length
       firm.customFieldSchema.fields = firm.customFieldSchema.fields.filter((entry) => entry.key !== fieldKey)
-      if (firm.customFieldSchema.fields.length === before) throw new Error('Custom field not found.')
+      if (firm.customFieldSchema.fields.length === before) {
+        const error = new Error('Custom field not found.')
+        error.statusCode = 404
+        error.code = 'CUSTOM_FIELD_NOT_FOUND'
+        error.details = { fieldErrors: { key: 'Field key was not found.' } }
+        throw error
+      }
       firm.customFieldSchema.updatedAt = now()
       persist()
       return { ok: true }
@@ -2594,21 +2622,28 @@ export function createStore({
     },
     addDraftCollaborator(user, submissionId, input = {}) {
       requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
       const submission = state.formSubmissions.find(
         (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
       )
       if (!submission) throw new Error('Draft submission not found.')
       const userId = String(input.userId || '').trim()
       if (!userId) throw new Error('Collaborator userId is required.')
+      if (userId === actorUserId) throw new Error('You are already a collaborator on this draft.')
       const permission = String(input.permission || '').toLowerCase() === 'write' ? 'write' : 'read'
       submission.collaborators = normalizeDraftCollaborators(submission)
       const existingUser = state.users.find((entry) => entry.id === userId && entry.firmId === user.firmId)
       if (!existingUser) throw new Error('Collaborator user not found.')
+      if (submission.collaborators.some((entry) => entry.userId === userId)) throw new Error('Collaborator already added.')
       submission.collaborators = normalizeDraftCollaborators(
         { ...submission, collaborators: [...submission.collaborators, { userId, permission }] },
         submission.createdByUserId
       )
       submission.updatedAt = now()
+      addAudit(user.firmId, actorUserId, 'form_submission', submission.id, 'form_submission.collaborator_added', {
+        collaboratorUserId: userId,
+        permission
+      })
       persist()
       return submission.collaborators
     },
@@ -2620,9 +2655,17 @@ export function createStore({
       if (!submission) throw new Error('Draft submission not found.')
       submission.collaborators = normalizeDraftCollaborators(submission)
       const targetUserId = String(collaboratorUserId || '').trim()
+      if (!targetUserId) throw new Error('Collaborator userId is required.')
+      if (targetUserId === submission.createdByUserId) throw new Error('Draft owner cannot be removed as collaborator.')
+      if (!submission.collaborators.some((entry) => entry.userId === targetUserId)) {
+        throw new Error('Collaborator is not assigned to this draft.')
+      }
       submission.collaborators = submission.collaborators.filter((entry) => entry.userId !== targetUserId)
       submission.collaborators = normalizeDraftCollaborators(submission, submission.createdByUserId)
       submission.updatedAt = now()
+      addAudit(user.firmId, resolveUserId(user), 'form_submission', submission.id, 'form_submission.collaborator_removed', {
+        collaboratorUserId: targetUserId
+      })
       persist()
       return submission.collaborators
     },
@@ -2761,6 +2804,11 @@ export function createStore({
         profile,
         submission
       })
+      const rowIdByIndex = new Map(
+        (resolved.rows || [])
+          .map((row) => [Number(row.rowIndex), String(row.rowId || '').trim()])
+          .filter(([rowIndex, rowId]) => Number.isFinite(rowIndex) && rowId)
+      )
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
       collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
@@ -2783,6 +2831,7 @@ export function createStore({
           const sourceMeta = issue?.meta && typeof issue.meta === 'object' ? issue.meta : {}
           const rowIndex = rowIndexMatch ? Number(rowIndexMatch[1]) : null
           const issueId = sourceMeta.issueId || [code, rowIndex ?? 'global', field || path || 'mapping'].join(':')
+          const rowId = Number.isFinite(rowIndex) ? rowIdByIndex.get(rowIndex) || null : null
           return {
             code,
             path,
@@ -2791,9 +2840,11 @@ export function createStore({
             severity: 'error',
             blocking: true,
             rowIndex,
+            ...(rowId ? { rowId } : {}),
             meta: {
               ...sourceMeta,
               issueId,
+              ...(rowId ? { rowId } : {}),
               fieldPath: sourceMeta.fieldPath || path,
               fieldKey: sourceMeta.fieldKey || field || path || 'mapping'
             }
@@ -3064,9 +3115,33 @@ export function createStore({
     rotateSession(token, reason = 'privilege_transition') {
       return rotateSession(token, reason)
     },
-    listUsers(user) {
+    listUsers(user, query = {}) {
       requirePermission(user, 'users:read')
-      return state.users.filter((entry) => entry.firmId === user.firmId).map(publicUser)
+      const mode = String(query.mode || '').trim().toLowerCase()
+      const search = String(query.search || '').trim().toLowerCase()
+      const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 20, 1), 50)
+      const includeSelf = query.includeSelf === true || query.includeSelf === 'true'
+      const firmUsers = state.users.filter((entry) => entry.firmId === user.firmId)
+      if (mode === 'lookup') {
+        const users = firmUsers
+          .filter((entry) => (includeSelf ? true : entry.id !== user.id))
+          .filter((entry) => {
+            if (!search) return true
+            const haystack = [entry.id, entry.email, entry.firstName, entry.lastName, `${entry.firstName} ${entry.lastName}`]
+              .map((value) => String(value || '').toLowerCase())
+              .join(' ')
+            return haystack.includes(search)
+          })
+          .slice(0, limit)
+          .map((entry) => ({
+            id: entry.id,
+            role: entry.role,
+            email: entry.email,
+            label: `${entry.firstName || ''} ${entry.lastName || ''}`.trim() || entry.email || entry.id
+          }))
+        return { mode: 'lookup', total: users.length, users }
+      }
+      return firmUsers.map(publicUser)
     },
     inviteUser(user, input) {
       requirePermission(user, 'users:manage')

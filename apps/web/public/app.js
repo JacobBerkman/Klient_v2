@@ -41,7 +41,9 @@ const state = {
   formsUi: {
     activeDraftSharePanelId: '',
     collaboratorsByDraftId: {},
-    shareFeedbackByDraftId: {}
+    shareFeedbackByDraftId: {},
+    userLookupByDraftId: {},
+    userLookupSearchByDraftId: {}
   },
   workflowStatusMessage: '',
   operations: {
@@ -458,13 +460,53 @@ function parseCustomFieldInputValue(field, rawValue) {
     const parsed = Number(value)
     return Number.isFinite(parsed) ? parsed : null
   }
+  if (field.type === 'date') {
+    return Number.isFinite(Date.parse(value)) ? value : null
+  }
   if (field.type === 'boolean') return value === 'true'
   return value
 }
 
-function customFieldControlMarkup(field, value = '', { disabled = false, idPrefix = 'profile-custom' } = {}) {
+function parseCustomFieldInputValueStrict(field, rawValue) {
+  const value = String(rawValue ?? '').trim()
+  if (!value) return { value: null, error: '' }
+  if (field.type === 'number') {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) {
+      return { value: null, error: `${field.label || field.key} must be a valid number.` }
+    }
+    return { value: parsed, error: '' }
+  }
+  if (field.type === 'date') {
+    if (!Number.isFinite(Date.parse(value))) {
+      return { value: null, error: `${field.label || field.key} must be a valid date.` }
+    }
+    return { value, error: '' }
+  }
+  if (field.type === 'boolean') {
+    if (value !== 'true' && value !== 'false') {
+      return { value: null, error: `${field.label || field.key} must be true or false.` }
+    }
+    return { value: value === 'true', error: '' }
+  }
+  return { value, error: '' }
+}
+
+function customFieldControlMarkup(
+  field,
+  value = '',
+  { disabled = false, idPrefix = 'profile-custom', booleanControl = 'select' } = {}
+) {
   const name = customFieldInputName(field.key)
   const elementId = `${idPrefix}-${field.key}`
+  if (field.type === 'boolean' && booleanControl === 'toggle') {
+    const checked = String(value) === 'true'
+    return `<label for="${escapeHtml(elementId)}" class="checkbox-row">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
+      <input id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" type="checkbox" value="true" ${checked ? 'checked' : ''} ${
+        disabled ? 'disabled' : ''
+      } />
+    </label>`
+  }
   if (field.type === 'boolean') {
     return `<label for="${escapeHtml(elementId)}">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
       <select id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" ${disabled ? 'disabled' : ''}>
@@ -505,13 +547,16 @@ function customFieldCreateFormMarkup() {
 
 function collectCustomFieldValues(formEl, fields = []) {
   const values = {}
+  const errors = []
   fields.forEach((field) => {
     const inputName = customFieldInputName(field.key)
-    const raw = formEl?.elements?.namedItem?.(inputName)?.value ?? ''
-    const parsed = parseCustomFieldInputValue(field, raw)
+    const control = formEl?.elements?.namedItem?.(inputName)
+    const raw = control?.type === 'checkbox' ? (control.checked ? 'true' : '') : control?.value ?? ''
+    const { value: parsed, error } = parseCustomFieldInputValueStrict(field, raw)
+    if (error) errors.push(error)
     if (parsed !== null) values[field.key] = parsed
   })
-  return values
+  return { values, errors }
 }
 
 function editableProfileFieldsFromCard(card = {}) {
@@ -856,9 +901,21 @@ function canManageDraftCollaborators(draft) {
 }
 
 function draftCollaboratorDeniedMessage(draft) {
-  if (state.user?.role === 'readonly') return 'Readonly role: collaborator updates are disabled.'
-  if (state.user?.role === 'advisor' && !isDraftOwner(draft)) return 'Only the draft owner can manage collaborators.'
+  if (state.user?.role === 'readonly') {
+    return 'Readonly role: you can view collaborators but cannot add or remove collaborators.'
+  }
+  if (state.user?.role === 'advisor' && !isDraftOwner(draft)) {
+    return 'Only the draft owner can manage collaborators. You can still review current sharing access.'
+  }
   return 'You do not have access to manage draft collaborators.'
+}
+
+function collaboratorLookupLabel(user = {}) {
+  const name = String(user.label || '').trim()
+  const email = String(user.email || '').trim()
+  const role = String(user.role || '').trim()
+  const pieces = [name || user.id, email && email !== name ? `<${email}>` : '', role ? `(${role})` : ''].filter(Boolean)
+  return pieces.join(' ')
 }
 
 function canReadDiagnostics() {
@@ -1424,6 +1481,12 @@ async function renderForms() {
         const panelVisible = state.formsUi.activeDraftSharePanelId === draft.id
         const panelId = `draft-share-panel-${draft.id}`
         const list = state.formsUi.collaboratorsByDraftId[draft.id]
+        const lookupResults = state.formsUi.userLookupByDraftId[draft.id] || []
+        const lookupSearch = state.formsUi.userLookupSearchByDraftId[draft.id] || ''
+        const existingCollaboratorIds = new Set((Array.isArray(list) ? list : []).map((entry) => entry.userId || entry.id))
+        const selectableLookupResults = lookupResults.filter(
+          (entry) => entry?.id && entry.id !== state.user?.id && !existingCollaboratorIds.has(entry.id)
+        )
         const canManage = canManageDraftCollaborators(draft)
         const deniedMessage = draftCollaboratorDeniedMessage(draft)
         const shareFeedback = state.formsUi.shareFeedbackByDraftId[draft.id] || ''
@@ -1447,9 +1510,20 @@ async function renderForms() {
         <div class="item compact">
           <h4>Draft sharing</h4>
           <p class="muted compact">Owner: <code>${escapeHtml(draft.createdByUserId || 'unknown')}</code></p>
+          <form data-search-draft-collaborator-users="${draft.id}">
+            <label>Search firm users
+              <input name="search" placeholder="name, email, or user id" value="${escapeHtml(lookupSearch)}" ${canManage ? '' : 'disabled'} />
+            </label>
+            <button type="submit" ${canManage ? '' : 'disabled'}>${pendingLabel(`draft-share-search-${draft.id}`, 'Find users', 'Searching…')}</button>
+          </form>
           <form data-add-draft-collaborator="${draft.id}">
-            <label>Add collaborator (user id)
-              <input name="userId" placeholder="advisor-user-id" ${canManage ? '' : 'disabled'} />
+            <label>Add collaborator
+              <select name="userId" ${canManage ? '' : 'disabled'}>
+                <option value="">Select a firm user…</option>
+                ${selectableLookupResults
+                  .map((user) => `<option value="${escapeHtml(user.id || '')}">${escapeHtml(collaboratorLookupLabel(user))}</option>`)
+                  .join('')}
+              </select>
             </label>
             <button type="submit" ${canManage ? '' : 'disabled'}>${pendingLabel(`draft-share-add-${draft.id}`, 'Add', 'Adding…')}</button>
           </form>
@@ -1644,11 +1718,46 @@ async function renderForms() {
       const actionKey = `draft-share-fetch-${draftId}`
       setActionPending(actionKey, 'pending')
       try {
-        const collaborators = await request(routes.formDraftCollaborators(draftId))
+        const [collaborators, userLookup] = await Promise.all([
+          request(routes.formDraftCollaborators(draftId)),
+          request(routes.users({ mode: 'lookup', limit: 25 }))
+        ])
         state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators) ? collaborators : collaborators?.collaborators || []
+        state.formsUi.userLookupByDraftId[draftId] = Array.isArray(userLookup?.users) ? userLookup.users : []
+        state.formsUi.userLookupSearchByDraftId[draftId] = ''
         state.formsUi.shareFeedbackByDraftId[draftId] = 'Collaborators loaded.'
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'load draft collaborators')
+        reportActionError('Forms', error)
+      } finally {
+        clearActionPending(actionKey)
+      }
+      await renderForms()
+    })
+  })
+
+  document.querySelectorAll('form[data-search-draft-collaborator-users]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const draftId = form.dataset.searchDraftCollaboratorUsers
+      const draft = drafts.find((entry) => entry.id === draftId)
+      if (!canManageDraftCollaborators(draft)) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = draftCollaboratorDeniedMessage(draft)
+        await renderForms()
+        return
+      }
+      const search = String(new FormData(form).get('search') || '').trim()
+      state.formsUi.userLookupSearchByDraftId[draftId] = search
+      const actionKey = `draft-share-search-${draftId}`
+      setActionPending(actionKey, 'pending')
+      try {
+        const userLookup = await request(routes.users({ mode: 'lookup', search, limit: 25 }))
+        state.formsUi.userLookupByDraftId[draftId] = Array.isArray(userLookup?.users) ? userLookup.users : []
+        state.formsUi.shareFeedbackByDraftId[draftId] = state.formsUi.userLookupByDraftId[draftId].length
+          ? `Found ${state.formsUi.userLookupByDraftId[draftId].length} matching firm users.`
+          : 'No matching firm users found.'
+      } catch (error) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'search firm users')
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -1669,7 +1778,7 @@ async function renderForms() {
       }
       const userId = String(new FormData(form).get('userId') || '').trim()
       if (!userId) {
-        state.formsUi.shareFeedbackByDraftId[draftId] = 'Provide a collaborator user id.'
+        state.formsUi.shareFeedbackByDraftId[draftId] = 'Select a collaborator from the firm user results.'
         await renderForms()
         return
       }
@@ -1684,6 +1793,9 @@ async function renderForms() {
         state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators)
           ? collaborators
           : collaborators?.collaborators || []
+        state.formsUi.userLookupByDraftId[draftId] = (state.formsUi.userLookupByDraftId[draftId] || []).filter(
+          (candidate) => candidate.id !== userId
+        )
         state.formsUi.shareFeedbackByDraftId[draftId] = `Collaborator ${userId} added.`
         reportActionSuccess('Forms', `Collaborator ${userId} added to draft ${draftId}.`)
       } catch (error) {
@@ -1714,6 +1826,12 @@ async function renderForms() {
         state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators)
           ? collaborators
           : collaborators?.collaborators || []
+        if (!state.formsUi.userLookupByDraftId[draftId]?.some((candidate) => candidate.id === userId)) {
+          state.formsUi.userLookupByDraftId[draftId] = [
+            ...(state.formsUi.userLookupByDraftId[draftId] || []),
+            { id: userId, label: userId, email: '', role: '' }
+          ]
+        }
         state.formsUi.shareFeedbackByDraftId[draftId] = `Collaborator ${userId} removed.`
         reportActionSuccess('Forms', `Collaborator ${userId} removed from draft ${draftId}.`)
       } catch (error) {
@@ -1953,6 +2071,40 @@ function normalizedExtractedFields(template = {}) {
     .filter(Boolean)
 }
 
+function normalizedKnownPathIndex(knownPaths = new Map()) {
+  const entries = [...knownPaths.entries()].map(([path, type]) => {
+    const normalizedPath = String(path || '').trim()
+    const leaf = normalizedPath.split('.').pop() || normalizedPath
+    return {
+      path: normalizedPath,
+      type: String(type || 'text'),
+      leaf,
+      normalizedLeaf: leaf.toLowerCase().replace(/[^a-z0-9]+/g, '')
+    }
+  })
+  return {
+    entries,
+    byPath: new Map(entries.map((entry) => [entry.path, entry]))
+  }
+}
+
+function mappingAutoMatchScore(sourceLabel = '', candidatePath = '') {
+  const left = String(sourceLabel || '').toLowerCase().replace(/[^a-z0-9]+/g, '')
+  const rightLeaf = String(candidatePath || '')
+    .split('.')
+    .pop()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '')
+  if (!left || !rightLeaf) return 0
+  if (left === rightLeaf) return 1
+  if (left.includes(rightLeaf) || rightLeaf.includes(left)) return 0.85
+  const leftTokens = new Set(String(sourceLabel || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
+  const rightTokens = new Set(String(candidatePath || '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean))
+  const overlap = [...leftTokens].filter((token) => rightTokens.has(token)).length
+  const tokenScore = overlap / Math.max(1, leftTokens.size, rightTokens.size)
+  return tokenScore * 0.75
+}
+
 function templateIngestionRecoveryMessage(extraction = {}) {
   const reasonCode = String(extraction?.reasonCode || '').trim()
   if (reasonCode === 'malformed_pdf') {
@@ -2053,16 +2205,29 @@ async function renderTemplates() {
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
   const preflight = template ? state.templatePublishPreflightByTemplateId[template.id] : null
   const preflightIssues = Array.isArray(preflight?.issues) ? preflight.issues : []
+  const preflightIssuesByRowIndex = new Map()
+  const preflightIssuesByRowId = new Map()
+  preflightIssues.forEach((issue) => {
+    const rowIndex = Number(issue.rowIndex)
+    const rowId = String(issue?.rowId || issue?.meta?.rowId || '').trim()
+    if (Number.isFinite(rowIndex)) {
+      const list = preflightIssuesByRowIndex.get(rowIndex) || []
+      list.push(issue)
+      preflightIssuesByRowIndex.set(rowIndex, list)
+    }
+    if (rowId) {
+      const list = preflightIssuesByRowId.get(rowId) || []
+      list.push(issue)
+      preflightIssuesByRowId.set(rowId, list)
+    }
+  })
   const preflightIssueRows = new Set(preflightIssues.map((issue) => Number(issue.rowIndex)).filter((value) => Number.isFinite(value)))
-  const previewWarningRows = new Set(
-    (preview?.rows || [])
-      .filter((row) => Array.isArray(row.warnings) && row.warnings.length)
-      .map((row) => Number(row.rowIndex))
-      .filter((value) => Number.isFinite(value))
-  )
+  const previewRows = Array.isArray(preview?.rows) ? preview.rows : []
+  const previewRowsByIndex = new Map(previewRows.map((row) => [Number(row.rowIndex), row]).filter(([index]) => Number.isFinite(index)))
+  const previewWarningRows = new Set(previewRows.filter((row) => Array.isArray(row.warnings) && row.warnings.length).map((row) => Number(row.rowIndex)).filter((value) => Number.isFinite(value)))
   const previewIssueRows = new Set((preview?.issues || []).map((issue) => Number(issue.rowIndex)).filter((value) => Number.isFinite(value)))
   const remediationRows = [
-    ...(preview?.rows || [])
+    ...previewRows
       .flatMap((row) =>
         (row.warnings || []).map((warning) => ({
           rowIndex: Number(row.rowIndex),
@@ -2085,7 +2250,7 @@ async function renderTemplates() {
     Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
   const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings || preflightIssues.length > 0
   const templateFilter = state.templateMappingFilterByTemplateId[template?.id] || 'all'
-  const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unmapped', 'preview-warning'])
+  const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unmapped', 'preview-warning', 'required-only'])
   const activeTemplateFilter = allowedTemplateFilters.has(templateFilter) ? templateFilter : 'all'
   if (template && activeTemplateFilter !== templateFilter) state.templateMappingFilterByTemplateId[template.id] = activeTemplateFilter
   const rowJumpHighlight = template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
@@ -2099,6 +2264,7 @@ async function renderTemplates() {
 
   const mappedFieldSet = new Set(draftMappings.map((entry) => String(entry.pdfField || '').trim()).filter(Boolean))
   const extractedFields = normalizedExtractedFields(template)
+  const knownPathIndex = normalizedKnownPathIndex(knownPaths)
   const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field.fieldName)).length
   const extraction = template?.extraction || {}
   const wizardSteps = ['upload', 'extraction', 'mapping', 'preview', 'publish']
@@ -2193,13 +2359,19 @@ async function renderTemplates() {
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mappings</h3>
-        <div class="row gap-sm wrap"><button id="add-mapping-row" class="tiny">Add Mapping</button><button id="save-mappings" class="tiny">Save Now</button></div>
+        <div class="row gap-sm wrap">
+          <button id="add-mapping-row" class="tiny">Add Mapping</button>
+          <button id="save-mappings" class="tiny">Save Now</button>
+          <button id="auto-map-similar" class="tiny secondary">Auto-map similar names</button>
+          <button id="clear-unresolved-rows" class="tiny secondary">Clear unresolved rows</button>
+        </div>
         <div class="row gap-sm wrap top-gap">
           ${[
             { value: 'all', label: `All (${draftMappings.length})` },
             { value: 'needs-fix', label: `Needs fix (${draftMappings.filter((_, index) => (mappingIssuesByIndex.get(index) || []).length > 0 || preflightIssues.some((issue) => Number(issue.rowIndex) === index)).length})` },
             { value: 'unmapped', label: `Unmapped (${draftMappings.filter((mapping) => !String(mapping.pdfField || '').trim()).length})` },
-            { value: 'preview-warning', label: `Preview warning (${draftMappings.filter((_, index) => previewWarningRows.has(index) || previewIssueRows.has(index)).length})` }
+            { value: 'preview-warning', label: `Preview warning (${draftMappings.filter((_, index) => previewWarningRows.has(index) || previewIssueRows.has(index)).length})` },
+            { value: 'required-only', label: `Required only (${draftMappings.filter((mapping) => mapping.required === true).length})` }
           ]
             .map(
               (filter) =>
@@ -2212,19 +2384,22 @@ async function renderTemplates() {
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
               const hasPreviewWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
-              const serverPreflightIssues = preflightIssues.filter((issue) => Number(issue.rowIndex) === index)
+              const previewRow = previewRowsByIndex.get(index)
+              const rowId = String(previewRow?.rowId || '').trim()
+              const serverPreflightIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
               const isUnmapped = !String(mapping.pdfField || '').trim()
               const showRow =
                 activeTemplateFilter === 'all' ||
                 (activeTemplateFilter === 'needs-fix' && (issues.length > 0 || serverPreflightIssues.length > 0)) ||
                 (activeTemplateFilter === 'unmapped' && isUnmapped) ||
-                (activeTemplateFilter === 'preview-warning' && hasPreviewWarnings)
+                (activeTemplateFilter === 'preview-warning' && hasPreviewWarnings) ||
+                (activeTemplateFilter === 'required-only' && mapping.required === true)
               if (!showRow) return ''
               const sampleValue = resolveSampleValue(mapping.sourcePath)
               const rowClasses = ['mapping-row-item']
               if (index === safeSelectedRowIndex) rowClasses.push('is-selected')
               if (index === rowJumpHighlight) rowClasses.push('is-jumped')
-              return `<tr id="mapping-row-${index}" class="${rowClasses.join(' ')}" data-select-row="${index}" tabindex="0">
+              return `<tr id="mapping-row-${index}" class="${rowClasses.join(' ')}" data-select-row="${index}" data-row-id="${escapeHtml(rowId)}" tabindex="0">
                 <td>${index + 1}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
@@ -2294,7 +2469,7 @@ async function renderTemplates() {
               <td>${escapeHtml(row.value == null ? '' : String(row.value))}</td>
               <td>${
                 hasWarnings
-                  ? `<button class="tiny secondary" data-jump-rowindex="${rowIndex}" data-focus-inspector="sourcePath">Jump to row ${rowIndex + 1}</button>`
+                  ? `<button class="tiny secondary" data-jump-rowindex="${rowIndex}" data-jump-rowid="${escapeHtml(row.rowId || '')}" data-focus-inspector="sourcePath">Jump to row ${rowIndex + 1}</button>`
                   : `<span class="muted">Row ${rowIndex + 1}</span>`
               } <span class="muted">id:<code>${escapeHtml(row.rowId || '')}</code></span> ${previewWarningMarkup(row.warnings || [])}</td>
             </tr>`
@@ -2317,8 +2492,9 @@ async function renderTemplates() {
             ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s) across ${preflightIssueRows.size || 0} mapped row(s).</p><ul>${preflightIssues
                 .map((issue) => {
                   const rowIndex = Number(issue.rowIndex)
+                  const rowId = String(issue?.rowId || issue?.meta?.rowId || '').trim()
                   const rowCta = Number.isFinite(rowIndex)
-                    ? `<button class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-focus-inspector="sourcePath">Row ${rowIndex + 1}</button> · `
+                    ? `<button class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="sourcePath">Row ${rowIndex + 1}</button> · `
                     : ''
                   return `<li>${rowCta}<code>${escapeHtml(issue?.meta?.issueId || issue.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`
                 })
@@ -2330,7 +2506,7 @@ async function renderTemplates() {
             ? `<h4>Row-level remediation</h4><ul>${remediationRows
                 .map(
                   (item) =>
-                    `<li><button class="tiny secondary" data-remediate-rowindex="${item.rowIndex}" data-focus-inspector="sourcePath">Row ${item.rowIndex + 1}</button> · <code>${escapeHtml(item.code)}</code> · ${escapeHtml(item.message)}${item.rowId ? ` · rowId <code>${escapeHtml(item.rowId)}</code>` : ''}${item.blocking ? ' · <strong>blocking</strong>' : ' · non-blocking'}</li>`
+                    `<li><button class="tiny secondary" data-remediate-rowindex="${item.rowIndex}" data-remediate-rowid="${escapeHtml(item.rowId || '')}" data-focus-inspector="sourcePath">Row ${item.rowIndex + 1}</button> · <code>${escapeHtml(item.code)}</code> · ${escapeHtml(item.message)}${item.rowId ? ` · rowId <code>${escapeHtml(item.rowId)}</code>` : ''}${item.blocking ? ' · <strong>blocking</strong>' : ' · non-blocking'}</li>`
                 )
                 .join('')}</ul>`
             : ''
@@ -2452,10 +2628,32 @@ async function renderTemplates() {
   const selectTemplateRow = async (rowIndex, { focusInspector = false, focusField = 'sourcePath', highlightRow = false } = {}) => {
     if (!template) return
     const normalizedRowIndex = Number(rowIndex)
+    if (!Number.isFinite(normalizedRowIndex)) return
     state.templateInspector[template.id] = { rowIndex: normalizedRowIndex }
     state.templateInspectorFocusRequestByTemplateId[template.id] = focusInspector ? focusField : ''
     state.templateJumpHighlightByTemplateId[template.id] = highlightRow ? normalizedRowIndex : NaN
     await renderTemplates()
+  }
+
+  const selectTemplateRowFromIssue = async (
+    rowIndex,
+    rowId,
+    { focusInspector = false, focusField = 'sourcePath', highlightRow = true } = {}
+  ) => {
+    const numericRowIndex = Number(rowIndex)
+    if (Number.isFinite(numericRowIndex)) {
+      await selectTemplateRow(numericRowIndex, { focusInspector, focusField, highlightRow })
+      return
+    }
+    const normalizedRowId = String(rowId || '').trim()
+    if (!normalizedRowId) return
+    const mappedRowIndex = Number(
+      [...(state.templatePreviewByTemplateId?.[template.id]?.rows || [])].find((row) => String(row?.rowId || '').trim() === normalizedRowId)
+        ?.rowIndex
+    )
+    if (Number.isFinite(mappedRowIndex)) {
+      await selectTemplateRow(mappedRowIndex, { focusInspector, focusField, highlightRow })
+    }
   }
 
   document.querySelectorAll('[data-select-row]').forEach((row) => {
@@ -2534,6 +2732,55 @@ async function renderTemplates() {
     await rerenderTemplates()
   })
 
+  document.querySelector('#auto-map-similar')?.addEventListener('click', async () => {
+    if (!template) return
+    const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+    let updates = 0
+    nextDraft.forEach((mapping, index) => {
+      const currentPath = String(mapping.sourcePath || '').trim()
+      const currentIssues = mappingIssuesByIndex.get(index) || []
+      const needsMapping = !currentPath || currentIssues.includes('Unknown source path')
+      if (!needsMapping) return
+      const sourceLabel = String(mapping.fieldLabel || mapping.pdfField || '').trim()
+      if (!sourceLabel) return
+      const bestMatch = knownPathIndex.entries
+        .map((candidate) => ({ candidate, score: mappingAutoMatchScore(sourceLabel, candidate.path) }))
+        .sort((a, b) => b.score - a.score)[0]
+      if (!bestMatch || bestMatch.score < 0.8) return
+      nextDraft[index] = { ...mapping, sourcePath: bestMatch.candidate.path }
+      updates += 1
+    })
+    if (!updates) {
+      setFlash('error', 'No unresolved rows matched known source paths by name similarity.')
+      return
+    }
+    state.templateMappingDrafts[template.id] = nextDraft
+    state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
+    state.templateWizardStepByTemplateId[template.id] = 'mapping'
+    setFlash('success', `Auto-mapped ${updates} row(s) by name similarity.`)
+    await rerenderTemplates()
+  })
+
+  document.querySelector('#clear-unresolved-rows')?.addEventListener('click', async () => {
+    if (!template) return
+    const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+    let updates = 0
+    nextDraft.forEach((mapping, index) => {
+      const previewWarnings = previewRowsByIndex.get(index)?.warnings || []
+      const hasUnresolvedPreviewIssue = previewWarnings.some((warning) => String(warning.code || '') === 'UNRESOLVED_SOURCE_PATH')
+      const hasUnknownLocalPath = (mappingIssuesByIndex.get(index) || []).includes('Unknown source path')
+      if (!hasUnresolvedPreviewIssue && !hasUnknownLocalPath) return
+      if (!String(mapping.sourcePath || '').trim()) return
+      nextDraft[index] = { ...mapping, sourcePath: '' }
+      updates += 1
+    })
+    state.templateMappingDrafts[template.id] = nextDraft
+    state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
+    state.templateWizardStepByTemplateId[template.id] = 'mapping'
+    setFlash('success', `Cleared ${updates} unresolved row(s).`)
+    await rerenderTemplates()
+  })
+
   document.querySelector('#preview-client')?.addEventListener('change', (event) => {
     setWorkflowContext({ clientId: event.target.value })
   })
@@ -2590,19 +2837,34 @@ async function renderTemplates() {
   document.querySelectorAll('[data-jump-rowindex]').forEach((button) => {
     button.addEventListener('click', async () => {
       const rowIndex = Number(button.dataset.jumpRowindex)
-      await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
+      const rowId = String(button.dataset.jumpRowid || '').trim()
+      await selectTemplateRowFromIssue(rowIndex, rowId, {
+        focusInspector: true,
+        focusField: button.dataset.focusInspector || 'sourcePath',
+        highlightRow: true
+      })
     })
   })
   document.querySelectorAll('[data-preflight-rowindex]').forEach((button) => {
     button.addEventListener('click', async () => {
       const rowIndex = Number(button.dataset.preflightRowindex)
-      await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
+      const rowId = String(button.dataset.preflightRowid || '').trim()
+      await selectTemplateRowFromIssue(rowIndex, rowId, {
+        focusInspector: true,
+        focusField: button.dataset.focusInspector || 'sourcePath',
+        highlightRow: true
+      })
     })
   })
   document.querySelectorAll('[data-remediate-rowindex]').forEach((button) => {
     button.addEventListener('click', async () => {
       const rowIndex = Number(button.dataset.remediateRowindex)
-      await selectTemplateRow(rowIndex, { focusInspector: true, focusField: button.dataset.focusInspector || 'sourcePath', highlightRow: true })
+      const rowId = String(button.dataset.remediateRowid || '').trim()
+      await selectTemplateRowFromIssue(rowIndex, rowId, {
+        focusInspector: true,
+        focusField: button.dataset.focusInspector || 'sourcePath',
+        highlightRow: true
+      })
     })
   })
 
@@ -2797,13 +3059,15 @@ function boardCardMarkup(card, kind) {
                   .map((field) =>
                     customFieldControlMarkup(field, inlineState.draft[customFieldInputName(field.key)] || '', {
                       disabled: !canEdit,
-                      idPrefix: `profile-edit-${card.id}`
+                      idPrefix: `profile-edit-${card.id}`,
+                      booleanControl: 'toggle'
                     })
                   )
                   .join('')}
               </div>
+              <p class="muted compact" data-inline-custom-field-errors="${card.id}" aria-live="polite"></p>
             </div>`
-            : ''
+            : '<p class="muted compact">No custom fields configured yet for this firm.</p>'
         }
         <div class="actions-row">
           <button type="submit" class="tiny" ${canEdit && inlineState.dirty && !inlineState.saving ? '' : 'disabled'}>${inlineState.saving ? 'Saving…' : 'Save'}</button>
@@ -2996,15 +3260,18 @@ function wireBoardInteractions(kind) {
     const profileId = form.dataset.editForm
     form.querySelectorAll('input, select, textarea').forEach((input) => {
       input.addEventListener('input', () => {
-        setInlineDraftField(kind, profileId, input.name, input.value)
+        const nextValue = input.type === 'checkbox' ? (input.checked ? 'true' : '') : input.value
+        setInlineDraftField(kind, profileId, input.name, nextValue)
       })
       input.addEventListener('change', () => {
-        setInlineDraftField(kind, profileId, input.name, input.value)
+        const nextValue = input.type === 'checkbox' ? (input.checked ? 'true' : '') : input.value
+        setInlineDraftField(kind, profileId, input.name, nextValue)
       })
     })
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
       const inlineState = ensureInlineProfileState(kind, profileId)
+      const feedbackEl = form.querySelector('[data-inline-feedback]')
       const payload = {
         firstName: inlineState.draft.firstName || '',
         lastName: inlineState.draft.lastName || '',
@@ -3012,16 +3279,27 @@ function wireBoardInteractions(kind) {
         phone: inlineState.draft.phone || ''
       }
       const extensionValues = {}
+      const extensionErrors = []
       state.customFieldSchema.fields.forEach((field) => {
-        const parsed = parseCustomFieldInputValue(field, inlineState.draft[customFieldInputName(field.key)] || '')
+        const { value: parsed, error } = parseCustomFieldInputValueStrict(
+          field,
+          inlineState.draft[customFieldInputName(field.key)] || ''
+        )
+        if (error) extensionErrors.push(error)
         if (parsed !== null) extensionValues[field.key] = parsed
       })
+      const customErrorEl = form.querySelector(`[data-inline-custom-field-errors="${profileId}"]`)
+      if (customErrorEl) customErrorEl.textContent = extensionErrors.join(' ')
+      if (extensionErrors.length) {
+        if (feedbackEl) feedbackEl.textContent = extensionErrors[0]
+        setAlert('error', extensionErrors[0])
+        return
+      }
       payload.extensions = {
         schemaVersion: '1.0.0',
         values: extensionValues
       }
       const submitButton = form.querySelector('button[type="submit"]')
-      const feedbackEl = form.querySelector('[data-inline-feedback]')
       if (submitButton) {
         submitButton.disabled = true
         submitButton.textContent = 'Saving…'
@@ -3691,10 +3969,47 @@ async function renderCustomFieldsAdmin() {
     </section>
   `
 
+  const markFieldError = (form, fieldName, message) => {
+    const field = form?.elements?.namedItem?.(fieldName)
+    if (!field) return
+    field.setAttribute('aria-invalid', message ? 'true' : 'false')
+  }
+  const applyFieldErrors = (form, fieldErrors = {}) => {
+    ;['key', 'type', 'metadata'].forEach((fieldName) => markFieldError(form, fieldName, fieldErrors[fieldName] || ''))
+  }
   const parseMetadataJson = (raw) => {
     const text = String(raw || '').trim()
-    if (!text) return {}
-    return JSON.parse(text)
+    if (!text) return { value: {}, error: '' }
+    try {
+      const parsed = JSON.parse(text)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { value: null, error: 'Metadata must be a JSON object.' }
+      }
+      return { value: parsed, error: '' }
+    } catch {
+      return { value: null, error: 'Metadata must be valid JSON.' }
+    }
+  }
+  const validateCustomFieldInput = (rawInput, { requireKey = true } = {}) => {
+    const payload = {
+      key: String(rawInput?.key || '')
+        .trim()
+        .replace(/[^a-zA-Z0-9_]+/g, '_'),
+      type: String(rawInput?.type || 'text')
+        .trim()
+        .toLowerCase(),
+      label: String(rawInput?.label || '').trim(),
+      required: Boolean(rawInput?.required)
+    }
+    const fieldErrors = {}
+    if (requireKey && !payload.key) fieldErrors.key = 'Key is required (letters, numbers, underscore).'
+    if (!new Set(['text', 'number', 'boolean', 'date']).has(payload.type)) {
+      fieldErrors.type = 'Type must be one of: text, number, boolean, date.'
+    }
+    const metadataResult = parseMetadataJson(rawInput?.metadata)
+    if (metadataResult.error) fieldErrors.metadata = metadataResult.error
+    payload.metadata = metadataResult.value
+    return { payload, fieldErrors }
   }
 
   document.querySelector('#custom-field-create-form')?.addEventListener('submit', async (event) => {
@@ -3702,23 +4017,41 @@ async function renderCustomFieldsAdmin() {
     if (!canManage) return
     const form = event.currentTarget
     clearFormFeedback(form)
+    applyFieldErrors(form, {})
+    const formData = new FormData(form)
+    const validation = validateCustomFieldInput(
+      {
+        key: formData.get('key'),
+        type: formData.get('type'),
+        label: formData.get('label'),
+        required: formData.get('required'),
+        metadata: formData.get('metadata')
+      },
+      { requireKey: true }
+    )
+    applyFieldErrors(form, validation.fieldErrors)
+    if (Object.keys(validation.fieldErrors).length) {
+      setFormFeedback(form, Object.values(validation.fieldErrors)[0])
+      return
+    }
+    const previousSchema = structuredClone(state.customFieldSchema)
+    const optimisticField = { ...validation.payload }
+    state.customFieldSchema.fields = [...(state.customFieldSchema.fields || []), optimisticField]
+    state.customFieldSchema.updatedAt = new Date().toISOString()
+    state.customFieldSchema.lastError = ''
+    setFormFeedback(form, 'Creating custom field…', 'success')
     try {
-      const formData = new FormData(form)
       await request(routes.profileCustomFieldSchema(), {
         method: 'POST',
-        body: JSON.stringify({
-          key: String(formData.get('key') || '').trim(),
-          type: String(formData.get('type') || 'text').trim(),
-          label: String(formData.get('label') || '').trim(),
-          required: Boolean(formData.get('required')),
-          metadata: parseMetadataJson(formData.get('metadata'))
-        })
+        body: JSON.stringify(validation.payload)
       })
-      setFlash('success', 'Custom field created.')
+      setFormFeedback(form, 'Custom field created.', 'success')
       state.customFieldSchema.fetched = false
       await refreshSelects()
       await renderCustomFieldsAdmin()
     } catch (error) {
+      state.customFieldSchema = previousSchema
+      applyFieldErrors(form, error?.details?.fieldErrors || {})
       setFormFeedback(form, normalizeApiError(error, 'create custom field schema'))
     }
   })
@@ -3728,23 +4061,41 @@ async function renderCustomFieldsAdmin() {
       event.preventDefault()
       if (!canManage) return
       clearFormFeedback(form)
+      applyFieldErrors(form, {})
       const fieldKey = form.dataset.customFieldUpdate
+      const formData = new FormData(form)
+      const validation = validateCustomFieldInput(
+        {
+          type: formData.get('type'),
+          label: formData.get('label'),
+          required: formData.get('required'),
+          metadata: formData.get('metadata')
+        },
+        { requireKey: false }
+      )
+      applyFieldErrors(form, validation.fieldErrors)
+      if (Object.keys(validation.fieldErrors).length) {
+        setFormFeedback(form, Object.values(validation.fieldErrors)[0])
+        return
+      }
+      const previousSchema = structuredClone(state.customFieldSchema)
+      state.customFieldSchema.fields = (state.customFieldSchema.fields || []).map((field) =>
+        field.key === fieldKey ? { ...field, ...validation.payload, key: fieldKey } : field
+      )
+      state.customFieldSchema.updatedAt = new Date().toISOString()
+      setFormFeedback(form, `Updating ${fieldKey}…`, 'success')
       try {
-        const formData = new FormData(form)
         await request(routes.profileCustomFieldSchemaField(fieldKey), {
           method: 'PATCH',
-          body: JSON.stringify({
-            label: String(formData.get('label') || '').trim(),
-            type: String(formData.get('type') || '').trim(),
-            required: Boolean(formData.get('required')),
-            metadata: parseMetadataJson(formData.get('metadata'))
-          })
+          body: JSON.stringify(validation.payload)
         })
-        setFlash('success', `Custom field ${fieldKey} updated.`)
+        setFormFeedback(form, `Custom field ${fieldKey} updated.`, 'success')
         state.customFieldSchema.fetched = false
         await refreshSelects()
         await renderCustomFieldsAdmin()
       } catch (error) {
+        state.customFieldSchema = previousSchema
+        applyFieldErrors(form, error?.details?.fieldErrors || {})
         setFormFeedback(form, normalizeApiError(error, `update custom field ${fieldKey}`))
       }
     })
@@ -3754,6 +4105,11 @@ async function renderCustomFieldsAdmin() {
     button.addEventListener('click', async () => {
       if (!canManage) return
       const fieldKey = button.dataset.customFieldDelete
+      const previousSchema = structuredClone(state.customFieldSchema)
+      state.customFieldSchema.fields = (state.customFieldSchema.fields || []).filter((field) => field.key !== fieldKey)
+      state.customFieldSchema.updatedAt = new Date().toISOString()
+      setFlash('success', `Deleting custom field ${fieldKey}…`)
+      await renderCustomFieldsAdmin()
       try {
         await request(routes.profileCustomFieldSchemaField(fieldKey), { method: 'DELETE' })
         setFlash('success', `Custom field ${fieldKey} deleted.`)
@@ -3761,6 +4117,7 @@ async function renderCustomFieldsAdmin() {
         await refreshSelects()
         await renderCustomFieldsAdmin()
       } catch (error) {
+        state.customFieldSchema = previousSchema
         setFlash('error', normalizeApiError(error, `delete custom field ${fieldKey}`))
         await renderCustomFieldsAdmin()
       }
@@ -4092,7 +4449,11 @@ profileCreateFormEl.addEventListener('submit', async (event) => {
   }
   try {
     const payload = validateRequiredFields(formEl, ['firstName', 'lastName'])
-    const extensionValues = collectCustomFieldValues(formEl, state.customFieldSchema.fields || [])
+    const { values: extensionValues, errors: extensionErrors } = collectCustomFieldValues(
+      formEl,
+      state.customFieldSchema.fields || []
+    )
+    if (extensionErrors.length) throw new Error(extensionErrors[0])
     const source = payload.cityOrLocation
       ? { cityOrLocation: payload.cityOrLocation, venue: payload.venue, occurredOn: payload.occurredOn }
       : null

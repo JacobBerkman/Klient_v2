@@ -34,8 +34,18 @@ test('app wiring includes conflict normalization and form-level validation helpe
   assert.match(appJs, /function normalizeApiError\(/)
   assert.match(appJs, /function validateRequiredFields\(/)
   assert.match(appJs, /function setFormFeedback\(/)
+  assert.match(appJs, /function parseCustomFieldInputValueStrict\(/)
+  assert.match(appJs, /const validateCustomFieldInput =/)
   assert.match(appJs, /function viewErrorBanner\(/)
   assert.match(appJs, /setWorkflowStatus\(/)
+})
+
+test('custom field admin and profile edit flows expose validation feedback, rollback, and empty-state messaging', () => {
+  assert.match(appJs, /Metadata must be valid JSON\./)
+  assert.match(appJs, /state\.customFieldSchema = previousSchema/)
+  assert.match(appJs, /No custom fields configured yet for this firm\./)
+  assert.match(appJs, /data-inline-custom-field-errors="\$\{card\.id\}"/)
+  assert.match(appJs, /type="checkbox" value="true"/)
 })
 
 test('navigation and board controls include accessibility-critical semantics', () => {
@@ -84,6 +94,11 @@ test('template builder auto-build + wizard flow keeps upload and publish-preflig
 test('template versioning and publish preflight controls remain wired in builder workflow', () => {
   assert.match(appJs, /routes\.documentTemplateMappingsPreview\(template\.id\)/)
   assert.match(appJs, /state\.templatePublishPreflightByTemplateId\[template\.id\]/)
+  assert.match(appJs, /id="auto-map-similar"/)
+  assert.match(appJs, /id="clear-unresolved-rows"/)
+  assert.match(appJs, /'required-only'/)
+  assert.match(appJs, /data-preflight-rowid="\$\{escapeHtml\(rowId\)\}"/)
+  assert.match(appJs, /const selectTemplateRowFromIssue = async \(/)
   assert.match(appJs, /routes\.documentTemplatePublish\(template\.id\)/)
   assert.match(appJs, /routes\.documentTemplateCompare\(template\.id, \{ baseVersion, targetVersion \}\)/)
   assert.match(appJs, /routes\.documentTemplateRevert\(template\.id\)/)
@@ -186,13 +201,15 @@ test('launch ops panel contract keeps admin gating, read-only copy, and diagnost
 test('forms draft sharing contract exposes panel controls, live-region feedback, and role gating rules', () => {
   assert.match(appJs, /data-open-draft-share-panel="\$\{draft\.id\}" aria-expanded="\$\{panelVisible \? 'true' : 'false'\}" aria-controls="\$\{panelId\}"/)
   assert.match(appJs, /data-draft-share-panel="\$\{draft\.id\}"/)
+  assert.match(appJs, /data-search-draft-collaborator-users="\$\{draft\.id\}"/)
   assert.match(appJs, /data-add-draft-collaborator="\$\{draft\.id\}"/)
   assert.match(appJs, /data-remove-draft-collaborator="\$\{draft\.id\}"/)
   assert.match(appJs, /data-draft-share-feedback="\$\{draft\.id\}" role="status" aria-live="polite" aria-atomic="true"/)
   assert.match(appJs, /function canManageDraftCollaborators\(draft\)/)
   assert.match(appJs, /function draftCollaboratorDeniedMessage\(draft\)/)
-  assert.match(appJs, /Readonly role: collaborator updates are disabled\./)
-  assert.match(appJs, /Only the draft owner can manage collaborators\./)
+  assert.match(appJs, /Readonly role: you can view collaborators but cannot add or remove collaborators\./)
+  assert.match(appJs, /Only the draft owner can manage collaborators\. You can still review current sharing access\./)
+  assert.match(appJs, /routes\.users\(\{ mode: 'lookup', search, limit: 25 \}\)/)
   assert.match(appJs, /routes\.formDraftCollaborators\(draftId\)/)
   assert.match(appJs, /routes\.formDraftCollaborator\(draftId, userId\)/)
 })

@@ -29,6 +29,7 @@ export const routes = {
   register: () => joinPath(API_PREFIX, 'register'),
   login: () => joinPath(API_PREFIX, 'login'),
   session: () => joinPath(API_PREFIX, 'session'),
+  users: (query = {}) => withQuery(joinPath(API_PREFIX, 'users'), query),
   dashboard: () => joinPath(API_PREFIX, 'dashboard'),
   profiles: (query = {}) => withQuery(joinPath(API_PREFIX, 'profiles'), query),
   profileDetail: (profileId) => joinPath(API_PREFIX, 'profiles', profileId),
