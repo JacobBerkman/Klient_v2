@@ -650,6 +650,13 @@ const preflight = async () => {
   ensureStartupFailfastEvidence(startupFailfastEvidence)
 
   await runStep({
+    name: 'Flow A.4a Provision Playwright browser binaries',
+    command: 'npx',
+    args: ['playwright', 'install', '--with-deps', 'chromium'],
+    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || '0' }
+  })
+
+  await runStep({
     name: 'Flow A.4 Hard release gate',
     command: 'npm',
     args: ['run', '--silent', 'validate:master'],
