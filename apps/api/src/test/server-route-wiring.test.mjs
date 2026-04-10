@@ -268,6 +268,51 @@ test('custom field schema routes enforce admin guard and forward payloads', asyn
   await close(server)
 })
 
+test('custom field schema routes keep read access for advisor/readonly but enforce admin-only mutations', async () => {
+  for (const role of ['advisor', 'readonly']) {
+    const fakeUser = { id: `${role}-u1`, firmId: 'f1', role }
+    const modules = {
+      auth: { requireUser: () => fakeUser },
+      policy: {
+        requireGuard: (user, guard) => {
+          if (guard === 'canManageUsers' && user.role !== 'admin') {
+            const error = new Error('Missing permission: canManageUsers')
+            error.statusCode = 403
+            throw error
+          }
+        }
+      },
+      profiles: {
+        getCustomFieldSchema: () => ({ fields: [] }),
+        createCustomField: () => ({})
+      }
+    }
+    const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+    const address = await listen(server)
+    const base = `http://${address.address}:${address.port}`
+    const cookie = '__Host-klient-session=token'
+
+    const listRes = await fetch(`${base}/api/profiles/custom-fields/schema`, { headers: { cookie } })
+    assert.equal(listRes.status, 200, `${role} should retain schema read access`)
+
+    const csrfRes = await fetch(`${base}/api/csrf`, { headers: { cookie } })
+    const csrfBody = await csrfRes.json()
+    const createRes = await fetch(`${base}/api/profiles/custom-fields/schema`, {
+      method: 'POST',
+      headers: {
+        cookie,
+        'content-type': 'application/json',
+        'x-csrf-token': csrfBody.csrfToken,
+        origin: base,
+        referer: `${base}/`
+      },
+      body: JSON.stringify({ key: 'blocked_for_role', type: 'text' })
+    })
+    assert.equal(createRes.status, 403, `${role} should be blocked from schema mutation`)
+    await close(server)
+  }
+})
+
 test('POST /api/login handles mfaRequired responses without issuing csrf tokens', async () => {
   const modules = {
     auth: {

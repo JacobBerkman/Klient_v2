@@ -5,7 +5,42 @@ test('@release-blocking admin bootstrap registration and login remain stable', a
   const email = `${seed}@e2e.test`
   const password = 'StrongPass123!'
 
-  await waitForAppReady(page)
+async function signInFromUi(page, email, password) {
+  await page.goto('/')
+  await page.getByRole('textbox', { name: 'Email' }).fill(email)
+  await page.getByRole('textbox', { name: 'Password' }).fill(password)
+  await page.locator('[data-e2e="login-submit"]').click()
+  await expect(page.locator('[data-e2e="auth-status"]')).toContainText('Signed in successfully.')
+  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+}
+
+async function inviteAndAcceptAdvisor(page, testInfo, label = 'advisor') {
+  const seed = uniqueSeed(testInfo, label)
+  const email = `${seed}@e2e.test`
+  const password = 'StrongPass123!'
+  const inviteResponse = await page.request.post('/api/invites', {
+    data: { email, role: 'advisor' }
+  })
+  expect(inviteResponse.status()).toBe(201)
+  const invite = await inviteResponse.json()
+  const acceptResponse = await page.request.post('/api/invites/accept', {
+    data: {
+      token: invite.token,
+      firstName: 'Ops',
+      lastName: 'Advisor',
+      password
+    }
+  })
+  expect(acceptResponse.ok()).toBeTruthy()
+  return { email, password }
+}
+
+test('admin bootstrap registration and login remain stable', async ({ page }, testInfo) => {
+  const seed = uniqueSeed(testInfo, 'bootstrap')
+  const email = `${seed}@e2e.test`
+  const password = 'StrongPass123!'
+
+  await page.goto('/')
   await page.locator('#register-form input[name="firmName"]').fill(`Bootstrap Firm ${seed}`)
   await page.locator('#register-form input[name="firstName"]').fill('Bootstrap')
   await page.locator('#register-form input[name="lastName"]').fill('Admin')
@@ -156,8 +191,38 @@ test('custom-field schema CRUD supports profile usage paths', async ({ page, see
   expect(deleteResponse.ok()).toBeTruthy()
 })
 
-test('@release-blocking portal draft then submit lifecycle is stable', async ({ page, seededRunId }) => {
-  const { email, password } = await registerAdminViaApi(page, seededRunId, 'portal')
+test('admin-to-operator custom-field workflow preserves readonly UI and server RBAC enforcement', async ({ page }, testInfo) => {
+  const { email, password } = await registerAdmin(page, testInfo, 'admin-operator')
+  await signInFromUi(page, email, password)
+  const fieldKey = `workflow_field_${Date.now()}`
+  const createResponse = await page.request.post('/api/profiles/custom-fields/schema', {
+    data: {
+      key: fieldKey,
+      type: 'number',
+      label: 'Workflow Score',
+      metadata: { group: 'workflow' }
+    }
+  })
+  expect(createResponse.status()).toBe(201)
+
+  const advisorCredentials = await inviteAndAcceptAdvisor(page, testInfo, 'operator')
+  await page.request.post('/api/logout')
+  await signInFromUi(page, advisorCredentials.email, advisorCredentials.password)
+
+  await page.getByRole('button', { name: 'Custom Fields' }).click()
+  await expect(page.getByRole('heading', { name: 'Custom Field Schema' })).toBeVisible()
+  await expect(page.getByText('Advisor role is read-only for schema changes')).toBeVisible()
+  await expect(page.locator('#custom-field-create-form button[type="submit"]')).toBeDisabled()
+  await expect(page.getByText(fieldKey)).toBeVisible()
+
+  const blockedCreateResponse = await page.request.post('/api/profiles/custom-fields/schema', {
+    data: { key: `blocked_${Date.now()}`, type: 'text' }
+  })
+  expect(blockedCreateResponse.status()).toBe(403)
+})
+
+test('portal draft then submit lifecycle is stable', async ({ page }, testInfo) => {
+  const { email, password } = await registerAdmin(page, testInfo, 'portal')
   await signInFromUi(page, email, password)
 
   const profileResponse = await page.request.post('/api/profiles', {
