@@ -65,6 +65,9 @@ Required gate summaries:
 - `security-summary.json`
 - `e2e-summary.json`
 
+E2E hard requirement:
+- The Playwright JSON report referenced by `e2e-summary.json` must exist, parse as valid JSON, and contain at least one collected suite/spec title; otherwise the E2E gate is failed and GO/NO-GO preflight must stop.
+
 Required manifest + approval artifacts:
 - `manifest.json`
 - `approval-bundle/`
