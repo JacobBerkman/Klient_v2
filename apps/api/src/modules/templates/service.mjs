@@ -14,7 +14,11 @@ const TEMPLATE_VALIDATION_MESSAGES = {
   required_pdf_field: 'PDF field is required.',
   required_source_path: 'Source path is required.',
   duplicate_pdf_field: 'PDF field is mapped more than once.',
-  required_repeater_path: 'Repeater path is required for array selector source paths.'
+  required_repeater_path: 'Repeater path is required for array selector source paths.',
+  expression_operator_assignment: 'Expression appears to use assignment (=) instead of equality.',
+  expression_operator_textual_logic: 'Expression uses textual logical operators; use && or ||.',
+  expression_unbalanced_parentheses: 'Expression has unbalanced parentheses.',
+  expression_incomplete_ternary: 'Expression ternary appears incomplete.'
 }
 
 function normalizePublishPreflightIssue(issue = {}, index = 0) {
@@ -36,6 +40,14 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
     errorMessage: TEMPLATE_VALIDATION_MESSAGES[code] || message,
     severity: 'error',
     blocking: true,
+    ...(Array.isArray(sourceMeta.suggestedSourcePaths) && sourceMeta.suggestedSourcePaths.length
+      ? { suggestedSourcePaths: sourceMeta.suggestedSourcePaths }
+      : {}),
+    action: {
+      field: field || sourceMeta.fieldKey || 'mapping',
+      suggestion: String(sourceMeta.suggestion || ''),
+      ...(sourceMeta.operator ? { operator: sourceMeta.operator } : {})
+    },
     ...(rowId ? { rowId } : {}),
     meta: {
       ...sourceMeta,

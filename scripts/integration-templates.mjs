@@ -22,7 +22,6 @@ try {
     headers,
     body: JSON.stringify({ mappings: [{ key: 'client.address.city', source: 'profile.address.city' }] })
   })
-
   const guardedPublishError = await context.requestExpectErrorAs(
     'admin',
     `/api/templates/${template.id}/publish`,
@@ -37,6 +36,55 @@ try {
     },
     400
   )
+
+  const previewProfile = await context.requestAs('admin', '/api/profiles', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ kind: 'client', firstName: 'Template', lastName: 'Preview', email: `preview-${Date.now()}@demo.test` })
+  })
+  const previewFormTemplate = await context.requestAs('admin', '/api/forms/templates', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ name: 'Template Mapping Assist Form', sections: [{ key: 'goal', label: 'Goal', type: 'text' }] })
+  })
+  const previewSubmission = await context.requestAs('admin', '/api/forms/submissions', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      clientId: previewProfile.id,
+      templateId: previewFormTemplate.id,
+      status: 'submitted',
+      data: { goal: 'Assist mapping suggestions' }
+    })
+  })
+
+  await context.requestAs('admin', `/api/templates/${template.id}/mappings`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      mappings: [{ pdfField: 'client_name', sourcePath: 'profile.first_name_typo' }],
+      requiredPdfFields: ['client_name']
+    })
+  })
+  const suggestionPreview = await context.requestAs('admin', `/api/templates/${template.id}/mappings/preview`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ clientId: previewProfile.id, submissionId: previewSubmission.id })
+  })
+  const suggestedPath = suggestionPreview.issues?.[0]?.suggestedSourcePaths?.[0]?.path || 'profile.firstName'
+  const suggestedMappingsUpdate = await context.requestAs('admin', `/api/templates/${template.id}/mappings`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({
+      mappings: [{ pdfField: 'client_name', sourcePath: suggestedPath }],
+      requiredPdfFields: ['client_name']
+    })
+  })
+  const preflightSuccess = await context.requestAs('admin', `/api/templates/${template.id}/mappings/preview`, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ clientId: previewProfile.id, submissionId: previewSubmission.id })
+  })
 
   const published = await context.requestAs('admin', `/api/templates/${template.id}/publish`, {
     method: 'POST',
@@ -61,6 +109,11 @@ try {
   const templates = await context.requestAs('admin', '/api/templates', { headers })
 
   assert(mapped.mappings.length === 1, 'Template mappings update failed')
+  assert(suggestionPreview.issues?.[0]?.code === 'unknown_source_path', 'Suggestion preview should flag unknown source path')
+  assert(Array.isArray(suggestionPreview.issues?.[0]?.suggestedSourcePaths), 'Suggestion preview should include suggested source paths')
+  assert(suggestionPreview.issues?.[0]?.action?.field === 'sourcePath', 'Suggestion preview should include actionable issue metadata')
+  assert(suggestedMappingsUpdate.mappings?.[0]?.sourcePath === suggestedPath, 'Suggestion-assisted mapping update failed')
+  assert(!Array.isArray(preflightSuccess.issues) || preflightSuccess.issues.length === 0, 'Publish preflight should pass after suggestion-assisted mapping update')
   assert(guardedPublishError.error?.code === 'SCHEMA_VALIDATION_FAILED', 'Publish guard should reject unknown mapping path')
   assert(Array.isArray(guardedPublishError.error?.details?.issues), 'Publish guard should return detailed issues array')
   assert(guardedPublishError.error?.details?.issues?.[0]?.code === 'unknown_source_path', 'Publish guard issue code mismatch')
@@ -142,7 +195,8 @@ try {
         templateId: template.id,
         status: published.status,
         versionCount: versions.length,
-        readonlyVersionCount: readonlyVersions.length
+        readonlyVersionCount: readonlyVersions.length,
+        preflightSuccess: !Array.isArray(preflightSuccess.issues) || preflightSuccess.issues.length === 0
       },
       null,
       2

@@ -148,6 +148,19 @@ function toIsoTimestamp(dateValue) {
   return new Date(dateValue).toISOString()
 }
 
+function buildFailureMessage({ failureError, failedStep }) {
+  const defaultMessage = String(failureError?.message || failureError)
+  if (!failedStep || failedStep.name !== 'E2E browser checks') {
+    return defaultMessage
+  }
+
+  const evidenceLocation = failedStep.evidenceFile || resolve(defaultEvidenceDir, 'e2e-summary.json')
+  const remediation =
+    'Remediation hints: run `npx playwright install --with-deps chromium`, confirm Chromium is available, and rerun `npm run test:e2e`.'
+
+  return `${defaultMessage}\nE2E browser checks failed. ${remediation}\nEvidence file: ${evidenceLocation}`
+}
+
 const results = []
 let failure = null
 const startedAt = Date.now()
@@ -202,7 +215,8 @@ if (skipped.length > 0) {
 }
 
 if (failure) {
-  process.stderr.write(`\n❌ ${failure.message}\n`)
+  const failedStep = results[results.length - 1] || null
+  process.stderr.write(`\n❌ ${buildFailureMessage({ failureError: failure, failedStep })}\n`)
   process.exitCode = Number.isInteger(failure.exitCode) ? failure.exitCode : 1
 } else {
   process.stdout.write('\n✅ Hard release gate passed.\n')

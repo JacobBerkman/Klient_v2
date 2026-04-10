@@ -29,6 +29,7 @@ const state = {
   templatePublishPreflightByTemplateId: {},
   templatePreviewSelectionByTemplateId: {},
   templateMappingFilterByTemplateId: {},
+  templateMappingSuggestionsByTemplateId: {},
   templateInspectorFocusRequestByTemplateId: {},
   templateJumpHighlightByTemplateId: {},
   customFieldSchema: {
@@ -2105,6 +2106,37 @@ function mappingAutoMatchScore(sourceLabel = '', candidatePath = '') {
   return tokenScore * 0.75
 }
 
+function bestSourcePathSuggestion({ mapping = {}, knownPathIndex, localIssues = [], serverPreflightIssues = [] }) {
+  const currentPath = String(mapping.sourcePath || '').trim()
+  const sourceLabel = String(mapping.fieldLabel || mapping.pdfField || '').trim()
+  const hasUnknownPathIssue =
+    localIssues.includes('Unknown source path') ||
+    serverPreflightIssues.some((issue) => String(issue.code || '').includes('unknown_source_path'))
+  const isMissingPath = !currentPath
+  if (!isMissingPath && !hasUnknownPathIssue) return null
+
+  const serverSuggestion = serverPreflightIssues
+    .flatMap((issue) => issue?.meta?.suggestedSourcePaths || [])
+    .map((entry) =>
+      typeof entry === 'string'
+        ? { path: entry, score: 0.91, reason: 'Server suggestion' }
+        : { path: String(entry?.path || ''), score: Number(entry?.score || 0.9), reason: 'Server suggestion' }
+    )
+    .find((entry) => entry.path)
+  if (serverSuggestion && (!currentPath || currentPath !== serverSuggestion.path)) return serverSuggestion
+
+  const bestLocal = knownPathIndex.entries
+    .map((candidate) => ({ candidate, score: mappingAutoMatchScore(sourceLabel, candidate.path) }))
+    .sort((a, b) => b.score - a.score)[0]
+  if (!bestLocal || bestLocal.score < 0.8) return null
+  if (currentPath && currentPath === bestLocal.candidate.path) return null
+  return {
+    path: bestLocal.candidate.path,
+    score: bestLocal.score,
+    reason: 'Name similarity'
+  }
+}
+
 function normalizeTransformDraftFromMapping(mapping = {}) {
   const legacyTransform = mapping?.formatter || mapping?.format || ''
   const transformInput = mapping?.transform ?? legacyTransform
@@ -2191,6 +2223,7 @@ async function renderTemplates() {
   if (!state.templateSaveStateByTemplateId) state.templateSaveStateByTemplateId = {}
   if (!state.templateAutosaveTimers) state.templateAutosaveTimers = {}
   if (!state.templateMappingFilterByTemplateId) state.templateMappingFilterByTemplateId = {}
+  if (!state.templateMappingSuggestionsByTemplateId) state.templateMappingSuggestionsByTemplateId = {}
   if (!state.templateInspectorFocusRequestByTemplateId) state.templateInspectorFocusRequestByTemplateId = {}
   if (!state.templateJumpHighlightByTemplateId) state.templateJumpHighlightByTemplateId = {}
 
@@ -2283,10 +2316,33 @@ async function renderTemplates() {
     Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
   const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings || preflightIssues.length > 0
   const templateFilter = state.templateMappingFilterByTemplateId[template?.id] || 'all'
-  const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unmapped', 'preview-warning', 'required-only'])
+  const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unresolved-only', 'unmapped', 'preview-warning', 'required-only'])
   const activeTemplateFilter = allowedTemplateFilters.has(templateFilter) ? templateFilter : 'all'
   if (template && activeTemplateFilter !== templateFilter) state.templateMappingFilterByTemplateId[template.id] = activeTemplateFilter
   const rowJumpHighlight = template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
+  const suggestionDraftByIndex = template ? state.templateMappingSuggestionsByTemplateId[template.id] || {} : {}
+  const suggestionByIndex = new Map()
+  let unresolvedRowsCount = 0
+  draftMappings.forEach((mapping, index) => {
+    const rowIssues = mappingIssuesByIndex.get(index) || []
+    const previewRow = previewRowsByIndex.get(index)
+    const rowId = String(previewRow?.rowId || '').trim()
+    const serverPreflightIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
+    const unresolved = !String(mapping.sourcePath || '').trim() || rowIssues.includes('Unknown source path') || serverPreflightIssues.length > 0
+    if (unresolved) unresolvedRowsCount += 1
+    const persistedSuggestion = suggestionDraftByIndex[index]
+    if (persistedSuggestion?.path) {
+      suggestionByIndex.set(index, persistedSuggestion)
+      return
+    }
+    const computed = bestSourcePathSuggestion({
+      mapping,
+      knownPathIndex,
+      localIssues: rowIssues,
+      serverPreflightIssues
+    })
+    if (computed) suggestionByIndex.set(index, computed)
+  })
 
   const selectedRowIndex = Number.isInteger(state.templateInspector?.[template?.id]?.rowIndex)
     ? state.templateInspector[template.id].rowIndex
@@ -2395,6 +2451,9 @@ async function renderTemplates() {
         <div class="row gap-sm wrap">
           <button id="add-mapping-row" class="tiny">Add Mapping</button>
           <button id="save-mappings" class="tiny">Save Now</button>
+          <button id="suggest-source-paths" class="tiny secondary">Suggest source paths</button>
+          <button id="apply-suggested-mappings" class="tiny secondary">Apply suggestions</button>
+          <button id="filter-unresolved-rows" class="tiny secondary">Filter unresolved</button>
           <button id="auto-map-similar" class="tiny secondary">Auto-map similar names</button>
           <button id="clear-unresolved-rows" class="tiny secondary">Clear unresolved rows</button>
         </div>
@@ -2402,6 +2461,7 @@ async function renderTemplates() {
           ${[
             { value: 'all', label: `All (${draftMappings.length})` },
             { value: 'needs-fix', label: `Needs fix (${draftMappings.filter((_, index) => (mappingIssuesByIndex.get(index) || []).length > 0 || preflightIssues.some((issue) => Number(issue.rowIndex) === index)).length})` },
+            { value: 'unresolved-only', label: `Unresolved only (${unresolvedRowsCount})` },
             { value: 'unmapped', label: `Unmapped (${draftMappings.filter((mapping) => !String(mapping.pdfField || '').trim()).length})` },
             { value: 'preview-warning', label: `Preview warning (${draftMappings.filter((_, index) => previewWarningRows.has(index) || previewIssueRows.has(index)).length})` },
             { value: 'required-only', label: `Required only (${draftMappings.filter((mapping) => mapping.required === true).length})` }
@@ -2412,7 +2472,7 @@ async function renderTemplates() {
             )
             .join('')}
         </div>
-        <table><thead><tr><th>#</th><th>State</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Confidence</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
+        <table><thead><tr><th>#</th><th>State</th><th>PDF Field</th><th>Source Path</th><th>Suggested</th><th>Label</th><th>Confidence</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
           ${draftMappings
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
@@ -2421,9 +2481,11 @@ async function renderTemplates() {
               const rowId = String(previewRow?.rowId || '').trim()
               const serverPreflightIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
               const isUnmapped = !String(mapping.pdfField || '').trim()
+              const isUnresolved = !String(mapping.sourcePath || '').trim() || issues.includes('Unknown source path') || serverPreflightIssues.length > 0
               const showRow =
                 activeTemplateFilter === 'all' ||
                 (activeTemplateFilter === 'needs-fix' && (issues.length > 0 || serverPreflightIssues.length > 0)) ||
+                (activeTemplateFilter === 'unresolved-only' && isUnresolved) ||
                 (activeTemplateFilter === 'unmapped' && isUnmapped) ||
                 (activeTemplateFilter === 'preview-warning' && hasPreviewWarnings) ||
                 (activeTemplateFilter === 'required-only' && mapping.required === true)
@@ -2433,6 +2495,7 @@ async function renderTemplates() {
               if (index === safeSelectedRowIndex) rowClasses.push('is-selected')
               if (index === rowJumpHighlight) rowClasses.push('is-jumped')
               const confidence = mappingConfidenceBadge(mapping, knownPathIndex)
+              const suggestion = suggestionByIndex.get(index)
               const stateBadge =
                 mapping.enabled === false
                   ? '<span class="badge subtle">Disabled</span>'
@@ -2446,6 +2509,11 @@ async function renderTemplates() {
                 <td>${stateBadge}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
+                <td>${
+                  suggestion
+                    ? `<span class="badge subtle">${escapeHtml(suggestion.path)}</span><div class="muted">${escapeHtml(suggestion.reason || 'Suggested')} (${Math.round(Number(suggestion.score || 0) * 100)}%)</div>`
+                    : '<span class="muted">None</span>'
+                }</td>
                 <td>${escapeHtml(mapping.fieldLabel || '')}</td>
                 <td><span class="badge subtle">${escapeHtml(confidence.label)}</span></td>
                 <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span><div class="muted">Hint: update Source Path using known paths and rerun Save Now.</div>` : '<span class="muted">OK</span>'}</td>
@@ -2454,7 +2522,7 @@ async function renderTemplates() {
                 <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
               </tr>`
             })
-            .join('') || '<tr><td colspan="10" class="muted">No mappings match this filter.</td></tr>'}
+            .join('') || '<tr><td colspan="11" class="muted">No mappings match this filter.</td></tr>'}
         </tbody></table>
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
@@ -2796,32 +2864,102 @@ async function renderTemplates() {
     await rerenderTemplates()
   })
 
-  document.querySelector('#auto-map-similar')?.addEventListener('click', async () => {
+  document.querySelector('#suggest-source-paths')?.addEventListener('click', async () => {
     if (!template) return
+    const suggestions = {}
+    draftMappings.forEach((mapping, index) => {
+      const rowIssues = mappingIssuesByIndex.get(index) || []
+      const previewRow = previewRowsByIndex.get(index)
+      const rowId = String(previewRow?.rowId || '').trim()
+      const serverIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
+      const suggestion = bestSourcePathSuggestion({
+        mapping,
+        knownPathIndex,
+        localIssues: rowIssues,
+        serverPreflightIssues: serverIssues
+      })
+      if (suggestion) suggestions[index] = suggestion
+    })
+    state.templateMappingSuggestionsByTemplateId[template.id] = suggestions
+    setFlash('success', `Suggested source paths for ${Object.keys(suggestions).length} unresolved row(s).`)
+    await rerenderTemplates()
+  })
+
+  document.querySelector('#apply-suggested-mappings')?.addEventListener('click', async () => {
+    if (!template) return
+    const savedSuggestions = state.templateMappingSuggestionsByTemplateId[template.id] || {}
     const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
     let updates = 0
     nextDraft.forEach((mapping, index) => {
-      const currentPath = String(mapping.sourcePath || '').trim()
-      const currentIssues = mappingIssuesByIndex.get(index) || []
-      const needsMapping = !currentPath || currentIssues.includes('Unknown source path')
-      if (!needsMapping) return
-      const sourceLabel = String(mapping.fieldLabel || mapping.pdfField || '').trim()
-      if (!sourceLabel) return
-      const bestMatch = knownPathIndex.entries
-        .map((candidate) => ({ candidate, score: mappingAutoMatchScore(sourceLabel, candidate.path) }))
-        .sort((a, b) => b.score - a.score)[0]
-      if (!bestMatch || bestMatch.score < 0.8) return
-      nextDraft[index] = { ...mapping, sourcePath: bestMatch.candidate.path }
+      const suggestion = savedSuggestions[index] || suggestionByIndex.get(index)
+      if (!suggestion?.path) return
+      const rowIssues = mappingIssuesByIndex.get(index) || []
+      const previewRow = previewRowsByIndex.get(index)
+      const rowId = String(previewRow?.rowId || '').trim()
+      const serverIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
+      const unresolved = !String(mapping.sourcePath || '').trim() || rowIssues.includes('Unknown source path') || serverIssues.length > 0
+      if (!unresolved) return
+      if (String(mapping.sourcePath || '').trim() === suggestion.path) return
+      nextDraft[index] = { ...mapping, sourcePath: suggestion.path }
+      updates += 1
+    })
+    if (!updates) {
+      setFlash('error', 'No unresolved rows were updated from suggestions.')
+      return
+    }
+    state.templateMappingDrafts[template.id] = nextDraft
+    state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
+    state.templateWizardStepByTemplateId[template.id] = 'mapping'
+    setFlash('success', `Applied suggestions to ${updates} unresolved row(s).`)
+    await rerenderTemplates()
+  })
+
+  document.querySelector('#filter-unresolved-rows')?.addEventListener('click', async () => {
+    if (!template) return
+    state.templateMappingFilterByTemplateId[template.id] = 'unresolved-only'
+    await rerenderTemplates()
+  })
+
+  document.querySelector('#auto-map-similar')?.addEventListener('click', async () => {
+    if (!template) return
+    const suggestions = {}
+    draftMappings.forEach((mapping, index) => {
+      const rowIssues = mappingIssuesByIndex.get(index) || []
+      const previewRow = previewRowsByIndex.get(index)
+      const rowId = String(previewRow?.rowId || '').trim()
+      const serverIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
+      const suggestion = bestSourcePathSuggestion({
+        mapping,
+        knownPathIndex,
+        localIssues: rowIssues,
+        serverPreflightIssues: serverIssues
+      })
+      if (suggestion) suggestions[index] = suggestion
+    })
+    const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+    let updates = 0
+    nextDraft.forEach((mapping, index) => {
+      const suggestion = suggestions[index]
+      if (!suggestion?.path) return
+      const rowIssues = mappingIssuesByIndex.get(index) || []
+      const previewRow = previewRowsByIndex.get(index)
+      const rowId = String(previewRow?.rowId || '').trim()
+      const serverIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
+      const unresolved = !String(mapping.sourcePath || '').trim() || rowIssues.includes('Unknown source path') || serverIssues.length > 0
+      if (!unresolved) return
+      if (String(mapping.sourcePath || '').trim() === suggestion.path) return
+      nextDraft[index] = { ...mapping, sourcePath: suggestion.path }
       updates += 1
     })
     if (!updates) {
       setFlash('error', 'No unresolved rows matched known source paths by name similarity.')
       return
     }
+    state.templateMappingSuggestionsByTemplateId[template.id] = suggestions
     state.templateMappingDrafts[template.id] = nextDraft
     state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
     state.templateWizardStepByTemplateId[template.id] = 'mapping'
-    setFlash('success', `Auto-mapped ${updates} row(s) by name similarity.`)
+    setFlash('success', `Auto-mapped ${updates} row(s) from suggestions.`)
     await rerenderTemplates()
   })
 
@@ -4017,8 +4155,25 @@ async function renderCustomFieldsAdmin() {
         <p class="muted compact">Metadata is optional JSON object used for grouping and UI hints.</p>
         <p class="field-error-text" data-field-error="key" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
+        <p class="field-error-text" data-field-error="required" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
         <button type="submit" ${canManage ? '' : 'disabled'}>Create Field</button>
+        <p class="muted compact" data-form-feedback aria-live="polite"></p>
+      </form>
+    </section>
+    <section class="item">
+      <h3>Bulk Edit Existing Fields</h3>
+      <form id="custom-field-bulk-form">
+        <p class="muted compact">Paste JSON array or tab-separated rows (key, type, label, required, metadata).</p>
+        <textarea
+          name="bulkRows"
+          rows="8"
+          placeholder='[{"key":"risk_tolerance","type":"number","label":"Risk Tolerance","required":false,"metadata":{"group":"planning"}}]'
+          ${canManage ? '' : 'disabled'}
+        ></textarea>
+        <div class="actions-row">
+          <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Apply + Save Rows</button>
+        </div>
         <p class="muted compact" data-form-feedback aria-live="polite"></p>
       </form>
     </section>
@@ -4037,6 +4192,7 @@ async function renderCustomFieldsAdmin() {
             <td><code>${escapeHtml(JSON.stringify(field.metadata || {}))}</code></td>
             <td>
               <form data-custom-field-update="${escapeHtml(field.key)}" class="grid two">
+                <input type="hidden" name="key" value="${escapeHtml(field.key)}" />
                 <input name="label" value="${escapeHtml(field.label || '')}" placeholder="Label" ${canManage ? '' : 'disabled'} />
                 <select name="type" ${canManage ? '' : 'disabled'}>
                   <option value="text" ${field.type === 'text' ? 'selected' : ''}>text</option>
@@ -4047,7 +4203,9 @@ async function renderCustomFieldsAdmin() {
                 <label><input name="required" type="checkbox" ${field.required ? 'checked' : ''} ${canManage ? '' : 'disabled'} /> Required</label>
                 <input name="metadata" value="${escapeHtml(JSON.stringify(field.metadata || {}))}" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
                 <p class="muted compact" data-type-help>Field type help: ${escapeHtml(customFieldTypeHelpText(field.type))}</p>
+                <p class="field-error-text" data-field-error="key" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
+                <p class="field-error-text" data-field-error="required" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
                 <div class="actions-row">
                   <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Update</button>
@@ -4067,13 +4225,14 @@ async function renderCustomFieldsAdmin() {
 
   const markFieldError = (form, fieldName, message) => {
     const field = form?.elements?.namedItem?.(fieldName)
-    if (!field) return
-    field.setAttribute('aria-invalid', message ? 'true' : 'false')
+    if (field?.setAttribute) field.setAttribute('aria-invalid', message ? 'true' : 'false')
     const errorEl = form?.querySelector(`[data-field-error="${fieldName}"]`)
     if (errorEl) errorEl.textContent = message || ''
   }
   const applyFieldErrors = (form, fieldErrors = {}) => {
-    ;['key', 'type', 'metadata'].forEach((fieldName) => markFieldError(form, fieldName, fieldErrors[fieldName] || ''))
+    ;['key', 'type', 'required', 'metadata'].forEach((fieldName) =>
+      markFieldError(form, fieldName, fieldErrors[fieldName] || '')
+    )
   }
   const updateTypeHelp = (form) => {
     const type = String(form?.elements?.namedItem?.('type')?.value || 'text').toLowerCase()
@@ -4094,6 +4253,16 @@ async function renderCustomFieldsAdmin() {
     }
   }
   const validateCustomFieldInput = (rawInput, { requireKey = true } = {}) => {
+    const normalizeRequiredInput = (value) => {
+      if (typeof value === 'boolean') return { value, error: '' }
+      if (value == null) return { value: false, error: '' }
+      const normalized = String(value).trim().toLowerCase()
+      if (!normalized) return { value: false, error: '' }
+      if (['true', '1', 'yes', 'y'].includes(normalized)) return { value: true, error: '' }
+      if (['false', '0', 'no', 'n'].includes(normalized)) return { value: false, error: '' }
+      return { value: false, error: 'Required must be a boolean (true/false).' }
+    }
+    const requiredResult = normalizeRequiredInput(rawInput?.required)
     const payload = {
       key: String(rawInput?.key || '')
         .trim()
@@ -4102,17 +4271,42 @@ async function renderCustomFieldsAdmin() {
         .trim()
         .toLowerCase(),
       label: String(rawInput?.label || '').trim(),
-      required: Boolean(rawInput?.required)
+      required: requiredResult.value
     }
     const fieldErrors = {}
     if (requireKey && !payload.key) fieldErrors.key = 'Key is required (letters, numbers, underscore).'
     if (!new Set(['text', 'number', 'boolean', 'date']).has(payload.type)) {
       fieldErrors.type = 'Type must be one of: text, number, boolean, date.'
     }
+    if (requiredResult.error) fieldErrors.required = requiredResult.error
     const metadataResult = parseMetadataJson(rawInput?.metadata)
     if (metadataResult.error) fieldErrors.metadata = metadataResult.error
     payload.metadata = metadataResult.value
     return { payload, fieldErrors }
+  }
+  const parseBulkRows = (rawText = '') => {
+    const trimmed = String(rawText || '').trim()
+    if (!trimmed) return { rows: [], parseError: 'Paste at least one row to bulk update.' }
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        if (!Array.isArray(parsed)) {
+          return { rows: [], parseError: 'Bulk payload must be a JSON array when using JSON input.' }
+        }
+        return { rows: parsed, parseError: '' }
+      } catch {
+        return { rows: [], parseError: 'Bulk JSON payload is invalid.' }
+      }
+    }
+    const lines = trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    const rows = lines.map((line) => {
+      const [key = '', type = '', label = '', required = '', metadata = ''] = line.split('\t')
+      return { key, type, label, required, metadata }
+    })
+    return { rows, parseError: '' }
   }
 
   document.querySelector('#custom-field-create-form')?.addEventListener('submit', async (event) => {
@@ -4163,6 +4357,84 @@ async function renderCustomFieldsAdmin() {
     updateTypeHelp(createForm)
     createForm.elements?.namedItem?.('type')?.addEventListener('change', () => updateTypeHelp(createForm))
   }
+  document.querySelector('#custom-field-bulk-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    if (!canManage) return
+    const form = event.currentTarget
+    clearFormFeedback(form)
+    document.querySelectorAll('[data-custom-field-update]').forEach((updateForm) => applyFieldErrors(updateForm, {}))
+    const formData = new FormData(form)
+    const parsed = parseBulkRows(formData.get('bulkRows'))
+    if (parsed.parseError) {
+      setFormFeedback(form, parsed.parseError)
+      return
+    }
+    const knownKeys = new Set((state.customFieldSchema.fields || []).map((field) => field.key))
+    const preparedRows = parsed.rows.map((row) => {
+      const validation = validateCustomFieldInput(row, { requireKey: true })
+      if (validation.payload.key && !knownKeys.has(validation.payload.key)) {
+        validation.fieldErrors.key = `Field ${validation.payload.key} was not found in current schema.`
+      }
+      return { payload: validation.payload, fieldErrors: validation.fieldErrors }
+    })
+    const hasClientErrors = preparedRows.some((row) => Object.keys(row.fieldErrors).length)
+    preparedRows.forEach((row) => {
+      const targetForm = Array.from(document.querySelectorAll('[data-custom-field-update]')).find(
+        (entry) => entry.dataset.customFieldUpdate === row.payload.key
+      )
+      if (targetForm) applyFieldErrors(targetForm, row.fieldErrors)
+    })
+    if (hasClientErrors) {
+      setFormFeedback(form, 'Bulk edit contains validation errors. Fix highlighted rows and retry.')
+      return
+    }
+    const previousSchema = structuredClone(state.customFieldSchema)
+    state.customFieldSchema.fields = (state.customFieldSchema.fields || []).map((field) => {
+      const row = preparedRows.find((entry) => entry.payload.key === field.key)
+      return row ? { ...field, ...row.payload, key: field.key } : field
+    })
+    state.customFieldSchema.updatedAt = new Date().toISOString()
+    setFlash('success', `Saving ${preparedRows.length} custom field updates…`)
+    await renderCustomFieldsAdmin()
+    const serverErrors = []
+    for (const row of preparedRows) {
+      try {
+        await request(routes.profileCustomFieldSchemaField(row.payload.key), {
+          method: 'PATCH',
+          body: JSON.stringify({
+            type: row.payload.type,
+            label: row.payload.label,
+            required: row.payload.required,
+            metadata: row.payload.metadata
+          })
+        })
+      } catch (error) {
+        serverErrors.push({ key: row.payload.key, fieldErrors: error?.details?.fieldErrors || {}, error })
+      }
+    }
+    if (serverErrors.length) {
+      state.customFieldSchema = previousSchema
+      setFlash('error', normalizeApiError(serverErrors[0].error, 'bulk update custom fields'))
+      await renderCustomFieldsAdmin()
+      serverErrors.forEach((entry) => {
+        const targetForm = Array.from(document.querySelectorAll('[data-custom-field-update]')).find(
+          (rowForm) => rowForm.dataset.customFieldUpdate === entry.key
+        )
+        if (targetForm) applyFieldErrors(targetForm, entry.fieldErrors)
+      })
+      const rerenderedBulkForm = document.querySelector('#custom-field-bulk-form')
+      if (rerenderedBulkForm) {
+        const bulkRowsInput = rerenderedBulkForm.elements?.namedItem?.('bulkRows')
+        if (bulkRowsInput) bulkRowsInput.value = String(formData.get('bulkRows') || '')
+        setFormFeedback(rerenderedBulkForm, 'Some rows failed validation on save. Review inline errors and retry.')
+      }
+      return
+    }
+    state.customFieldSchema.fetched = false
+    await refreshSelects()
+    setFlash('success', `Updated ${preparedRows.length} custom fields.`)
+    await renderCustomFieldsAdmin()
+  })
 
   document.querySelectorAll('[data-custom-field-update]').forEach((form) => {
     updateTypeHelp(form)
