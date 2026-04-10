@@ -947,7 +947,13 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/users' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadUsers')
-        const result = modules.firmsUsers.listUsers(user)
+        const query = {
+          mode: url.searchParams.get('mode') || '',
+          search: url.searchParams.get('search') || '',
+          limit: url.searchParams.get('limit') || '',
+          includeSelf: url.searchParams.get('includeSelf') || ''
+        }
+        const result = modules.firmsUsers.listUsers(user, query)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }

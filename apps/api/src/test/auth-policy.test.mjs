@@ -194,6 +194,33 @@ test('session rotation invalidates prior session token during privilege transiti
   assert.equal(store.requireUser(rotated.token).id, rotated.user.id)
 })
 
+test('user lookup mode is constrained to same-firm members and supports search', async () => {
+  const { store } = await loadStoreWithIsolatedState()
+  const adminSession = store.login({ email: 'admin@demo.test', password: 'ChangeMe123!' })
+  const admin = store.requireUser(adminSession.token)
+  const advisorInvite = store.inviteUser(admin, { email: 'lookup-advisor@example.com', role: 'advisor' })
+  store.acceptInvite({
+    token: advisorInvite.token,
+    firstName: 'Lookup',
+    lastName: 'Advisor',
+    password: 'LookupPass123!'
+  })
+  store.register({
+    firmName: 'Other Firm',
+    firstName: 'Other',
+    lastName: 'Member',
+    email: 'other-firm@example.com',
+    password: 'OtherFirmPass123!'
+  })
+
+  const lookup = store.listUsers(admin, { mode: 'lookup', search: 'lookup', includeSelf: false, limit: 10 })
+  assert.equal(lookup.mode, 'lookup')
+  assert.equal(Array.isArray(lookup.users), true)
+  assert.ok(lookup.users.every((entry) => entry.email.includes('lookup')))
+  assert.ok(lookup.users.every((entry) => entry.id !== admin.id))
+  assert.ok(lookup.users.every((entry) => entry.email !== 'other-firm@example.com'))
+})
+
 test('ops and export policy guards enforce production privilege boundaries', async () => {
   const policy = await loadPolicy()
 
