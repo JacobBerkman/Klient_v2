@@ -94,6 +94,11 @@ test('template builder auto-build + wizard flow keeps upload and publish-preflig
 test('template versioning and publish preflight controls remain wired in builder workflow', () => {
   assert.match(appJs, /routes\.documentTemplateMappingsPreview\(template\.id\)/)
   assert.match(appJs, /state\.templatePublishPreflightByTemplateId\[template\.id\]/)
+  assert.match(appJs, /id="auto-map-similar"/)
+  assert.match(appJs, /id="clear-unresolved-rows"/)
+  assert.match(appJs, /'required-only'/)
+  assert.match(appJs, /data-preflight-rowid="\$\{escapeHtml\(rowId\)\}"/)
+  assert.match(appJs, /const selectTemplateRowFromIssue = async \(/)
   assert.match(appJs, /routes\.documentTemplatePublish\(template\.id\)/)
   assert.match(appJs, /routes\.documentTemplateCompare\(template\.id, \{ baseVersion, targetVersion \}\)/)
   assert.match(appJs, /routes\.documentTemplateRevert\(template\.id\)/)
