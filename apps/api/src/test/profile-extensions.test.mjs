@@ -129,6 +129,28 @@ test('custom field schema validation payload includes mappable field errors for 
   assert.equal(metadataError.details.fieldErrors.metadata, 'Metadata must be a JSON object.')
 })
 
+test('custom field schema persists required flag changes and normalizes truthy/falsy inputs', async () => {
+  const store = await loadStore()
+  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+
+  const created = store.createProfileCustomField(admin, {
+    key: 'household_reviewed',
+    type: 'boolean',
+    required: 'yes'
+  })
+  assert.equal(created.required, true)
+
+  const updated = store.updateProfileCustomField(admin, 'household_reviewed', {
+    required: 0
+  })
+  assert.equal(updated.required, false)
+
+  const schema = store.getProfileCustomFieldSchema(admin)
+  const persisted = schema.fields.find((field) => field.key === 'household_reviewed')
+  assert.ok(persisted)
+  assert.equal(persisted.required, false)
+})
+
 test('custom field schema store blocks readonly users from schema mutation', async () => {
   const store = await loadStore()
   const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }

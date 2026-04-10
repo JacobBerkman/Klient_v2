@@ -4017,8 +4017,25 @@ async function renderCustomFieldsAdmin() {
         <p class="muted compact">Metadata is optional JSON object used for grouping and UI hints.</p>
         <p class="field-error-text" data-field-error="key" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
+        <p class="field-error-text" data-field-error="required" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
         <button type="submit" ${canManage ? '' : 'disabled'}>Create Field</button>
+        <p class="muted compact" data-form-feedback aria-live="polite"></p>
+      </form>
+    </section>
+    <section class="item">
+      <h3>Bulk Edit Existing Fields</h3>
+      <form id="custom-field-bulk-form">
+        <p class="muted compact">Paste JSON array or tab-separated rows (key, type, label, required, metadata).</p>
+        <textarea
+          name="bulkRows"
+          rows="8"
+          placeholder='[{"key":"risk_tolerance","type":"number","label":"Risk Tolerance","required":false,"metadata":{"group":"planning"}}]'
+          ${canManage ? '' : 'disabled'}
+        ></textarea>
+        <div class="actions-row">
+          <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Apply + Save Rows</button>
+        </div>
         <p class="muted compact" data-form-feedback aria-live="polite"></p>
       </form>
     </section>
@@ -4037,6 +4054,7 @@ async function renderCustomFieldsAdmin() {
             <td><code>${escapeHtml(JSON.stringify(field.metadata || {}))}</code></td>
             <td>
               <form data-custom-field-update="${escapeHtml(field.key)}" class="grid two">
+                <input type="hidden" name="key" value="${escapeHtml(field.key)}" />
                 <input name="label" value="${escapeHtml(field.label || '')}" placeholder="Label" ${canManage ? '' : 'disabled'} />
                 <select name="type" ${canManage ? '' : 'disabled'}>
                   <option value="text" ${field.type === 'text' ? 'selected' : ''}>text</option>
@@ -4047,7 +4065,9 @@ async function renderCustomFieldsAdmin() {
                 <label><input name="required" type="checkbox" ${field.required ? 'checked' : ''} ${canManage ? '' : 'disabled'} /> Required</label>
                 <input name="metadata" value="${escapeHtml(JSON.stringify(field.metadata || {}))}" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
                 <p class="muted compact" data-type-help>Field type help: ${escapeHtml(customFieldTypeHelpText(field.type))}</p>
+                <p class="field-error-text" data-field-error="key" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
+                <p class="field-error-text" data-field-error="required" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
                 <div class="actions-row">
                   <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Update</button>
@@ -4067,13 +4087,14 @@ async function renderCustomFieldsAdmin() {
 
   const markFieldError = (form, fieldName, message) => {
     const field = form?.elements?.namedItem?.(fieldName)
-    if (!field) return
-    field.setAttribute('aria-invalid', message ? 'true' : 'false')
+    if (field?.setAttribute) field.setAttribute('aria-invalid', message ? 'true' : 'false')
     const errorEl = form?.querySelector(`[data-field-error="${fieldName}"]`)
     if (errorEl) errorEl.textContent = message || ''
   }
   const applyFieldErrors = (form, fieldErrors = {}) => {
-    ;['key', 'type', 'metadata'].forEach((fieldName) => markFieldError(form, fieldName, fieldErrors[fieldName] || ''))
+    ;['key', 'type', 'required', 'metadata'].forEach((fieldName) =>
+      markFieldError(form, fieldName, fieldErrors[fieldName] || '')
+    )
   }
   const updateTypeHelp = (form) => {
     const type = String(form?.elements?.namedItem?.('type')?.value || 'text').toLowerCase()
@@ -4094,6 +4115,16 @@ async function renderCustomFieldsAdmin() {
     }
   }
   const validateCustomFieldInput = (rawInput, { requireKey = true } = {}) => {
+    const normalizeRequiredInput = (value) => {
+      if (typeof value === 'boolean') return { value, error: '' }
+      if (value == null) return { value: false, error: '' }
+      const normalized = String(value).trim().toLowerCase()
+      if (!normalized) return { value: false, error: '' }
+      if (['true', '1', 'yes', 'y'].includes(normalized)) return { value: true, error: '' }
+      if (['false', '0', 'no', 'n'].includes(normalized)) return { value: false, error: '' }
+      return { value: false, error: 'Required must be a boolean (true/false).' }
+    }
+    const requiredResult = normalizeRequiredInput(rawInput?.required)
     const payload = {
       key: String(rawInput?.key || '')
         .trim()
@@ -4102,17 +4133,42 @@ async function renderCustomFieldsAdmin() {
         .trim()
         .toLowerCase(),
       label: String(rawInput?.label || '').trim(),
-      required: Boolean(rawInput?.required)
+      required: requiredResult.value
     }
     const fieldErrors = {}
     if (requireKey && !payload.key) fieldErrors.key = 'Key is required (letters, numbers, underscore).'
     if (!new Set(['text', 'number', 'boolean', 'date']).has(payload.type)) {
       fieldErrors.type = 'Type must be one of: text, number, boolean, date.'
     }
+    if (requiredResult.error) fieldErrors.required = requiredResult.error
     const metadataResult = parseMetadataJson(rawInput?.metadata)
     if (metadataResult.error) fieldErrors.metadata = metadataResult.error
     payload.metadata = metadataResult.value
     return { payload, fieldErrors }
+  }
+  const parseBulkRows = (rawText = '') => {
+    const trimmed = String(rawText || '').trim()
+    if (!trimmed) return { rows: [], parseError: 'Paste at least one row to bulk update.' }
+    if (trimmed.startsWith('[')) {
+      try {
+        const parsed = JSON.parse(trimmed)
+        if (!Array.isArray(parsed)) {
+          return { rows: [], parseError: 'Bulk payload must be a JSON array when using JSON input.' }
+        }
+        return { rows: parsed, parseError: '' }
+      } catch {
+        return { rows: [], parseError: 'Bulk JSON payload is invalid.' }
+      }
+    }
+    const lines = trimmed
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+    const rows = lines.map((line) => {
+      const [key = '', type = '', label = '', required = '', metadata = ''] = line.split('\t')
+      return { key, type, label, required, metadata }
+    })
+    return { rows, parseError: '' }
   }
 
   document.querySelector('#custom-field-create-form')?.addEventListener('submit', async (event) => {
@@ -4163,6 +4219,84 @@ async function renderCustomFieldsAdmin() {
     updateTypeHelp(createForm)
     createForm.elements?.namedItem?.('type')?.addEventListener('change', () => updateTypeHelp(createForm))
   }
+  document.querySelector('#custom-field-bulk-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    if (!canManage) return
+    const form = event.currentTarget
+    clearFormFeedback(form)
+    document.querySelectorAll('[data-custom-field-update]').forEach((updateForm) => applyFieldErrors(updateForm, {}))
+    const formData = new FormData(form)
+    const parsed = parseBulkRows(formData.get('bulkRows'))
+    if (parsed.parseError) {
+      setFormFeedback(form, parsed.parseError)
+      return
+    }
+    const knownKeys = new Set((state.customFieldSchema.fields || []).map((field) => field.key))
+    const preparedRows = parsed.rows.map((row) => {
+      const validation = validateCustomFieldInput(row, { requireKey: true })
+      if (validation.payload.key && !knownKeys.has(validation.payload.key)) {
+        validation.fieldErrors.key = `Field ${validation.payload.key} was not found in current schema.`
+      }
+      return { payload: validation.payload, fieldErrors: validation.fieldErrors }
+    })
+    const hasClientErrors = preparedRows.some((row) => Object.keys(row.fieldErrors).length)
+    preparedRows.forEach((row) => {
+      const targetForm = Array.from(document.querySelectorAll('[data-custom-field-update]')).find(
+        (entry) => entry.dataset.customFieldUpdate === row.payload.key
+      )
+      if (targetForm) applyFieldErrors(targetForm, row.fieldErrors)
+    })
+    if (hasClientErrors) {
+      setFormFeedback(form, 'Bulk edit contains validation errors. Fix highlighted rows and retry.')
+      return
+    }
+    const previousSchema = structuredClone(state.customFieldSchema)
+    state.customFieldSchema.fields = (state.customFieldSchema.fields || []).map((field) => {
+      const row = preparedRows.find((entry) => entry.payload.key === field.key)
+      return row ? { ...field, ...row.payload, key: field.key } : field
+    })
+    state.customFieldSchema.updatedAt = new Date().toISOString()
+    setFlash('success', `Saving ${preparedRows.length} custom field updates…`)
+    await renderCustomFieldsAdmin()
+    const serverErrors = []
+    for (const row of preparedRows) {
+      try {
+        await request(routes.profileCustomFieldSchemaField(row.payload.key), {
+          method: 'PATCH',
+          body: JSON.stringify({
+            type: row.payload.type,
+            label: row.payload.label,
+            required: row.payload.required,
+            metadata: row.payload.metadata
+          })
+        })
+      } catch (error) {
+        serverErrors.push({ key: row.payload.key, fieldErrors: error?.details?.fieldErrors || {}, error })
+      }
+    }
+    if (serverErrors.length) {
+      state.customFieldSchema = previousSchema
+      setFlash('error', normalizeApiError(serverErrors[0].error, 'bulk update custom fields'))
+      await renderCustomFieldsAdmin()
+      serverErrors.forEach((entry) => {
+        const targetForm = Array.from(document.querySelectorAll('[data-custom-field-update]')).find(
+          (rowForm) => rowForm.dataset.customFieldUpdate === entry.key
+        )
+        if (targetForm) applyFieldErrors(targetForm, entry.fieldErrors)
+      })
+      const rerenderedBulkForm = document.querySelector('#custom-field-bulk-form')
+      if (rerenderedBulkForm) {
+        const bulkRowsInput = rerenderedBulkForm.elements?.namedItem?.('bulkRows')
+        if (bulkRowsInput) bulkRowsInput.value = String(formData.get('bulkRows') || '')
+        setFormFeedback(rerenderedBulkForm, 'Some rows failed validation on save. Review inline errors and retry.')
+      }
+      return
+    }
+    state.customFieldSchema.fetched = false
+    await refreshSelects()
+    setFlash('success', `Updated ${preparedRows.length} custom fields.`)
+    await renderCustomFieldsAdmin()
+  })
 
   document.querySelectorAll('[data-custom-field-update]').forEach((form) => {
     updateTypeHelp(form)
