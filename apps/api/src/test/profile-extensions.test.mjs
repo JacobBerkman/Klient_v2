@@ -92,10 +92,41 @@ test('custom field schema rejects invalid field type payloads', async () => {
   const store = await loadStore()
   const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
 
-  assert.throws(
-    () => store.createProfileCustomField(admin, { key: 'unsupported_field', type: 'object' }),
-    /Custom field type must be one of/
-  )
+  let error
+  try {
+    store.createProfileCustomField(admin, { key: 'unsupported_field', type: 'object' })
+  } catch (caught) {
+    error = caught
+  }
+  assert.ok(error)
+  assert.match(error.message, /Custom field type must be one of/)
+  assert.equal(error.statusCode, 422)
+  assert.equal(error.code, 'CUSTOM_FIELD_VALIDATION')
+  assert.equal(error.details.fieldErrors.type, 'Type must be one of: text, number, boolean, date.')
+})
+
+test('custom field schema validation payload includes mappable field errors for key and metadata', async () => {
+  const store = await loadStore()
+  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  let missingKeyError
+  try {
+    store.createProfileCustomField(admin, { type: 'text' })
+  } catch (caught) {
+    missingKeyError = caught
+  }
+  assert.ok(missingKeyError)
+  assert.equal(missingKeyError.statusCode, 422)
+  assert.equal(missingKeyError.details.fieldErrors.key, 'Key is required.')
+
+  let metadataError
+  try {
+    store.createProfileCustomField(admin, { key: 'bad_metadata', type: 'text', metadata: ['invalid'] })
+  } catch (caught) {
+    metadataError = caught
+  }
+  assert.ok(metadataError)
+  assert.equal(metadataError.statusCode, 422)
+  assert.equal(metadataError.details.fieldErrors.metadata, 'Metadata must be a JSON object.')
 })
 
 test('custom field schema store blocks readonly users from schema mutation', async () => {
