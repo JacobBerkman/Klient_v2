@@ -264,7 +264,6 @@ export async function main() {
       return 0
     }
 
-    const browserInstalled = await hasInstalledPlaywrightBrowser()
     let browserExitCode = 0
     if (browserInstalled) {
       const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
@@ -305,7 +304,7 @@ export async function main() {
           details: {
             suites: {
               uiContract: uiContractSuites,
-              browser: fallbackValidation.suiteNames
+              browser: [browserSuitePattern]
             },
             artifacts: {
               playwrightJsonReport: {
