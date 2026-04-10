@@ -175,6 +175,50 @@ function validateSummaryFiles(evidenceDir, phases) {
   }
 }
 
+function parseBooleanSignal(value) {
+  if (typeof value === 'boolean') return value
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  if (['1', 'true', 'yes', 'y', 'on'].includes(normalized)) return true
+  if (['0', 'false', 'no', 'n', 'off'].includes(normalized)) return false
+  return null
+}
+
+function isReleaseRefEnvironment(env) {
+  const githubRef = String(env.GITHUB_REF || '').trim()
+  const githubRefName = String(env.GITHUB_REF_NAME || '').trim()
+  const gitlabTag = String(env.CI_COMMIT_TAG || '').trim()
+  const gitlabRefName = String(env.CI_COMMIT_REF_NAME || '').trim()
+
+  if (githubRef.startsWith('refs/tags/')) return true
+  if (githubRef.startsWith('refs/heads/release/') || githubRef.startsWith('refs/heads/release-')) return true
+  if (githubRefName.startsWith('release/') || githubRefName.startsWith('release-')) return true
+  if (gitlabTag) return true
+  if (gitlabRefName.startsWith('release/') || gitlabRefName.startsWith('release-')) return true
+  return false
+}
+
+function determineStrictE2EMode(env) {
+  const override = parseBooleanSignal(env.RELEASE_E2E_STRICT_MODE)
+  if (override !== null) return override
+  return isReleaseRefEnvironment(env)
+}
+
+function validateE2ESummary(evidenceDir, { strictMode }) {
+  const e2eSummaryPath = resolve(evidenceDir, 'e2e-summary.json')
+  const e2eSummary = parseJson(e2eSummaryPath, 'E2E summary')
+  const mode = e2eSummary?.executionMode
+  if (mode !== 'browser' && mode !== 'fallback') {
+    fail(`Invalid e2e-summary.json executionMode at ${e2eSummaryPath}. Expected "browser" or "fallback", got ${String(mode)}.`)
+  }
+
+  if (strictMode && mode !== 'browser') {
+    fail(
+      `E2E strict mode is required for release refs, but e2e-summary.json executionMode=${mode}. Re-run with browser mode.`
+    )
+  }
+}
+
 function validateHandoffDoc(handoffFile) {
   if (!handoffFile) {
     fail('Handoff placeholder check requested but no handoff file provided. Use --handoff-file or RELEASE_HANDOFF_DOC.')
@@ -267,6 +311,9 @@ const phasesToValidate =
 
 validateArtifacts(evidenceDir, phasesToValidate)
 validateSummaryFiles(evidenceDir, phasesToValidate)
+if (phasesToValidate.includes('preflight')) {
+  validateE2ESummary(evidenceDir, { strictMode: determineStrictE2EMode(process.env) })
+}
 
 const manifestPath = resolve(evidenceDir, 'manifest.json')
 if (!existsSync(manifestPath)) {

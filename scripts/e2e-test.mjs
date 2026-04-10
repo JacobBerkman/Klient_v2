@@ -8,7 +8,7 @@ import { createTestContext } from './test-harness.mjs'
 
 const uiContractSuites = ['apps/web/public/ui-contract.test.mjs']
 const browserSuitePattern = 'tests/e2e'
-const browserFallbackEnvFlag = 'E2E_ALLOW_MISSING_BROWSER_FALLBACK'
+const executionMode = 'browser'
 
 const evidence = createEvidenceRecorder({
   gate: 'e2e',
@@ -151,6 +151,7 @@ export async function gatePlaywrightReportOrFail({ reportPath, evidenceRecorder 
   const error = new Error(validation.artifact.reason)
   evidenceRecorder.finalize({
     status: 'failed',
+    fields: { executionMode },
     error,
     details: {
       suites: {
@@ -160,6 +161,7 @@ export async function gatePlaywrightReportOrFail({ reportPath, evidenceRecorder 
       artifacts: {
         playwrightJsonReport: validation.artifact
       },
+      downgradeWarnings: [],
       uiContract: uiContractStatus,
       browser: { status: 'failed', exitCode: 0 }
     }
@@ -194,12 +196,14 @@ export async function main() {
       )
       evidence.finalize({
         status: 'failed',
+        fields: { executionMode },
         error,
         details: {
           suites: {
             uiContract: uiContractSuites,
             browser: [browserSuitePattern]
           },
+          downgradeWarnings: [],
           uiContract: { status: 'failed', exitCode: uiContractResult.code }
         }
       })
@@ -242,6 +246,7 @@ export async function main() {
       const error = new Error(errorMessage)
       evidence.finalize({
         status: 'failed',
+        fields: { executionMode },
         error,
         details: {
           suites: {
@@ -260,6 +265,7 @@ export async function main() {
               fallbackReason: fallback.reason
             }
           },
+          downgradeWarnings: [],
           uiContract: { status: 'passed', exitCode: 0 },
           browser: { status: 'failed', exitCode: playwrightResult.code }
         }
@@ -276,6 +282,7 @@ export async function main() {
 
     evidence.finalize({
       status: 'passed',
+      fields: { executionMode },
       details: {
         suites: {
           uiContract: uiContractSuites,
@@ -284,12 +291,13 @@ export async function main() {
         artifacts: {
           playwrightJsonReport: reportValidation.artifact
         },
+        downgradeWarnings: [],
         uiContract: { status: 'passed', exitCode: 0 },
         browser: { status: 'passed', exitCode: browserExitCode }
       }
     })
   } catch (error) {
-    evidence.finalize({ status: 'failed', error })
+    evidence.finalize({ status: 'failed', fields: { executionMode }, error })
     throw error
   } finally {
     await context.shutdown()
