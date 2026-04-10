@@ -140,6 +140,70 @@ test('template upload/map/preflight/publish loop executes with issue remediation
   await expect(page.getByText('Templates: Template published.')).toBeVisible()
 })
 
+test('operator mapping completion flow surfaces confidence cues and publishes successfully', async ({ page }, testInfo) => {
+  const { email, password } = await registerAdmin(page, testInfo, 'operator-flow')
+  await signInFromUi(page, email, password)
+
+  const profileResponse = await page.request.post('/api/profiles', {
+    data: {
+      kind: 'client',
+      firstName: 'Operator',
+      lastName: 'Mapper',
+      email: `operator-${Date.now()}@e2e.test`
+    }
+  })
+  const profile = await profileResponse.json()
+  expect(profileResponse.ok()).toBeTruthy()
+
+  const formTemplateResponse = await page.request.post('/api/forms/templates', {
+    data: {
+      name: `Operator Mapping Source ${Date.now()}`,
+      sections: [{ title: 'Goals', fields: [{ key: 'primaryGoal', label: 'Primary Goal', type: 'text', required: true }] }]
+    }
+  })
+  const formTemplate = await formTemplateResponse.json()
+  expect(formTemplateResponse.ok()).toBeTruthy()
+
+  const submissionResponse = await page.request.post('/api/forms/submissions', {
+    data: {
+      clientId: profile.id,
+      templateId: formTemplate.id,
+      status: 'submitted',
+      data: { primaryGoal: 'Complete operator mapping flow' }
+    }
+  })
+  expect(submissionResponse.ok()).toBeTruthy()
+
+  const templateResponse = await page.request.post('/api/templates', {
+    data: {
+      name: `Operator Publish Template ${Date.now()}`,
+      extractedFields: ['firstName'],
+      mappings: [{ pdfField: 'firstName', fieldLabel: 'First Name', sourcePath: '' }]
+    }
+  })
+  const template = await templateResponse.json()
+  expect(templateResponse.status()).toBe(201)
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Templates' }).click()
+  await page.locator('#template-select').selectOption(template.id)
+  await page.getByRole('button', { name: '3. Mapping' }).click()
+
+  await expect(page.getByText('Validation hints: ensure PDF Field + Source Path are filled')).toBeVisible()
+  await expect(page.locator('#mapping-row-0')).toContainText('Missing source')
+  await expect(page.locator('#mapping-row-0')).toContainText('Unmapped')
+
+  await page.locator('#inspector-sourcePath').fill('profile.firstName')
+  await page.locator('#save-mappings').click()
+  await expect(page.locator('#mapping-row-0')).toContainText('High confidence')
+
+  await page.getByRole('button', { name: '5. Publish' }).click()
+  await page.locator('#run-publish-preflight').click()
+  await expect(page.getByText('Publish preflight passed with no schema validation issues.')).toBeVisible()
+  await page.locator('#publish-template').click()
+  await expect(page.getByText('Templates: Template published.')).toBeVisible()
+})
+
 test('custom-field schema CRUD supports profile usage paths', async ({ page }, testInfo) => {
   const { email, password } = await registerAdmin(page, testInfo, 'schema')
   await signInFromUi(page, email, password)

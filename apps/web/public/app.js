@@ -2105,6 +2105,50 @@ function mappingAutoMatchScore(sourceLabel = '', candidatePath = '') {
   return tokenScore * 0.75
 }
 
+function normalizeTransformDraftFromMapping(mapping = {}) {
+  const legacyTransform = mapping?.formatter || mapping?.format || ''
+  const transformInput = mapping?.transform ?? legacyTransform
+  if (typeof transformInput === 'string') {
+    const transformType = transformInput === 'custom' ? 'expression' : transformInput
+    return {
+      transformType: String(transformType || ''),
+      transformExpression: String(mapping?.expression || ''),
+      transformCurrency: ''
+    }
+  }
+  const transformType = String(transformInput?.type || '').trim()
+  return {
+    transformType: transformType === 'custom' ? 'expression' : transformType,
+    transformExpression: String(transformInput?.expression || mapping?.expression || ''),
+    transformCurrency: String(transformInput?.currency || '')
+  }
+}
+
+function mappingDraftFromAnyShape(mapping = {}) {
+  const transformDraft = normalizeTransformDraftFromMapping(mapping)
+  return {
+    pdfField: String(mapping.pdfField || mapping.targetField || mapping.field || mapping.key || ''),
+    fieldLabel: String(mapping.fieldLabel || mapping.label || mapping.fieldName || ''),
+    sourcePath: String(mapping.sourcePath || mapping.path || mapping.source || ''),
+    defaultValue: mapping.defaultValue == null ? '' : String(mapping.defaultValue),
+    targetType: String(mapping.targetType || 'text'),
+    required: mapping.required === true,
+    enabled: mapping.enabled !== false,
+    ...transformDraft
+  }
+}
+
+function mappingConfidenceBadge(mapping = {}, knownPathIndex) {
+  const sourcePath = String(mapping.sourcePath || '').trim()
+  if (!sourcePath) return { tone: 'low', label: 'Unmapped' }
+  if (!knownPathIndex.byPath.has(sourcePath)) return { tone: 'low', label: 'Low confidence' }
+  const sourceLabel = String(mapping.fieldLabel || mapping.pdfField || '').trim()
+  const score = mappingAutoMatchScore(sourceLabel, sourcePath)
+  if (score >= 0.95) return { tone: 'high', label: 'High confidence' }
+  if (score >= 0.75) return { tone: 'medium', label: 'Medium confidence' }
+  return { tone: 'low', label: 'Low confidence' }
+}
+
 function templateIngestionRecoveryMessage(extraction = {}) {
   const reasonCode = String(extraction?.reasonCode || '').trim()
   if (reasonCode === 'malformed_pdf') {
@@ -2150,18 +2194,7 @@ async function renderTemplates() {
   if (!state.templateInspectorFocusRequestByTemplateId) state.templateInspectorFocusRequestByTemplateId = {}
   if (!state.templateJumpHighlightByTemplateId) state.templateJumpHighlightByTemplateId = {}
 
-  const mappingDraftFromServer = (mapping = {}) => ({
-    pdfField: String(mapping.pdfField || ''),
-    fieldLabel: String(mapping.fieldLabel || mapping.label || ''),
-    sourcePath: String(mapping.sourcePath || ''),
-    defaultValue: mapping.defaultValue == null ? '' : String(mapping.defaultValue),
-    targetType: String(mapping.targetType || 'text'),
-    required: mapping.required === true,
-    enabled: mapping.enabled !== false,
-    transformType: String(mapping?.transform?.type || ''),
-    transformExpression: String(mapping?.transform?.expression || ''),
-    transformCurrency: String(mapping?.transform?.currency || '')
-  })
+  const mappingDraftFromServer = (mapping = {}) => mappingDraftFromAnyShape(mapping)
   const normalizeMappingDraft = (draft = {}) => {
     const sourcePath = String(draft.sourcePath || '').trim()
     const transformType = String(draft.transformType || '').trim()
@@ -2379,7 +2412,7 @@ async function renderTemplates() {
             )
             .join('')}
         </div>
-        <table><thead><tr><th>#</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
+        <table><thead><tr><th>#</th><th>State</th><th>PDF Field</th><th>Source Path</th><th>Label</th><th>Confidence</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
           ${draftMappings
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
@@ -2399,23 +2432,54 @@ async function renderTemplates() {
               const rowClasses = ['mapping-row-item']
               if (index === safeSelectedRowIndex) rowClasses.push('is-selected')
               if (index === rowJumpHighlight) rowClasses.push('is-jumped')
+              const confidence = mappingConfidenceBadge(mapping, knownPathIndex)
+              const stateBadge =
+                mapping.enabled === false
+                  ? '<span class="badge subtle">Disabled</span>'
+                  : issues.length || serverPreflightIssues.length
+                    ? '<span class="error-badge">Needs fix</span>'
+                    : !String(mapping.sourcePath || '').trim()
+                      ? '<span class="warning-badge">Missing source</span>'
+                      : '<span class="badge subtle">Ready</span>'
               return `<tr id="mapping-row-${index}" class="${rowClasses.join(' ')}" data-select-row="${index}" data-row-id="${escapeHtml(rowId)}" tabindex="0">
                 <td>${index + 1}</td>
+                <td>${stateBadge}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
                 <td>${escapeHtml(mapping.fieldLabel || '')}</td>
-                <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span>` : '<span class="muted">OK</span>'}</td>
+                <td><span class="badge subtle">${escapeHtml(confidence.label)}</span></td>
+                <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span><div class="muted">Hint: update Source Path using known paths and rerun Save Now.</div>` : '<span class="muted">OK</span>'}</td>
                 <td>${serverPreflightIssues.length ? `<span class="error-badge">${escapeHtml(serverPreflightIssues.map((issue) => issue.code || issue.message || 'issue').join(', '))}</span>` : '<span class="muted">None</span>'}</td>
                 <td>${hasPreviewWarnings ? '<span class="warning-badge">Preview warning</span>' : '<span class="muted">OK</span>'}</td>
                 <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
               </tr>`
             })
-            .join('') || '<tr><td colspan="8" class="muted">No mappings match this filter.</td></tr>'}
+            .join('') || '<tr><td colspan="10" class="muted">No mappings match this filter.</td></tr>'}
         </tbody></table>
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Field Inspector</h3>
         <div class="muted">Selected row ${safeSelectedRowIndex + 1} of ${Math.max(1, draftMappings.length)}${selectedMapping.enabled === false ? ' (disabled)' : ''}</div>
+        <div class="row wrap gap-sm">
+          ${
+            selectedMapping.enabled === false
+              ? '<span class="badge subtle">State: disabled</span>'
+              : '<span class="badge subtle">State: enabled</span>'
+          }
+          ${
+            (mappingIssuesByIndex.get(safeSelectedRowIndex) || []).length
+              ? `<span class="error-badge">Local issues: ${escapeHtml((mappingIssuesByIndex.get(safeSelectedRowIndex) || []).join('; '))}</span>`
+              : '<span class="badge subtle">Local validation: OK</span>'
+          }
+          ${
+            (preflightIssuesByRowIndex.get(safeSelectedRowIndex) || []).length
+              ? `<span class="error-badge">Preflight issues: ${escapeHtml(
+                  (preflightIssuesByRowIndex.get(safeSelectedRowIndex) || []).map((issue) => issue.code || issue.message || 'issue').join(', ')
+                )}</span>`
+              : '<span class="badge subtle">Preflight: clear</span>'
+          }
+        </div>
+        <p class="muted">Validation hints: ensure PDF Field + Source Path are filled, Source Path exists in known paths, and expression transforms include an expression.</p>
         <datalist id="source-path-options">${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}</datalist>
         <div class="grid two">
           <label>PDF Field<input id="inspector-pdfField" value="${escapeHtml(selectedMapping.pdfField || '')}" /></label>
