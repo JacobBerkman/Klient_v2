@@ -2594,21 +2594,28 @@ export function createStore({
     },
     addDraftCollaborator(user, submissionId, input = {}) {
       requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
       const submission = state.formSubmissions.find(
         (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
       )
       if (!submission) throw new Error('Draft submission not found.')
       const userId = String(input.userId || '').trim()
       if (!userId) throw new Error('Collaborator userId is required.')
+      if (userId === actorUserId) throw new Error('You are already a collaborator on this draft.')
       const permission = String(input.permission || '').toLowerCase() === 'write' ? 'write' : 'read'
       submission.collaborators = normalizeDraftCollaborators(submission)
       const existingUser = state.users.find((entry) => entry.id === userId && entry.firmId === user.firmId)
       if (!existingUser) throw new Error('Collaborator user not found.')
+      if (submission.collaborators.some((entry) => entry.userId === userId)) throw new Error('Collaborator already added.')
       submission.collaborators = normalizeDraftCollaborators(
         { ...submission, collaborators: [...submission.collaborators, { userId, permission }] },
         submission.createdByUserId
       )
       submission.updatedAt = now()
+      addAudit(user.firmId, actorUserId, 'form_submission', submission.id, 'form_submission.collaborator_added', {
+        collaboratorUserId: userId,
+        permission
+      })
       persist()
       return submission.collaborators
     },
@@ -2620,9 +2627,17 @@ export function createStore({
       if (!submission) throw new Error('Draft submission not found.')
       submission.collaborators = normalizeDraftCollaborators(submission)
       const targetUserId = String(collaboratorUserId || '').trim()
+      if (!targetUserId) throw new Error('Collaborator userId is required.')
+      if (targetUserId === submission.createdByUserId) throw new Error('Draft owner cannot be removed as collaborator.')
+      if (!submission.collaborators.some((entry) => entry.userId === targetUserId)) {
+        throw new Error('Collaborator is not assigned to this draft.')
+      }
       submission.collaborators = submission.collaborators.filter((entry) => entry.userId !== targetUserId)
       submission.collaborators = normalizeDraftCollaborators(submission, submission.createdByUserId)
       submission.updatedAt = now()
+      addAudit(user.firmId, resolveUserId(user), 'form_submission', submission.id, 'form_submission.collaborator_removed', {
+        collaboratorUserId: targetUserId
+      })
       persist()
       return submission.collaborators
     },
@@ -3064,9 +3079,33 @@ export function createStore({
     rotateSession(token, reason = 'privilege_transition') {
       return rotateSession(token, reason)
     },
-    listUsers(user) {
+    listUsers(user, query = {}) {
       requirePermission(user, 'users:read')
-      return state.users.filter((entry) => entry.firmId === user.firmId).map(publicUser)
+      const mode = String(query.mode || '').trim().toLowerCase()
+      const search = String(query.search || '').trim().toLowerCase()
+      const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 20, 1), 50)
+      const includeSelf = query.includeSelf === true || query.includeSelf === 'true'
+      const firmUsers = state.users.filter((entry) => entry.firmId === user.firmId)
+      if (mode === 'lookup') {
+        const users = firmUsers
+          .filter((entry) => (includeSelf ? true : entry.id !== user.id))
+          .filter((entry) => {
+            if (!search) return true
+            const haystack = [entry.id, entry.email, entry.firstName, entry.lastName, `${entry.firstName} ${entry.lastName}`]
+              .map((value) => String(value || '').toLowerCase())
+              .join(' ')
+            return haystack.includes(search)
+          })
+          .slice(0, limit)
+          .map((entry) => ({
+            id: entry.id,
+            role: entry.role,
+            email: entry.email,
+            label: `${entry.firstName || ''} ${entry.lastName || ''}`.trim() || entry.email || entry.id
+          }))
+        return { mode: 'lookup', total: users.length, users }
+      }
+      return firmUsers.map(publicUser)
     },
     inviteUser(user, input) {
       requirePermission(user, 'users:manage')

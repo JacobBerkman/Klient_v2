@@ -41,7 +41,9 @@ const state = {
   formsUi: {
     activeDraftSharePanelId: '',
     collaboratorsByDraftId: {},
-    shareFeedbackByDraftId: {}
+    shareFeedbackByDraftId: {},
+    userLookupByDraftId: {},
+    userLookupSearchByDraftId: {}
   },
   workflowStatusMessage: '',
   operations: {
@@ -856,9 +858,21 @@ function canManageDraftCollaborators(draft) {
 }
 
 function draftCollaboratorDeniedMessage(draft) {
-  if (state.user?.role === 'readonly') return 'Readonly role: collaborator updates are disabled.'
-  if (state.user?.role === 'advisor' && !isDraftOwner(draft)) return 'Only the draft owner can manage collaborators.'
+  if (state.user?.role === 'readonly') {
+    return 'Readonly role: you can view collaborators but cannot add or remove collaborators.'
+  }
+  if (state.user?.role === 'advisor' && !isDraftOwner(draft)) {
+    return 'Only the draft owner can manage collaborators. You can still review current sharing access.'
+  }
   return 'You do not have access to manage draft collaborators.'
+}
+
+function collaboratorLookupLabel(user = {}) {
+  const name = String(user.label || '').trim()
+  const email = String(user.email || '').trim()
+  const role = String(user.role || '').trim()
+  const pieces = [name || user.id, email && email !== name ? `<${email}>` : '', role ? `(${role})` : ''].filter(Boolean)
+  return pieces.join(' ')
 }
 
 function canReadDiagnostics() {
@@ -1424,6 +1438,12 @@ async function renderForms() {
         const panelVisible = state.formsUi.activeDraftSharePanelId === draft.id
         const panelId = `draft-share-panel-${draft.id}`
         const list = state.formsUi.collaboratorsByDraftId[draft.id]
+        const lookupResults = state.formsUi.userLookupByDraftId[draft.id] || []
+        const lookupSearch = state.formsUi.userLookupSearchByDraftId[draft.id] || ''
+        const existingCollaboratorIds = new Set((Array.isArray(list) ? list : []).map((entry) => entry.userId || entry.id))
+        const selectableLookupResults = lookupResults.filter(
+          (entry) => entry?.id && entry.id !== state.user?.id && !existingCollaboratorIds.has(entry.id)
+        )
         const canManage = canManageDraftCollaborators(draft)
         const deniedMessage = draftCollaboratorDeniedMessage(draft)
         const shareFeedback = state.formsUi.shareFeedbackByDraftId[draft.id] || ''
@@ -1447,9 +1467,20 @@ async function renderForms() {
         <div class="item compact">
           <h4>Draft sharing</h4>
           <p class="muted compact">Owner: <code>${escapeHtml(draft.createdByUserId || 'unknown')}</code></p>
+          <form data-search-draft-collaborator-users="${draft.id}">
+            <label>Search firm users
+              <input name="search" placeholder="name, email, or user id" value="${escapeHtml(lookupSearch)}" ${canManage ? '' : 'disabled'} />
+            </label>
+            <button type="submit" ${canManage ? '' : 'disabled'}>${pendingLabel(`draft-share-search-${draft.id}`, 'Find users', 'Searching…')}</button>
+          </form>
           <form data-add-draft-collaborator="${draft.id}">
-            <label>Add collaborator (user id)
-              <input name="userId" placeholder="advisor-user-id" ${canManage ? '' : 'disabled'} />
+            <label>Add collaborator
+              <select name="userId" ${canManage ? '' : 'disabled'}>
+                <option value="">Select a firm user…</option>
+                ${selectableLookupResults
+                  .map((user) => `<option value="${escapeHtml(user.id || '')}">${escapeHtml(collaboratorLookupLabel(user))}</option>`)
+                  .join('')}
+              </select>
             </label>
             <button type="submit" ${canManage ? '' : 'disabled'}>${pendingLabel(`draft-share-add-${draft.id}`, 'Add', 'Adding…')}</button>
           </form>
@@ -1644,11 +1675,46 @@ async function renderForms() {
       const actionKey = `draft-share-fetch-${draftId}`
       setActionPending(actionKey, 'pending')
       try {
-        const collaborators = await request(routes.formDraftCollaborators(draftId))
+        const [collaborators, userLookup] = await Promise.all([
+          request(routes.formDraftCollaborators(draftId)),
+          request(routes.users({ mode: 'lookup', limit: 25 }))
+        ])
         state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators) ? collaborators : collaborators?.collaborators || []
+        state.formsUi.userLookupByDraftId[draftId] = Array.isArray(userLookup?.users) ? userLookup.users : []
+        state.formsUi.userLookupSearchByDraftId[draftId] = ''
         state.formsUi.shareFeedbackByDraftId[draftId] = 'Collaborators loaded.'
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'load draft collaborators')
+        reportActionError('Forms', error)
+      } finally {
+        clearActionPending(actionKey)
+      }
+      await renderForms()
+    })
+  })
+
+  document.querySelectorAll('form[data-search-draft-collaborator-users]').forEach((form) => {
+    form.addEventListener('submit', async (event) => {
+      event.preventDefault()
+      const draftId = form.dataset.searchDraftCollaboratorUsers
+      const draft = drafts.find((entry) => entry.id === draftId)
+      if (!canManageDraftCollaborators(draft)) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = draftCollaboratorDeniedMessage(draft)
+        await renderForms()
+        return
+      }
+      const search = String(new FormData(form).get('search') || '').trim()
+      state.formsUi.userLookupSearchByDraftId[draftId] = search
+      const actionKey = `draft-share-search-${draftId}`
+      setActionPending(actionKey, 'pending')
+      try {
+        const userLookup = await request(routes.users({ mode: 'lookup', search, limit: 25 }))
+        state.formsUi.userLookupByDraftId[draftId] = Array.isArray(userLookup?.users) ? userLookup.users : []
+        state.formsUi.shareFeedbackByDraftId[draftId] = state.formsUi.userLookupByDraftId[draftId].length
+          ? `Found ${state.formsUi.userLookupByDraftId[draftId].length} matching firm users.`
+          : 'No matching firm users found.'
+      } catch (error) {
+        state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'search firm users')
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -1669,7 +1735,7 @@ async function renderForms() {
       }
       const userId = String(new FormData(form).get('userId') || '').trim()
       if (!userId) {
-        state.formsUi.shareFeedbackByDraftId[draftId] = 'Provide a collaborator user id.'
+        state.formsUi.shareFeedbackByDraftId[draftId] = 'Select a collaborator from the firm user results.'
         await renderForms()
         return
       }
@@ -1684,6 +1750,9 @@ async function renderForms() {
         state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators)
           ? collaborators
           : collaborators?.collaborators || []
+        state.formsUi.userLookupByDraftId[draftId] = (state.formsUi.userLookupByDraftId[draftId] || []).filter(
+          (candidate) => candidate.id !== userId
+        )
         state.formsUi.shareFeedbackByDraftId[draftId] = `Collaborator ${userId} added.`
         reportActionSuccess('Forms', `Collaborator ${userId} added to draft ${draftId}.`)
       } catch (error) {
@@ -1714,6 +1783,12 @@ async function renderForms() {
         state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators)
           ? collaborators
           : collaborators?.collaborators || []
+        if (!state.formsUi.userLookupByDraftId[draftId]?.some((candidate) => candidate.id === userId)) {
+          state.formsUi.userLookupByDraftId[draftId] = [
+            ...(state.formsUi.userLookupByDraftId[draftId] || []),
+            { id: userId, label: userId, email: '', role: '' }
+          ]
+        }
         state.formsUi.shareFeedbackByDraftId[draftId] = `Collaborator ${userId} removed.`
         reportActionSuccess('Forms', `Collaborator ${userId} removed from draft ${draftId}.`)
       } catch (error) {
