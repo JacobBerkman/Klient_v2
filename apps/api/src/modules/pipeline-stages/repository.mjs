@@ -1,17 +1,19 @@
+import { throwRepositoryScaffoldError } from '../shared/repository-scaffold.mjs'
+
 export class PipelineStagesRepository {
   listStages(_firmContext) {
-    throw new Error('PipelineStagesRepository.listStages not implemented')
+    throwRepositoryScaffoldError('PipelineStagesRepository', 'listStages')
   }
   createStage(_firmContext, _input) {
-    throw new Error('PipelineStagesRepository.createStage not implemented')
+    throwRepositoryScaffoldError('PipelineStagesRepository', 'createStage')
   }
   updateStageMetadata(_firmContext, _stageId, _patch) {
-    throw new Error('PipelineStagesRepository.updateStageMetadata not implemented')
+    throwRepositoryScaffoldError('PipelineStagesRepository', 'updateStageMetadata')
   }
   deactivateStage(_firmContext, _stageId) {
-    throw new Error('PipelineStagesRepository.deactivateStage not implemented')
+    throwRepositoryScaffoldError('PipelineStagesRepository', 'deactivateStage')
   }
   reorderStages(_firmContext, _input) {
-    throw new Error('PipelineStagesRepository.reorderStages not implemented')
+    throwRepositoryScaffoldError('PipelineStagesRepository', 'reorderStages')
   }
 }

@@ -1,32 +1,34 @@
+import { throwRepositoryScaffoldError } from '../shared/repository-scaffold.mjs'
+
 export class TemplateRepository {
   listDocumentTemplates(_firmContext) {
-    throw new Error('TemplateRepository.listDocumentTemplates not implemented')
+    throwRepositoryScaffoldError('TemplateRepository', 'listDocumentTemplates')
   }
   createDocumentTemplate(_firmContext, _input) {
-    throw new Error('TemplateRepository.createDocumentTemplate not implemented')
+    throwRepositoryScaffoldError('TemplateRepository', 'createDocumentTemplate')
   }
   updateTemplateMappings(_firmContext, _templateId, _mappings) {
-    throw new Error('TemplateRepository.updateTemplateMappings not implemented')
+    throwRepositoryScaffoldError('TemplateRepository', 'updateTemplateMappings')
   }
   publishTemplate(_firmContext, _templateId) {
-    throw new Error('TemplateRepository.publishTemplate not implemented')
+    throwRepositoryScaffoldError('TemplateRepository', 'publishTemplate')
   }
   previewTemplateMappings(_firmContext, _templateId, _input) {
-    throw new Error('TemplateRepository.previewTemplateMappings not implemented')
+    throwRepositoryScaffoldError('TemplateRepository', 'previewTemplateMappings')
   }
   compareTemplateVersions() {
-    throw new Error('TemplateRepository.compareTemplateVersions not implemented')
+    throwRepositoryScaffoldError('TemplateRepository', 'compareTemplateVersions')
   }
   revertTemplateVersion() {
-    throw new Error('TemplateRepository.revertTemplateVersion not implemented')
+    throwRepositoryScaffoldError('TemplateRepository', 'revertTemplateVersion')
   }
   listTemplateVersions() {
-    throw new Error('TemplateRepository.listTemplateVersions not implemented')
+    throwRepositoryScaffoldError('TemplateRepository', 'listTemplateVersions')
   }
   listPublishTransitions() {
-    throw new Error('TemplateRepository.listPublishTransitions not implemented')
+    throwRepositoryScaffoldError('TemplateRepository', 'listPublishTransitions')
   }
   autoBuildTemplate() {
-    throw new Error('TemplateRepository.autoBuildTemplate not implemented')
+    throwRepositoryScaffoldError('TemplateRepository', 'autoBuildTemplate')
   }
 }
