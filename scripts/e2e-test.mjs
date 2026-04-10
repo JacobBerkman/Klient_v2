@@ -183,8 +183,8 @@ export async function gatePlaywrightReportOrFail({ reportPath, evidenceRecorder 
   return validation
 }
 
-function finalizeFailure(error, details = {}) {
-  evidence.finalize({
+function finalizeFailure(evidenceRecorder, error, details = {}) {
+  evidenceRecorder.finalize({
     status: 'failed',
     fields: { executionMode },
     error,
@@ -193,12 +193,23 @@ function finalizeFailure(error, details = {}) {
   return 1
 }
 
-export async function main() {
-  const context = await createTestContext('e2e-browser-suite')
+export async function main(deps = {}) {
+  const {
+    createContext = createTestContext,
+    run = runCommand,
+    hasBrowser = hasInstalledPlaywrightBrowser,
+    evidenceRecorder = evidence,
+    removeFile = rm,
+    validateReport = validatePlaywrightJsonReport,
+    writeFallbackReport = writeFallbackPlaywrightReport
+  } = deps
+
+  const context = await createContext('e2e-browser-suite')
   const fallback = browserFallbackMode()
+  const strictMode = !fallback.enabled
 
   try {
-    await rm(playwrightReportPath, { force: true })
+    await removeFile(playwrightReportPath, { force: true })
 
     const baseEnv = {
       ...process.env,
@@ -209,14 +220,14 @@ export async function main() {
       TEST_RESET_BEHAVIOR: process.env.TEST_RESET_BEHAVIOR || 'isolated'
     }
 
-    const uiContractResult = await runCommand(process.execPath, ['--test', ...uiContractSuites], baseEnv, 4 * 60_000)
+    const uiContractResult = await run(process.execPath, ['--test', ...uiContractSuites], baseEnv, 4 * 60_000)
     if (uiContractResult.signal || uiContractResult.code !== 0) {
       const error = new Error(
         uiContractResult.signal
           ? `UI contract checks terminated by signal ${uiContractResult.signal}`
           : `UI contract checks failed with exit code ${uiContractResult.code}`
       )
-      return finalizeFailure(error, {
+      return finalizeFailure(evidenceRecorder, error, {
         suites: {
           uiContract: uiContractSuites,
           browser: [browserSuitePattern]
@@ -226,16 +237,22 @@ export async function main() {
       })
     }
 
-    const browserInstalled = await hasInstalledPlaywrightBrowser()
+    const browserInstalled = await hasBrowser()
     if (!browserInstalled) {
-      if (!fallback.enabled) {
+      if (strictMode) {
         const error = new Error(
           `Playwright browser binaries are missing and strict mode is enabled (${browserFallbackEnvFlag}=1 to allow local fallback).`
         )
-        return finalizeFailure(error, {
+        return finalizeFailure(evidenceRecorder, error, {
           suites: {
             uiContract: uiContractSuites,
             browser: [browserSuitePattern]
+          },
+          artifacts: {
+            playwrightJsonReport: buildPlaywrightReportFailure(
+              playwrightReportPath,
+              'Playwright browser binaries are missing; report not generated'
+            )
           },
           downgradeWarnings: [],
           uiContract: { status: 'passed', exitCode: 0 },
@@ -243,9 +260,25 @@ export async function main() {
         })
       }
 
-      await writeFallbackPlaywrightReport(playwrightReportPath)
-      const fallbackValidation = await validatePlaywrightJsonReport(playwrightReportPath)
-      evidence.finalize({
+      await writeFallbackReport(playwrightReportPath)
+      const fallbackValidation = await validateReport(playwrightReportPath)
+      if (!fallbackValidation.ok) {
+        const error = new Error(fallbackValidation.artifact.reason)
+        return finalizeFailure(evidenceRecorder, error, {
+          suites: {
+            uiContract: uiContractSuites,
+            browser: [browserSuitePattern]
+          },
+          artifacts: {
+            playwrightJsonReport: fallbackValidation.artifact
+          },
+          downgradeWarnings: [fallback.reason],
+          uiContract: { status: 'passed', exitCode: 0 },
+          browser: { status: 'skipped', exitCode: 0 }
+        })
+      }
+
+      evidenceRecorder.finalize({
         status: 'passed',
         fields: { executionMode: 'fallback' },
         details: {
@@ -264,6 +297,7 @@ export async function main() {
       return 0
     }
 
+<<<<<<< codex/apply-canonical-env-var-for-e2e-tests
     let browserExitCode = 0
     if (browserInstalled) {
       const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
@@ -295,8 +329,24 @@ export async function main() {
           })
           return
         }
+=======
+    const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
+    const playwrightResult = await run(command, ['playwright', 'test', browserSuitePattern], baseEnv)
+    const browserExitCode = playwrightResult.code ?? 1
 
+    if (playwrightResult.signal || playwrightResult.code !== 0) {
+      const errorMessage = playwrightResult.signal
+        ? `Playwright browser suite terminated by signal ${playwrightResult.signal}`
+        : `Playwright browser suite failed with exit code ${playwrightResult.code}`
+      const playwrightArtifact = buildPlaywrightReportFailure(
+        playwrightReportPath,
+        'Playwright process failed before report validation'
+      )
+>>>>>>> main
+
+      if (strictMode) {
         const error = new Error(errorMessage)
+<<<<<<< codex/apply-canonical-env-var-for-e2e-tests
         evidence.finalize({
           status: 'failed',
           fields: { executionMode },
@@ -340,57 +390,70 @@ export async function main() {
         status: 'passed',
         fields: { executionMode },
         details: {
+=======
+        return finalizeFailure(evidenceRecorder, error, {
+>>>>>>> main
           suites: {
             uiContract: uiContractSuites,
-            browser: reportValidation.suiteNames
+            browser: [browserSuitePattern]
           },
           artifacts: {
-            playwrightJsonReport: reportValidation.artifact
+            playwrightJsonReport: playwrightArtifact
           },
           downgradeWarnings: [],
           uiContract: { status: 'passed', exitCode: 0 },
-          browser: { status: 'passed', exitCode: browserExitCode }
-        }
-      })
-      return
-    }
-
-    if (fallback.enabled) {
-      await writeFallbackPlaywrightReport(playwrightReportPath)
-      const reportValidation = await gatePlaywrightReportOrFail({
-        reportPath: playwrightReportPath,
-        uiContractStatus: { status: 'passed', exitCode: 0 }
-      })
-      if (!reportValidation.ok) {
-        process.exitCode = 1
-        return
+          browser: { status: 'failed', exitCode: browserExitCode }
+        })
       }
 
-      evidence.finalize({
+      evidenceRecorder.finalize({
         status: 'passed',
+        fields: { executionMode: 'fallback' },
         details: {
           suites: {
             uiContract: uiContractSuites,
-            browser: reportValidation.suiteNames
+            browser: [browserSuitePattern]
           },
           artifacts: {
-            playwrightJsonReport: reportValidation.artifact
+            playwrightJsonReport: {
+              ...playwrightArtifact,
+              reason: `Local fallback accepted Playwright browser failure (${browserFallbackEnvFlag}=1)`
+            }
           },
-          downgradeWarnings: [
-            `Browser binaries were not detected; fallback execution accepted because ${browserFallbackEnvFlag}=1`
-          ],
+          downgradeWarnings: [fallback.reason],
           uiContract: { status: 'passed', exitCode: 0 },
-          browser: { status: 'skipped', exitCode: 0 }
+          browser: { status: 'skipped', exitCode: browserExitCode }
         }
       })
-      return
+      return 0
     }
 
-    throw new Error(
-      `Playwright browser binaries are not installed. Install browsers or enable local fallback with ${browserFallbackEnvFlag}=1.`
-    )
+    const reportValidation = await gatePlaywrightReportOrFail({
+      reportPath: playwrightReportPath,
+      evidenceRecorder,
+      uiContractStatus: { status: 'passed', exitCode: 0 }
+    })
+    if (!reportValidation.ok) return 1
+
+    evidenceRecorder.finalize({
+      status: 'passed',
+      fields: { executionMode },
+      details: {
+        suites: {
+          uiContract: uiContractSuites,
+          browser: reportValidation.suiteNames
+        },
+        artifacts: {
+          playwrightJsonReport: reportValidation.artifact
+        },
+        downgradeWarnings: [],
+        uiContract: { status: 'passed', exitCode: 0 },
+        browser: { status: 'passed', exitCode: browserExitCode }
+      }
+    })
+    return 0
   } catch (error) {
-    evidence.finalize({ status: 'failed', fields: { executionMode }, error })
+    evidenceRecorder.finalize({ status: 'failed', fields: { executionMode }, error })
     throw error
   } finally {
     await context.shutdown()
