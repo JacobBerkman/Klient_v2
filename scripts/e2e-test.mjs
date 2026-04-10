@@ -85,23 +85,11 @@ try {
 
   const uiContractResult = await runCommand(process.execPath, ['--test', ...uiContractSuites], baseEnv)
   if (uiContractResult.signal || uiContractResult.code !== 0) {
-    const error = new Error(
+    throw new Error(
       uiContractResult.signal
         ? `UI contract checks terminated by signal ${uiContractResult.signal}`
         : `UI contract checks failed with exit code ${uiContractResult.code}`
     )
-    evidence.finalize({
-      status: 'failed',
-      error,
-      details: {
-        suites: {
-          uiContract: uiContractSuites,
-          browser: [browserSuitePattern]
-        },
-        uiContract: { status: 'failed', exitCode: uiContractResult.code }
-      }
-    })
-    process.exit(1)
   }
 
   const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
@@ -109,34 +97,12 @@ try {
   const playwrightMetadata = await buildPlaywrightMetadata()
 
   if (playwrightResult.signal || playwrightResult.code !== 0) {
-    const error = new Error(
+    throw new Error(
       playwrightResult.signal
         ? `Playwright browser suite terminated by signal ${playwrightResult.signal}`
         : `Playwright browser suite failed with exit code ${playwrightResult.code}`
     )
-    evidence.finalize({
-      status: 'failed',
-      error,
-      details: {
-        suites: {
-          uiContract: uiContractSuites,
-          browser: playwrightMetadata.suiteNames.length ? playwrightMetadata.suiteNames : [browserSuitePattern]
-        },
-        artifacts: {
-          playwrightJsonReport: playwrightMetadata.artifact
-        },
-        uiContract: { status: 'passed', exitCode: 0 },
-        browser: { status: 'failed', exitCode: playwrightResult.code }
-      }
-    })
-    process.exit(1)
   }
-)
-
-child.on('exit', async (code, signal) => {
-  try {
-    const reportExists = existsSync(playwrightReportFile)
-    const report = reportExists ? JSON.parse(readFileSync(playwrightReportFile, 'utf8')) : null
 
   evidence.finalize({
     status: 'passed',
@@ -153,8 +119,26 @@ child.on('exit', async (code, signal) => {
     }
   })
 } catch (error) {
-  evidence.finalize({ status: 'failed', error })
-  throw error
+  const playwrightMetadata = await buildPlaywrightMetadata()
+  const message = error instanceof Error ? error.message : String(error)
+  const uiContractFailed = message.startsWith('UI contract checks')
+
+  evidence.finalize({
+    status: 'failed',
+    error,
+    details: {
+      suites: {
+        uiContract: uiContractSuites,
+        browser: playwrightMetadata.suiteNames.length ? playwrightMetadata.suiteNames : [browserSuitePattern]
+      },
+      artifacts: {
+        playwrightJsonReport: playwrightMetadata.artifact
+      },
+      uiContract: uiContractFailed ? { status: 'failed' } : { status: 'passed', exitCode: 0 },
+      browser: uiContractFailed ? { status: 'skipped' } : { status: 'failed' }
+    }
+  })
+  process.exitCode = 1
 } finally {
   await context.shutdown()
 }
