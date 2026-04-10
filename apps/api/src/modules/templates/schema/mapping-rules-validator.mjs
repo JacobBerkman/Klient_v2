@@ -69,12 +69,20 @@ export function convertLegacyMappingRules(input) {
   return input.map((rule) => {
     if (!isObject(rule)) return rule
     const next = { ...rule }
-    next.pdfField ||= rule.targetField || rule.field || rule.key
-    next.sourcePath ||= rule.path || rule.source
+    next.pdfField ||= rule.targetField || rule.target || rule.field || rule.key
+    next.sourcePath ||= rule.path || rule.source || rule.source_field
+    if (!('fieldLabel' in next) && (rule.label || rule.name)) next.fieldLabel = rule.label || rule.name
+    if (!('required' in next) && ('isRequired' in rule || 'mandatory' in rule)) {
+      next.required = rule.isRequired === true || rule.mandatory === true
+    }
+    if (!('enabled' in next) && ('disabled' in rule || 'isEnabled' in rule)) {
+      next.enabled = rule.disabled === true ? false : rule.isEnabled !== false
+    }
+    if (!('targetType' in next) && (rule.type || rule.valueType)) next.targetType = rule.type || rule.valueType
     if ('transform' in next) {
       next.transform = toTransformObject(next.transform)
-    } else if (rule.formatter) {
-      next.transform = toTransformObject(rule.formatter)
+    } else if (rule.formatter || rule.format || rule.transformer) {
+      next.transform = toTransformObject(rule.formatter || rule.format || rule.transformer)
     }
     if (next.transform?.type === 'expression' && !next.transform.expression && rule.expression) {
       next.transform.expression = rule.expression

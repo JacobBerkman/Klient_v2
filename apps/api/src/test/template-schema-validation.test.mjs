@@ -228,6 +228,50 @@ test('mapping preview resolves profile and submission explicit path prefixes', a
   assert.equal(valueByField.goal_via_form, 'Build emergency fund')
 })
 
+test('legacy and modern mapping payloads produce equivalent runtime preview output', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+  const profile = store.createProfile(user, { kind: 'client', firstName: 'Jamie', lastName: 'Parity', stage: 'intake' })
+  const formTemplate = store.createFormTemplate(user, {
+    name: 'Legacy parity form',
+    sections: [{ key: 'goal', label: 'Goal', type: 'text' }]
+  })
+  const submission = store.createFormSubmission(user, {
+    clientId: profile.id,
+    templateId: formTemplate.id,
+    status: 'submitted',
+    data: { goal: 'Fund education' }
+  })
+
+  const modernTemplate = store.createDocumentTemplate(user, {
+    name: 'Modern parity template',
+    mappings: [
+      { pdfField: 'client_first_name', sourcePath: 'profile.firstName', fieldLabel: 'First Name' },
+      { pdfField: 'client_goal', sourcePath: 'submission.goal', transform: { type: 'expression', expression: 'value' } }
+    ]
+  })
+  const legacyTemplate = store.createDocumentTemplate(user, {
+    name: 'Legacy parity template',
+    mappings: [
+      { targetField: 'client_first_name', path: 'profile.firstName', label: 'First Name', isRequired: false },
+      { field: 'client_goal', source: 'submission.goal', formatter: 'custom', expression: 'value' }
+    ]
+  })
+
+  const modernPreview = store.previewTemplateMappings(user, modernTemplate.id, {
+    clientId: profile.id,
+    submissionId: submission.id
+  })
+  const legacyPreview = store.previewTemplateMappings(user, legacyTemplate.id, {
+    clientId: profile.id,
+    submissionId: submission.id
+  })
+
+  const modernRows = modernPreview.rows.map((row) => ({ pdfField: row.pdfField, sourcePath: row.sourcePath, value: row.value }))
+  const legacyRows = legacyPreview.rows.map((row) => ({ pdfField: row.pdfField, sourcePath: row.sourcePath, value: row.value }))
+  assert.deepEqual(legacyRows, modernRows)
+})
+
 test('firm custom profile fields participate in firm-aware preview + publish source path validation', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)

@@ -35,6 +35,7 @@ const canonicalHardGateSequence = [
   'npm run test:integration',
   'npm run check:migrations',
   'npm run test:smoke',
+  'npm run test:ui-contract',
   'npm run test:e2e',
   'npm run test:security'
 ]
@@ -77,6 +78,9 @@ for (const command of canonicalCommandLabels) {
 }
 
 assertContainsInOrder(contentByKey.quickRef, canonicalHardGateSequence, filesToRead.quickRef)
+
+assertContains(contentByKey.quickRef, 'npm run validate:master', filesToRead.quickRef)
+assertContains(contentByKey.checklist, 'npm run validate:master', filesToRead.checklist)
 
 assertContains(
   contentByKey.readme,
