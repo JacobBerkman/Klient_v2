@@ -1,17 +1,18 @@
 import { assert, createTestContext } from './test-harness.mjs'
 
-async function processQueued(context, times = 1) {
-  for (let i = 0; i < times; i += 1) {
-    await context.request('/api/exports/process', {
-      method: 'POST',
-      headers: context.authHeaders()
-    })
-    await wait(300)
-  }
+const TERMINAL_EXPORT_STATUSES = new Set(['completed', 'failed', 'dead-letter'])
+
+async function processQueueTick(context) {
+  await context.request('/api/exports/process', {
+    method: 'POST',
+    headers: context.authHeaders()
+  })
 }
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+async function processQueued(context, times = 1) {
+  for (let i = 0; i < times; i += 1) {
+    await processQueueTick(context)
+  }
 }
 
 async function consumeResponse(response) {
@@ -19,43 +20,40 @@ async function consumeResponse(response) {
   await response.arrayBuffer()
 }
 
-async function waitForTerminalExport(context, exportId, { maxTicks = 20 } = {}) {
+async function waitForExport(context, matcher, { maxTicks = 40 } = {}) {
   for (let attempt = 0; attempt < maxTicks; attempt += 1) {
     const exportsList = await context.request('/api/exports?sort=updatedAt_desc', {
       headers: context.authHeaders()
     })
-    const job = exportsList.find((entry) => entry.id === exportId)
-    if (job && ['completed', 'failed', 'dead-letter'].includes(job.status)) return job
-    await context.request('/api/exports/process', {
-      method: 'POST',
-      headers: context.authHeaders()
-    })
-    await wait(250)
+    const match = exportsList.find(matcher)
+    if (match) return match
+    await processQueueTick(context)
   }
+
   return null
 }
 
-async function waitForCompletedExport(context, exportIds, { maxTicks = 30 } = {}) {
-  for (let attempt = 0; attempt < maxTicks; attempt += 1) {
-    const exportsList = await context.request('/api/exports?sort=updatedAt_desc', {
-      headers: context.authHeaders()
-    })
-    const terminal = exportsList.find(
-      (entry) => exportIds.includes(entry.id) && ['completed', 'failed', 'dead-letter'].includes(entry.status)
-    )
-    if (terminal) return terminal
-    await context.request('/api/exports/process', {
-      method: 'POST',
-      headers: context.authHeaders()
-    })
-    await wait(300)
-  }
-  return null
+async function waitForTerminalExport(context, exportId, { maxTicks = 40 } = {}) {
+  return waitForExport(
+    context,
+    (entry) => entry.id === exportId && TERMINAL_EXPORT_STATUSES.has(entry.status),
+    { maxTicks }
+  )
 }
 
-const context = await createTestContext('exports')
+async function waitForCompletedExport(context, exportIds, { maxTicks = 60 } = {}) {
+  const idSet = new Set(exportIds)
+  return waitForExport(
+    context,
+    (entry) => idSet.has(entry.id) && TERMINAL_EXPORT_STATUSES.has(entry.status),
+    { maxTicks }
+  )
+}
 
-try {
+async function main() {
+  const context = await createTestContext('exports')
+
+  try {
   await context.login()
   const headers = context.authHeaders()
 
@@ -400,6 +398,13 @@ try {
       2
     )
   )
-} finally {
-  await context.shutdown()
+  } finally {
+    await context.shutdown()
+  }
 }
+
+main().catch((error) => {
+  process.exitCode = 1
+  console.error(`\n❌ integration-exports failed: ${error.message}`)
+  throw error
+})

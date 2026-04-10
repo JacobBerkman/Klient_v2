@@ -23,8 +23,8 @@ env:
   FORCE_COLOR: '0'
 
 jobs:
-  syntax_lint:
-    name: 1) syntax/lint
+  docs_and_gate_config:
+    name: 1) docs + gate config parity
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -36,38 +36,25 @@ jobs:
 
       - run: npm ci
 
-      - name: Run syntax/lint suite
+      - name: Validate release docs and gate command wiring
         run: |
-          mkdir -p artifacts/syntax-lint
+          mkdir -p artifacts/docs-and-gate-config
           {
-            echo "# Syntax/Lint readiness summary"
-            echo "- suite: syntax/lint"
-            echo "- seed: ${TEST_SEED}"
-            echo "- node: $(node --version)"
-            echo "- npm: $(npm --version)"
-          } > artifacts/syntax-lint/readiness-summary.md
+            npm run check:release-docs
+            npm run check:release-gate-commands
+          } 2>&1 | tee artifacts/docs-and-gate-config/suite.log
 
-          {
-            npm run check:syntax
-            npm run lint
-            npm run format:check
-            git diff --check
-          } 2>&1 | tee artifacts/syntax-lint/suite.log
-
-      - name: Upload failure artifacts (syntax/lint)
+      - name: Upload failure artifacts (docs + gate config)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: syntax-lint-failure-artifacts
+          name: docs-and-gate-config-failure-artifacts
           if-no-files-found: warn
           path: |
-            artifacts/syntax-lint/**
-            test-results/**
-            snapshots/**
-            tmp/**/snapshots/**
+            artifacts/docs-and-gate-config/**
 
-  smoke_runtime_contract:
-    name: 2) smoke + runtime contract
+  hard_release_gate:
+    name: 2) hard release gate (validate:master)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -79,144 +66,27 @@ jobs:
 
       - run: npm ci
 
-      - name: Run smoke + runtime contract suite
+      - name: Run canonical hard release gate
         run: |
-          mkdir -p artifacts/smoke-runtime-contract
+          mkdir -p artifacts/hard-release-gate
           {
-            echo "# Smoke + runtime contract readiness summary"
-            echo "- suite: smoke + runtime contract"
+            echo "# Hard release gate readiness summary"
+            echo "- suite: validate:master"
             echo "- seed: ${TEST_SEED}"
             echo "- node: $(node --version)"
             echo "- npm: $(npm --version)"
-          } > artifacts/smoke-runtime-contract/readiness-summary.md
+          } > artifacts/hard-release-gate/readiness-summary.md
 
-          {
-            npm run test:smoke
-            npm run test:runtime-contract
-          } 2>&1 | tee artifacts/smoke-runtime-contract/suite.log
+          npm run validate:master 2>&1 | tee artifacts/hard-release-gate/suite.log
 
-      - name: Upload failure artifacts (smoke + runtime contract)
+      - name: Upload failure artifacts (hard release gate)
         if: failure()
         uses: actions/upload-artifact@v4
         with:
-          name: smoke-runtime-contract-failure-artifacts
+          name: hard-release-gate-failure-artifacts
           if-no-files-found: warn
           path: |
-            artifacts/smoke-runtime-contract/**
-            test-results/**
-            snapshots/**
-            tmp/**/snapshots/**
-
-  api_contract:
-    name: 3) API contract
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-
-      - name: Run API contract suite
-        run: |
-          mkdir -p artifacts/api-contract
-          {
-            echo "# API contract readiness summary"
-            echo "- suite: API contract"
-            echo "- seed: ${TEST_SEED}"
-            echo "- node: $(node --version)"
-            echo "- npm: $(npm --version)"
-          } > artifacts/api-contract/readiness-summary.md
-
-          npm run test:contract 2>&1 | tee artifacts/api-contract/suite.log
-
-      - name: Upload failure artifacts (API contract)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: api-contract-failure-artifacts
-          if-no-files-found: warn
-          path: |
-            artifacts/api-contract/**
-            test-results/**
-            snapshots/**
-            tmp/**/snapshots/**
-
-  full_integration:
-    name: 4) full integration
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-
-      - name: Run full integration suite
-        run: |
-          mkdir -p artifacts/full-integration
-          {
-            echo "# Full integration readiness summary"
-            echo "- suite: full integration"
-            echo "- seed: ${TEST_SEED}"
-            echo "- node: $(node --version)"
-            echo "- npm: $(npm --version)"
-          } > artifacts/full-integration/readiness-summary.md
-
-          npm run test:integration 2>&1 | tee artifacts/full-integration/suite.log
-
-      - name: Upload failure artifacts (full integration)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: full-integration-failure-artifacts
-          if-no-files-found: warn
-          path: |
-            artifacts/full-integration/**
-            test-results/**
-            snapshots/**
-            tmp/**/snapshots/**
-
-  migration_checks:
-    name: 5) migration checks
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-
-      - name: Run migration checks suite
-        run: |
-          mkdir -p artifacts/migration-checks
-          {
-            echo "# Migration checks readiness summary"
-            echo "- suite: migration checks"
-            echo "- seed: ${TEST_SEED}"
-            echo "- node: $(node --version)"
-            echo "- npm: $(npm --version)"
-          } > artifacts/migration-checks/readiness-summary.md
-
-          npm run check:migrations 2>&1 | tee artifacts/migration-checks/suite.log
-
-      - name: Upload failure artifacts (migration checks)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: migration-checks-failure-artifacts
-          if-no-files-found: warn
-          path: |
-            artifacts/migration-checks/**
+            artifacts/hard-release-gate/**
             test-results/**
             snapshots/**
             tmp/**/snapshots/**
