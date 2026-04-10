@@ -2,6 +2,7 @@
 
 Use this handoff package for every production release so engineering, SRE, and approvers review one consistent record.
 For exact operator commands and diagnostics triage, use the canonical operator flow in `docs/deployment-quick-reference.md#canonical-operator-flow-exact-command-sequence`.
+For canonical ordering references, use `docs/deployment-quick-reference.md#canonical-hard-gate-sequence-validatemaster-exact-execution-order` and `docs/deployment-quick-reference.md#deterministic-post-deploy-validation-sequence`.
 For a filled historical example, see `docs/release-handoffs/release-handoff-2026-03-30.md`.
 
 Architecture note: this release process assumes the existing single-process **Node + SQLite + static web** deployment model (no split app-tier/database migration in this template).
@@ -94,6 +95,7 @@ Checkpoint citation guidance (required when multiple postdeploy runs exist):
 
 Optional per-file links (if a reviewer requests drill-down):
 - Use the canonical required artifact list in `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
+- For E2E proof completeness, include `e2e-summary.json` fields `executionMode`, `details.artifacts.playwrightJsonReport.path`, `details.artifacts.playwrightJsonReport.valid`, and `details.artifacts.playwrightJsonReport.suiteCount`.
 - Add any additional per-phase links relevant to this release (for example: `branch-parity.txt`, `backup.json`, `startup-failfast.json`, `restore.json`, `restore-drill.json`, `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`).
 
 ## 4) Rollback readiness

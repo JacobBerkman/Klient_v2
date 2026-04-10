@@ -23,11 +23,13 @@ async function createEvidenceDir({ e2eFixtureName }) {
     'security-summary.json'
   ]
   for (const file of summaryFiles) {
-    await writeFile(resolve(evidenceDir, file), '{"status":"passed"}\n', 'utf8')
+    const gate = file.replace('-summary.json', '').replace('api-contract', 'contract')
+    await writeFile(resolve(evidenceDir, file), JSON.stringify({ status: 'passed', error: null, gate }) + '\n', 'utf8')
   }
 
   const e2eFixture = await readFile(resolve(fixturesDir, e2eFixtureName), 'utf8')
   await writeFile(resolve(evidenceDir, 'e2e-summary.json'), `${e2eFixture.trim()}\n`, 'utf8')
+  await writeFile(resolve(evidenceDir, 'playwright-report.json'), '{"suites":[{"title":"release blocking smoke"}]}\n', 'utf8')
 
   await writeFile(resolve(evidenceDir, 'backup.json'), '{"ok":true}\n', 'utf8')
   await writeFile(resolve(evidenceDir, 'branch-parity.txt'), 'ok\n', 'utf8')
@@ -93,5 +95,28 @@ test('local validation allows fallback mode when ref is not release', async () =
   const result = runValidate({ evidenceDir: context.evidenceDir, env: { GITHUB_REF: 'refs/heads/feature/local-test' } })
 
   assert.equal(result.status, 0, result.stderr || result.stdout)
+  await rm(context.root, { recursive: true, force: true })
+})
+
+
+test('fails when e2e summary is missing playwright report metadata fields', async () => {
+  const context = await createEvidenceDir({ e2eFixtureName: 'browser.json' })
+  await writeFile(resolve(context.evidenceDir, 'e2e-summary.json'), '{"status":"passed","error":null,"gate":"e2e","executionMode":"browser","details":{"artifacts":{}}}\n', 'utf8')
+
+  const result = runValidate({ evidenceDir: context.evidenceDir, env: { GITHUB_REF: 'refs/heads/release/2026-04-10' } })
+
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /playwrightJsonReport metadata/)
+  await rm(context.root, { recursive: true, force: true })
+})
+
+test('fails when key gate summary is not passed', async () => {
+  const context = await createEvidenceDir({ e2eFixtureName: 'browser.json' })
+  await writeFile(resolve(context.evidenceDir, 'security-summary.json'), '{"status":"failed","error":{"message":"boom"}}\n', 'utf8')
+
+  const result = runValidate({ evidenceDir: context.evidenceDir })
+
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /security-summary\.json must have status=passed/)
   await rm(context.root, { recursive: true, force: true })
 })

@@ -9,6 +9,13 @@ const filesToRead = {
   operationsUi: 'apps/web/public/app.js'
 }
 
+const canonicalE2EEvidenceFields = [
+  'executionMode',
+  'details.artifacts.playwrightJsonReport.path',
+  'details.artifacts.playwrightJsonReport.valid',
+  'details.artifacts.playwrightJsonReport.suiteCount'
+]
+
 const canonicalArtifacts = [
   'validate-master-summary.json',
   'api-contract-summary.json',
@@ -102,5 +109,31 @@ assertContains(
   'docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts',
   filesToRead.handoff
 )
+
+assertContains(
+  contentByKey.checklist,
+  'docs/deployment-quick-reference.md#canonical-hard-gate-sequence-validatemaster-exact-execution-order',
+  filesToRead.checklist
+)
+assertContains(
+  contentByKey.checklist,
+  'docs/deployment-quick-reference.md#deterministic-post-deploy-validation-sequence',
+  filesToRead.checklist
+)
+assertContains(
+  contentByKey.handoff,
+  'docs/deployment-quick-reference.md#canonical-hard-gate-sequence-validatemaster-exact-execution-order',
+  filesToRead.handoff
+)
+assertContains(
+  contentByKey.handoff,
+  'docs/deployment-quick-reference.md#deterministic-post-deploy-validation-sequence',
+  filesToRead.handoff
+)
+
+for (const e2eField of canonicalE2EEvidenceFields) {
+  assertContains(contentByKey.quickRef, e2eField, filesToRead.quickRef)
+  assertContains(contentByKey.checklist, e2eField, filesToRead.checklist)
+}
 
 process.stdout.write('✅ Release doc consistency checks passed.\n')
