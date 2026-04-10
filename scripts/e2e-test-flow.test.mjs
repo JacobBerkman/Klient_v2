@@ -25,3 +25,10 @@ test('e2e harness enforces strict CI browser runs and allows opt-in local fallba
   assert.doesNotMatch(content, /existsSync\(/)
   assert.doesNotMatch(content, /readFileSync\(/)
 })
+
+
+test('e2e script loads as an executable module and exports main entrypoint', async () => {
+  const module = await import('./e2e-test.mjs')
+  assert.equal(typeof module.main, 'function')
+  assert.equal(typeof module.validatePlaywrightJsonReport, 'function')
+})

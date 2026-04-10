@@ -103,8 +103,7 @@ async function main() {
   console.log('\n✅ All integration scripts passed.')
   console.log(`Executed ${executed.length} suites in ${totalDurationMs}ms.`)
 
-  // Force deterministic aggregate-runner completion even when a suite leaves transient async handles.
-  process.exit(0)
+  process.exitCode = 0
 }
 
 main().catch((error) => {
