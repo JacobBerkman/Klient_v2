@@ -172,6 +172,31 @@ function emitE2EModeSummary(evidenceDir) {
   }
 }
 
+function emitPlaywrightProvisioningDiagnostics() {
+  const strictMode = determineStrictE2EMode(process.env)
+  const configuredBrowsersPath = process.env.PLAYWRIGHT_BROWSERS_PATH || '0'
+  const expectedChromiumPaths = [
+    process.env.PLAYWRIGHT_CHROMIUM_EXECUTABLE_PATH || '',
+    process.env.PLAYWRIGHT_CHROMIUM_PATH || '',
+    process.env.CHROMIUM_PATH || '',
+    process.env.CHROME_BIN || ''
+  ].map((value) => value.trim()).filter(Boolean)
+  const hasKnownChromiumBinary = expectedChromiumPaths.some((candidatePath) => {
+    try {
+      return Boolean(candidatePath) && readdirSync(dirname(candidatePath)).length >= 0
+    } catch {
+      return false
+    }
+  })
+  process.stdout.write(
+    `\nℹ Playwright provisioning diagnostics: strict mode ${strictMode ? 'required' : 'not required'}; ` +
+      `PLAYWRIGHT_BROWSERS_PATH=${configuredBrowsersPath}; known Chromium binary ${hasKnownChromiumBinary ? 'detected' : 'not detected'}.\n`
+  )
+  process.stdout.write(
+    `ℹ Playwright provisioning mode: ${hasKnownChromiumBinary ? 'verify+provision' : 'provision-install'} (command: npx playwright install --with-deps chromium).\n`
+  )
+}
+
 async function validateReleaseEvidence() {
   const args = ['scripts/validate-release-evidence.mjs', '--release-id', options.releaseId, '--phase', executionPhase]
   const strictHandoffValidationEnabled =
@@ -697,6 +722,8 @@ const preflight = async () => {
   }
   writeFileSync(startupFailfastEvidence, `${JSON.stringify(probeReport, null, 2)}\n`, 'utf8')
   ensureStartupFailfastEvidence(startupFailfastEvidence)
+
+  emitPlaywrightProvisioningDiagnostics()
 
   await runStep({
     name: 'Flow A.4a Provision Playwright browser binaries',
