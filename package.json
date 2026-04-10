@@ -34,7 +34,8 @@
     "test:smoke": "node scripts/smoke-test.mjs",
     "test:ui-contract": "node --test apps/web/public/ui-contract.test.mjs",
     "validate:master": "node scripts/master-validate.mjs",
-    "validate:release-evidence": "node scripts/validate-release-evidence.mjs"
+    "validate:release-evidence": "node scripts/validate-release-evidence.mjs",
+    "check:release-gate-commands": "node scripts/check-release-gate-commands.mjs"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

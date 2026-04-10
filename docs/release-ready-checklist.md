@@ -38,6 +38,13 @@ Hard gate only (legacy/manual mode):
 npm run validate:master
 ```
 
+Gate/documentation parity precheck (required before GO/NO-GO execution and mirrored in CI):
+
+```bash
+npm run check:release-docs
+npm run check:release-gate-commands
+```
+
 Canonical gate artifact filenames and required evidence bundle contents are maintained in one location:
 `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
 
