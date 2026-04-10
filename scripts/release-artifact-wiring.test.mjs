@@ -55,9 +55,22 @@ test('validate master evidence env var wiring remains explicit for every evidenc
     ['Integration suites', 'RELEASE_EVIDENCE_INTEGRATION_FILE'],
     ['Migration order checks', 'RELEASE_EVIDENCE_MIGRATION_FILE'],
     ['Smoke test', 'RELEASE_EVIDENCE_SMOKE_FILE'],
-    ['E2E checks', 'RELEASE_EVIDENCE_E2E_FILE'],
+    ['E2E browser checks', 'RELEASE_EVIDENCE_E2E_FILE'],
     ['Security checks', 'RELEASE_EVIDENCE_SECURITY_FILE']
   ]
+
+  const baseGateStepsBlock = masterValidate.match(/const baseGateSteps = \[([\s\S]*?)\n\]/)?.[1] || ''
+  const evidenceProducingStepLabels = sortedUnique(
+    [...baseGateStepsBlock.matchAll(/\{[^{}]*name:\s*'([^']+)'[^{}]*evidenceFile:\s*resolve\(defaultEvidenceDir,\s*'[^']+'\)[^{}]*\}/g)].map(
+      (match) => match[1]
+    )
+  )
+  const expectedMappingLabels = sortedUnique(expectedMappings.map(([stepLabel]) => stepLabel))
+  assert.deepEqual(
+    expectedMappingLabels,
+    evidenceProducingStepLabels,
+    'expectedMappings must cover all evidence-producing baseGateSteps labels'
+  )
 
   for (const [stepLabel, envVarName] of expectedMappings) {
     const escapedLabel = stepLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
