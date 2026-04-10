@@ -105,6 +105,28 @@ Smoke test the full runtime:
 npm run test:smoke
 ```
 
+Run only the minimal critical-path browser E2E suite (release-blocking tag):
+
+```bash
+E2E_GREP='@release-blocking' npm run test:e2e
+```
+
+Run the complete browser E2E suite:
+
+```bash
+npm run test:e2e
+```
+
+### E2E execution expectations (local + CI)
+- Local:
+  - `npm run test:e2e` runs UI contracts plus Playwright browser suites.
+  - `E2E_GREP='@release-blocking' npm run test:e2e` runs only the release-blocking critical path.
+  - Retries are disabled locally to fail fast.
+- CI:
+  - The `e2e release-blocking` workflow job installs Chromium and runs `E2E_GREP='@release-blocking' npm run test:e2e`.
+  - Playwright retries are enabled in CI and traces/screenshots are captured only on failures for diagnostics.
+  - Merge/release validation cannot pass unless the release-blocking E2E job is green.
+
 ### One-command local validation
 
 Prepare dependencies and local environment defaults:
