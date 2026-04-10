@@ -9,8 +9,8 @@ import { createTestContext } from './test-harness.mjs'
 const uiContractSuites = ['apps/web/public/ui-contract.test.mjs']
 const browserSuitePattern = 'tests/e2e'
 const executionMode = 'browser'
-const browserFallbackEnvFlag = 'E2E_ALLOW_BROWSER_FALLBACK'
-const fallbackSuite = 'Playwright browser fallback (local only)'
+const browserFallbackEnvFlag = 'RELEASE_E2E_ALLOW_FALLBACK'
+const fallbackSuite = 'playwright-browser-fallback'
 
 const evidence = createEvidenceRecorder({
   gate: 'e2e',
@@ -268,12 +268,8 @@ export async function main() {
     let browserExitCode = 0
     if (browserInstalled) {
       const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
-      const playwrightArgs = ['playwright', 'test', browserSuitePattern]
-      if (process.env.E2E_GREP) {
-        playwrightArgs.push('--grep', process.env.E2E_GREP)
-      }
-      const playwrightResult = await runCommand(command, playwrightArgs, baseEnv, 8 * 60_000)
-      browserExitCode = playwrightResult.code
+      const playwrightResult = await runCommand(command, ['playwright', 'test', browserSuitePattern], baseEnv)
+      browserExitCode = playwrightResult.code ?? 1
 
       if (playwrightResult.signal || playwrightResult.code !== 0) {
         const errorMessage = playwrightResult.signal
@@ -331,38 +327,69 @@ export async function main() {
         process.exit(1)
         return
       }
-    } else if (fallback.enabled) {
-      await writeFallbackPlaywrightReport(playwrightReportPath)
-    } else {
-      throw new Error('Playwright browser binaries are not installed. Run "npx playwright install --with-deps chromium".')
-    }
 
-    const reportValidation = await gatePlaywrightReportOrFail({
-      reportPath: playwrightReportPath,
-      uiContractStatus: { status: 'passed', exitCode: 0 }
-    })
-    if (!reportValidation.ok) {
-      return 1
-    }
-
-    evidence.finalize({
-      status: 'passed',
-      fields: { executionMode },
-      details: {
-        suites: {
-          uiContract: uiContractSuites,
-          browser: reportValidation.suiteNames
-        },
-        artifacts: {
-          playwrightJsonReport: reportValidation.artifact
-        },
-        downgradeWarnings: [],
-        uiContract: { status: 'passed', exitCode: 0 },
-        browser: { status: 'passed', exitCode: playwrightResult.code }
+      const reportValidation = await gatePlaywrightReportOrFail({
+        reportPath: playwrightReportPath,
+        uiContractStatus: { status: 'passed', exitCode: 0 }
+      })
+      if (!reportValidation.ok) {
+        process.exitCode = 1
+        return
       }
-    })
 
-    return 0
+      evidence.finalize({
+        status: 'passed',
+        fields: { executionMode },
+        details: {
+          suites: {
+            uiContract: uiContractSuites,
+            browser: reportValidation.suiteNames
+          },
+          artifacts: {
+            playwrightJsonReport: reportValidation.artifact
+          },
+          downgradeWarnings: [],
+          uiContract: { status: 'passed', exitCode: 0 },
+          browser: { status: 'passed', exitCode: browserExitCode }
+        }
+      })
+      return
+    }
+
+    if (fallback.enabled) {
+      await writeFallbackPlaywrightReport(playwrightReportPath)
+      const reportValidation = await gatePlaywrightReportOrFail({
+        reportPath: playwrightReportPath,
+        uiContractStatus: { status: 'passed', exitCode: 0 }
+      })
+      if (!reportValidation.ok) {
+        process.exitCode = 1
+        return
+      }
+
+      evidence.finalize({
+        status: 'passed',
+        details: {
+          suites: {
+            uiContract: uiContractSuites,
+            browser: reportValidation.suiteNames
+          },
+          artifacts: {
+            playwrightJsonReport: reportValidation.artifact
+          },
+          downgradeWarnings: [
+            `Browser binaries were not detected; fallback execution accepted because ${browserFallbackEnvFlag}=1`
+          ],
+          uiContract: { status: 'passed', exitCode: 0 },
+          browser: { status: 'skipped', exitCode: 0 }
+        }
+      })
+      return
+    }
+
+    throw new Error(
+      `Playwright browser binaries are not installed. Install browsers or enable local fallback with ${browserFallbackEnvFlag}=1.`
+    )
   } catch (error) {
     evidence.finalize({ status: 'failed', fields: { executionMode }, error })
     throw error

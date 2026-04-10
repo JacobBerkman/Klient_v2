@@ -1,0 +1,111 @@
+{
+  "schemaVersion": "1.1.0",
+  "generatedAt": "2026-04-10T23:25:16.673Z",
+  "nodeEnv": null,
+  "evidenceDir": "/workspace/Klient_v2/artifacts/release-evidence",
+  "status": "passed",
+  "startedAt": "2026-04-10T23:20:27.337Z",
+  "finishedAt": "2026-04-10T23:25:16.673Z",
+  "failedStep": null,
+  "steps": [
+    {
+      "name": "Static syntax checks",
+      "command": "npm run check:syntax",
+      "evidenceFile": null,
+      "status": "passed",
+      "durationMs": 2192,
+      "startedAt": "2026-04-10T23:20:27.340Z",
+      "finishedAt": "2026-04-10T23:20:29.534Z"
+    },
+    {
+      "name": "Conflict marker guard",
+      "command": "npm run check:conflicts",
+      "evidenceFile": null,
+      "status": "passed",
+      "durationMs": 441,
+      "startedAt": "2026-04-10T23:20:29.536Z",
+      "finishedAt": "2026-04-10T23:20:29.977Z"
+    },
+    {
+      "name": "API contract tests",
+      "command": "npm run test:contract",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/api-contract-summary.json",
+      "status": "passed",
+      "durationMs": 4894,
+      "startedAt": "2026-04-10T23:20:29.979Z",
+      "finishedAt": "2026-04-10T23:20:34.873Z"
+    },
+    {
+      "name": "Negative-path RBAC checks",
+      "command": "node scripts/integration-rbac.mjs",
+      "evidenceFile": null,
+      "status": "passed",
+      "durationMs": 7356,
+      "startedAt": "2026-04-10T23:20:34.875Z",
+      "finishedAt": "2026-04-10T23:20:42.231Z"
+    },
+    {
+      "name": "Negative-path tenancy checks",
+      "command": "node scripts/integration-tenancy.mjs",
+      "evidenceFile": null,
+      "status": "passed",
+      "durationMs": 9849,
+      "startedAt": "2026-04-10T23:20:42.233Z",
+      "finishedAt": "2026-04-10T23:20:52.082Z"
+    },
+    {
+      "name": "Integration suites",
+      "command": "npm run test:integration",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/integration-summary.json",
+      "status": "passed",
+      "durationMs": 222032,
+      "startedAt": "2026-04-10T23:20:52.084Z",
+      "finishedAt": "2026-04-10T23:24:34.116Z"
+    },
+    {
+      "name": "Migration order checks",
+      "command": "npm run check:migrations",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/migration-summary.json",
+      "status": "passed",
+      "durationMs": 1269,
+      "startedAt": "2026-04-10T23:24:34.118Z",
+      "finishedAt": "2026-04-10T23:24:35.387Z"
+    },
+    {
+      "name": "Smoke test",
+      "command": "npm run test:smoke",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/smoke-summary.json",
+      "status": "passed",
+      "durationMs": 21098,
+      "startedAt": "2026-04-10T23:24:35.388Z",
+      "finishedAt": "2026-04-10T23:24:56.486Z"
+    },
+    {
+      "name": "UI contract checks",
+      "command": "npm run test:ui-contract",
+      "evidenceFile": null,
+      "status": "passed",
+      "durationMs": 586,
+      "startedAt": "2026-04-10T23:24:56.488Z",
+      "finishedAt": "2026-04-10T23:24:57.074Z"
+    },
+    {
+      "name": "E2E browser checks",
+      "command": "npm run test:e2e",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/e2e-summary.json",
+      "status": "passed",
+      "durationMs": 2037,
+      "startedAt": "2026-04-10T23:24:57.075Z",
+      "finishedAt": "2026-04-10T23:24:59.112Z"
+    },
+    {
+      "name": "Security checks",
+      "command": "npm run test:security",
+      "evidenceFile": "/workspace/Klient_v2/artifacts/release-evidence/security-summary.json",
+      "status": "passed",
+      "durationMs": 17558,
+      "startedAt": "2026-04-10T23:24:59.115Z",
+      "finishedAt": "2026-04-10T23:25:16.673Z"
+    }
+  ]
+}

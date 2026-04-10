@@ -1,0 +1,12 @@
+{
+  "schemaVersion": "1.0.0",
+  "gate": "contract",
+  "command": "npm run test:contract",
+  "startedAt": "2026-04-10T23:14:18.893Z",
+  "finishedAt": "2026-04-10T23:14:23.177Z",
+  "durationMs": 4284,
+  "status": "passed",
+  "metadata": {},
+  "details": {},
+  "error": null
+}
