@@ -67,8 +67,8 @@ Required gate summaries:
 - `e2e-summary.json`
 
 E2E hard requirement:
-- The Playwright JSON report referenced by `e2e-summary.json` must exist, parse as valid JSON, and contain at least one collected suite/spec title; otherwise the E2E gate is failed and GO/NO-GO preflight must stop.
-- Local-only troubleshooting fallback is gated by `RELEASE_E2E_ALLOW_FALLBACK=1`; when `CI=true`, fallback is always ignored and browser execution remains strict.
+- `e2e-summary.json` must include `executionMode` plus `details.artifacts.playwrightJsonReport.path`, `details.artifacts.playwrightJsonReport.valid=true`, and `details.artifacts.playwrightJsonReport.suiteCount>=1`.
+- The Playwright JSON report referenced by `details.artifacts.playwrightJsonReport.path` must exist, parse as valid JSON, and contain at least one collected suite/spec title; otherwise the E2E gate is failed and GO/NO-GO preflight must stop.
 
 Required manifest + approval artifacts:
 - `manifest.json`

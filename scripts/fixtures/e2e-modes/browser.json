@@ -1,6 +1,15 @@
 {
+  "status": "passed",
+  "error": null,
   "executionMode": "browser",
   "details": {
+    "artifacts": {
+      "playwrightJsonReport": {
+        "path": "playwright-report.json",
+        "valid": true,
+        "suiteCount": 1
+      }
+    },
     "downgradeWarnings": []
   }
 }

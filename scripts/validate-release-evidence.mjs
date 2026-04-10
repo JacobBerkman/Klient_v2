@@ -207,6 +207,8 @@ function determineStrictE2EMode(env) {
 function validateE2ESummary(evidenceDir, { strictMode }) {
   const e2eSummaryPath = resolve(evidenceDir, 'e2e-summary.json')
   const e2eSummary = parseJson(e2eSummaryPath, 'E2E summary')
+  assertPassedGateSummary(e2eSummary, { fileName: 'e2e-summary.json', gateName: 'e2e' })
+
   const mode = e2eSummary?.executionMode
   if (mode !== 'browser' && mode !== 'fallback') {
     fail(`Invalid e2e-summary.json executionMode at ${e2eSummaryPath}. Expected "browser" or "fallback", got ${String(mode)}.`)
@@ -216,6 +218,75 @@ function validateE2ESummary(evidenceDir, { strictMode }) {
     fail(
       `E2E strict mode is required for release refs, but e2e-summary.json executionMode=${mode}. Re-run with browser mode.`
     )
+  }
+
+  const playwrightReport = e2eSummary?.details?.artifacts?.playwrightJsonReport
+  if (!playwrightReport || typeof playwrightReport !== 'object') {
+    fail('e2e-summary.json is missing details.artifacts.playwrightJsonReport metadata.')
+  }
+
+  if (typeof playwrightReport.path !== 'string' || playwrightReport.path.trim().length === 0) {
+    fail('e2e-summary.json must include a non-empty details.artifacts.playwrightJsonReport.path value.')
+  }
+
+  if (playwrightReport.valid !== true) {
+    fail('e2e-summary.json details.artifacts.playwrightJsonReport.valid must be true.')
+  }
+
+  if (!Number.isInteger(playwrightReport.suiteCount) || playwrightReport.suiteCount < 1) {
+    fail('e2e-summary.json details.artifacts.playwrightJsonReport.suiteCount must be an integer >= 1.')
+  }
+
+  const playwrightReportPath = resolve(evidenceDir, playwrightReport.path)
+  if (!existsSync(playwrightReportPath)) {
+    fail(`Playwright report referenced by e2e-summary.json is missing: ${playwrightReport.path}`)
+  }
+
+}
+
+
+
+function parseSummaryFile(evidenceDir, fileName, label) {
+  const filePath = resolve(evidenceDir, fileName)
+  if (!existsSync(filePath)) {
+    fail(`Missing required summary file: ${filePath}`)
+  }
+  return parseJson(filePath, label)
+}
+
+function assertPassedGateSummary(summary, { fileName, gateName }) {
+  if (!summary || typeof summary !== 'object') {
+    fail(`${fileName} must contain a JSON object.`)
+  }
+
+  if (summary.status !== 'passed') {
+    fail(`${fileName} must have status=passed for release evidence completeness. Got ${String(summary.status)}.`)
+  }
+
+  if (summary.error !== null) {
+    fail(`${fileName} must have error=null when status=passed.`)
+  }
+
+  if (summary.gate && summary.gate !== gateName) {
+    fail(`${fileName} gate mismatch. Expected ${gateName}, got ${String(summary.gate)}.`)
+  }
+}
+
+function validateKeyGateSummarySemantics(evidenceDir, phases) {
+  if (!phases.includes('preflight')) return
+
+  const gateSummaries = [
+    { fileName: 'api-contract-summary.json', gateName: 'contract' },
+    { fileName: 'integration-summary.json', gateName: 'integration' },
+    { fileName: 'migration-summary.json', gateName: 'migration' },
+    { fileName: 'smoke-summary.json', gateName: 'smoke' },
+    { fileName: 'security-summary.json', gateName: 'security' },
+    { fileName: 'validate-master-summary.json', gateName: 'validate-master' }
+  ]
+
+  for (const gate of gateSummaries) {
+    const summary = parseSummaryFile(evidenceDir, gate.fileName, `${gate.gateName} summary`)
+    assertPassedGateSummary(summary, gate)
   }
 }
 
@@ -311,6 +382,7 @@ const phasesToValidate =
 
 validateArtifacts(evidenceDir, phasesToValidate)
 validateSummaryFiles(evidenceDir, phasesToValidate)
+validateKeyGateSummarySemantics(evidenceDir, phasesToValidate)
 if (phasesToValidate.includes('preflight')) {
   validateE2ESummary(evidenceDir, { strictMode: determineStrictE2EMode(process.env) })
 }
