@@ -318,6 +318,14 @@ function normalizeCustomFieldType(value) {
   return normalized
 }
 
+function customFieldValidationError(message, fieldErrors = {}) {
+  const error = new Error(message)
+  error.statusCode = 422
+  error.code = 'CUSTOM_FIELD_VALIDATION'
+  error.details = { fieldErrors }
+  return error
+}
+
 function normalizeCustomFieldSchema(schema = {}) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
     return { fields: [], updatedAt: now() }
@@ -1760,13 +1768,20 @@ export function createStore({
       const key = String(input?.key || '')
         .trim()
         .replace(/[^a-zA-Z0-9_]+/g, '_')
-      if (!key) throw new Error('Custom field key is required.')
+      if (!key) throw customFieldValidationError('Custom field key is required.', { key: 'Key is required.' })
       if (firm.customFieldSchema.fields.some((field) => field.key === key)) {
-        throw new Error('Custom field key already exists.')
+        throw customFieldValidationError('Custom field key already exists.', { key: 'Key already exists.' })
       }
       const type = normalizeCustomFieldType(input?.type)
       if (!CUSTOM_FIELD_TYPES.has(type)) {
-        throw new Error('Custom field type must be one of: text, number, boolean, date.')
+        throw customFieldValidationError('Custom field type must be one of: text, number, boolean, date.', {
+          type: 'Type must be one of: text, number, boolean, date.'
+        })
+      }
+      if (input?.metadata != null && (typeof input.metadata !== 'object' || Array.isArray(input.metadata))) {
+        throw customFieldValidationError('Custom field metadata must be a JSON object.', {
+          metadata: 'Metadata must be a JSON object.'
+        })
       }
       const field = {
         key,
@@ -1793,13 +1808,20 @@ export function createStore({
       if ('type' in patch) {
         const nextType = normalizeCustomFieldType(patch.type)
         if (!CUSTOM_FIELD_TYPES.has(nextType)) {
-          throw new Error('Custom field type must be one of: text, number, boolean, date.')
+          throw customFieldValidationError('Custom field type must be one of: text, number, boolean, date.', {
+            type: 'Type must be one of: text, number, boolean, date.'
+          })
         }
         field.type = nextType
       }
       if ('label' in patch) field.label = String(patch.label || field.key).trim() || field.key
       if ('required' in patch) field.required = Boolean(patch.required)
       if ('metadata' in patch) {
+        if (patch.metadata != null && (typeof patch.metadata !== 'object' || Array.isArray(patch.metadata))) {
+          throw customFieldValidationError('Custom field metadata must be a JSON object.', {
+            metadata: 'Metadata must be a JSON object.'
+          })
+        }
         field.metadata =
           patch.metadata && typeof patch.metadata === 'object' && !Array.isArray(patch.metadata) ? { ...patch.metadata } : {}
       }
@@ -1814,7 +1836,13 @@ export function createStore({
       firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
       const before = firm.customFieldSchema.fields.length
       firm.customFieldSchema.fields = firm.customFieldSchema.fields.filter((entry) => entry.key !== fieldKey)
-      if (firm.customFieldSchema.fields.length === before) throw new Error('Custom field not found.')
+      if (firm.customFieldSchema.fields.length === before) {
+        const error = new Error('Custom field not found.')
+        error.statusCode = 404
+        error.code = 'CUSTOM_FIELD_NOT_FOUND'
+        error.details = { fieldErrors: { key: 'Field key was not found.' } }
+        throw error
+      }
       firm.customFieldSchema.updatedAt = now()
       persist()
       return { ok: true }

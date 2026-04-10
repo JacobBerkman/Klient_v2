@@ -458,13 +458,53 @@ function parseCustomFieldInputValue(field, rawValue) {
     const parsed = Number(value)
     return Number.isFinite(parsed) ? parsed : null
   }
+  if (field.type === 'date') {
+    return Number.isFinite(Date.parse(value)) ? value : null
+  }
   if (field.type === 'boolean') return value === 'true'
   return value
 }
 
-function customFieldControlMarkup(field, value = '', { disabled = false, idPrefix = 'profile-custom' } = {}) {
+function parseCustomFieldInputValueStrict(field, rawValue) {
+  const value = String(rawValue ?? '').trim()
+  if (!value) return { value: null, error: '' }
+  if (field.type === 'number') {
+    const parsed = Number(value)
+    if (!Number.isFinite(parsed)) {
+      return { value: null, error: `${field.label || field.key} must be a valid number.` }
+    }
+    return { value: parsed, error: '' }
+  }
+  if (field.type === 'date') {
+    if (!Number.isFinite(Date.parse(value))) {
+      return { value: null, error: `${field.label || field.key} must be a valid date.` }
+    }
+    return { value, error: '' }
+  }
+  if (field.type === 'boolean') {
+    if (value !== 'true' && value !== 'false') {
+      return { value: null, error: `${field.label || field.key} must be true or false.` }
+    }
+    return { value: value === 'true', error: '' }
+  }
+  return { value, error: '' }
+}
+
+function customFieldControlMarkup(
+  field,
+  value = '',
+  { disabled = false, idPrefix = 'profile-custom', booleanControl = 'select' } = {}
+) {
   const name = customFieldInputName(field.key)
   const elementId = `${idPrefix}-${field.key}`
+  if (field.type === 'boolean' && booleanControl === 'toggle') {
+    const checked = String(value) === 'true'
+    return `<label for="${escapeHtml(elementId)}" class="checkbox-row">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
+      <input id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" type="checkbox" value="true" ${checked ? 'checked' : ''} ${
+        disabled ? 'disabled' : ''
+      } />
+    </label>`
+  }
   if (field.type === 'boolean') {
     return `<label for="${escapeHtml(elementId)}">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
       <select id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" ${disabled ? 'disabled' : ''}>
@@ -505,13 +545,16 @@ function customFieldCreateFormMarkup() {
 
 function collectCustomFieldValues(formEl, fields = []) {
   const values = {}
+  const errors = []
   fields.forEach((field) => {
     const inputName = customFieldInputName(field.key)
-    const raw = formEl?.elements?.namedItem?.(inputName)?.value ?? ''
-    const parsed = parseCustomFieldInputValue(field, raw)
+    const control = formEl?.elements?.namedItem?.(inputName)
+    const raw = control?.type === 'checkbox' ? (control.checked ? 'true' : '') : control?.value ?? ''
+    const { value: parsed, error } = parseCustomFieldInputValueStrict(field, raw)
+    if (error) errors.push(error)
     if (parsed !== null) values[field.key] = parsed
   })
-  return values
+  return { values, errors }
 }
 
 function editableProfileFieldsFromCard(card = {}) {
@@ -2797,13 +2840,15 @@ function boardCardMarkup(card, kind) {
                   .map((field) =>
                     customFieldControlMarkup(field, inlineState.draft[customFieldInputName(field.key)] || '', {
                       disabled: !canEdit,
-                      idPrefix: `profile-edit-${card.id}`
+                      idPrefix: `profile-edit-${card.id}`,
+                      booleanControl: 'toggle'
                     })
                   )
                   .join('')}
               </div>
+              <p class="muted compact" data-inline-custom-field-errors="${card.id}" aria-live="polite"></p>
             </div>`
-            : ''
+            : '<p class="muted compact">No custom fields configured yet for this firm.</p>'
         }
         <div class="actions-row">
           <button type="submit" class="tiny" ${canEdit && inlineState.dirty && !inlineState.saving ? '' : 'disabled'}>${inlineState.saving ? 'Saving…' : 'Save'}</button>
@@ -2996,15 +3041,18 @@ function wireBoardInteractions(kind) {
     const profileId = form.dataset.editForm
     form.querySelectorAll('input, select, textarea').forEach((input) => {
       input.addEventListener('input', () => {
-        setInlineDraftField(kind, profileId, input.name, input.value)
+        const nextValue = input.type === 'checkbox' ? (input.checked ? 'true' : '') : input.value
+        setInlineDraftField(kind, profileId, input.name, nextValue)
       })
       input.addEventListener('change', () => {
-        setInlineDraftField(kind, profileId, input.name, input.value)
+        const nextValue = input.type === 'checkbox' ? (input.checked ? 'true' : '') : input.value
+        setInlineDraftField(kind, profileId, input.name, nextValue)
       })
     })
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
       const inlineState = ensureInlineProfileState(kind, profileId)
+      const feedbackEl = form.querySelector('[data-inline-feedback]')
       const payload = {
         firstName: inlineState.draft.firstName || '',
         lastName: inlineState.draft.lastName || '',
@@ -3012,16 +3060,27 @@ function wireBoardInteractions(kind) {
         phone: inlineState.draft.phone || ''
       }
       const extensionValues = {}
+      const extensionErrors = []
       state.customFieldSchema.fields.forEach((field) => {
-        const parsed = parseCustomFieldInputValue(field, inlineState.draft[customFieldInputName(field.key)] || '')
+        const { value: parsed, error } = parseCustomFieldInputValueStrict(
+          field,
+          inlineState.draft[customFieldInputName(field.key)] || ''
+        )
+        if (error) extensionErrors.push(error)
         if (parsed !== null) extensionValues[field.key] = parsed
       })
+      const customErrorEl = form.querySelector(`[data-inline-custom-field-errors="${profileId}"]`)
+      if (customErrorEl) customErrorEl.textContent = extensionErrors.join(' ')
+      if (extensionErrors.length) {
+        if (feedbackEl) feedbackEl.textContent = extensionErrors[0]
+        setAlert('error', extensionErrors[0])
+        return
+      }
       payload.extensions = {
         schemaVersion: '1.0.0',
         values: extensionValues
       }
       const submitButton = form.querySelector('button[type="submit"]')
-      const feedbackEl = form.querySelector('[data-inline-feedback]')
       if (submitButton) {
         submitButton.disabled = true
         submitButton.textContent = 'Saving…'
@@ -3691,10 +3750,47 @@ async function renderCustomFieldsAdmin() {
     </section>
   `
 
+  const markFieldError = (form, fieldName, message) => {
+    const field = form?.elements?.namedItem?.(fieldName)
+    if (!field) return
+    field.setAttribute('aria-invalid', message ? 'true' : 'false')
+  }
+  const applyFieldErrors = (form, fieldErrors = {}) => {
+    ;['key', 'type', 'metadata'].forEach((fieldName) => markFieldError(form, fieldName, fieldErrors[fieldName] || ''))
+  }
   const parseMetadataJson = (raw) => {
     const text = String(raw || '').trim()
-    if (!text) return {}
-    return JSON.parse(text)
+    if (!text) return { value: {}, error: '' }
+    try {
+      const parsed = JSON.parse(text)
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+        return { value: null, error: 'Metadata must be a JSON object.' }
+      }
+      return { value: parsed, error: '' }
+    } catch {
+      return { value: null, error: 'Metadata must be valid JSON.' }
+    }
+  }
+  const validateCustomFieldInput = (rawInput, { requireKey = true } = {}) => {
+    const payload = {
+      key: String(rawInput?.key || '')
+        .trim()
+        .replace(/[^a-zA-Z0-9_]+/g, '_'),
+      type: String(rawInput?.type || 'text')
+        .trim()
+        .toLowerCase(),
+      label: String(rawInput?.label || '').trim(),
+      required: Boolean(rawInput?.required)
+    }
+    const fieldErrors = {}
+    if (requireKey && !payload.key) fieldErrors.key = 'Key is required (letters, numbers, underscore).'
+    if (!new Set(['text', 'number', 'boolean', 'date']).has(payload.type)) {
+      fieldErrors.type = 'Type must be one of: text, number, boolean, date.'
+    }
+    const metadataResult = parseMetadataJson(rawInput?.metadata)
+    if (metadataResult.error) fieldErrors.metadata = metadataResult.error
+    payload.metadata = metadataResult.value
+    return { payload, fieldErrors }
   }
 
   document.querySelector('#custom-field-create-form')?.addEventListener('submit', async (event) => {
@@ -3702,23 +3798,41 @@ async function renderCustomFieldsAdmin() {
     if (!canManage) return
     const form = event.currentTarget
     clearFormFeedback(form)
+    applyFieldErrors(form, {})
+    const formData = new FormData(form)
+    const validation = validateCustomFieldInput(
+      {
+        key: formData.get('key'),
+        type: formData.get('type'),
+        label: formData.get('label'),
+        required: formData.get('required'),
+        metadata: formData.get('metadata')
+      },
+      { requireKey: true }
+    )
+    applyFieldErrors(form, validation.fieldErrors)
+    if (Object.keys(validation.fieldErrors).length) {
+      setFormFeedback(form, Object.values(validation.fieldErrors)[0])
+      return
+    }
+    const previousSchema = structuredClone(state.customFieldSchema)
+    const optimisticField = { ...validation.payload }
+    state.customFieldSchema.fields = [...(state.customFieldSchema.fields || []), optimisticField]
+    state.customFieldSchema.updatedAt = new Date().toISOString()
+    state.customFieldSchema.lastError = ''
+    setFormFeedback(form, 'Creating custom field…', 'success')
     try {
-      const formData = new FormData(form)
       await request(routes.profileCustomFieldSchema(), {
         method: 'POST',
-        body: JSON.stringify({
-          key: String(formData.get('key') || '').trim(),
-          type: String(formData.get('type') || 'text').trim(),
-          label: String(formData.get('label') || '').trim(),
-          required: Boolean(formData.get('required')),
-          metadata: parseMetadataJson(formData.get('metadata'))
-        })
+        body: JSON.stringify(validation.payload)
       })
-      setFlash('success', 'Custom field created.')
+      setFormFeedback(form, 'Custom field created.', 'success')
       state.customFieldSchema.fetched = false
       await refreshSelects()
       await renderCustomFieldsAdmin()
     } catch (error) {
+      state.customFieldSchema = previousSchema
+      applyFieldErrors(form, error?.details?.fieldErrors || {})
       setFormFeedback(form, normalizeApiError(error, 'create custom field schema'))
     }
   })
@@ -3728,23 +3842,41 @@ async function renderCustomFieldsAdmin() {
       event.preventDefault()
       if (!canManage) return
       clearFormFeedback(form)
+      applyFieldErrors(form, {})
       const fieldKey = form.dataset.customFieldUpdate
+      const formData = new FormData(form)
+      const validation = validateCustomFieldInput(
+        {
+          type: formData.get('type'),
+          label: formData.get('label'),
+          required: formData.get('required'),
+          metadata: formData.get('metadata')
+        },
+        { requireKey: false }
+      )
+      applyFieldErrors(form, validation.fieldErrors)
+      if (Object.keys(validation.fieldErrors).length) {
+        setFormFeedback(form, Object.values(validation.fieldErrors)[0])
+        return
+      }
+      const previousSchema = structuredClone(state.customFieldSchema)
+      state.customFieldSchema.fields = (state.customFieldSchema.fields || []).map((field) =>
+        field.key === fieldKey ? { ...field, ...validation.payload, key: fieldKey } : field
+      )
+      state.customFieldSchema.updatedAt = new Date().toISOString()
+      setFormFeedback(form, `Updating ${fieldKey}…`, 'success')
       try {
-        const formData = new FormData(form)
         await request(routes.profileCustomFieldSchemaField(fieldKey), {
           method: 'PATCH',
-          body: JSON.stringify({
-            label: String(formData.get('label') || '').trim(),
-            type: String(formData.get('type') || '').trim(),
-            required: Boolean(formData.get('required')),
-            metadata: parseMetadataJson(formData.get('metadata'))
-          })
+          body: JSON.stringify(validation.payload)
         })
-        setFlash('success', `Custom field ${fieldKey} updated.`)
+        setFormFeedback(form, `Custom field ${fieldKey} updated.`, 'success')
         state.customFieldSchema.fetched = false
         await refreshSelects()
         await renderCustomFieldsAdmin()
       } catch (error) {
+        state.customFieldSchema = previousSchema
+        applyFieldErrors(form, error?.details?.fieldErrors || {})
         setFormFeedback(form, normalizeApiError(error, `update custom field ${fieldKey}`))
       }
     })
@@ -3754,6 +3886,11 @@ async function renderCustomFieldsAdmin() {
     button.addEventListener('click', async () => {
       if (!canManage) return
       const fieldKey = button.dataset.customFieldDelete
+      const previousSchema = structuredClone(state.customFieldSchema)
+      state.customFieldSchema.fields = (state.customFieldSchema.fields || []).filter((field) => field.key !== fieldKey)
+      state.customFieldSchema.updatedAt = new Date().toISOString()
+      setFlash('success', `Deleting custom field ${fieldKey}…`)
+      await renderCustomFieldsAdmin()
       try {
         await request(routes.profileCustomFieldSchemaField(fieldKey), { method: 'DELETE' })
         setFlash('success', `Custom field ${fieldKey} deleted.`)
@@ -3761,6 +3898,7 @@ async function renderCustomFieldsAdmin() {
         await refreshSelects()
         await renderCustomFieldsAdmin()
       } catch (error) {
+        state.customFieldSchema = previousSchema
         setFlash('error', normalizeApiError(error, `delete custom field ${fieldKey}`))
         await renderCustomFieldsAdmin()
       }
@@ -4092,7 +4230,11 @@ profileCreateFormEl.addEventListener('submit', async (event) => {
   }
   try {
     const payload = validateRequiredFields(formEl, ['firstName', 'lastName'])
-    const extensionValues = collectCustomFieldValues(formEl, state.customFieldSchema.fields || [])
+    const { values: extensionValues, errors: extensionErrors } = collectCustomFieldValues(
+      formEl,
+      state.customFieldSchema.fields || []
+    )
+    if (extensionErrors.length) throw new Error(extensionErrors[0])
     const source = payload.cityOrLocation
       ? { cityOrLocation: payload.cityOrLocation, venue: payload.venue, occurredOn: payload.occurredOn }
       : null

@@ -34,8 +34,18 @@ test('app wiring includes conflict normalization and form-level validation helpe
   assert.match(appJs, /function normalizeApiError\(/)
   assert.match(appJs, /function validateRequiredFields\(/)
   assert.match(appJs, /function setFormFeedback\(/)
+  assert.match(appJs, /function parseCustomFieldInputValueStrict\(/)
+  assert.match(appJs, /const validateCustomFieldInput =/)
   assert.match(appJs, /function viewErrorBanner\(/)
   assert.match(appJs, /setWorkflowStatus\(/)
+})
+
+test('custom field admin and profile edit flows expose validation feedback, rollback, and empty-state messaging', () => {
+  assert.match(appJs, /Metadata must be valid JSON\./)
+  assert.match(appJs, /state\.customFieldSchema = previousSchema/)
+  assert.match(appJs, /No custom fields configured yet for this firm\./)
+  assert.match(appJs, /data-inline-custom-field-errors="\$\{card\.id\}"/)
+  assert.match(appJs, /type="checkbox" value="true"/)
 })
 
 test('navigation and board controls include accessibility-critical semantics', () => {
