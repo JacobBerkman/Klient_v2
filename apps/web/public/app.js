@@ -2570,11 +2570,22 @@ async function renderTemplates() {
   const knownPathIndex = normalizedKnownPathIndex(knownPaths)
   const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field.fieldName)).length
   const extraction = template?.extraction || {}
+  const hasExtractionData = extractedFields.length > 0 || Boolean(extraction?.status)
+  const hasMappingData = draftMappings.length > 0 || extractedFields.length > 0
+  const hasPreviewableMappings = draftMappings.length > 0
+  const wizardStepEnabled = {
+    upload: true,
+    extraction: hasExtractionData,
+    mapping: hasMappingData,
+    preview: hasPreviewableMappings,
+    publish: hasPreviewableMappings
+  }
   const wizardSteps = ['upload', 'extraction', 'mapping', 'preview', 'publish']
   const defaultWizardStep = extraction?.status === 'failed' ? 'extraction' : extractedFields.length ? 'mapping' : 'upload'
-  const activeWizardStep = wizardSteps.includes(state.templateWizardStepByTemplateId?.[template?.id])
+  const activeWizardStepCandidate = wizardSteps.includes(state.templateWizardStepByTemplateId?.[template?.id])
     ? state.templateWizardStepByTemplateId[template.id]
     : defaultWizardStep
+  const activeWizardStep = wizardStepEnabled[activeWizardStepCandidate] ? activeWizardStepCandidate : defaultWizardStep
   if (template) state.templateWizardStepByTemplateId[template.id] = activeWizardStep
   const saveState = state.templateSaveStateByTemplateId[template?.id] || { status: 'idle', message: '' }
 
@@ -2613,7 +2624,7 @@ async function renderTemplates() {
           ${wizardSteps
             .map((step, index) => {
               const label = `${index + 1}. ${step.charAt(0).toUpperCase() + step.slice(1)}`
-              return `<button type="button" class="tiny ${activeWizardStep === step ? '' : 'secondary'}" data-template-wizard-step="${step}" aria-pressed="${activeWizardStep === step ? 'true' : 'false'}">${label}</button>`
+              return `<button type="button" class="tiny ${activeWizardStep === step ? '' : 'secondary'}" data-template-wizard-step="${step}" aria-pressed="${activeWizardStep === step ? 'true' : 'false'}" ${wizardStepEnabled[step] ? '' : 'disabled'}>${label}</button>`
             })
             .join('')}
         </div>
@@ -2766,6 +2777,10 @@ async function renderTemplates() {
                 )}</span>`
               : '<span class="badge subtle">Preflight: clear</span>'
           }
+          ${(() => {
+            const selectedConfidence = mappingConfidenceBadge(selectedMapping, knownPathIndex)
+            return `<span class="badge subtle">Confidence: ${escapeHtml(selectedConfidence.label)}</span>`
+          })()}
         </div>
         <p class="muted">Validation hints: ensure PDF Field + Source Path are filled, Source Path exists in known paths, and expression transforms include an expression.</p>
         <datalist id="source-path-options">${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}</datalist>
@@ -2787,6 +2802,7 @@ async function renderTemplates() {
         </div>
         <div class="row gap-sm wrap top-gap">
           <button id="inspector-reset-source-path" class="tiny secondary">Clear source path</button>
+          <button id="inspector-reset-source-path-suggested" class="tiny secondary">Reset to suggested source path</button>
           <button id="inspector-reset-transform" class="tiny secondary">Reset transform to none</button>
         </div>
       </section>
@@ -2957,7 +2973,9 @@ async function renderTemplates() {
   document.querySelectorAll('[data-template-wizard-step]').forEach((button) => {
     button.addEventListener('click', async () => {
       if (!template) return
-      state.templateWizardStepByTemplateId[template.id] = button.dataset.templateWizardStep || 'mapping'
+      const requestedStep = String(button.dataset.templateWizardStep || 'mapping')
+      if (!wizardStepEnabled[requestedStep]) return
+      state.templateWizardStepByTemplateId[template.id] = requestedStep
       await rerenderTemplates()
     })
   })
@@ -2986,11 +3004,15 @@ async function renderTemplates() {
     await rerenderTemplates()
   })
 
-  const selectTemplateRow = async (rowIndex, { focusInspector = false, focusField = 'sourcePath', highlightRow = false } = {}) => {
+  const selectTemplateRow = async (
+    rowIndex,
+    { focusInspector = false, focusField = 'sourcePath', highlightRow = false, wizardStep = '' } = {}
+  ) => {
     if (!template) return
     const normalizedRowIndex = Number(rowIndex)
     if (!Number.isFinite(normalizedRowIndex)) return
     state.templateInspector[template.id] = { rowIndex: normalizedRowIndex }
+    if (wizardStep && wizardSteps.includes(wizardStep)) state.templateWizardStepByTemplateId[template.id] = wizardStep
     state.templateInspectorFocusRequestByTemplateId[template.id] = focusInspector ? focusField : ''
     state.templateJumpHighlightByTemplateId[template.id] = highlightRow ? normalizedRowIndex : NaN
     await renderTemplates()
@@ -3003,7 +3025,7 @@ async function renderTemplates() {
   ) => {
     const numericRowIndex = Number(rowIndex)
     if (Number.isFinite(numericRowIndex)) {
-      await selectTemplateRow(numericRowIndex, { focusInspector, focusField, highlightRow })
+      await selectTemplateRow(numericRowIndex, { focusInspector, focusField, highlightRow, wizardStep: 'mapping' })
       return
     }
     const normalizedRowId = String(rowId || '').trim()
@@ -3013,7 +3035,7 @@ async function renderTemplates() {
         ?.rowIndex
     )
     if (Number.isFinite(mappedRowIndex)) {
-      await selectTemplateRow(mappedRowIndex, { focusInspector, focusField, highlightRow })
+      await selectTemplateRow(mappedRowIndex, { focusInspector, focusField, highlightRow, wizardStep: 'mapping' })
     }
   }
 
@@ -3037,8 +3059,11 @@ async function renderTemplates() {
 
   document.querySelector('#jump-to-unmapped-extracted')?.addEventListener('click', async () => {
     if (!template) return
+    const firstUnmappedIndex = draftMappings.findIndex((mapping) => !String(mapping.sourcePath || '').trim())
     state.templateWizardStepByTemplateId[template.id] = 'mapping'
     state.templateMappingFilterByTemplateId[template.id] = 'unmapped'
+    if (firstUnmappedIndex >= 0) state.templateInspector[template.id] = { rowIndex: firstUnmappedIndex }
+    state.templateInspectorFocusRequestByTemplateId[template.id] = 'sourcePath'
     await rerenderTemplates()
   })
 
@@ -3114,6 +3139,16 @@ async function renderTemplates() {
     const sourcePathEl = document.querySelector('#inspector-sourcePath')
     if (!sourcePathEl) return
     sourcePathEl.value = ''
+    await applyInspectorToDraft()
+    await rerenderTemplates()
+  })
+  document.querySelector('#inspector-reset-source-path-suggested')?.addEventListener('click', async () => {
+    if (!template) return
+    const rowIndex = Number(state.templateInspector?.[template.id]?.rowIndex || 0)
+    const suggestion = suggestionByIndex.get(rowIndex)
+    const sourcePathEl = document.querySelector('#inspector-sourcePath')
+    if (!sourcePathEl || !suggestion?.path) return
+    sourcePathEl.value = String(suggestion.path).trim()
     await applyInspectorToDraft()
     await rerenderTemplates()
   })
