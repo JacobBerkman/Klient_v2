@@ -196,3 +196,24 @@ test('custom field schema remains tenant-isolated across firms', async () => {
   assert.throws(() => store.updateProfileCustomField(adminB, 'firm_a_only', { label: 'Blocked' }), /not found/i)
   assert.throws(() => store.deleteProfileCustomField(adminB, 'firm_a_only'), /not found/i)
 })
+
+test('custom field dry-run preview reports validation and diff counts for CRUD propagation planning', async () => {
+  const store = await loadStore()
+  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  store.createProfileCustomField(admin, {
+    key: 'planning_score',
+    type: 'number',
+    label: 'Planning Score',
+    required: false
+  })
+  const preview = store.previewProfileCustomFieldSchema(admin, {
+    rows: [
+      { key: 'planning_score', type: 'number', label: 'Planning Score Updated', required: true, metadata: { group: 'planning' } },
+      { key: 'risk_band', type: 'text', label: 'Risk Band', required: false, metadata: { group: 'planning' } }
+    ]
+  })
+  assert.equal(preview.valid, true)
+  assert.equal(preview.diff.counts.updated, 1)
+  assert.equal(preview.diff.counts.added, 1)
+  assert.ok(preview.diff.counts.removed >= 0)
+})

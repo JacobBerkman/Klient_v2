@@ -1,6 +1,5 @@
 import {
   deterministicEmail,
-  inviteAndAcceptAdvisor,
   registerAdminViaApi,
   signInFromUi,
   test,
@@ -187,6 +186,20 @@ test('@release-blocking custom-field schema CRUD states surface in admin and pro
   await expect(page.locator('#custom-field-create-form [data-form-feedback]')).toContainText('Success: custom field created.')
   await expect(page.getByText(fieldKey)).toBeVisible()
 
+  await page.locator('#custom-field-bulk-add-row').click()
+  const bulkRow = page.locator('[data-bulk-row]').last()
+  await bulkRow.locator('input[name="bulkKey"]').fill(fieldKey)
+  await bulkRow.locator('select[name="bulkType"]').selectOption('number')
+  await bulkRow.locator('input[name="bulkLabel"]').fill('Custom Score')
+  await bulkRow.locator('input[name="bulkRequired"]').fill('true')
+  await bulkRow.locator('input[name="bulkMetadata"]').fill('{"group":"board"}')
+  await page.locator('#custom-field-bulk-form button[type="submit"]').click()
+  await expect(page.locator('#custom-field-bulk-form [data-form-feedback]')).toContainText(
+    'Success: preview generated. Confirm to persist changes.'
+  )
+  await page.locator('#custom-field-bulk-confirm-form button[type="submit"]').click()
+  await expect(page.getByText('Bulk schema changes saved.')).toBeVisible()
+
   await page.locator(`[data-custom-field-update="${fieldKey}"] input[name="label"]`).fill('Custom Score')
   await page.locator(`[data-custom-field-update="${fieldKey}"] select[name="type"]`).selectOption('number')
   await page.locator(`[data-custom-field-update="${fieldKey}"] button[type="submit"]`).click()
@@ -217,6 +230,15 @@ test('@release-blocking custom-field schema CRUD states surface in admin and pro
   await page.locator(`[data-edit-profile="${profile.id}"]`).click()
   await expect(page.locator(`#profile-edit-${profile.id}-${fieldKey}`)).toBeVisible()
   await expect(page.locator(`#profile-edit-${profile.id}-${fieldKey}`)).toHaveAttribute('type', 'number')
+
+  await page.locator(`#profile-edit-${profile.id} input[name="firstName"]`).fill('CustomEdited')
+  await page.request.patch(`/api/profiles/${profile.id}`, { data: { firstName: 'ServerChanged' } })
+  await page.locator(`#profile-edit-${profile.id} button[type="submit"]`).click()
+  await expect(page.locator(`[data-inline-feedback="${profile.id}"]`)).toContainText('Your unsaved edits were preserved')
+  await expect(page.locator(`#profile-edit-${profile.id} input[name="firstName"]`)).toHaveValue('CustomEdited')
+  await page.locator(`[data-inline-conflict-refresh="${profile.id}"]`).click()
+  await expect(page.locator(`[data-inline-feedback="${profile.id}"]`)).toContainText('Reloaded latest server values')
+  await expect(page.locator(`#profile-edit-${profile.id} input[name="firstName"]`)).toHaveValue('CustomEdited')
 
   cleanupActions.push(async () => {
     await page.request.delete(`/api/profiles/${profile.id}`).catch(() => {})
