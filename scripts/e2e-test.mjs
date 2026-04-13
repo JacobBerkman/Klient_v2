@@ -207,6 +207,7 @@ export async function main(deps = {}) {
   const context = await createContext('e2e-browser-suite')
   const fallback = browserFallbackMode()
   const strictMode = !fallback.enabled
+  const baseUrl = context.baseUrl || `http://127.0.0.1:${context.port}`
 
   try {
     await removeFile(playwrightReportPath, { force: true })
@@ -214,7 +215,8 @@ export async function main(deps = {}) {
     const baseEnv = {
       ...process.env,
       PORT: String(context.port),
-      KLIENT_BASE_URL: `http://127.0.0.1:${context.port}`,
+      KLIENT_BASE_URL: baseUrl,
+      E2E_BASE_URL: baseUrl,
       PLAYWRIGHT_JSON_REPORT: playwrightReportPath,
       RELEASE_E2E_PLAYWRIGHT_REPORT: playwrightReportPath,
       TEST_RESET_BEHAVIOR: process.env.TEST_RESET_BEHAVIOR || 'isolated'
@@ -297,39 +299,6 @@ export async function main(deps = {}) {
       return 0
     }
 
-<<<<<<< codex/apply-canonical-env-var-for-e2e-tests
-    let browserExitCode = 0
-    if (browserInstalled) {
-      const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
-      const playwrightResult = await runCommand(command, ['playwright', 'test', browserSuitePattern], baseEnv)
-      browserExitCode = playwrightResult.code ?? 1
-
-      if (playwrightResult.signal || playwrightResult.code !== 0) {
-        const errorMessage = playwrightResult.signal
-          ? `Playwright browser suite terminated by signal ${playwrightResult.signal}`
-          : `Playwright browser suite failed with exit code ${playwrightResult.code}`
-        if (fallback.enabled) {
-          evidence.finalize({
-            status: 'passed',
-            details: {
-              suites: {
-                uiContract: uiContractSuites,
-                browser: [browserSuitePattern]
-              },
-              artifacts: {
-                playwrightJsonReport: {
-                  path: playwrightReportPath,
-                  valid: false,
-                  reason: `Local fallback accepted Playwright browser failure (${browserFallbackEnvFlag}=1)`
-                }
-              },
-              uiContract: { status: 'passed', exitCode: 0 },
-              browser: { status: 'skipped', exitCode: playwrightResult.code }
-            }
-          })
-          return
-        }
-=======
     const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
     const playwrightResult = await run(command, ['playwright', 'test', browserSuitePattern], baseEnv)
     const browserExitCode = playwrightResult.code ?? 1
@@ -342,57 +311,10 @@ export async function main(deps = {}) {
         playwrightReportPath,
         'Playwright process failed before report validation'
       )
->>>>>>> main
 
       if (strictMode) {
         const error = new Error(errorMessage)
-<<<<<<< codex/apply-canonical-env-var-for-e2e-tests
-        evidence.finalize({
-          status: 'failed',
-          fields: { executionMode },
-          error,
-          details: {
-            suites: {
-              uiContract: uiContractSuites,
-              browser: [browserSuitePattern]
-            },
-            artifacts: {
-              playwrightJsonReport: {
-                path: playwrightReportPath,
-                valid: false,
-                reason: 'Playwright process failed before report validation'
-              },
-              playwrightExecution: {
-                strictMode: true,
-                fallbackEnabled: fallback.enabled,
-                fallbackReason: fallback.reason
-              }
-            },
-            downgradeWarnings: [],
-            uiContract: { status: 'passed', exitCode: 0 },
-            browser: { status: 'failed', exitCode: playwrightResult.code }
-          }
-        })
-        process.exit(1)
-        return
-      }
-
-      const reportValidation = await gatePlaywrightReportOrFail({
-        reportPath: playwrightReportPath,
-        uiContractStatus: { status: 'passed', exitCode: 0 }
-      })
-      if (!reportValidation.ok) {
-        process.exitCode = 1
-        return
-      }
-
-      evidence.finalize({
-        status: 'passed',
-        fields: { executionMode },
-        details: {
-=======
         return finalizeFailure(evidenceRecorder, error, {
->>>>>>> main
           suites: {
             uiContract: uiContractSuites,
             browser: [browserSuitePattern]
