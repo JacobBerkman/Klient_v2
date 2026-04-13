@@ -24,6 +24,10 @@ Release identity collection checklist (fill before GO/NO-GO):
 
 ## 2) Required environment keys (presence check)
 Record whether each required key is set in the deployment target (do not paste secret values).
+Use `docs/deployment-quick-reference.md#required-environment-variables` and
+`docs/deployment-quick-reference.md#production-runtime-required-app-variables-from-startup-validation`
+as the single-source definitions for release-time env requirements.
+Do not add secret values in this handoff; record presence and secret/version references only.
 
 | Key | Present (Y/N) | Notes |
 |---|---|---|
@@ -81,6 +85,7 @@ Attach links or paths to the objective release evidence.
 
 Use one canonical manifest link for approvers; include optional direct links only when a reviewer asks for a specific file.
 Canonical required bundle contents are defined at `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
+Strict E2E mode/fallback policy boundaries are defined at `docs/deployment-quick-reference.md#canonical-browser-gate-policy-ci--local`.
 
 | Evidence package | Artifact link or path |
 |---|---|

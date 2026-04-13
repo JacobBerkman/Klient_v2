@@ -4,7 +4,7 @@ import { resolve } from 'node:path'
 const VALID_PHASES = new Set(['all', 'preflight', 'postdeploy', 'restore', 'restore-drill'])
 
 const PHASE_ARTIFACTS = {
-  preflight: ['backup.json', 'branch-parity.txt', 'startup-failfast.json', 'startup-failfast.txt'],
+  preflight: ['preflight-env-summary.json', 'backup.json', 'branch-parity.txt', 'startup-failfast.json', 'startup-failfast.txt'],
   postdeploy: [
     'postdeploy-health.json',
     'postdeploy-ready.json',
@@ -30,6 +30,10 @@ const REQUIRED_SUMMARY_FILES = [
 function fail(message) {
   process.stderr.write(`\n❌ ${message}\n`)
   process.exit(1)
+}
+
+function remediationHint(lines = []) {
+  return lines.filter(Boolean).map((line) => `\n   • ${line}`).join('')
 }
 
 function parseArgs(argv) {
@@ -148,7 +152,12 @@ function validateArtifacts(evidenceDir, phases) {
   }
 
   if (missingArtifacts.length > 0) {
-    fail(`Missing required phase artifact(s): ${missingArtifacts.sort().join(', ')}`)
+    fail(
+      `Missing required phase artifact(s): ${missingArtifacts.sort().join(', ')}.${remediationHint([
+        `Re-run the matching phase command for this release-id (for example: npm run release:go-no-go -- --release-id ${JSON.stringify(process.env.RELEASE_ID || '<release-id>')} --phase ${phases[0]}).`,
+        `Then re-run: node scripts/validate-release-evidence.mjs --release-id ${JSON.stringify(process.env.RELEASE_ID || '<release-id>')} --phase ${phases.length > 1 ? 'all' : phases[0]}.`
+      ])}`
+    )
   }
 }
 
@@ -171,7 +180,12 @@ function validateSummaryFiles(evidenceDir, phases) {
   }
 
   if (missing.length > 0) {
-    fail(`Missing required summary file(s): ${missing.sort().join(', ')}`)
+    fail(
+      `Missing required summary file(s): ${missing.sort().join(', ')}.${remediationHint([
+        'Re-run npm run validate:master to regenerate preflight gate summaries.',
+        'If this is postdeploy-only validation, rerun --phase postdeploy to regenerate postdeploy-evaluation-summary.json.'
+      ])}`
+    )
   }
 }
 
@@ -211,35 +225,68 @@ function validateE2ESummary(evidenceDir, { strictMode }) {
 
   const mode = e2eSummary?.executionMode
   if (mode !== 'browser' && mode !== 'fallback') {
-    fail(`Invalid e2e-summary.json executionMode at ${e2eSummaryPath}. Expected "browser" or "fallback", got ${String(mode)}.`)
+    fail(
+      `Invalid e2e-summary.json executionMode at ${e2eSummaryPath}. Expected "browser" or "fallback", got ${String(mode)}.${remediationHint([
+        'Re-run npm run test:e2e to regenerate e2e-summary.json.',
+        'If this is a release ref/strict mode, keep RELEASE_E2E_STRICT_MODE=1 and RELEASE_E2E_ALLOW_FALLBACK=0.'
+      ])}`
+    )
   }
 
   if (strictMode && mode !== 'browser') {
     fail(
-      `E2E strict mode is required for release refs, but e2e-summary.json executionMode=${mode}. Re-run with browser mode.`
+      `E2E strict mode is required for release refs, but e2e-summary.json executionMode=${mode}.${remediationHint([
+        'Re-provision browser binaries: npx playwright install --with-deps chromium.',
+        'Re-run npm run test:e2e with strict settings: RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0.'
+      ])}`
     )
   }
 
   const playwrightReport = e2eSummary?.details?.artifacts?.playwrightJsonReport
   if (!playwrightReport || typeof playwrightReport !== 'object') {
-    fail('e2e-summary.json is missing details.artifacts.playwrightJsonReport metadata.')
+    fail(
+      `e2e-summary.json is missing details.artifacts.playwrightJsonReport metadata.${remediationHint([
+        'Re-run npm run test:e2e so the summary writer emits Playwright report metadata.',
+        'Confirm artifacts/release-evidence/<release-id>/playwright-report.json is generated.'
+      ])}`
+    )
   }
 
   if (typeof playwrightReport.path !== 'string' || playwrightReport.path.trim().length === 0) {
-    fail('e2e-summary.json must include a non-empty details.artifacts.playwrightJsonReport.path value.')
+    fail(
+      `e2e-summary.json must include a non-empty details.artifacts.playwrightJsonReport.path value.${remediationHint([
+        'Re-run npm run test:e2e and verify the writer sets details.artifacts.playwrightJsonReport.path.',
+        'Do not hand-edit evidence files; regenerate from canonical gate commands.'
+      ])}`
+    )
   }
 
   if (playwrightReport.valid !== true) {
-    fail('e2e-summary.json details.artifacts.playwrightJsonReport.valid must be true.')
+    fail(
+      `e2e-summary.json details.artifacts.playwrightJsonReport.valid must be true.${remediationHint([
+        'Inspect artifacts/release-evidence/<release-id>/playwright-report.json for parse errors.',
+        'Re-run npm run test:e2e after fixing failing/invalid Playwright output generation.'
+      ])}`
+    )
   }
 
   if (!Number.isInteger(playwrightReport.suiteCount) || playwrightReport.suiteCount < 1) {
-    fail('e2e-summary.json details.artifacts.playwrightJsonReport.suiteCount must be an integer >= 1.')
+    fail(
+      `e2e-summary.json details.artifacts.playwrightJsonReport.suiteCount must be an integer >= 1.${remediationHint([
+        'Ensure the release-blocking Playwright suite executed and collected at least one suite.',
+        'Re-run npm run test:e2e to regenerate e2e-summary.json and Playwright report.'
+      ])}`
+    )
   }
 
   const playwrightReportPath = resolve(evidenceDir, playwrightReport.path)
   if (!existsSync(playwrightReportPath)) {
-    fail(`Playwright report referenced by e2e-summary.json is missing: ${playwrightReport.path}`)
+    fail(
+      `Playwright report referenced by e2e-summary.json is missing: ${playwrightReport.path}.${remediationHint([
+        'Confirm details.artifacts.playwrightJsonReport.path is relative to artifacts/release-evidence/<release-id>/.',
+        'Re-run npm run test:e2e to regenerate both e2e-summary.json and playwright-report.json.'
+      ])}`
+    )
   }
 
 }
@@ -249,7 +296,12 @@ function validateE2ESummary(evidenceDir, { strictMode }) {
 function parseSummaryFile(evidenceDir, fileName, label) {
   const filePath = resolve(evidenceDir, fileName)
   if (!existsSync(filePath)) {
-    fail(`Missing required summary file: ${filePath}`)
+    fail(
+      `Missing required summary file: ${filePath}.${remediationHint([
+        'Re-run npm run validate:master for preflight summaries.',
+        'Then re-run node scripts/validate-release-evidence.mjs --release-id <release-id> --phase <phase>.'
+      ])}`
+    )
   }
   return parseJson(filePath, label)
 }
