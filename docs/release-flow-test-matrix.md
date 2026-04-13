@@ -16,6 +16,11 @@ Deterministic guarantees in this path:
 - isolated reset behavior default (`TEST_RESET_BEHAVIOR=isolated`),
 - strict CI behavior (local fallback is ignored whenever `CI=true`).
 
+CI gate policy:
+
+- Browser provisioning is performed in `.github/workflows/smoke.yml` via `npx playwright install --with-deps chromium` before browser execution in both `hard_release_gate` (`npm run validate:master`) and `e2e_release_blocking` (`npm run test:e2e`).
+- `e2e_release_blocking` is the authoritative release-blocking browser job for merge/release decisions; `hard_release_gate` exists to keep the canonical `validate:master` path parity-tested with the same provisioning expectations.
+
 ## Preserved flow to deterministic test mapping
 
 | Preserved flow | Deterministic automated test(s) | Why this is the primary gate |
