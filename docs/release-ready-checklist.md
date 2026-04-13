@@ -7,6 +7,8 @@ Use the canonical operator flow at `docs/deployment-quick-reference.md#canonical
 Use `docs/deployment-quick-reference.md#canonical-hard-gate-sequence-validatemaster-exact-execution-order` and `docs/deployment-quick-reference.md#deterministic-post-deploy-validation-sequence` as the canonical command ordering references.
 Use the preserved-flow mapping at `docs/release-flow-test-matrix.md` to ensure RC-critical journeys are validated with deterministic targeted tests before freeze.
 Treat `npm run test:e2e` as the canonical browser gate: strict in CI, deterministic host/port, isolated reset default, and stable Playwright JSON evidence output under the release evidence directory.
+In CI, browser provisioning for this gate happens before execution in `.github/workflows/smoke.yml` (`hard_release_gate` and `e2e_release_blocking` both run `npx playwright install --with-deps chromium` before browser tests).
+The authoritative release-blocking browser decision in CI is the `e2e_release_blocking` job; `hard_release_gate` keeps `validate:master` aligned with the same browser prerequisites for command-parity confidence.
 
 ## Primary operator command (GO/NO-GO)
 Run the operator workflow (fails fast, deterministic order):
