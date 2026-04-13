@@ -73,6 +73,16 @@ function assertContains(content, needle, label) {
   if (!content.includes(needle)) missing.push(`${label} missing command: ${needle}`)
 }
 
+function getJobBlock(content, jobId) {
+  const matcher = new RegExp(`\\n  ${jobId}:\\n([\\s\\S]*?)(?=\\n  [a-z0-9_]+:\\n|$)`)
+  const match = content.match(matcher)
+  if (!match) {
+    missing.push(`.github/workflows/smoke.yml missing job: ${jobId}`)
+    return ''
+  }
+  return match[1]
+}
+
 for (const cmd of requiredGateCommands) {
   assertContains(quickRef, cmd, 'docs/deployment-quick-reference.md')
   assertContains(checklist, cmd, 'docs/release-ready-checklist.md')
@@ -94,6 +104,63 @@ for (const { jobId } of releaseGateJobs) {
 assertContains(workflow, 'npm run validate:master', '.github/workflows/smoke.yml')
 assertContains(workflow, 'npm run check:release-docs', '.github/workflows/smoke.yml')
 assertContains(workflow, 'npm run check:release-gate-commands', '.github/workflows/smoke.yml')
+
+const e2eReleaseJob = getJobBlock(workflow, 'e2e_release_blocking')
+if (e2eReleaseJob) {
+  const mkdirMatch = e2eReleaseJob.match(/mkdir -p (artifacts\/[^\s]+)/)
+  if (!mkdirMatch) {
+    missing.push('.github/workflows/smoke.yml e2e_release_blocking missing mkdir -p artifacts path')
+  } else {
+    const artifactBase = mkdirMatch[1]
+    const escapedBase = artifactBase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    if (!new RegExp(`\\}\\s*>\\s*${escapedBase}/readiness-summary\\.md`).test(e2eReleaseJob)) {
+      missing.push('.github/workflows/smoke.yml e2e_release_blocking readiness-summary path differs from mkdir path')
+    }
+    if (!new RegExp(`tee\\s+${escapedBase}/suite\\.log`).test(e2eReleaseJob)) {
+      missing.push('.github/workflows/smoke.yml e2e_release_blocking suite log path differs from mkdir path')
+    }
+    if (!new RegExp(`\\n\\s*${escapedBase}/\\*\\*\\n`).test(e2eReleaseJob)) {
+      missing.push('.github/workflows/smoke.yml e2e_release_blocking artifact upload path differs from mkdir path')
+    }
+  }
+}
+
+const hardReleaseJob = getJobBlock(workflow, 'hard_release_gate')
+if (hardReleaseJob) {
+  const playwrightInstallIndex = hardReleaseJob.indexOf('npx playwright install --with-deps chromium')
+  const validateMasterIndex = hardReleaseJob.indexOf('npm run validate:master')
+  if (playwrightInstallIndex < 0) {
+    missing.push('.github/workflows/smoke.yml hard_release_gate missing Playwright install step')
+  }
+  if (validateMasterIndex < 0) {
+    missing.push('.github/workflows/smoke.yml hard_release_gate missing npm run validate:master')
+  }
+  if (playwrightInstallIndex >= 0 && validateMasterIndex >= 0 && playwrightInstallIndex > validateMasterIndex) {
+    missing.push('.github/workflows/smoke.yml hard_release_gate installs Playwright after validate:master (must be before)')
+  }
+}
+
+const jobIds = new Set([...workflow.matchAll(/^  ([a-z0-9_]+):$/gm)].map((entry) => entry[1]))
+const mergeGateJob = getJobBlock(workflow, 'merge_gate')
+if (mergeGateJob) {
+  const needsBlockMatch = mergeGateJob.match(/\n    needs:\n([\s\S]*?)\n    if:/)
+  if (!needsBlockMatch) {
+    missing.push('.github/workflows/smoke.yml merge_gate missing needs block')
+  } else {
+    const dependencies = [...needsBlockMatch[1].matchAll(/^\s+- ([a-z0-9_]+)$/gm)].map((entry) => entry[1])
+    if (dependencies.length === 0) {
+      missing.push('.github/workflows/smoke.yml merge_gate needs block is empty')
+    }
+    for (const dependency of dependencies) {
+      if (!jobIds.has(dependency)) {
+        missing.push(`.github/workflows/smoke.yml merge_gate needs includes unknown job: ${dependency}`)
+      }
+    }
+  }
+}
+
+const e2eDocsFolder = 'artifacts/e2e-release-blocking'
+assertContains(quickRef, `${e2eDocsFolder}/`, 'docs/deployment-quick-reference.md')
 
 if (workflow.includes('npm run test:runtime-contract')) {
   missing.push('.github/workflows/smoke.yml uses non-canonical command: npm run test:runtime-contract')
