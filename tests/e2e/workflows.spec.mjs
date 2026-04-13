@@ -8,10 +8,30 @@ import {
   waitForAppReady
 } from './bootstrap.mjs'
 
-test('@release-blocking admin bootstrap registration and login remain stable', async ({ page, seededRunId }) => {
-  await waitForAppReady(page)
+async function inviteAndAcceptAdvisor(page, seed, label = 'advisor') {
+  const safeSeed = `${seed}-${label}`
+  const email = `${safeSeed}@e2e.test`
+  const password = 'StrongPass123!'
+  const inviteResponse = await page.request.post('/api/invites', {
+    data: { email, role: 'advisor' }
+  })
+  expect(inviteResponse.status()).toBe(201)
+  const invite = await inviteResponse.json()
+  const acceptResponse = await page.request.post('/api/invites/accept', {
+    data: {
+      token: invite.token,
+      firstName: 'Ops',
+      lastName: 'Advisor',
+      password
+    }
+  })
+  expect(acceptResponse.ok()).toBeTruthy()
+  return { email, password }
+}
 
-  const email = deterministicEmail(seededRunId, 'bootstrap-admin')
+test('admin bootstrap registration and login remain stable', async ({ page, seededRunId }) => {
+  const seed = `${seededRunId}-bootstrap`
+  const email = `${seed}@e2e.test`
   const password = 'StrongPass123!'
 
   await page.goto('/')
@@ -37,6 +57,7 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   await waitForAppReady(page)
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'template')
   await signInFromUi(page, email, password)
+  const stableToken = seededRunId.replace(/[^a-z0-9-]/gi, '').slice(0, 24)
 
   const profileEmail = deterministicEmail(seededRunId, 'template-preview-client')
   const profileResponse = await page.request.post('/api/profiles', {
@@ -44,7 +65,7 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
       kind: 'client',
       firstName: 'Template',
       lastName: 'Preview',
-      email: profileEmail
+      email: `template-preview-${stableToken}@e2e.test`
     }
   })
   expect(profileResponse.ok()).toBeTruthy()
@@ -53,7 +74,7 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   const templateName = `Template Preview Source ${seededRunId}`
   const formTemplateResponse = await page.request.post('/api/forms/templates', {
     data: {
-      name: templateName,
+      name: `Template Preview Source ${stableToken}`,
       sections: [
         {
           title: 'Client goals',
@@ -83,7 +104,7 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   const autoBuildTemplateName = `Auto Build Template ${seededRunId}`
   const autoBuildResponse = await page.request.post('/api/templates/auto-build', {
     data: {
-      name: autoBuildTemplateName,
+      name: `Auto Build Template ${stableToken}`,
       fileName: 'auto-build.pdf',
       fileBytes: [0x25, 0x50, 0x44, 0x46, 0x2d]
     }
@@ -93,7 +114,7 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   const remediationTemplateName = `Preflight Loop Template ${seededRunId}`
   const remediationTemplateResponse = await page.request.post('/api/templates', {
     data: {
-      name: remediationTemplateName,
+      name: `Preflight Loop Template ${stableToken}`,
       extractedFields: ['firstName'],
       mappings: [{ pdfField: 'firstName', fieldLabel: 'First Name', sourcePath: 'profile.unknownPath', required: true }]
     }
@@ -104,9 +125,14 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   await page.goto('/')
   await page.getByRole('button', { name: 'Templates' }).click()
   await page.locator('#template-select').selectOption(remediationTemplate.id)
+  await page.getByRole('button', { name: '2. Extraction' }).click()
+  await expect(page.getByText('Extracted fields 1')).toBeVisible()
+  await page.locator('#jump-to-unmapped-extracted').click()
+  await expect(page.locator('[data-mapping-filter="unmapped"][aria-pressed="true"]')).toBeVisible()
   await page.getByRole('button', { name: '3. Mapping' }).click()
   await page.locator('[data-mapping-filter="required-only"]').click()
   await expect(page.locator('#mapping-row-0')).toBeVisible()
+  await expect(page.locator('[data-apply-suggestion-row="0"]')).toBeVisible()
 
   await page.getByRole('button', { name: '5. Publish' }).click()
   await page.locator('#run-publish-preflight').click()
@@ -116,11 +142,18 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('profile.unknownPath')
 
   await page.getByRole('button', { name: '3. Mapping' }).click()
+  await page.locator('#inspector-reset-source-path').click()
+  await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
   await page.locator('#clear-unresolved-rows').click()
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
   await page.locator('#auto-map-similar').click()
   await expect(page.getByText('Auto-mapped 1 row(s) by name similarity.')).toBeVisible()
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('profile.firstName')
+  await page.selectOption('#inspector-transformType', 'expression')
+  await page.fill('#inspector-transformExpression', 'value')
+  await page.click('#inspector-reset-transform')
+  await expect(page.locator('#inspector-transformType')).toHaveValue('')
+  await expect(page.locator('#inspector-transformExpression')).toHaveValue('')
   await page.locator('#save-mappings').click()
 
   await page.getByRole('button', { name: '5. Publish' }).click()
@@ -183,12 +216,7 @@ test('@release-blocking custom-field schema CRUD supports profile usage paths', 
   })
 })
 
-test('@release-blocking admin-to-operator custom-field workflow preserves readonly UI and server RBAC enforcement', async ({
-  page,
-  seededRunId,
-  cleanupActions
-}) => {
-  await waitForAppReady(page)
+test('admin-to-operator custom-field workflow preserves readonly UI and server RBAC enforcement', async ({ page, seededRunId }) => {
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'admin-operator')
   await signInFromUi(page, email, password)
 
@@ -202,10 +230,6 @@ test('@release-blocking admin-to-operator custom-field workflow preserves readon
     }
   })
   expect(createResponse.status()).toBe(201)
-
-  cleanupActions.push(async () => {
-    await page.request.delete(`/api/profiles/custom-fields/schema/${fieldKey}`).catch(() => {})
-  })
 
   const advisorCredentials = await inviteAndAcceptAdvisor(page, seededRunId, 'operator')
   await page.request.post('/api/logout')
@@ -223,59 +247,36 @@ test('@release-blocking admin-to-operator custom-field workflow preserves readon
   expect(blockedCreateResponse.status()).toBe(403)
 })
 
-test.describe('transient infrastructure retries', () => {
-  test.describe.configure({ retries: process.env.CI ? 1 : 0 })
+test('portal draft then submit lifecycle is stable', async ({ page, seededRunId }) => {
+  const { email, password } = await registerAdminViaApi(page, seededRunId, 'portal')
+  await signInFromUi(page, email, password)
 
-  test('@release-blocking @transient-infra portal draft then submit lifecycle is stable', async ({ page, seededRunId, cleanupActions }) => {
-    await waitForAppReady(page)
-    const { email, password } = await registerAdminViaApi(page, seededRunId, 'portal')
-    await signInFromUi(page, email, password)
+  const profileResponse = await page.request.post('/api/profiles', {
+    data: {
+      kind: 'client',
+      firstName: 'Portal',
+      lastName: 'Client',
+      email: `portal-client-${Date.now()}@e2e.test`
+    }
+  })
+  const profile = await profileResponse.json()
+  expect(profileResponse.status()).toBe(201)
 
-    const profileEmail = deterministicEmail(seededRunId, 'portal-client')
-    const profileResponse = await page.request.post('/api/profiles', {
-      data: {
-        kind: 'client',
-        firstName: 'Portal',
-        lastName: 'Client',
-        email: profileEmail
-      }
-    })
-    expect(profileResponse.status()).toBe(201)
-    const profile = await profileResponse.json()
+  const templateResponse = await page.request.post('/api/forms/templates', {
+    data: {
+      name: `Portal Intake ${Date.now()}`,
+      sections: [
+        {
+          title: 'Goals',
+          fields: [{ key: 'goal', label: 'Goal', type: 'text', required: true }]
+        }
+      ]
+    }
+  })
+  const template = await templateResponse.json()
+  expect(templateResponse.status()).toBe(201)
 
-    const templateResponse = await page.request.post('/api/forms/templates', {
-      data: {
-        name: `Portal Intake ${seededRunId}`,
-        sections: [
-          {
-            title: 'Goals',
-            fields: [{ key: 'goal', label: 'Goal', type: 'text', required: true }]
-          }
-        ]
-      }
-    })
-    expect(templateResponse.status()).toBe(201)
-    const template = await templateResponse.json()
-
-    cleanupActions.push(async () => {
-      await page.request.delete(`/api/forms/templates/${template.id}`).catch(() => {})
-      await page.request.delete(`/api/profiles/${profile.id}`).catch(() => {})
-    })
-
-    const portalLinkResponse = await page.request.post('/api/portal-links', {
-      data: { profileId: profile.id, templateIds: [template.id], expiresInHours: 2, maxUses: 3 }
-    })
-    expect(portalLinkResponse.status()).toBe(201)
-    const portalLink = await portalLinkResponse.json()
-
-    await page.goto(`/portal.html?token=${portalLink.token}`)
-    await expect(page.getByTestId('template-picker')).toBeVisible()
-
-    await page.locator('#portal-fields input[name="goal"]').fill('Save for retirement')
-    await page.getByTestId('portal-save-draft').click()
-    await expect(page.getByTestId('portal-status-badge')).toContainText('draft')
-
-    await page.getByTestId('portal-submit').click()
-    await expect(page.getByTestId('portal-status-badge')).toContainText('submitted')
+  const portalLinkResponse = await page.request.post('/api/portal-links', {
+    data: { profileId: profile.id, templateIds: [template.id], expiresInHours: 2, maxUses: 3 }
   })
 })

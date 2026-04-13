@@ -2459,6 +2459,12 @@ async function renderTemplates() {
         <h3>Step 2 · Extraction Summary</h3>
         <p class="muted">Status: <span class="badge ${extraction?.status === 'failed' ? 'error-badge' : 'subtle'}">${escapeHtml(extraction?.status || 'unknown')}</span></p>
         <p class="muted">Reason code: <code>${escapeHtml(extraction?.reasonCode || 'none')}</code></p>
+        <div class="row wrap gap-sm">
+          <span class="badge subtle">Extracted fields ${extractedFields.length}</span>
+          <span class="badge ${mappedExtractedCount === extractedFields.length && extractedFields.length ? 'subtle' : 'warning-badge'}">Mapped ${mappedExtractedCount}</span>
+          <span class="badge ${Math.max(0, extractedFields.length - mappedExtractedCount) > 0 ? 'error-badge' : 'subtle'}">Unmapped ${Math.max(0, extractedFields.length - mappedExtractedCount)}</span>
+          <button id="jump-to-unmapped-extracted" class="tiny secondary">Review unmapped in mapping</button>
+        </div>
         ${
           extraction?.status === 'failed'
             ? `<p class="error-banner">${escapeHtml(templateIngestionRecoveryMessage(extraction))}</p>`
@@ -2558,7 +2564,7 @@ async function renderTemplates() {
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
                 <td>${
                   suggestion
-                    ? `<span class="badge subtle">${escapeHtml(suggestion.path)}</span><div class="muted">${escapeHtml(suggestion.reason || 'Suggested')} (${Math.round(Number(suggestion.score || 0) * 100)}%)</div>`
+                    ? `<span class="badge subtle">${escapeHtml(suggestion.path)}</span><div class="muted">${escapeHtml(suggestion.reason || 'Suggested')} (${Math.round(Number(suggestion.score || 0) * 100)}%)</div><button class="tiny secondary top-gap" data-apply-suggestion-row="${index}" data-suggested-path="${escapeHtml(suggestion.path)}">Apply</button>`
                     : '<span class="muted">None</span>'
                 }</td>
                 <td>${escapeHtml(mapping.fieldLabel || '')}</td>
@@ -2599,7 +2605,7 @@ async function renderTemplates() {
         <div class="grid two">
           <label>PDF Field<input id="inspector-pdfField" value="${escapeHtml(selectedMapping.pdfField || '')}" /></label>
           <label>Field Label/Name<input id="inspector-fieldLabel" value="${escapeHtml(selectedMapping.fieldLabel || '')}" /></label>
-          <label>Source Path<input id="inspector-sourcePath" list="source-path-options" value="${escapeHtml(selectedMapping.sourcePath || '')}" /></label>
+          <label>Source Path<input id="inspector-sourcePath" list="source-path-options" value="${escapeHtml(selectedMapping.sourcePath || '')}" /><div class="muted">Use <code>profile.*</code> for client profile fields or <code>submission.*</code>/<code>form.*</code> for form answers.</div></label>
           <label>Default Value<input id="inspector-defaultValue" value="${escapeHtml(selectedMapping.defaultValue || '')}" /></label>
           <label>Target Type<select id="inspector-targetType">${['text', 'number', 'boolean', 'date']
             .map((type) => `<option value="${type}" ${selectedMapping.targetType === type ? 'selected' : ''}>${type}</option>`)
@@ -2607,10 +2613,14 @@ async function renderTemplates() {
           <label>Transform Type<select id="inspector-transformType">${['', 'date', 'phone', 'currency', 'checkbox', 'expression']
             .map((type) => `<option value="${type}" ${selectedMapping.transformType === type ? 'selected' : ''}>${type || 'none'}</option>`)
             .join('')}</select></label>
-          <label>Transform Expression<input id="inspector-transformExpression" value="${escapeHtml(selectedMapping.transformExpression || '')}" /></label>
+          <label>Transform Expression<input id="inspector-transformExpression" value="${escapeHtml(selectedMapping.transformExpression || '')}" /><div class="muted">Only required for <code>expression</code>. Clear transform fields to make mapping pass-through again.</div></label>
           <label>Transform Currency<input id="inspector-transformCurrency" value="${escapeHtml(selectedMapping.transformCurrency || '')}" placeholder="USD" /></label>
           <label><input type="checkbox" id="inspector-required" ${selectedMapping.required ? 'checked' : ''} /> Required</label>
           <label><input type="checkbox" id="inspector-enabled" ${selectedMapping.enabled !== false ? 'checked' : ''} /> Mapping Enabled</label>
+        </div>
+        <div class="row gap-sm wrap top-gap">
+          <button id="inspector-reset-source-path" class="tiny secondary">Clear source path</button>
+          <button id="inspector-reset-transform" class="tiny secondary">Reset transform to none</button>
         </div>
       </section>
       <section class="item" data-template-wizard-section="preview" ${activeWizardStep === 'preview' ? '' : 'hidden'}>
@@ -2853,6 +2863,36 @@ async function renderTemplates() {
     })
   })
 
+  document.querySelector('#jump-to-unmapped-extracted')?.addEventListener('click', async () => {
+    if (!template) return
+    state.templateWizardStepByTemplateId[template.id] = 'mapping'
+    state.templateMappingFilterByTemplateId[template.id] = 'unmapped'
+    await rerenderTemplates()
+  })
+
+  document.querySelectorAll('[data-apply-suggestion-row]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!template) return
+      const rowIndex = Number(button.dataset.applySuggestionRow)
+      if (!Number.isFinite(rowIndex)) return
+      const suggestionPath = String(button.dataset.suggestedPath || '').trim()
+      if (!suggestionPath) return
+      const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+      const current = nextDraft[rowIndex] || mappingDraftFromServer({})
+      if (String(current.sourcePath || '').trim() === suggestionPath) {
+        setFlash('success', `Row ${rowIndex + 1} already uses suggested source path.`)
+        await rerenderTemplates()
+        return
+      }
+      nextDraft[rowIndex] = { ...current, sourcePath: suggestionPath }
+      state.templateMappingDrafts[template.id] = nextDraft
+      state.templateInspector[template.id] = { rowIndex }
+      state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
+      setFlash('success', `Applied suggestion to row ${rowIndex + 1}.`)
+      await rerenderTemplates()
+    })
+  })
+
   const applyInspectorToDraft = async () => {
     const idx = state.templateInspector[template.id]?.rowIndex || 0
     const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
@@ -2896,6 +2936,25 @@ async function renderTemplates() {
   ].forEach((selector) => {
     document.querySelector(selector)?.addEventListener('input', applyInspectorToDraft)
     document.querySelector(selector)?.addEventListener('change', applyInspectorToDraft)
+  })
+
+  document.querySelector('#inspector-reset-source-path')?.addEventListener('click', async () => {
+    const sourcePathEl = document.querySelector('#inspector-sourcePath')
+    if (!sourcePathEl) return
+    sourcePathEl.value = ''
+    await applyInspectorToDraft()
+    await rerenderTemplates()
+  })
+
+  document.querySelector('#inspector-reset-transform')?.addEventListener('click', async () => {
+    const typeEl = document.querySelector('#inspector-transformType')
+    const expressionEl = document.querySelector('#inspector-transformExpression')
+    const currencyEl = document.querySelector('#inspector-transformCurrency')
+    if (typeEl) typeEl.value = ''
+    if (expressionEl) expressionEl.value = ''
+    if (currencyEl) currencyEl.value = ''
+    await applyInspectorToDraft()
+    await rerenderTemplates()
   })
 
   document.querySelector('#add-mapping-row')?.addEventListener('click', async () => {
@@ -3006,7 +3065,7 @@ async function renderTemplates() {
     state.templateMappingDrafts[template.id] = nextDraft
     state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
     state.templateWizardStepByTemplateId[template.id] = 'mapping'
-    setFlash('success', `Auto-mapped ${updates} row(s) from suggestions.`)
+    setFlash('success', `Auto-mapped ${updates} row(s) by name similarity.`)
     await rerenderTemplates()
   })
 
