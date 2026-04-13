@@ -162,6 +162,7 @@ test('template versioning and publish preflight controls remain wired in builder
   assert.match(appJs, /Preflight schema \${preflightIssues\.length \? 'Failed' : 'Clear'}/)
   assert.match(appJs, /Publish state \${publishDisabled \? 'Blocked' : 'Ready'}/)
   assert.match(appJs, /mappingSaveStateLabel\(saveState, \{/)
+  assert.match(appJs, /function deriveTemplateIssueRowAnchor\(rowIndex\) \{/)
   assert.match(appJs, /rowAnchor = Number\.isFinite\(Number\(rowIndex\)\) \? `#mapping-row-\$\{Number\(rowIndex\)\}` : ''/)
   assert.match(appJs, /data-focus-inspector="\$\{escapeHtml\(issue\.inspectorTarget \|\| 'sourcePath'\)\}"/)
   assert.match(appJs, /id="auto-map-similar"/)
