@@ -44,6 +44,7 @@ export function runCommandProcess({
     let timeoutId = null
     let closeFallbackId = null
     let exitResult = null
+    let closeObserved = false
     const stdioMode = Array.isArray(stdio) ? stdio.join(',') : String(stdio)
 
     const cleanup = () => {
@@ -97,6 +98,10 @@ export function runCommandProcess({
       }
 
       exitResult = { code, signal }
+      if (closeObserved) {
+        finalizeCompletion('close', code, signal)
+        return
+      }
       if (!closeFallbackId) {
         closeFallbackId = setTimeout(() => {
           finalizeCompletion('exit', code, signal)
@@ -106,6 +111,7 @@ export function runCommandProcess({
     }
 
     const onClose = (code, signal) => {
+      closeObserved = true
       const completion = exitResult ?? { code, signal }
       finalizeCompletion('close', completion.code, completion.signal)
     }
@@ -118,6 +124,10 @@ export function runCommandProcess({
 
     if (timeoutMs > 0) {
       timeoutId = setTimeout(() => {
+        if (exitResult) {
+          finalizeCompletion('exit', exitResult.code, exitResult.signal)
+          return
+        }
         child.kill('SIGTERM')
         settle(
           reject,
