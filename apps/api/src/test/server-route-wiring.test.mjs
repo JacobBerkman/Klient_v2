@@ -186,13 +186,7 @@ test('pipeline stage config routes are transport-only and call pipelineStages mo
 
   const createRes = await fetch(`${base}/api/pipeline/stages`, {
     method: 'POST',
-    headers: {
-      cookie,
-      'content-type': 'application/json',
-      'x-csrf-token': csrfToken,
-      origin: base,
-      referer: `${base}/`
-    },
+    headers: await issueHeaders(true),
     body: JSON.stringify({ key: 'new_stage', label: 'New Stage' })
   })
   const createBody = await createRes.json()
@@ -466,6 +460,105 @@ test('GET /api/analytics/export requires auth and applies download headers', asy
   assert.match(authorized.headers.get('content-disposition') || '', /^attachment; filename=\"analytics-report-\d{4}-\d{2}-\d{2}\.csv\"$/)
   assert.equal(csv.includes('profiles,3'), true)
   assert.deepEqual(calls, ['policy:u1:canReadAnalytics'])
+  await close(server)
+})
+
+test('workflow draft revision route enforces policy before mutation and preserves tenant user context', async () => {
+  const calls = []
+  const fakeUser = { id: 'u-draft-1', firmId: 'firm-1', role: 'advisor' }
+  const modules = {
+    auth: { requireUser: () => (calls.push('auth.requireUser'), fakeUser) },
+    policy: { requireGuard: (user, guard) => calls.push(`policy:${user.id}:${guard}`) },
+    forms: {
+      reviseDraftSubmission: (user, draftId, payload) => {
+        calls.push({ route: 'forms.reviseDraftSubmission', user, draftId, payload })
+        return { id: draftId, ...payload }
+      }
+    }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+  const cookie = '__Host-klient-session=token'
+  const csrfBootstrap = await fetch(`${base}/api/csrf`, { headers: { cookie } })
+  const csrfPayload = await csrfBootstrap.json()
+  const csrfToken = csrfPayload.csrfToken
+
+  const patchRes = await fetch(`${base}/api/forms/drafts/draft-123`, {
+    method: 'PATCH',
+    headers: { cookie, 'content-type': 'application/json', 'x-csrf-token': csrfToken, origin: base, referer: `${base}/` },
+    body: JSON.stringify({ status: 'draft', values: { fieldA: 'updated' } })
+  })
+  const patchBody = await patchRes.json()
+  assert.equal(patchRes.status, 200)
+  assert.equal(patchBody.id, 'draft-123')
+  const formsCallIndex = calls.findIndex((entry) => entry?.route === 'forms.reviseDraftSubmission')
+  const canWriteFormsIndex = calls.indexOf('policy:u-draft-1:canWriteForms')
+  const canWriteCollaboratorIndex = calls.indexOf('policy:u-draft-1:canWriteDraftCollaborator')
+  assert.ok(canWriteFormsIndex >= 0)
+  assert.ok(canWriteCollaboratorIndex >= 0)
+  assert.ok(formsCallIndex > canWriteFormsIndex)
+  assert.ok(formsCallIndex > canWriteCollaboratorIndex)
+  assert.deepEqual(calls[formsCallIndex], {
+    route: 'forms.reviseDraftSubmission',
+    user: fakeUser,
+    draftId: 'draft-123',
+    payload: { status: 'draft', values: { fieldA: 'updated' } }
+  })
+
+  await close(server)
+})
+
+test('POST /api/templates/auto-build keeps csrf bootstrap + token flow for state-changing requests', async () => {
+  const calls = []
+  const fakeUser = { id: 'u-template-1', firmId: 'firm-1', role: 'admin' }
+  const modules = {
+    auth: { requireUser: () => fakeUser },
+    policy: { requireGuard: (user, guard) => calls.push(`policy:${user.id}:${guard}`) },
+    templates: {
+      autoBuild: (user, payload) => {
+        calls.push({ route: 'templates.autoBuild', user: user.id, payload })
+        return { id: 'tpl-autobuild-1', ...payload }
+      }
+    }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+  const cookie = '__Host-klient-session=token'
+
+  const missingCsrfRes = await fetch(`${base}/api/templates/auto-build`, {
+    method: 'POST',
+    headers: { cookie, 'content-type': 'application/json', origin: base, referer: `${base}/` },
+    body: JSON.stringify({ name: 'NoCsrf' })
+  })
+  assert.equal(missingCsrfRes.status, 403)
+
+  const csrfBootstrap = await fetch(`${base}/api/csrf`, { headers: { cookie } })
+  const csrfPayload = await csrfBootstrap.json()
+  const withCsrfRes = await fetch(`${base}/api/templates/auto-build`, {
+    method: 'POST',
+    headers: {
+      cookie,
+      'content-type': 'application/json',
+      'x-csrf-token': csrfPayload.csrfToken,
+      origin: base,
+      referer: `${base}/`
+    },
+    body: JSON.stringify({ name: 'WithCsrf', fileName: 'source.pdf' })
+  })
+  const withCsrfBody = await withCsrfRes.json()
+  assert.equal(withCsrfRes.status, 201)
+  assert.equal(withCsrfBody.id, 'tpl-autobuild-1')
+  assert.deepEqual(calls, [
+    'policy:u-template-1:canEditTemplate',
+    {
+      route: 'templates.autoBuild',
+      user: 'u-template-1',
+      payload: { name: 'WithCsrf', fileName: 'source.pdf' }
+    }
+  ])
+
   await close(server)
 })
 
