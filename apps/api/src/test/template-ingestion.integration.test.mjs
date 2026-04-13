@@ -46,6 +46,7 @@ test('autoBuildTemplate extracts AcroForm metadata and snapshots it in versions'
   assert.equal(template.extraction.status, 'completed')
   assert.equal(template.extraction.reasonCode, null)
   assert.equal(template.extraction.error, null)
+  assert.deepEqual(template.extraction.diagnostics, [])
   assert.equal(template.extractedFields.length, 4)
   assert.equal(template.mappings.length, 3)
 
@@ -87,6 +88,8 @@ test('autoBuildTemplate returns failed extraction status for non-form pdf', asyn
   assert.equal(template.extraction.reasonCode, 'no_acroform')
   assert.equal(template.extraction.error.code, 'TEMPLATE_INGESTION_NO_ACROFORM')
   assert.match(template.extraction.error.message, /AcroForm/i)
+  assert.equal(template.extraction.diagnostics[0]?.reasonCode, 'no_acroform')
+  assert.equal(template.extraction.diagnostics[0]?.severity, 'error')
   assert.equal(template.extractedFields.length, 0)
   assert.equal(template.mappings.length, 0)
 })
@@ -106,5 +109,28 @@ test('autoBuildTemplate returns failed extraction status for malformed files', a
   assert.equal(template.extraction.reasonCode, 'malformed_pdf')
   assert.equal(template.extraction.error.code, 'TEMPLATE_INGESTION_MALFORMED_PDF')
   assert.match(template.extraction.error.message, /valid AcroForm PDF/i)
+  assert.equal(template.extraction.diagnostics[0]?.reasonCode, 'malformed_pdf')
   assert.equal(template.extractedFields.length, 0)
+})
+
+test('autoBuildTemplate returns failed extraction status for AcroForm PDFs with no fields', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+  const noFieldsPdf = Buffer.from(
+    '%PDF-1.4\n1 0 obj\n<< /Type /Catalog /AcroForm 2 0 R >>\nendobj\n2 0 obj\n<< /Fields [] >>\nendobj\n%%EOF',
+    'latin1'
+  )
+
+  const template = store.autoBuildTemplate(user, {
+    name: 'No Fields Template',
+    fileName: 'no-fields.pdf',
+    fileBytesBase64: noFieldsPdf.toString('base64')
+  })
+
+  assert.equal(template.extraction.status, 'failed')
+  assert.equal(template.extraction.reasonCode, 'no_fields')
+  assert.equal(template.extraction.error.code, 'TEMPLATE_INGESTION_NO_FIELDS')
+  assert.equal(template.extraction.diagnostics[0]?.code, 'TEMPLATE_INGESTION_NO_FIELDS')
+  assert.equal(template.extractedFields.length, 0)
+  assert.equal(template.mappings.length, 0)
 })

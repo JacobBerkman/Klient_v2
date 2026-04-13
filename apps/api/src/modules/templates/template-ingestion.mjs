@@ -34,6 +34,21 @@ function buildIngestionError(reasonCode) {
   }
 }
 
+function buildIngestionDiagnostics(reasonCode, details = {}) {
+  if (!reasonCode) return []
+  const error = buildIngestionError(reasonCode)
+  return [
+    {
+      type: 'ingestion',
+      severity: 'error',
+      reasonCode,
+      code: error?.code || 'TEMPLATE_INGESTION_FAILED',
+      message: error?.message || 'Template ingestion failed.',
+      details: details && typeof details === 'object' ? details : {}
+    }
+  ]
+}
+
 function parsePdfStringLiteral(value) {
   if (!value) return ''
   return value.replace(/\\([\\()])/g, '$1')
@@ -119,19 +134,37 @@ function resolveAcroFormObject(pdfText, pdfObjects) {
 export function extractTemplateFieldsFromPdfBytes(bytes) {
   if (!bytes || bytes.length === 0) {
     const reasonCode = EXTRACTION_REASON.malformed
-    return { status: 'failed', reasonCode, error: buildIngestionError(reasonCode), fields: [] }
+    return {
+      status: 'failed',
+      reasonCode,
+      error: buildIngestionError(reasonCode),
+      diagnostics: buildIngestionDiagnostics(reasonCode, { stage: 'header', bytesLength: 0 }),
+      fields: []
+    }
   }
   const pdfText = Buffer.from(bytes).toString('latin1')
   if (!pdfText.startsWith(PDF_HEADER)) {
     const reasonCode = EXTRACTION_REASON.malformed
-    return { status: 'failed', reasonCode, error: buildIngestionError(reasonCode), fields: [] }
+    return {
+      status: 'failed',
+      reasonCode,
+      error: buildIngestionError(reasonCode),
+      diagnostics: buildIngestionDiagnostics(reasonCode, { stage: 'header', bytesLength: bytes.length }),
+      fields: []
+    }
   }
 
   const pdfObjects = parseObjectMap(pdfText)
   const acroFormRaw = resolveAcroFormObject(pdfText, pdfObjects)
   if (!acroFormRaw) {
     const reasonCode = EXTRACTION_REASON.noAcroForm
-    return { status: 'failed', reasonCode, error: buildIngestionError(reasonCode), fields: [] }
+    return {
+      status: 'failed',
+      reasonCode,
+      error: buildIngestionError(reasonCode),
+      diagnostics: buildIngestionDiagnostics(reasonCode, { stage: 'acroform' }),
+      fields: []
+    }
   }
 
   const acroFormDict = extractDictionary(acroFormRaw) || acroFormRaw
@@ -139,7 +172,13 @@ export function extractTemplateFieldsFromPdfBytes(bytes) {
   const rootRefs = parseRefList(fieldsRaw)
   if (!rootRefs.length) {
     const reasonCode = EXTRACTION_REASON.noFields
-    return { status: 'failed', reasonCode, error: buildIngestionError(reasonCode), fields: [] }
+    return {
+      status: 'failed',
+      reasonCode,
+      error: buildIngestionError(reasonCode),
+      diagnostics: buildIngestionDiagnostics(reasonCode, { stage: 'fields', rootRefs: 0 }),
+      fields: []
+    }
   }
 
   const pageIndexByRef = parsePages(pdfObjects)
@@ -173,8 +212,14 @@ export function extractTemplateFieldsFromPdfBytes(bytes) {
 
   if (!extracted.length) {
     const reasonCode = EXTRACTION_REASON.noFields
-    return { status: 'failed', reasonCode, error: buildIngestionError(reasonCode), fields: [] }
+    return {
+      status: 'failed',
+      reasonCode,
+      error: buildIngestionError(reasonCode),
+      diagnostics: buildIngestionDiagnostics(reasonCode, { stage: 'fields', rootRefs: rootRefs.length }),
+      fields: []
+    }
   }
 
-  return { status: 'completed', reasonCode: null, error: null, fields: extracted }
+  return { status: 'completed', reasonCode: null, error: null, diagnostics: [], fields: extracted }
 }

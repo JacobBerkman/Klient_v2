@@ -88,6 +88,27 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
     }
   })
   expect(autoBuildResponse.status()).toBe(201)
+  const malformedAutoBuild = await autoBuildResponse.json()
+  expect(malformedAutoBuild.extraction.status).toBe('failed')
+  expect(malformedAutoBuild.extraction.reasonCode).toBe('malformed_pdf')
+  expect(malformedAutoBuild.extraction.diagnostics[0].code).toBe('TEMPLATE_INGESTION_MALFORMED_PDF')
+
+  const noFieldsResponse = await page.request.post('/api/templates/auto-build', {
+    data: {
+      name: `No Fields Auto Build ${stableToken}`,
+      fileName: 'no-fields.pdf',
+      fileBytes: Array.from(
+        Buffer.from(
+          '%PDF-1.4\n1 0 obj\n<< /Type /Catalog /AcroForm 2 0 R >>\nendobj\n2 0 obj\n<< /Fields [] >>\nendobj\n%%EOF',
+          'latin1'
+        )
+      )
+    }
+  })
+  expect(noFieldsResponse.status()).toBe(201)
+  const noFieldsAutoBuild = await noFieldsResponse.json()
+  expect(noFieldsAutoBuild.extraction.reasonCode).toBe('no_fields')
+  expect(noFieldsAutoBuild.extraction.error.code).toBe('TEMPLATE_INGESTION_NO_FIELDS')
 
   const remediationTemplateName = `Preflight Loop Template ${seededRunId}`
   const remediationTemplateResponse = await page.request.post('/api/templates', {
@@ -127,6 +148,12 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('profile.firstName')
   await page.locator('#inspector-reset-source-path').click()
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
+  await page.getByRole('button', { name: '5. Publish' }).click()
+  await page.locator('#run-publish-preflight').click()
+  await expect(page.getByText('Publish preflight found 1 schema issue(s).')).toBeVisible()
+  await expect(page.getByText('required_source_path')).toBeVisible()
+  await page.locator('[data-preflight-rowindex="0"]').click()
+  await expect(page.locator('#inspector-sourcePath')).toBeFocused()
   await page.locator('#clear-unresolved-rows').click()
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
   await page.locator('#auto-map-similar').click()
