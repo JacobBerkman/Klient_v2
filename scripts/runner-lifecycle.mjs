@@ -45,6 +45,7 @@ export function runCommandProcess({
     let closeFallbackId = null
     let exitResult = null
     let closeObserved = false
+    let timeoutTriggered = false
     const stdioMode = Array.isArray(stdio) ? stdio.join(',') : String(stdio)
 
     const cleanup = () => {
@@ -76,6 +77,15 @@ export function runCommandProcess({
       if (settled) return
 
       const durationMs = Date.now() - start
+      if (timeoutTriggered) {
+        settle(
+          reject,
+          new Error(
+            `${displayLabel} timed out after ${timeoutMs}ms (stdio=${stdioMode}; waiting for ${shouldPreferClose ? 'close' : 'exit'})`
+          )
+        )
+        return
+      }
       if (signal) {
         settle(reject, new Error(`${displayLabel} terminated by signal ${signal} after ${durationMs}ms (${eventName})`))
         return
@@ -92,12 +102,12 @@ export function runCommandProcess({
     const shouldPreferClose = shouldDrainStdout || shouldDrainStderr
 
     const onExit = (code, signal) => {
+      exitResult = { code, signal }
       if (!shouldPreferClose) {
         finalizeCompletion('exit', code, signal)
         return
       }
 
-      exitResult = { code, signal }
       if (closeObserved) {
         finalizeCompletion('close', code, signal)
         return
@@ -124,17 +134,14 @@ export function runCommandProcess({
 
     if (timeoutMs > 0) {
       timeoutId = setTimeout(() => {
+        if (settled) return
         if (exitResult) {
           finalizeCompletion('exit', exitResult.code, exitResult.signal)
           return
         }
+        timeoutTriggered = true
         child.kill('SIGTERM')
-        settle(
-          reject,
-          new Error(
-            `${displayLabel} timed out after ${timeoutMs}ms (stdio=${stdioMode}; waiting for ${shouldPreferClose ? 'close' : 'exit'})`
-          )
-        )
+        finalizeCompletion('timeout', null, null)
       }, timeoutMs)
       timeoutId.unref()
     }

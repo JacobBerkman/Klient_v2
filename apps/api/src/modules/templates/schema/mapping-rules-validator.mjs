@@ -13,9 +13,14 @@ function buildIssueMeta({ code, path, rowIndex, field, meta }) {
   const normalizedPath = String(path || '')
   const normalizedField = String(field || '')
   const issueId = [code, issueRowIndex ?? 'global', normalizedField || normalizedPath || 'mapping'].join(':')
+  const rowAnchor = issueRowIndex != null ? `#mapping-row-${issueRowIndex}` : ''
+  const inspectorTarget = normalizedField || normalizedPath || 'sourcePath'
   return {
     ...(meta && isObject(meta) ? meta : {}),
     issueId,
+    rowIndex: issueRowIndex,
+    rowAnchor,
+    inspectorTarget,
     fieldPath: normalizedPath,
     fieldKey: normalizedField || normalizedPath || 'mapping'
   }
@@ -24,6 +29,9 @@ function buildIssueMeta({ code, path, rowIndex, field, meta }) {
 function pushIssue(issues, { code, path, rowIndex = null, field, message, meta }) {
   const issue = { code, path, rowIndex, field, message }
   issue.meta = buildIssueMeta({ code, path, rowIndex, field, meta })
+  issue.issueId = issue.meta.issueId
+  issue.rowAnchor = issue.meta.rowAnchor
+  issue.inspectorTarget = issue.meta.inspectorTarget
   issues.push(issue)
 }
 

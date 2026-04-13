@@ -29,12 +29,14 @@ test('release preflight provisions Playwright browsers before validate:master', 
 
 test('master gate keeps canonical E2E browser step label', () => {
   const content = readScript('scripts/master-validate.mjs')
-  assert.match(content, /name: 'E2E browser checks'/)
+  assert.match(content, /'E2E browser checks':/)
   assert.doesNotMatch(content, /RELEASE_E2E_ALLOW_FALLBACK = '1'/)
 })
 
 test('release go/no-go enforces strict browser mode for preflight hard gate', () => {
   const content = readScript('scripts/release-go-no-go.mjs')
+  assert.match(content, /PLAYWRIGHT_JSON_REPORT: resolve\(evidenceDir, 'playwright-report\.json'\)/)
+  assert.match(content, /RELEASE_E2E_PLAYWRIGHT_REPORT: resolve\(evidenceDir, 'playwright-report\.json'\)/)
   assert.match(content, /RELEASE_E2E_STRICT_MODE: process\.env\.RELEASE_E2E_STRICT_MODE \|\| '1'/)
   assert.match(content, /RELEASE_E2E_ALLOW_FALLBACK: '0'/)
 })

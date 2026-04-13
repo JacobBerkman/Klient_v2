@@ -54,6 +54,9 @@ test('rejects invalid transform registry type with descriptive error path', asyn
       assert.equal(error.details.issues[0].code, 'unsupported_transform_type')
       assert.equal(error.details.issues[0].field, 'transform.type')
       assert.equal(error.details.issues[0].path, '/mappings/0/transform/type')
+      assert.equal(error.details.issues[0].issueId, 'unsupported_transform_type:0:transform.type')
+      assert.equal(error.details.issues[0].rowAnchor, '#mapping-row-0')
+      assert.equal(error.details.issues[0].inspectorTarget, 'transform.type')
       assert.equal(error.details.issues[0].meta?.issueId, 'unsupported_transform_type:0:transform.type')
       return true
     }
@@ -393,6 +396,9 @@ test('preview returns blocking schema issues for missing mapping paths before pu
   assert.match(JSON.stringify(preview.issues), /known profile\/form schema path/i)
   assert.equal(preview.issues[0].code, 'unknown_source_path')
   assert.equal(preview.issues[0].field, 'sourcePath')
+  assert.equal(preview.issues[0].issueId, 'unknown_source_path:0:sourcePath')
+  assert.equal(preview.issues[0].rowAnchor, '#mapping-row-0')
+  assert.equal(preview.issues[0].inspectorTarget, 'sourcePath')
   assert.ok(preview.issues[0].meta?.issueId)
   assert.ok(preview.issues[0].rowId)
   assert.equal(preview.issues[0].meta?.rowId, preview.issues[0].rowId)

@@ -6,7 +6,7 @@ const nodeBin = process.execPath
 
 test('runCommandProcess drains piped integration-style output and cleanly hands off next suite', async () => {
   const noisyScript = [
-    'const payload = { suite: "integration-exports", dump: "x".repeat(300000) };',
+    'const payload = { suite: "integration-exports", dump: "x".repeat(2_000_000) };',
     'console.log(JSON.stringify(payload));'
   ].join(' ')
 
@@ -111,16 +111,18 @@ test('runCommandProcess timeout rejects with explicit stdio context for piped ru
 })
 
 test('runCommandProcess does not misclassify fast exits near timeout boundary as timeouts', async () => {
-  const result = await runCommandProcess({
-    command: nodeBin,
-    args: ['-e', 'setTimeout(() => process.exit(0), 40)'],
-    label: 'timeout-boundary-fast-exit',
-    stdio: 'pipe',
-    timeoutMs: 400
-  })
+  for (let iteration = 0; iteration < 3; iteration += 1) {
+    const result = await runCommandProcess({
+      command: nodeBin,
+      args: ['-e', 'setTimeout(() => process.exit(0), 1000)'],
+      label: `timeout-boundary-fast-exit-${iteration}`,
+      stdio: 'pipe',
+      timeoutMs: 1200
+    })
 
-  assert.equal(result.code, 0)
-  assert.equal(typeof result.durationMs, 'number')
+    assert.equal(result.code, 0)
+    assert.equal(typeof result.durationMs, 'number')
+  }
 })
 
 test('runCommandProcess handles abrupt non-zero exit with piped stdio', async () => {
