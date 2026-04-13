@@ -46,6 +46,53 @@ try {
   await context.login(advisorAccepted.user.email, 'AdvisorPass123!', 'advisor')
   const advisorHeaders = context.authHeaders('advisor')
 
+  await context.requestAs('admin', '/api/profiles/custom-fields/schema', {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      key: 'client_note',
+      type: 'text',
+      label: 'Client Note',
+      required: false
+    })
+  })
+  await context.requestAs('admin', '/api/profiles/custom-fields/schema', {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      key: 'estimated_assets',
+      type: 'number',
+      label: 'Estimated Assets',
+      required: false
+    })
+  })
+  await context.requestAs('admin', '/api/profiles/custom-fields/schema', {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      key: 'onboard_date',
+      type: 'date',
+      label: 'Onboard Date',
+      required: false
+    })
+  })
+  await context.requestAs('admin', '/api/profiles/custom-fields/schema', {
+    method: 'POST',
+    headers: adminHeaders,
+    body: JSON.stringify({
+      key: 'vip_client',
+      type: 'boolean',
+      label: 'VIP Client',
+      required: false
+    })
+  })
+  const schemaSnapshot = await context.requestAs('advisor', '/api/profiles/custom-fields/schema', { headers: advisorHeaders })
+  const createdKeys = new Set((schemaSnapshot.fields || []).map((field) => field.key))
+  assert(createdKeys.has('client_note'), 'Text custom field should be created.')
+  assert(createdKeys.has('estimated_assets'), 'Number custom field should be created.')
+  assert(createdKeys.has('onboard_date'), 'Date custom field should be created.')
+  assert(createdKeys.has('vip_client'), 'Boolean custom field should be created.')
+
   const profile = await context.requestAs('advisor', '/api/profiles', {
     method: 'POST',
     headers: advisorHeaders,
@@ -53,9 +100,31 @@ try {
       kind: 'client',
       firstName: 'Taylor',
       lastName: 'Client',
-      email: 'taylor.client@e2e.test'
+      email: 'taylor.client@e2e.test',
+      extensions: {
+        schemaVersion: '1.0.0',
+        values: {
+          client_note: 'Prefers quarterly reviews',
+          estimated_assets: 725000,
+          onboard_date: '2026-04-13',
+          vip_client: true
+        }
+      }
     })
   })
+  assert(profile.extensions?.values?.client_note === 'Prefers quarterly reviews', 'Text custom field should persist.')
+  assert(profile.extensions?.values?.estimated_assets === 725000, 'Number custom field should persist.')
+  assert(profile.extensions?.values?.onboard_date === '2026-04-13', 'Date custom field should persist.')
+  assert(profile.extensions?.values?.vip_client === true, 'Boolean custom field should persist.')
+
+  const profileDetail = await context.requestAs('advisor', `/api/profiles/${profile.id}`, { headers: advisorHeaders })
+  assert(profileDetail.profile?.extensions?.values?.client_note === profile.extensions?.values?.client_note, 'Profile detail should preserve custom field text parity.')
+  assert(
+    profileDetail.profile?.extensions?.values?.estimated_assets === profile.extensions?.values?.estimated_assets,
+    'Profile detail should preserve custom field number parity.'
+  )
+  assert(profileDetail.profile?.extensions?.values?.onboard_date === profile.extensions?.values?.onboard_date, 'Profile detail should preserve custom field date parity.')
+  assert(profileDetail.profile?.extensions?.values?.vip_client === profile.extensions?.values?.vip_client, 'Profile detail should preserve custom field boolean parity.')
 
   const formTemplate = await context.requestAs('advisor', '/api/forms/templates', {
     method: 'POST',
@@ -210,6 +279,10 @@ try {
       advisorSubmissionId: submittedForm.id,
       portalDraftId: portalDraft.id,
       portalSubmissionId: portalSubmitted.id
+    },
+    customFields: {
+      profileValues: profile.extensions?.values || {},
+      profileDetailValues: profileDetail.profile?.extensions?.values || {}
     }
   }
 
