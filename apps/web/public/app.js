@@ -419,7 +419,8 @@ function canManageCustomFieldSchema() {
 }
 
 function normalizeCustomFieldDefinitions(fields = []) {
-  return (Array.isArray(fields) ? fields : [])
+  return sortCustomFieldDefinitions(
+    (Array.isArray(fields) ? fields : [])
     .map((field) => ({
       key: String(field?.key || '')
         .trim()
@@ -432,6 +433,40 @@ function normalizeCustomFieldDefinitions(fields = []) {
       metadata: field?.metadata && typeof field.metadata === 'object' && !Array.isArray(field.metadata) ? field.metadata : {}
     }))
     .filter((field) => field.key)
+  )
+}
+
+function customFieldGroupName(field = {}) {
+  const rawGroup = field?.metadata && typeof field.metadata === 'object' ? field.metadata.group : ''
+  return String(rawGroup || 'General').trim() || 'General'
+}
+
+function customFieldSortOrder(field = {}) {
+  const rawOrder = field?.metadata && typeof field.metadata === 'object' ? field.metadata.order : null
+  if (rawOrder == null || rawOrder === '') return Number.POSITIVE_INFINITY
+  const parsed = Number(rawOrder)
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY
+}
+
+function sortCustomFieldDefinitions(fields = []) {
+  return [...fields].sort((a, b) => {
+    const groupCompare = customFieldGroupName(a).localeCompare(customFieldGroupName(b))
+    if (groupCompare !== 0) return groupCompare
+    const orderCompare = customFieldSortOrder(a) - customFieldSortOrder(b)
+    if (orderCompare !== 0) return orderCompare
+    const labelCompare = String(a.label || a.key || '').localeCompare(String(b.label || b.key || ''))
+    if (labelCompare !== 0) return labelCompare
+    return String(a.key || '').localeCompare(String(b.key || ''))
+  })
+}
+
+function groupedCustomFields(fields = []) {
+  return sortCustomFieldDefinitions(fields).reduce((groups, field) => {
+    const groupName = customFieldGroupName(field)
+    if (!groups[groupName]) groups[groupName] = []
+    groups[groupName].push(field)
+    return groups
+  }, {})
 }
 
 async function ensureCustomFieldSchema(force = false) {
@@ -594,9 +629,15 @@ function customFieldCreateFormMarkup() {
     })
     return
   }
-  profileCustomFieldsEl.innerHTML = `<h4>Firm Custom Fields</h4><div class="grid two">${fields
-    .map((field) => customFieldControlMarkup(field, ''))
-    .join('')}</div><p class="muted compact" role="status" aria-live="polite">These values appear on client profiles and carry into draft review context for operators.</p>`
+  const grouped = groupedCustomFields(fields)
+  profileCustomFieldsEl.innerHTML = `<h4>Firm Custom Fields</h4>${Object.entries(grouped)
+    .map(
+      ([groupName, groupFields]) => `<div class="top-gap">
+      <h5>${escapeHtml(groupName)}</h5>
+      <div class="grid two">${groupFields.map((field) => customFieldControlMarkup(field, '')).join('')}</div>
+    </div>`
+    )
+    .join('')}<p class="muted compact" role="status" aria-live="polite">These values appear on client profiles and carry into draft review context for operators.</p>`
 }
 
 function collectCustomFieldValues(formEl, fields = []) {
@@ -3806,6 +3847,7 @@ async function renderTemplates() {
 function boardCardMarkup(card, kind) {
   const canEdit = canMutateProfiles()
   const inlineState = ensureInlineProfileState(kind, card.id, card)
+  const customFieldGroups = groupedCustomFields(state.customFieldSchema.fields || [])
   const displayName = `${card.firstName || ''} ${card.lastName || ''}`.trim() || card.id
   const cardStage = card.stage || getStageDefinitions({ includeInactive: false })[0]?.id || 'discovery'
   const workflow = card.workflowSummary || {}
@@ -4789,7 +4831,7 @@ async function renderCustomFieldsAdmin() {
   const bulkUi = uiState.bulk || { status: '', message: '', rowErrorsByKey: {}, draftRows: [] }
   const bulkDraftRows = Array.isArray(bulkUi.draftRows) && bulkUi.draftRows.length
     ? bulkUi.draftRows
-    : [{ key: '', type: 'text', label: '', required: '', metadata: '' }]
+    : [{ key: '', type: 'text', label: '', required: '', group: '', order: '', metadata: '' }]
   const bulkValidationSummaryItems = Object.entries(bulkUi.rowErrorsByKey || {})
     .flatMap(([key, errors]) => Object.values(errors || {}).map((message) => `<li><strong>${escapeHtml(key || 'row')}</strong>: ${escapeHtml(message)}</li>`))
     .join('')
@@ -4831,7 +4873,9 @@ async function renderCustomFieldsAdmin() {
         </select>
         <input name="label" placeholder="Display label" ${canManage ? '' : 'disabled'} />
         <label><input name="required" type="checkbox" ${canManage ? '' : 'disabled'} /> Required</label>
-        <input name="metadata" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
+        <input name="group" placeholder="Group (default: General)" ${canManage ? '' : 'disabled'} />
+        <input name="order" type="number" step="1" placeholder="Order (optional)" ${canManage ? '' : 'disabled'} />
+        <input name="metadata" placeholder='{"uiHint":"currency"}' ${canManage ? '' : 'disabled'} />
         <p class="muted compact">Key uses letters, numbers, and underscores only.</p>
         <p class="muted compact" data-type-help>Field type help: Plain text value.</p>
         <p class="muted compact">Metadata is optional JSON object used for grouping and UI hints.</p>
@@ -4839,6 +4883,8 @@ async function renderCustomFieldsAdmin() {
         <p class="field-error-text" data-field-error="label" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="required" role="alert" aria-live="polite"></p>
+        <p class="field-error-text" data-field-error="group" role="alert" aria-live="polite"></p>
+        <p class="field-error-text" data-field-error="order" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
         <button type="submit" ${createButtonDisabled ? 'disabled' : ''}>${createButtonLabel}</button>
         <p class="muted compact" data-form-feedback aria-live="polite"></p>
@@ -4847,8 +4893,8 @@ async function renderCustomFieldsAdmin() {
     <section class="item">
       <h3>Bulk Edit Existing Fields</h3>
       <form id="custom-field-bulk-form">
-        <p class="muted compact">Use guided rows (key, type, label, required, metadata). JSON import is optional.</p>
-        <table><thead><tr><th>Key</th><th>Type</th><th>Label</th><th>Required</th><th>Metadata</th><th>Row</th></tr></thead><tbody>
+        <p class="muted compact">Use guided rows (key, type, label, required, group, order, metadata). JSON import is optional.</p>
+        <table><thead><tr><th>Key</th><th>Type</th><th>Label</th><th>Required</th><th>Group</th><th>Order</th><th>Metadata</th><th>Row</th></tr></thead><tbody>
           ${bulkDraftRows
             .map((row, index) => `<tr data-bulk-row="${index}">
               <td><input name="bulkKey" data-bulk-col="key" value="${escapeHtml(row.key || '')}" placeholder="field_key" ${canManage ? '' : 'disabled'} /></td>
@@ -4862,7 +4908,9 @@ async function renderCustomFieldsAdmin() {
               </td>
               <td><input name="bulkLabel" data-bulk-col="label" value="${escapeHtml(row.label || '')}" placeholder="Display label" ${canManage ? '' : 'disabled'} /></td>
               <td><input name="bulkRequired" data-bulk-col="required" value="${escapeHtml(String(row.required ?? ''))}" placeholder="true/false" ${canManage ? '' : 'disabled'} /></td>
-              <td><input name="bulkMetadata" data-bulk-col="metadata" value="${escapeHtml(String(row.metadata ?? ''))}" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} /></td>
+              <td><input name="bulkGroup" data-bulk-col="group" value="${escapeHtml(String(row.group ?? ''))}" placeholder="General" ${canManage ? '' : 'disabled'} /></td>
+              <td><input name="bulkOrder" data-bulk-col="order" value="${escapeHtml(String(row.order ?? ''))}" placeholder="1" ${canManage ? '' : 'disabled'} /></td>
+              <td><input name="bulkMetadata" data-bulk-col="metadata" value="${escapeHtml(String(row.metadata ?? ''))}" placeholder='{"uiHint":"currency"}' ${canManage ? '' : 'disabled'} /></td>
               <td><button type="button" class="tiny secondary" data-remove-bulk-row="${index}" ${canManage && bulkDraftRows.length > 1 ? '' : 'disabled'}>Remove</button></td>
             </tr>`)
             .join('')}
@@ -4910,7 +4958,7 @@ async function renderCustomFieldsAdmin() {
     </section>
     <section class="item">
       <h3>Current Fields</h3>
-      <table><thead><tr><th>Key</th><th>Type</th><th>Label</th><th>Required</th><th>Metadata</th><th>Actions</th></tr></thead><tbody>
+      <table><thead><tr><th>Key</th><th>Type</th><th>Label</th><th>Required</th><th>Group</th><th>Order</th><th>Metadata</th><th>Actions</th></tr></thead><tbody>
       ${
         fields.length
           ? fields
@@ -4920,6 +4968,8 @@ async function renderCustomFieldsAdmin() {
             <td>${escapeHtml(field.type)}</td>
             <td>${escapeHtml(field.label || field.key)}</td>
             <td>${field.required ? 'Yes' : 'No'}</td>
+            <td>${escapeHtml(customFieldGroupName(field))}</td>
+            <td>${Number.isFinite(customFieldSortOrder(field)) ? escapeHtml(String(customFieldSortOrder(field))) : '<span class="muted">Auto</span>'}</td>
             <td><code>${escapeHtml(JSON.stringify(field.metadata || {}))}</code></td>
             <td>
               <form data-custom-field-update="${escapeHtml(field.key)}" class="grid two">
@@ -4932,12 +4982,16 @@ async function renderCustomFieldsAdmin() {
                   <option value="date" ${field.type === 'date' ? 'selected' : ''}>date</option>
                 </select>
                 <label><input name="required" type="checkbox" ${field.required ? 'checked' : ''} ${canManage ? '' : 'disabled'} /> Required</label>
-                <input name="metadata" value="${escapeHtml(JSON.stringify(field.metadata || {}))}" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
+                <input name="group" value="${escapeHtml(customFieldGroupName(field))}" placeholder="Group (default: General)" ${canManage ? '' : 'disabled'} />
+                <input name="order" type="number" step="1" value="${Number.isFinite(customFieldSortOrder(field)) ? escapeHtml(String(customFieldSortOrder(field))) : ''}" placeholder="Order (optional)" ${canManage ? '' : 'disabled'} />
+                <input name="metadata" value="${escapeHtml(JSON.stringify(field.metadata || {}))}" placeholder='{"uiHint":"currency"}' ${canManage ? '' : 'disabled'} />
                 <p class="muted compact" data-type-help>Field type help: ${escapeHtml(customFieldTypeHelpText(field.type))}</p>
                 <p class="field-error-text" data-field-error="key" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="label" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="required" role="alert" aria-live="polite"></p>
+                <p class="field-error-text" data-field-error="group" role="alert" aria-live="polite"></p>
+                <p class="field-error-text" data-field-error="order" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
                 <div class="actions-row">
                   <button type="submit" class="tiny" ${
@@ -4961,7 +5015,7 @@ async function renderCustomFieldsAdmin() {
           </tr>`
               )
               .join('')
-          : '<tr><td colspan="6"><p class="empty-state" role="status">No custom fields configured. Create your first field to enable profile extensions.</p></td></tr>'
+          : '<tr><td colspan="8"><p class="empty-state" role="status">No custom fields configured. Create your first field to enable profile extensions.</p></td></tr>'
       }
       </tbody></table>
     </section>
@@ -4974,7 +5028,7 @@ async function renderCustomFieldsAdmin() {
     if (errorEl) errorEl.textContent = message || ''
   }
   const applyFieldErrors = (form, fieldErrors = {}) => {
-    ;['key', 'label', 'type', 'required', 'metadata'].forEach((fieldName) =>
+    ;['key', 'label', 'type', 'required', 'group', 'order', 'metadata'].forEach((fieldName) =>
       markFieldError(form, fieldName, fieldErrors[fieldName] || '')
     )
   }
@@ -5024,9 +5078,25 @@ async function renderCustomFieldsAdmin() {
       fieldErrors.type = 'Type must be one of: text, number, boolean, date.'
     }
     if (requiredResult.error) fieldErrors.required = requiredResult.error
+    const group = String(rawInput?.group || '').trim() || 'General'
+    if (group.length > 80) fieldErrors.group = 'Group must be 80 characters or fewer.'
+    const orderRaw = String(rawInput?.order ?? '').trim()
+    let order = null
+    if (orderRaw) {
+      const parsed = Number(orderRaw)
+      if (!Number.isFinite(parsed) || !Number.isInteger(parsed) || parsed < 0) {
+        fieldErrors.order = 'Order must be a whole number 0 or higher.'
+      } else {
+        order = parsed
+      }
+    }
     const metadataResult = parseMetadataJson(rawInput?.metadata)
     if (metadataResult.error) fieldErrors.metadata = metadataResult.error
-    payload.metadata = metadataResult.value
+    payload.metadata = {
+      ...(metadataResult.value || {}),
+      group,
+      ...(order == null ? {} : { order })
+    }
     return { payload, fieldErrors }
   }
   const parseBulkRows = (rawText = '') => {
@@ -5048,8 +5118,8 @@ async function renderCustomFieldsAdmin() {
       .map((line) => line.trim())
       .filter(Boolean)
     const rows = lines.map((line) => {
-      const [key = '', type = '', label = '', required = '', metadata = ''] = line.split('\t')
-      return { key, type, label, required, metadata }
+      const [key = '', type = '', label = '', required = '', group = '', order = '', metadata = ''] = line.split('\t')
+      return { key, type, label, required, group, order, metadata }
     })
     return { rows, parseError: '' }
   }
@@ -5058,13 +5128,17 @@ async function renderCustomFieldsAdmin() {
     const types = Array.from(form.querySelectorAll('select[name="bulkType"]')).map((input) => input.value)
     const labels = Array.from(form.querySelectorAll('input[name="bulkLabel"]')).map((input) => input.value)
     const required = Array.from(form.querySelectorAll('input[name="bulkRequired"]')).map((input) => input.value)
+    const groups = Array.from(form.querySelectorAll('input[name="bulkGroup"]')).map((input) => input.value)
+    const orders = Array.from(form.querySelectorAll('input[name="bulkOrder"]')).map((input) => input.value)
     const metadata = Array.from(form.querySelectorAll('input[name="bulkMetadata"]')).map((input) => input.value)
-    const size = Math.max(keys.length, types.length, labels.length, required.length, metadata.length)
+    const size = Math.max(keys.length, types.length, labels.length, required.length, groups.length, orders.length, metadata.length)
     return Array.from({ length: size }, (_, index) => ({
       key: keys[index] || '',
       type: types[index] || 'text',
       label: labels[index] || '',
       required: required[index] || '',
+      group: groups[index] || '',
+      order: orders[index] || '',
       metadata: metadata[index] || ''
     })).filter((row) => Object.values(row).some((value) => String(value || '').trim()))
   }
@@ -5125,6 +5199,8 @@ async function renderCustomFieldsAdmin() {
         type: formData.get('type'),
         label: formData.get('label'),
         required: formData.get('required'),
+        group: formData.get('group'),
+        order: formData.get('order'),
         metadata: formData.get('metadata')
       },
       { requireKey: true }
@@ -5190,7 +5266,7 @@ async function renderCustomFieldsAdmin() {
     state.customFieldSchema.bulkPreview = null
     document.querySelectorAll('[data-custom-field-update]').forEach((updateForm) => applyFieldErrors(updateForm, {}))
     const enteredRows = collectBulkRowsFromForm(form)
-    state.customFieldSchema.ui.bulk.draftRows = enteredRows.length ? enteredRows : [{ key: '', type: 'text', label: '', required: '', metadata: '' }]
+    state.customFieldSchema.ui.bulk.draftRows = enteredRows.length ? enteredRows : [{ key: '', type: 'text', label: '', required: '', group: '', order: '', metadata: '' }]
     if (!enteredRows.length) {
       state.customFieldSchema.ui.bulk = {
         status: 'error',
@@ -5305,6 +5381,8 @@ async function renderCustomFieldsAdmin() {
         type: row.type || 'text',
         label: row.label || '',
         required: row.required ?? '',
+        group: row.group ?? row.metadata?.group ?? '',
+        order: row.order ?? row.metadata?.order ?? '',
         metadata:
           typeof row.metadata === 'object' && row.metadata
             ? JSON.stringify(row.metadata)
@@ -5319,7 +5397,7 @@ async function renderCustomFieldsAdmin() {
     if (!canManage) return
     state.customFieldSchema.ui.bulk = state.customFieldSchema.ui.bulk || {}
     const existing = state.customFieldSchema.ui.bulk.draftRows || []
-    state.customFieldSchema.ui.bulk.draftRows = [...existing, { key: '', type: 'text', label: '', required: '', metadata: '' }]
+    state.customFieldSchema.ui.bulk.draftRows = [...existing, { key: '', type: 'text', label: '', required: '', group: '', order: '', metadata: '' }]
     await renderCustomFieldsAdmin()
   })
   document.querySelectorAll('[data-remove-bulk-row]').forEach((button) => {
@@ -5332,7 +5410,7 @@ async function renderCustomFieldsAdmin() {
       state.customFieldSchema.ui.bulk = state.customFieldSchema.ui.bulk || {}
       state.customFieldSchema.ui.bulk.draftRows = rows.length
         ? rows
-        : [{ key: '', type: 'text', label: '', required: '', metadata: '' }]
+        : [{ key: '', type: 'text', label: '', required: '', group: '', order: '', metadata: '' }]
       await renderCustomFieldsAdmin()
     })
   })
@@ -5418,6 +5496,8 @@ async function renderCustomFieldsAdmin() {
           type: formData.get('type'),
           label: formData.get('label'),
           required: formData.get('required'),
+          group: formData.get('group'),
+          order: formData.get('order'),
           metadata: formData.get('metadata')
         },
         { requireKey: false }
@@ -6125,9 +6205,3 @@ window.addEventListener('hashchange', async () => {
   await renderCurrentView()
 })
 await renderCurrentView()
-  const customFieldGroups = state.customFieldSchema.fields.reduce((groups, field) => {
-    const groupName = String(field?.metadata?.group || 'General').trim() || 'General'
-    if (!groups[groupName]) groups[groupName] = []
-    groups[groupName].push(field)
-    return groups
-  }, {})

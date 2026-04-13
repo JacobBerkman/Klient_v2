@@ -1,5 +1,35 @@
 import { createFirmContext } from '../shared/tenancy.mjs'
 
+function customFieldGroupName(field = {}) {
+  const rawGroup = field?.metadata && typeof field.metadata === 'object' ? field.metadata.group : ''
+  return String(rawGroup || 'General').trim() || 'General'
+}
+
+function customFieldSortOrder(field = {}) {
+  const rawOrder = field?.metadata && typeof field.metadata === 'object' ? field.metadata.order : null
+  if (rawOrder == null || rawOrder === '') return Number.POSITIVE_INFINITY
+  const parsed = Number(rawOrder)
+  return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY
+}
+
+function sortCustomFields(fields = []) {
+  return [...fields].sort((a, b) => {
+    const groupCompare = customFieldGroupName(a).localeCompare(customFieldGroupName(b))
+    if (groupCompare !== 0) return groupCompare
+    const orderCompare = customFieldSortOrder(a) - customFieldSortOrder(b)
+    if (orderCompare !== 0) return orderCompare
+    const labelCompare = String(a?.label || a?.key || '').localeCompare(String(b?.label || b?.key || ''))
+    if (labelCompare !== 0) return labelCompare
+    return String(a?.key || '').localeCompare(String(b?.key || ''))
+  })
+}
+
+function withSortedSchema(result = {}) {
+  if (!result || typeof result !== 'object') return result
+  if (!Array.isArray(result.fields)) return result
+  return { ...result, fields: sortCustomFields(result.fields) }
+}
+
 export function createProfilesService({ profileRepository, policy }) {
   async function assertUpdatePreconditions(user, profileId, patch) {
     if (!patch || typeof patch !== 'object') return patch
@@ -65,7 +95,7 @@ export function createProfilesService({ profileRepository, policy }) {
     },
     getCustomFieldSchema(user) {
       policy.requireGuard(user, 'canReadProfiles')
-      return profileRepository.getCustomFieldSchema(createFirmContext(user))
+      return withSortedSchema(profileRepository.getCustomFieldSchema(createFirmContext(user)))
     },
     createCustomField(user, input) {
       policy.requireGuard(user, 'canManageUsers')
@@ -77,7 +107,23 @@ export function createProfilesService({ profileRepository, policy }) {
     },
     dryRunCustomFieldSchema(user, input) {
       policy.requireGuard(user, 'canManageUsers')
-      return profileRepository.dryRunCustomFieldSchema(createFirmContext(user), input)
+      const preview = profileRepository.dryRunCustomFieldSchema(createFirmContext(user), input)
+      if (preview?.diff) {
+        return {
+          ...preview,
+          normalizedRows: sortCustomFields(preview.normalizedRows || []),
+          diff: {
+            ...preview.diff,
+            added: sortCustomFields(preview.diff.added || []),
+            unchanged: sortCustomFields(preview.diff.unchanged || []),
+            removed: sortCustomFields(preview.diff.removed || []),
+            updated: [...(preview.diff.updated || [])].sort((a, b) =>
+              String(a?.after?.key || a?.before?.key || '').localeCompare(String(b?.after?.key || b?.before?.key || ''))
+            )
+          }
+        }
+      }
+      return preview
     },
     deleteCustomField(user, fieldKey) {
       policy.requireGuard(user, 'canManageUsers')
