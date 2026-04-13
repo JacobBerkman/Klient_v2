@@ -371,6 +371,22 @@ async function main() {
     await consumeResponse(retriedDownload)
   }
 
+  const queueSummary = {
+    pending: queueHealth?.queue?.pending ?? null,
+    queued: queueHealth?.queue?.queued ?? null,
+    retrying: queueHealth?.queue?.retrying ?? null,
+    running: queueHealth?.queue?.running ?? null,
+    completed: queueHealth?.queue?.machineState?.completed?.count ?? null,
+    failed: queueHealth?.queue?.machineState?.failed?.count ?? null,
+    deadLetter: queueHealth?.queue?.machineState?.deadLetter?.count ?? null,
+    stalled: diagnostics?.data?.queue?.stalled ?? null
+  }
+  const safeRetrySummary = {
+    dryRun: safeRetryDryRun?.dryRun ?? null,
+    includeDeadLetter: safeRetryDryRun?.includeDeadLetter ?? null,
+    candidateCount: safeRetryDryRun?.candidateCount ?? 0
+  }
+
   console.log(
     JSON.stringify(
       {
@@ -390,9 +406,8 @@ async function main() {
           queuedAfterRetry: afterBulkRetry.length,
           jobsAfterRetryProcessing: afterRetryProcessing.length
         },
-        queue: diagnostics?.data?.queue || null,
-        queueHealth,
-        safeRetryDryRun
+        queue: queueSummary,
+        safeRetry: safeRetrySummary
       },
       null,
       2

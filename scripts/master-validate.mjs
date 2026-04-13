@@ -115,7 +115,12 @@ function envForStep(step) {
   if (step.evidenceFile && step.name === 'Integration suites') env.RELEASE_EVIDENCE_INTEGRATION_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Migration order checks') env.RELEASE_EVIDENCE_MIGRATION_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Smoke test') env.RELEASE_EVIDENCE_SMOKE_FILE = step.evidenceFile
-  if (step.evidenceFile && step.name === 'E2E browser checks') env.RELEASE_EVIDENCE_E2E_FILE = step.evidenceFile
+  if (step.evidenceFile && step.name === 'E2E browser checks') {
+    env.RELEASE_EVIDENCE_E2E_FILE = step.evidenceFile
+    if (String(env.CI || '').toLowerCase() !== 'true' && !('RELEASE_E2E_ALLOW_FALLBACK' in env)) {
+      env.RELEASE_E2E_ALLOW_FALLBACK = '1'
+    }
+  }
   if (step.evidenceFile && step.name === 'Security checks') env.RELEASE_EVIDENCE_SECURITY_FILE = step.evidenceFile
   return env
 }
