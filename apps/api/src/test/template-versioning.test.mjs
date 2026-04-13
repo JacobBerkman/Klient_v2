@@ -145,6 +145,9 @@ test('preview preflight exposes schema issues before publish attempts', () => {
   assert.match(JSON.stringify(preflight.issues), /known profile\/form schema path/i)
   assert.equal(preflight.issues[0].code, 'unknown_source_path')
   assert.equal(preflight.issues[0].field, 'sourcePath')
+  assert.equal(preflight.issues[0].issueId, 'unknown_source_path:0:sourcePath')
+  assert.equal(preflight.issues[0].rowAnchor, '#mapping-row-0')
+  assert.equal(preflight.issues[0].inspectorTarget, 'sourcePath')
   assert.ok(preflight.issues[0].meta?.issueId)
   assert.equal(preflight.issues[0].blocking, true)
 
@@ -271,4 +274,6 @@ test('templates service enriches preflight diagnostics into readiness summary', 
   assert.equal(preflight.publishReadiness.blockers.length, 1)
   assert.equal(preflight.publishReadiness.warnings.length, 2)
   assert.equal(preflight.publishReadiness.quickLinks[0]?.anchor, '#mapping-row-0')
+  assert.equal(preflight.publishReadiness.quickLinks[0]?.field, 'sourcePath')
+  assert.equal(preflight.issues[0]?.issueId, 'required_source_path:0:sourcePath')
 })

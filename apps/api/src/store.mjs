@@ -2931,11 +2931,16 @@ export function createStore({
           const sourceMeta = issue?.meta && typeof issue.meta === 'object' ? issue.meta : {}
           const rowIndex = rowIndexMatch ? Number(rowIndexMatch[1]) : null
           const issueId = sourceMeta.issueId || [code, rowIndex ?? 'global', field || path || 'mapping'].join(':')
+          const rowAnchor = rowIndex != null ? `#mapping-row-${rowIndex}` : ''
+          const inspectorTarget = String(sourceMeta.inspectorTarget || field || sourceMeta.fieldKey || 'sourcePath')
           const rowId = Number.isFinite(rowIndex) ? rowIdByIndex.get(rowIndex) || null : null
           return {
             code,
             path,
             field,
+            issueId,
+            rowAnchor,
+            inspectorTarget,
             message: String(issue?.message || 'Validation issue'),
             severity: 'error',
             blocking: true,
@@ -2944,6 +2949,8 @@ export function createStore({
             meta: {
               ...sourceMeta,
               issueId,
+              rowAnchor,
+              inspectorTarget,
               ...(rowId ? { rowId } : {}),
               fieldPath: sourceMeta.fieldPath || path,
               fieldKey: sourceMeta.fieldKey || field || path || 'mapping'
@@ -3006,11 +3013,16 @@ export function createStore({
               code: String(warning.code || 'preview_blocking_warning').toLowerCase(),
               path: `/mappings/${row.rowIndex}/sourcePath`,
               field: 'sourcePath',
+              issueId: `${warning.code || 'preview_blocking_warning'}:${row.rowIndex}:sourcePath`,
+              rowAnchor: `#mapping-row-${row.rowIndex}`,
+              inspectorTarget: 'sourcePath',
               rowIndex: row.rowIndex,
               message: String(warning.message || 'Blocking preview warning'),
               meta: {
                 issueId: `${warning.code || 'preview_blocking_warning'}:${row.rowIndex}:sourcePath`,
-                rowId: row.rowId || null
+                rowId: row.rowId || null,
+                rowAnchor: `#mapping-row-${row.rowIndex}`,
+                inspectorTarget: 'sourcePath'
               }
             }))
         )

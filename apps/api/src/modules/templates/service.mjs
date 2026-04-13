@@ -29,6 +29,8 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
   const message = String(issue?.message || 'Validation issue')
   const sourceMeta = issue?.meta && typeof issue.meta === 'object' ? issue.meta : {}
   const issueId = sourceMeta.issueId || [code, rowIndex ?? 'global', field || path || index].join(':')
+  const rowAnchor = rowIndex != null ? `#mapping-row-${rowIndex}` : ''
+  const inspectorTarget = String(sourceMeta.inspectorTarget || field || sourceMeta.fieldKey || 'sourcePath')
   const rowId = String(issue?.rowId || sourceMeta.rowId || '').trim()
   const severity = String(issue?.severity || sourceMeta.severity || 'error').toLowerCase() === 'warning' ? 'warning' : 'error'
   const blocking = issue?.blocking === false || sourceMeta.blocking === false ? false : severity !== 'warning'
@@ -38,6 +40,9 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
     path,
     field,
     rowIndex,
+    issueId,
+    rowAnchor,
+    inspectorTarget,
     message,
     errorMessage: TEMPLATE_VALIDATION_MESSAGES[code] || message,
     severity,
@@ -46,7 +51,7 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
       ? { suggestedSourcePaths: sourceMeta.suggestedSourcePaths }
       : {}),
     action: {
-      field: field || sourceMeta.fieldKey || 'mapping',
+      field: inspectorTarget,
       suggestion: String(sourceMeta.suggestion || ''),
       ...(sourceMeta.operator ? { operator: sourceMeta.operator } : {})
     },
@@ -54,6 +59,8 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
     meta: {
       ...sourceMeta,
       issueId,
+      rowAnchor,
+      inspectorTarget,
       ...(rowId ? { rowId } : {}),
       fieldPath: sourceMeta.fieldPath || path,
       fieldKey: sourceMeta.fieldKey || field || path || 'mapping'
@@ -141,8 +148,8 @@ function buildPublishReadiness(issues = []) {
       return {
         rowIndex,
         ...(rowId ? { rowId } : {}),
-        field: String(issue?.field || issue?.meta?.fieldKey || 'sourcePath'),
-        anchor: `#mapping-row-${rowIndex}`,
+        field: String(issue?.inspectorTarget || issue?.field || issue?.meta?.fieldKey || 'sourcePath'),
+        anchor: String(issue?.rowAnchor || `#mapping-row-${rowIndex}`),
         label: `Row ${rowIndex + 1}`
       }
     })
