@@ -500,50 +500,89 @@ function customFieldControlMarkup(
 ) {
   const name = customFieldInputName(field.key)
   const elementId = `${idPrefix}-${field.key}`
+  const helpId = `${elementId}-help`
+  const affordanceByType = {
+    text: 'Freeform text value.',
+    number: 'Numbers only (example: 125000).',
+    date: 'Use YYYY-MM-DD.',
+    boolean: 'Choose true/false.'
+  }
+  const affordance = affordanceByType[field.type] || affordanceByType.text
   if (field.type === 'boolean' && booleanControl === 'toggle') {
     const checked = String(value) === 'true'
     return `<label for="${escapeHtml(elementId)}" class="checkbox-row">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
       <input id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" type="checkbox" value="true" ${checked ? 'checked' : ''} ${
         disabled ? 'disabled' : ''
-      } />
+      } aria-describedby="${escapeHtml(helpId)}" />
+      <span id="${escapeHtml(helpId)}" class="muted compact">${escapeHtml(affordance)}</span>
     </label>`
   }
   if (field.type === 'boolean') {
     return `<label for="${escapeHtml(elementId)}">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
-      <select id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" ${disabled ? 'disabled' : ''}>
+      <select id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" ${disabled ? 'disabled' : ''} aria-describedby="${escapeHtml(helpId)}">
         <option value="">Not set</option>
         <option value="true" ${String(value) === 'true' ? 'selected' : ''}>True</option>
         <option value="false" ${String(value) === 'false' ? 'selected' : ''}>False</option>
       </select>
+      <span id="${escapeHtml(helpId)}" class="muted compact">${escapeHtml(affordance)}</span>
     </label>`
   }
   const inputType = field.type === 'number' ? 'number' : field.type === 'date' ? 'date' : 'text'
   return `<label for="${escapeHtml(elementId)}">${escapeHtml(field.label || field.key)}${field.required ? ' *' : ''}
     <input id="${escapeHtml(elementId)}" name="${escapeHtml(name)}" type="${inputType}" value="${escapeHtml(value || '')}" ${
       disabled ? 'disabled' : ''
-    } ${field.required ? 'required' : ''} />
+    } ${field.required ? 'required' : ''} ${field.type === 'number' ? 'inputmode="decimal" step="any"' : ''} ${
+      field.type === 'date' ? 'placeholder="YYYY-MM-DD"' : ''
+    } aria-describedby="${escapeHtml(helpId)}" />
+    <span id="${escapeHtml(helpId)}" class="muted compact">${escapeHtml(affordance)}</span>
   </label>`
+}
+
+function customFieldCreateFormActionsMarkup() {
+  return `<div class="row gap-sm wrap top-gap">
+    <button type="button" class="secondary tiny" data-retry-custom-field-schema>Retry schema load</button>
+    <button type="button" class="secondary tiny" data-open-custom-fields-view>Manage field definitions</button>
+  </div>`
 }
 
 function customFieldCreateFormMarkup() {
   if (!profileCustomFieldsEl) return
   const fields = state.customFieldSchema.fields || []
   if (state.customFieldSchema.loading) {
-    profileCustomFieldsEl.innerHTML = '<h4>Firm Custom Fields</h4><p class="muted compact">Loading custom field schema…</p>'
+    profileCustomFieldsEl.innerHTML =
+      '<h4>Firm Custom Fields</h4><p class="muted compact" role="status" aria-live="polite">Loading custom field schema…</p>'
     return
   }
   if (state.customFieldSchema.lastError) {
-    profileCustomFieldsEl.innerHTML = `<h4>Firm Custom Fields</h4><p class="error-banner">${escapeHtml(state.customFieldSchema.lastError)}</p>`
+    profileCustomFieldsEl.innerHTML = `<h4>Firm Custom Fields</h4><p class="error-banner" role="alert">Could not load schema: ${escapeHtml(
+      state.customFieldSchema.lastError
+    )}</p>
+    <p class="muted compact">Profile creation can continue without custom fields, or retry now.</p>
+    ${customFieldCreateFormActionsMarkup()}`
+    profileCustomFieldsEl.querySelector('[data-retry-custom-field-schema]')?.addEventListener('click', async () => {
+      state.customFieldSchema.fetched = false
+      await ensureCustomFieldSchema(true)
+      customFieldCreateFormMarkup()
+    })
+    profileCustomFieldsEl.querySelector('[data-open-custom-fields-view]')?.addEventListener('click', () => {
+      state.view = 'custom-fields'
+      renderCurrentView()
+    })
     return
   }
   if (!fields.length) {
     profileCustomFieldsEl.innerHTML =
-      '<h4>Firm Custom Fields</h4><p class="muted compact">No custom fields are configured for this firm.</p>'
+      '<h4>Firm Custom Fields</h4><p class="muted compact" role="status" aria-live="polite">No custom fields are configured for this firm.</p><p class="muted compact">Create fields to capture operator-specific values in profile and draft workflows.</p>' +
+      customFieldCreateFormActionsMarkup()
+    profileCustomFieldsEl.querySelector('[data-open-custom-fields-view]')?.addEventListener('click', () => {
+      state.view = 'custom-fields'
+      renderCurrentView()
+    })
     return
   }
   profileCustomFieldsEl.innerHTML = `<h4>Firm Custom Fields</h4><div class="grid two">${fields
     .map((field) => customFieldControlMarkup(field, ''))
-    .join('')}</div>`
+    .join('')}</div><p class="muted compact" role="status" aria-live="polite">These values appear on client profiles and carry into draft review context for operators.</p>`
 }
 
 function collectCustomFieldValues(formEl, fields = []) {
@@ -591,6 +630,8 @@ function ensureInlineProfileState(kind, profileId, card = null) {
       dirty: false,
       saving: false,
       conflictMessage: '',
+      lastSaveMessage: '',
+      lastSaveWasError: false,
       isEditing: false
     }
   }
@@ -636,6 +677,8 @@ function completeInlineSave(kind, profileId, card = null) {
   entry.dirty = false
   entry.saving = false
   entry.conflictMessage = ''
+  entry.lastSaveMessage = 'Profile saved successfully.'
+  entry.lastSaveWasError = false
   entry.isEditing = false
 }
 
@@ -643,6 +686,8 @@ function failInlineSave(kind, profileId, conflictMessage = '') {
   const entry = ensureInlineProfileState(kind, profileId)
   entry.saving = false
   entry.conflictMessage = conflictMessage || 'Unable to save right now. Retry after reloading latest profile data.'
+  entry.lastSaveMessage = entry.conflictMessage
+  entry.lastSaveWasError = true
 }
 
 function cancelInlineDraft(kind, profileId, card = null) {
@@ -651,6 +696,8 @@ function cancelInlineDraft(kind, profileId, card = null) {
   entry.dirty = false
   entry.saving = false
   entry.conflictMessage = ''
+  entry.lastSaveMessage = ''
+  entry.lastSaveWasError = false
   entry.isEditing = false
 }
 
@@ -2457,6 +2504,12 @@ async function renderTemplates() {
         <h3>Step 2 · Extraction Summary</h3>
         <p class="muted">Status: <span class="badge ${extraction?.status === 'failed' ? 'error-badge' : 'subtle'}">${escapeHtml(extraction?.status || 'unknown')}</span></p>
         <p class="muted">Reason code: <code>${escapeHtml(extraction?.reasonCode || 'none')}</code></p>
+        <div class="row wrap gap-sm">
+          <span class="badge subtle">Extracted fields ${extractedFields.length}</span>
+          <span class="badge ${mappedExtractedCount === extractedFields.length && extractedFields.length ? 'subtle' : 'warning-badge'}">Mapped ${mappedExtractedCount}</span>
+          <span class="badge ${Math.max(0, extractedFields.length - mappedExtractedCount) > 0 ? 'error-badge' : 'subtle'}">Unmapped ${Math.max(0, extractedFields.length - mappedExtractedCount)}</span>
+          <button id="jump-to-unmapped-extracted" class="tiny secondary">Review unmapped in mapping</button>
+        </div>
         ${
           extraction?.status === 'failed'
             ? `<p class="error-banner">${escapeHtml(templateIngestionRecoveryMessage(extraction))}</p>`
@@ -2556,7 +2609,7 @@ async function renderTemplates() {
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
                 <td>${
                   suggestion
-                    ? `<span class="badge subtle">${escapeHtml(suggestion.path)}</span><div class="muted">${escapeHtml(suggestion.reason || 'Suggested')} (${Math.round(Number(suggestion.score || 0) * 100)}%)</div>`
+                    ? `<span class="badge subtle">${escapeHtml(suggestion.path)}</span><div class="muted">${escapeHtml(suggestion.reason || 'Suggested')} (${Math.round(Number(suggestion.score || 0) * 100)}%)</div><button class="tiny secondary top-gap" data-apply-suggestion-row="${index}" data-suggested-path="${escapeHtml(suggestion.path)}">Apply</button>`
                     : '<span class="muted">None</span>'
                 }</td>
                 <td>${escapeHtml(mapping.fieldLabel || '')}</td>
@@ -2597,7 +2650,7 @@ async function renderTemplates() {
         <div class="grid two">
           <label>PDF Field<input id="inspector-pdfField" value="${escapeHtml(selectedMapping.pdfField || '')}" /></label>
           <label>Field Label/Name<input id="inspector-fieldLabel" value="${escapeHtml(selectedMapping.fieldLabel || '')}" /></label>
-          <label>Source Path<input id="inspector-sourcePath" list="source-path-options" value="${escapeHtml(selectedMapping.sourcePath || '')}" /></label>
+          <label>Source Path<input id="inspector-sourcePath" list="source-path-options" value="${escapeHtml(selectedMapping.sourcePath || '')}" /><div class="muted">Use <code>profile.*</code> for client profile fields or <code>submission.*</code>/<code>form.*</code> for form answers.</div></label>
           <label>Default Value<input id="inspector-defaultValue" value="${escapeHtml(selectedMapping.defaultValue || '')}" /></label>
           <label>Target Type<select id="inspector-targetType">${['text', 'number', 'boolean', 'date']
             .map((type) => `<option value="${type}" ${selectedMapping.targetType === type ? 'selected' : ''}>${type}</option>`)
@@ -2605,10 +2658,14 @@ async function renderTemplates() {
           <label>Transform Type<select id="inspector-transformType">${['', 'date', 'phone', 'currency', 'checkbox', 'expression']
             .map((type) => `<option value="${type}" ${selectedMapping.transformType === type ? 'selected' : ''}>${type || 'none'}</option>`)
             .join('')}</select></label>
-          <label>Transform Expression<input id="inspector-transformExpression" value="${escapeHtml(selectedMapping.transformExpression || '')}" /></label>
+          <label>Transform Expression<input id="inspector-transformExpression" value="${escapeHtml(selectedMapping.transformExpression || '')}" /><div class="muted">Only required for <code>expression</code>. Clear transform fields to make mapping pass-through again.</div></label>
           <label>Transform Currency<input id="inspector-transformCurrency" value="${escapeHtml(selectedMapping.transformCurrency || '')}" placeholder="USD" /></label>
           <label><input type="checkbox" id="inspector-required" ${selectedMapping.required ? 'checked' : ''} /> Required</label>
           <label><input type="checkbox" id="inspector-enabled" ${selectedMapping.enabled !== false ? 'checked' : ''} /> Mapping Enabled</label>
+        </div>
+        <div class="row gap-sm wrap top-gap">
+          <button id="inspector-reset-source-path" class="tiny secondary">Clear source path</button>
+          <button id="inspector-reset-transform" class="tiny secondary">Reset transform to none</button>
         </div>
       </section>
       <section class="item" data-template-wizard-section="preview" ${activeWizardStep === 'preview' ? '' : 'hidden'}>
@@ -2864,6 +2921,36 @@ async function renderTemplates() {
     })
   })
 
+  document.querySelector('#jump-to-unmapped-extracted')?.addEventListener('click', async () => {
+    if (!template) return
+    state.templateWizardStepByTemplateId[template.id] = 'mapping'
+    state.templateMappingFilterByTemplateId[template.id] = 'unmapped'
+    await rerenderTemplates()
+  })
+
+  document.querySelectorAll('[data-apply-suggestion-row]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!template) return
+      const rowIndex = Number(button.dataset.applySuggestionRow)
+      if (!Number.isFinite(rowIndex)) return
+      const suggestionPath = String(button.dataset.suggestedPath || '').trim()
+      if (!suggestionPath) return
+      const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
+      const current = nextDraft[rowIndex] || mappingDraftFromServer({})
+      if (String(current.sourcePath || '').trim() === suggestionPath) {
+        setFlash('success', `Row ${rowIndex + 1} already uses suggested source path.`)
+        await rerenderTemplates()
+        return
+      }
+      nextDraft[rowIndex] = { ...current, sourcePath: suggestionPath }
+      state.templateMappingDrafts[template.id] = nextDraft
+      state.templateInspector[template.id] = { rowIndex }
+      state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
+      setFlash('success', `Applied suggestion to row ${rowIndex + 1}.`)
+      await rerenderTemplates()
+    })
+  })
+
   const applyInspectorToDraft = async () => {
     const idx = state.templateInspector[template.id]?.rowIndex || 0
     const nextDraft = [...(state.templateMappingDrafts[template.id] || [])]
@@ -2907,6 +2994,25 @@ async function renderTemplates() {
   ].forEach((selector) => {
     document.querySelector(selector)?.addEventListener('input', applyInspectorToDraft)
     document.querySelector(selector)?.addEventListener('change', applyInspectorToDraft)
+  })
+
+  document.querySelector('#inspector-reset-source-path')?.addEventListener('click', async () => {
+    const sourcePathEl = document.querySelector('#inspector-sourcePath')
+    if (!sourcePathEl) return
+    sourcePathEl.value = ''
+    await applyInspectorToDraft()
+    await rerenderTemplates()
+  })
+
+  document.querySelector('#inspector-reset-transform')?.addEventListener('click', async () => {
+    const typeEl = document.querySelector('#inspector-transformType')
+    const expressionEl = document.querySelector('#inspector-transformExpression')
+    const currencyEl = document.querySelector('#inspector-transformCurrency')
+    if (typeEl) typeEl.value = ''
+    if (expressionEl) expressionEl.value = ''
+    if (currencyEl) currencyEl.value = ''
+    await applyInspectorToDraft()
+    await rerenderTemplates()
   })
 
   document.querySelector('#add-mapping-row')?.addEventListener('click', async () => {
@@ -3017,7 +3123,7 @@ async function renderTemplates() {
     state.templateMappingDrafts[template.id] = nextDraft
     state.templateSaveStateByTemplateId[template.id] = { status: 'dirty' }
     state.templateWizardStepByTemplateId[template.id] = 'mapping'
-    setFlash('success', `Auto-mapped ${updates} row(s) from suggestions.`)
+    setFlash('success', `Auto-mapped ${updates} row(s) by name similarity.`)
     await rerenderTemplates()
   })
 
@@ -3328,16 +3434,19 @@ function boardCardMarkup(card, kind) {
                   )
                   .join('')}
               </div>
-              <p class="muted compact">Tip: text supports freeform values, number requires numeric values, date requires YYYY-MM-DD.</p>
-              <p class="muted compact" data-inline-custom-field-errors="${card.id}" aria-live="polite"></p>
+              <p class="muted compact">Where these appear: profile detail + draft/resume flows for advisor operators.</p>
+              <p class="muted compact" data-inline-custom-field-errors="${card.id}" role="status" aria-live="polite"></p>
             </div>`
             : '<p class="muted compact">No custom fields configured yet for this firm.</p>'
         }
         <div class="actions-row">
           <button type="submit" class="tiny" ${canEdit && inlineState.dirty && !inlineState.saving ? '' : 'disabled'}>${inlineState.saving ? 'Saving…' : 'Save'}</button>
+          <button type="button" class="secondary tiny" data-inline-retry-save="${card.id}" ${canEdit && inlineState.lastSaveWasError && !inlineState.saving ? '' : 'hidden'}>Retry save</button>
           <button type="button" class="secondary tiny" data-cancel-edit="${card.id}" ${canEdit && !inlineState.saving ? '' : 'disabled'}>Cancel</button>
         </div>
-        <p class="muted compact" data-inline-feedback="${card.id}" aria-live="polite"></p>
+        <p class="muted compact" data-inline-feedback="${card.id}" role="${inlineState.lastSaveWasError ? 'alert' : 'status'}" aria-live="${inlineState.lastSaveWasError ? 'assertive' : 'polite'}">${escapeHtml(
+          inlineState.lastSaveMessage || ''
+        )}</p>
       </form>
       <div class="muted compact-meta">Type: ${escapeHtml(kind)}</div>
     </article>
@@ -3520,6 +3629,13 @@ function wireBoardInteractions(kind) {
       await renderCurrentView()
     })
   })
+  document.querySelectorAll('[data-inline-retry-save]').forEach((button) => {
+    button.addEventListener('click', () => {
+      const profileId = button.dataset.inlineRetrySave
+      const form = document.querySelector(`[data-edit-form="${profileId}"]`)
+      form?.requestSubmit()
+    })
+  })
   document.querySelectorAll('[data-edit-form]').forEach((form) => {
     const profileId = form.dataset.editForm
     form.querySelectorAll('input, select, textarea').forEach((input) => {
@@ -3565,7 +3681,7 @@ function wireBoardInteractions(kind) {
       if (customErrorEl) {
         customErrorEl.textContent = extensionErrors.length
           ? extensionErrors.join(' ')
-          : 'Custom fields validated successfully.'
+          : 'Custom field values look good.'
         customErrorEl.classList.remove('error-banner', 'success-banner')
         customErrorEl.classList.add(extensionErrors.length ? 'error-banner' : 'success-banner')
       }
@@ -3583,18 +3699,20 @@ function wireBoardInteractions(kind) {
         submitButton.disabled = true
         submitButton.textContent = 'Saving…'
       }
+      inlineState.lastSaveMessage = ''
+      inlineState.lastSaveWasError = false
       setAlert('success', `Saving profile ${profileId} optimistically…`)
       if (feedbackEl) feedbackEl.textContent = 'Saving profile changes…'
       try {
         await saveInlineProfile(kind, profileId, payload, inlineState.expectedUpdatedAt || form.dataset.updatedAt || '')
         clearAlert()
-        if (feedbackEl) feedbackEl.textContent = 'Profile saved.'
+        if (feedbackEl) feedbackEl.textContent = 'Profile saved successfully.'
         setWorkflowStatus(`Profile ${profileId} updated.`)
         reportActionSuccess('Profiles', 'Profile updated.')
       } catch (error) {
         const message = normalizeApiError(error, 'save this profile')
         setAlert('error', message)
-        if (feedbackEl) feedbackEl.textContent = message
+        if (feedbackEl) feedbackEl.textContent = `${message} Use retry to attempt save again.`
         setWorkflowStatus(message)
         reportActionError('Profiles', error)
       } finally {
