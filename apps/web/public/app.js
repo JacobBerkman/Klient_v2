@@ -1028,6 +1028,20 @@ function draftShareMembershipState(draftId) {
 
 function normalizeDraftShareError(error, action = 'complete this collaborator action') {
   const message = String(error?.message || '').toLowerCase()
+  const code = String(error?.code || '').toUpperCase()
+  const reason = String(error?.details?.reason || '').toLowerCase()
+  if (code === 'FORMS_DRAFT_COLLABORATORS_STALE_DRAFT' || reason === 'draft_not_found') {
+    return 'This draft is stale or no longer available. Refresh drafts, then reopen sharing.'
+  }
+  if (code === 'FORMS_DRAFT_COLLABORATORS_ALREADY_ADDED' || reason === 'already_added') {
+    return 'That user is already a collaborator. Refresh membership to confirm the latest state.'
+  }
+  if (code === 'FORMS_DRAFT_COLLABORATORS_ALREADY_REMOVED' || reason === 'already_removed') {
+    return 'That collaborator was already removed. Refresh membership to sync with the latest server state.'
+  }
+  if (code === 'FORMS_DRAFT_COLLABORATORS_OWNER_IMMUTABLE' || reason === 'owner_immutable') {
+    return 'Draft owner membership is immutable and cannot be removed.'
+  }
   if (isConflictError(error) || Number(error?.status) === 409) {
     return 'Membership changed on another session. Refresh membership, review current collaborators, and retry.'
   }
@@ -1061,6 +1075,12 @@ function draftShareCapabilitySummary(draft, membershipState) {
         ? 'You can edit this draft, but collaborator membership changes are disabled for your role.'
         : 'You currently cannot edit this draft or manage collaborator membership.'
   }
+}
+
+function draftShareCollaboratorsFromResponse(payload) {
+  if (Array.isArray(payload)) return payload
+  if (Array.isArray(payload?.collaborators)) return payload.collaborators
+  return []
 }
 
 function canViewDraftCollaborators() {
@@ -1703,6 +1723,7 @@ async function renderForms() {
             <span class="badge subtle">${escapeHtml(capabilityTone)}</span>
             ${capability.cannotManageReason ? `<span class="badge subtle">manage disabled</span>` : ''}
           </p>
+          <p class="muted compact">Current access state before any action: owner=<strong>${capability.isOwner ? 'yes' : 'no'}</strong>, collaborator=<strong>${capability.isCollaborator ? 'yes' : 'no'}</strong>, can-manage=<strong>${canManage ? 'yes' : 'no'}</strong>.</p>
           <p class="muted compact">Action hint: ${escapeHtml(capability.actionHint)}</p>
           ${
             canManage
@@ -1940,7 +1961,7 @@ async function renderForms() {
           request(routes.formDraftCollaborators(draftId)),
           request(routes.users({ mode: 'lookup', limit: 25 }))
         ])
-        state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators) ? collaborators : collaborators?.collaborators || []
+        state.formsUi.collaboratorsByDraftId[draftId] = draftShareCollaboratorsFromResponse(collaborators)
         state.formsUi.membershipRefreshedAtByDraftId[draftId] = new Date().toISOString()
         state.formsUi.userLookupByDraftId[draftId] = canManageDraftCollaborators(draft)
           ? Array.isArray(userLookup?.users)
@@ -1949,8 +1970,8 @@ async function renderForms() {
           : []
         state.formsUi.userLookupSearchByDraftId[draftId] = ''
         state.formsUi.shareFeedbackByDraftId[draftId] = canManageDraftCollaborators(draft)
-          ? 'Collaborator membership loaded. Search firm users to add access.'
-          : 'Collaborator membership loaded in view-only mode.'
+          ? 'Membership loaded. Next step: search users, then add or remove as needed.'
+          : 'Membership loaded in view-only mode. Search/add/remove are disabled for your role.'
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'load draft collaborators')
         reportActionError('Forms', error)
@@ -1975,9 +1996,9 @@ async function renderForms() {
       setActionPending(actionKey, 'pending')
       try {
         const collaborators = await request(routes.formDraftCollaborators(draftId))
-        state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators) ? collaborators : collaborators?.collaborators || []
+        state.formsUi.collaboratorsByDraftId[draftId] = draftShareCollaboratorsFromResponse(collaborators)
         state.formsUi.membershipRefreshedAtByDraftId[draftId] = new Date().toISOString()
-        state.formsUi.shareFeedbackByDraftId[draftId] = 'Collaborator membership refreshed.'
+        state.formsUi.shareFeedbackByDraftId[draftId] = 'Membership refreshed from server.'
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'refresh draft collaborators')
         reportActionError('Forms', error)
@@ -2010,8 +2031,8 @@ async function renderForms() {
         const userLookup = await request(routes.users({ mode: 'lookup', search, limit: 25 }))
         state.formsUi.userLookupByDraftId[draftId] = Array.isArray(userLookup?.users) ? userLookup.users : []
         state.formsUi.shareFeedbackByDraftId[draftId] = state.formsUi.userLookupByDraftId[draftId].length
-          ? `Search complete: ${state.formsUi.userLookupByDraftId[draftId].length} matching firm user(s) found.`
-          : 'Search complete: no matching firm users found.'
+          ? `Search complete: ${state.formsUi.userLookupByDraftId[draftId].length} candidate user(s) ready to add.`
+          : 'Search complete: no candidates found. Refine your query and retry.'
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'search firm users')
         reportActionError('Forms', error)
@@ -2069,15 +2090,13 @@ async function renderForms() {
           body: JSON.stringify({ userId })
         })
         const collaborators = await request(routes.formDraftCollaborators(draftId))
-        state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators)
-          ? collaborators
-          : collaborators?.collaborators || []
+        state.formsUi.collaboratorsByDraftId[draftId] = draftShareCollaboratorsFromResponse(collaborators)
         state.formsUi.membershipRefreshedAtByDraftId[draftId] = new Date().toISOString()
         state.formsUi.userLookupByDraftId[draftId] = (state.formsUi.userLookupByDraftId[draftId] || []).filter(
           (candidate) => candidate.id !== userId
         )
         state.formsUi.selectedUserIdByDraftId[draftId] = ''
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Add complete: ${collaboratorIdentityLabel(userId)} now has draft access.`
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Add complete: ${collaboratorIdentityLabel(userId)} now has draft access. Membership is current.`
         reportActionSuccess('Forms', `Collaborator ${userId} added to draft ${draftId}.`)
       } catch (error) {
         state.formsUi.collaboratorsByDraftId[draftId] = previousCollaborators
@@ -2130,9 +2149,7 @@ async function renderForms() {
       try {
         await request(routes.formDraftCollaborator(draftId, userId), { method: 'DELETE' })
         const collaborators = await request(routes.formDraftCollaborators(draftId))
-        state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators)
-          ? collaborators
-          : collaborators?.collaborators || []
+        state.formsUi.collaboratorsByDraftId[draftId] = draftShareCollaboratorsFromResponse(collaborators)
         state.formsUi.membershipRefreshedAtByDraftId[draftId] = new Date().toISOString()
         if (!state.formsUi.userLookupByDraftId[draftId]?.some((candidate) => candidate.id === userId)) {
           state.formsUi.userLookupByDraftId[draftId] = [
@@ -2142,7 +2159,7 @@ async function renderForms() {
         }
         state.formsUi.shareFeedbackByDraftId[draftId] = `Remove complete: ${collaboratorIdentityLabel(
           userId
-        )} no longer has draft access.`
+        )} no longer has draft access. Membership is current.`
         reportActionSuccess('Forms', `Collaborator ${userId} removed from draft ${draftId}.`)
       } catch (error) {
         state.formsUi.collaboratorsByDraftId[draftId] = previousCollaborators

@@ -364,19 +364,29 @@ test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC
   await page.locator(`[data-open-draft-share-panel="${draft.id}"]`).click()
   await expect(page.locator(`#draft-share-panel-${draft.id}`)).toBeVisible()
   await expect(page.getByText('owner-manage')).toBeVisible()
+  await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(
+    'Current access state before any action: owner=yes, collaborator=yes, can-manage=yes.'
+  )
   await expect(page.getByText('Changes use canonical user IDs')).toBeVisible()
 
   await page.locator(`form[data-search-draft-collaborator-users="${draft.id}"] input[name="search"]`).fill('Maya')
   await page.locator(`form[data-search-draft-collaborator-users="${draft.id}"] button[type="submit"]`).click()
-  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Search complete')
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('candidate user(s) ready to add')
 
   await page.locator(`form[data-add-draft-collaborator="${draft.id}"] select[name="userId"]`).selectOption({ label: /maya advisor/i })
   await page.locator(`form[data-add-draft-collaborator="${draft.id}"] button[type="submit"]`).click()
-  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Add complete')
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Membership is current')
   await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(advisor.email)
 
+  const duplicateAddResponse = await page.request.post(`/api/forms/drafts/${draft.id}/collaborators`, {
+    data: { userId: advisor.email }
+  })
+  expect(duplicateAddResponse.status()).toBe(409)
+  const duplicateAddPayload = await duplicateAddResponse.json()
+  expect(duplicateAddPayload.error.code).toBe('FORMS_DRAFT_COLLABORATORS_ALREADY_ADDED')
+
   await page.locator(`[data-refresh-draft-collaborators="${draft.id}"]`).click()
-  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Collaborator membership refreshed')
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Membership refreshed from server')
 
   await page
     .locator(`[data-remove-draft-collaborator="${draft.id}"]`)
@@ -385,11 +395,19 @@ test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC
     .click()
   await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Remove complete')
 
+  const duplicateRemoveResponse = await page.request.delete(`/api/forms/drafts/${draft.id}/collaborators/${advisor.email}`)
+  expect(duplicateRemoveResponse.status()).toBe(409)
+  const duplicateRemovePayload = await duplicateRemoveResponse.json()
+  expect(duplicateRemovePayload.error.code).toBe('FORMS_DRAFT_COLLABORATORS_ALREADY_REMOVED')
+
   await page.request.post('/api/logout')
   await signInFromUi(page, readonly.email, readonly.password)
   await page.getByRole('button', { name: 'Forms' }).click()
   await page.locator(`[data-open-draft-share-panel="${draft.id}"]`).click()
   await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText('mutating controls are intentionally disabled')
+  await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(
+    'Current access state before any action: owner=no, collaborator=no, can-manage=no.'
+  )
   await expect(page.locator(`form[data-search-draft-collaborator-users="${draft.id}"] button[type="submit"]`)).toBeDisabled()
   await expect(page.locator(`form[data-add-draft-collaborator="${draft.id}"] button[type="submit"]`)).toBeDisabled()
 
