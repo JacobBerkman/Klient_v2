@@ -280,7 +280,7 @@ These six commands are the canonical release gate checks. CI runs each command a
 | Integration suites | `full_integration` | QA Lead | `npm run test:integration` | `artifacts/release-evidence/<release-id>/integration-summary.json` | `artifacts/integration-gate/` |
 | Migration checks | `migration_checks` | Data/DB Owner | `npm run check:migrations` | `artifacts/release-evidence/<release-id>/migration-summary.json` | `artifacts/migration-checks-gate/` |
 | Smoke | `smoke_runtime_contract` | Release Manager | `npm run test:smoke` | `artifacts/release-evidence/<release-id>/smoke-summary.json` | `artifacts/smoke-gate/` |
-| E2E browser checks | `e2e_release_blocking` | QA Lead | `npm run test:e2e` (`E2E_GREP='@release-blocking'` in CI) | `artifacts/release-evidence/<release-id>/e2e-summary.json` | `artifacts/e2e-gate/` |
+| E2E browser checks | `e2e_release_blocking` | QA Lead | `npm run test:e2e` (`E2E_GREP='@release-blocking'` in CI) | `artifacts/release-evidence/<release-id>/e2e-summary.json` | `artifacts/e2e-release-blocking/` |
 | Security checks | `security_checks` | Security Owner | `npm run test:security` | `artifacts/release-evidence/<release-id>/security-summary.json` | `artifacts/security-gate/` |
 
 Drift-prevention rule:
