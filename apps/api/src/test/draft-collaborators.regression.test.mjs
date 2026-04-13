@@ -54,19 +54,28 @@ test('draft collaboration regression enforces role + collaborator boundaries for
   assert.throws(() => modules.forms.acquireDraftLock(advisor, draft.id, {}), /access denied/i)
   assert.throws(() => modules.forms.listDraftCollaborators(readonly, draft.id), /Missing permission: canManageDraftSharing/)
 
-  modules.forms.addDraftCollaborator(admin, draft.id, { userId: advisor.id, permission: 'write' })
-  modules.forms.addDraftCollaborator(admin, draft.id, { userId: readonly.id, permission: 'read' })
+  const addAdvisor = modules.forms.addDraftCollaborator(admin, draft.id, { userId: advisor.id, permission: 'write' })
+  assert.equal(addAdvisor.feedback.code, 'DRAFT_COLLABORATOR_ADDED')
+  const addReadonly = modules.forms.addDraftCollaborator(admin, draft.id, { userId: readonly.id, permission: 'read' })
+  assert.equal(addReadonly.feedback.code, 'DRAFT_COLLABORATOR_ADDED')
   const collaboratorSnapshot = modules.forms.listDraftCollaborators(admin, draft.id)
+  assert.equal(collaboratorSnapshot.feedback.code, 'DRAFT_COLLABORATORS_LOADED')
   assert.deepEqual(
-    collaboratorSnapshot.map((entry) => [entry.userId, entry.permission]),
+    collaboratorSnapshot.collaborators.map((entry) => [entry.userId, entry.permission]),
     [
       [admin.id, 'write'],
       [advisor.id, 'write'],
       [readonly.id, 'read']
     ]
   )
-  assert.throws(() => modules.forms.addDraftCollaborator(admin, draft.id, { userId: advisor.id }), /already added/i)
-  assert.throws(() => modules.forms.addDraftCollaborator(advisor, draft.id, { userId: advisor.id }), /already a collaborator/i)
+  assert.throws(() => modules.forms.addDraftCollaborator(admin, draft.id, { userId: advisor.id }), (error) => {
+    assert.equal(error.code, 'FORMS_DRAFT_COLLABORATORS_ALREADY_ADDED')
+    return true
+  })
+  assert.throws(() => modules.forms.addDraftCollaborator(advisor, draft.id, { userId: advisor.id }), (error) => {
+    assert.equal(error.code, 'FORMS_DRAFT_COLLABORATORS_ALREADY_ADDED')
+    return true
+  })
 
   assert.equal(modules.forms.listFormDrafts(advisor).length, 1)
   assert.equal(modules.forms.listFormDrafts(readonly).length, 1)
@@ -92,10 +101,17 @@ test('draft collaboration regression enforces role + collaborator boundaries for
     /Missing permission: canWriteForms/
   )
 
-  assert.throws(() => modules.forms.removeDraftCollaborator(admin, draft.id, admin.id), /owner cannot be removed/i)
-  assert.throws(() => modules.forms.removeDraftCollaborator(admin, draft.id, 'missing-user-id'), /not assigned/i)
+  assert.throws(() => modules.forms.removeDraftCollaborator(admin, draft.id, admin.id), (error) => {
+    assert.equal(error.code, 'FORMS_DRAFT_COLLABORATORS_OWNER_IMMUTABLE')
+    return true
+  })
+  assert.throws(() => modules.forms.removeDraftCollaborator(admin, draft.id, 'missing-user-id'), (error) => {
+    assert.equal(error.code, 'FORMS_DRAFT_COLLABORATORS_ALREADY_REMOVED')
+    return true
+  })
   const afterRemoval = modules.forms.removeDraftCollaborator(admin, draft.id, readonly.id)
-  assert.ok(afterRemoval.every((entry) => entry.userId !== readonly.id))
+  assert.equal(afterRemoval.feedback.code, 'DRAFT_COLLABORATOR_REMOVED')
+  assert.ok(afterRemoval.collaborators.every((entry) => entry.userId !== readonly.id))
 
   const auditActions = store.state.auditEvents
     .filter((entry) => entry.entityType === 'form_submission' && entry.entityId === draft.id)

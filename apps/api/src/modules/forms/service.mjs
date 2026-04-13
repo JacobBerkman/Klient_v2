@@ -158,6 +158,65 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
     return patch
   }
 
+  function draftCollaboratorsPayload({
+    action,
+    draftId,
+    collaborators = [],
+    actorUserId = '',
+    canManage = false,
+    feedbackCode = '',
+    message = ''
+  }) {
+    return {
+      action,
+      draftId,
+      collaborators,
+      collaboratorCount: collaborators.length,
+      actor: {
+        userId: actorUserId,
+        canManage
+      },
+      feedback: {
+        code: feedbackCode,
+        message
+      }
+    }
+  }
+
+  function normalizeDraftCollaboratorError(error, { draftId, action, targetUserId = '' } = {}) {
+    const message = String(error?.message || 'Draft collaborator request failed.')
+    const lowered = message.toLowerCase()
+    if (lowered.includes('draft submission not found')) {
+      throw createFormsError('Draft submission not found.', {
+        statusCode: 404,
+        code: 'FORMS_DRAFT_COLLABORATORS_STALE_DRAFT',
+        details: { action, draftId, stale: true, reason: 'draft_not_found' }
+      })
+    }
+    if (lowered.includes('already added') || lowered.includes('already a collaborator')) {
+      throw createFormsError('Collaborator already added.', {
+        statusCode: 409,
+        code: 'FORMS_DRAFT_COLLABORATORS_ALREADY_ADDED',
+        details: { action, draftId, targetUserId, stale: true, reason: 'already_added' }
+      })
+    }
+    if (lowered.includes('not assigned')) {
+      throw createFormsError('Collaborator is already removed.', {
+        statusCode: 409,
+        code: 'FORMS_DRAFT_COLLABORATORS_ALREADY_REMOVED',
+        details: { action, draftId, targetUserId, stale: true, reason: 'already_removed' }
+      })
+    }
+    if (lowered.includes('owner cannot be removed')) {
+      throw createFormsError('Draft owner cannot be removed as collaborator.', {
+        statusCode: 409,
+        code: 'FORMS_DRAFT_COLLABORATORS_OWNER_IMMUTABLE',
+        details: { action, draftId, targetUserId, reason: 'owner_immutable' }
+      })
+    }
+    throw error
+  }
+
   return {
     listFormTemplates(user) {
       if (templatesCompatibility?.listForms) {
@@ -216,15 +275,56 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
     },
     listDraftCollaborators(user, draftId) {
       policy.requireGuard(user, 'canManageDraftSharing')
-      return store.listDraftCollaborators(createFirmContext(user), draftId)
+      try {
+        const collaborators = store.listDraftCollaborators(createFirmContext(user), draftId)
+        return draftCollaboratorsPayload({
+          action: 'list',
+          draftId,
+          collaborators,
+          actorUserId: user.id,
+          canManage: true,
+          feedbackCode: 'DRAFT_COLLABORATORS_LOADED',
+          message: 'Collaborator membership loaded.'
+        })
+      } catch (error) {
+        normalizeDraftCollaboratorError(error, { draftId, action: 'list' })
+      }
     },
     addDraftCollaborator(user, draftId, input = {}) {
       policy.requireGuard(user, 'canManageDraftSharing')
-      return store.addDraftCollaborator(createFirmContext(user), draftId, input)
+      const targetUserId = String(input?.userId || '').trim()
+      try {
+        const collaborators = store.addDraftCollaborator(createFirmContext(user), draftId, input)
+        return draftCollaboratorsPayload({
+          action: 'add',
+          draftId,
+          collaborators,
+          actorUserId: user.id,
+          canManage: true,
+          feedbackCode: 'DRAFT_COLLABORATOR_ADDED',
+          message: 'Collaborator added.'
+        })
+      } catch (error) {
+        normalizeDraftCollaboratorError(error, { draftId, action: 'add', targetUserId })
+      }
     },
     removeDraftCollaborator(user, draftId, collaboratorUserId) {
       policy.requireGuard(user, 'canManageDraftSharing')
-      return store.removeDraftCollaborator(createFirmContext(user), draftId, collaboratorUserId)
+      const targetUserId = String(collaboratorUserId || '').trim()
+      try {
+        const collaborators = store.removeDraftCollaborator(createFirmContext(user), draftId, collaboratorUserId)
+        return draftCollaboratorsPayload({
+          action: 'remove',
+          draftId,
+          collaborators,
+          actorUserId: user.id,
+          canManage: true,
+          feedbackCode: 'DRAFT_COLLABORATOR_REMOVED',
+          message: 'Collaborator removed.'
+        })
+      } catch (error) {
+        normalizeDraftCollaboratorError(error, { draftId, action: 'remove', targetUserId })
+      }
     },
     updateSubmission(user, submissionId, patch) {
       policy.requireGuard(user, 'canWriteForms')
