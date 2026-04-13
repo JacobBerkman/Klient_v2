@@ -326,6 +326,43 @@ function customFieldValidationError(message, fieldErrors = {}) {
   return error
 }
 
+function normalizeCustomFieldRequired(value) {
+  if (typeof value === 'boolean') return { value, error: '' }
+  if (value == null) return { value: false, error: '' }
+  const normalized = String(value).trim().toLowerCase()
+  if (!normalized) return { value: false, error: '' }
+  if (['true', '1', 'yes', 'y'].includes(normalized)) return { value: true, error: '' }
+  if (['false', '0', 'no', 'n'].includes(normalized)) return { value: false, error: '' }
+  return { value: false, error: 'Required must be a boolean (true/false).' }
+}
+
+function validateCustomFieldRowInput(row = {}, { requireKnownKey = false, knownKeys = new Set() } = {}) {
+  const key = String(row?.key || '')
+    .trim()
+    .replace(/[^a-zA-Z0-9_]+/g, '_')
+  const type = normalizeCustomFieldType(row?.type)
+  const label = String(row?.label || key).trim() || key
+  const requiredResult = normalizeCustomFieldRequired(row?.required)
+  const fieldErrors = {}
+  if (!key) fieldErrors.key = 'Key is required.'
+  if (requireKnownKey && key && !knownKeys.has(key)) fieldErrors.key = 'Field key was not found.'
+  if (!CUSTOM_FIELD_TYPES.has(type)) fieldErrors.type = 'Type must be one of: text, number, boolean, date.'
+  if (requiredResult.error) fieldErrors.required = requiredResult.error
+  if (row?.metadata != null && (typeof row.metadata !== 'object' || Array.isArray(row.metadata))) {
+    fieldErrors.metadata = 'Metadata must be a JSON object.'
+  }
+  return {
+    normalized: {
+      key,
+      type,
+      label,
+      required: requiredResult.value,
+      metadata: row?.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? { ...row.metadata } : {}
+    },
+    fieldErrors
+  }
+}
+
 function normalizeCustomFieldSchema(schema = {}) {
   if (!schema || typeof schema !== 'object' || Array.isArray(schema)) {
     return { fields: [], updatedAt: now() }
@@ -1828,6 +1865,69 @@ export function createStore({
       firm.customFieldSchema.updatedAt = now()
       persist()
       return deepClone(field)
+    },
+    previewProfileCustomFieldSchema(user, input = {}) {
+      requirePermission(user, 'users:manage')
+      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      if (!firm) throw new Error('Firm not found.')
+      firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
+      const rows = Array.isArray(input?.rows) ? input.rows : []
+      const knownKeys = new Set(firm.customFieldSchema.fields.map((field) => field.key))
+      const seenKeys = new Set()
+      const normalizedRows = []
+      const validation = []
+      rows.forEach((row, index) => {
+        const checked = validateCustomFieldRowInput(row, { requireKnownKey: false, knownKeys })
+        const fieldErrors = { ...checked.fieldErrors }
+        if (checked.normalized.key && seenKeys.has(checked.normalized.key)) fieldErrors.key = 'Duplicate key in bulk payload.'
+        if (checked.normalized.key) seenKeys.add(checked.normalized.key)
+        if (Object.keys(fieldErrors).length) {
+          validation.push({ index, key: checked.normalized.key || String(row?.key || ''), fieldErrors })
+        }
+        normalizedRows.push(checked.normalized)
+      })
+      const nextByKey = new Map(normalizedRows.map((row) => [row.key, row]))
+      const currentByKey = new Map(firm.customFieldSchema.fields.map((field) => [field.key, field]))
+      const added = []
+      const updated = []
+      const unchanged = []
+      const removed = []
+      nextByKey.forEach((row, key) => {
+        if (!key) return
+        const current = currentByKey.get(key)
+        if (!current) {
+          added.push(row)
+          return
+        }
+        const hasChange =
+          current.type !== row.type ||
+          (current.label || current.key) !== row.label ||
+          Boolean(current.required) !== Boolean(row.required) ||
+          JSON.stringify(current.metadata || {}) !== JSON.stringify(row.metadata || {})
+        if (hasChange) updated.push({ before: current, after: row })
+        else unchanged.push(row)
+      })
+      currentByKey.forEach((field, key) => {
+        if (!nextByKey.has(key)) removed.push(field)
+      })
+      return {
+        dryRun: true,
+        normalizedRows,
+        validation,
+        valid: validation.length === 0,
+        diff: {
+          added,
+          updated,
+          removed,
+          unchanged,
+          counts: {
+            added: added.length,
+            updated: updated.length,
+            removed: removed.length,
+            unchanged: unchanged.length
+          }
+        }
+      }
     },
     deleteProfileCustomField(user, fieldKey) {
       requirePermission(user, 'users:manage')

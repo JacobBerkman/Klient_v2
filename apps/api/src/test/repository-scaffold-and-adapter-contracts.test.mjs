@@ -31,6 +31,7 @@ test('repository scaffold classes throw scaffold-only errors for abstract method
   assertScaffoldError(() => profileRepository.getCustomFieldSchema({}), 'getCustomFieldSchema')
   assertScaffoldError(() => profileRepository.createCustomField({}, {}), 'createCustomField')
   assertScaffoldError(() => profileRepository.updateCustomField({}, 'risk', {}), 'updateCustomField')
+  assertScaffoldError(() => profileRepository.dryRunCustomFieldSchema({}, { rows: [] }), 'dryRunCustomFieldSchema')
   assertScaffoldError(() => profileRepository.deleteCustomField({}, 'risk'), 'deleteCustomField')
 
   const pipelineStagesRepository = new PipelineStagesRepository()

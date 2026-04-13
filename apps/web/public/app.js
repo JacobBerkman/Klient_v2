@@ -37,7 +37,8 @@ const state = {
     loading: false,
     fields: [],
     updatedAt: '',
-    lastError: ''
+    lastError: '',
+    bulkPreview: null
   },
   formsUi: {
     activeDraftSharePanelId: '',
@@ -430,7 +431,7 @@ function normalizeCustomFieldDefinitions(fields = []) {
 
 async function ensureCustomFieldSchema(force = false) {
   if (!state.user || state.user.role === 'client') {
-    state.customFieldSchema = { fetched: true, loading: false, fields: [], updatedAt: '', lastError: '' }
+    state.customFieldSchema = { fetched: true, loading: false, fields: [], updatedAt: '', lastError: '', bulkPreview: null }
     return state.customFieldSchema.fields
   }
   if (!force && state.customFieldSchema.fetched) return state.customFieldSchema.fields
@@ -1024,7 +1025,7 @@ function updateViewNavState() {
 
 async function refreshSelects() {
   if (!state.user || state.user.role === 'client') {
-    state.customFieldSchema = { fetched: true, loading: false, fields: [], updatedAt: '', lastError: '' }
+    state.customFieldSchema = { fetched: true, loading: false, fields: [], updatedAt: '', lastError: '', bulkPreview: null }
     customFieldCreateFormMarkup()
     return
   }
@@ -4353,12 +4354,31 @@ async function renderCustomFieldsAdmin() {
           rows="8"
           placeholder='[{"key":"risk_tolerance","type":"number","label":"Risk Tolerance","required":false,"metadata":{"group":"planning"}}]'
           ${canManage ? '' : 'disabled'}
-        ></textarea>
+        >${escapeHtml(state.customFieldSchema.bulkPreview?.rawRows || '')}</textarea>
         <div class="actions-row">
-          <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Apply + Save Rows</button>
+          <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Preview Changes</button>
         </div>
         <p class="muted compact" data-form-feedback aria-live="polite"></p>
       </form>
+      ${
+        state.customFieldSchema.bulkPreview
+          ? `<div class="item" id="custom-field-bulk-preview">
+        <h4>Bulk Diff Preview</h4>
+        <p class="muted compact">Review summary, then confirm to persist changes.</p>
+        <ul>
+          <li>Added: <strong>${state.customFieldSchema.bulkPreview.diff?.counts?.added || 0}</strong></li>
+          <li>Updated: <strong>${state.customFieldSchema.bulkPreview.diff?.counts?.updated || 0}</strong></li>
+          <li>Removed: <strong>${state.customFieldSchema.bulkPreview.diff?.counts?.removed || 0}</strong></li>
+          <li>Unchanged: <strong>${state.customFieldSchema.bulkPreview.diff?.counts?.unchanged || 0}</strong></li>
+        </ul>
+        <form id="custom-field-bulk-confirm-form">
+          <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Confirm + Save Changes</button>
+          <button type="button" class="tiny secondary" id="custom-field-bulk-cancel-preview" ${canManage ? '' : 'disabled'}>Cancel Preview</button>
+          <p class="muted compact" data-form-feedback aria-live="polite"></p>
+        </form>
+      </div>`
+          : ''
+      }
     </section>
     <section class="item">
       <h3>Current Fields</h3>
@@ -4545,6 +4565,7 @@ async function renderCustomFieldsAdmin() {
     if (!canManage) return
     const form = event.currentTarget
     clearFormFeedback(form)
+    state.customFieldSchema.bulkPreview = null
     document.querySelectorAll('[data-custom-field-update]').forEach((updateForm) => applyFieldErrors(updateForm, {}))
     const formData = new FormData(form)
     const parsed = parseBulkRows(formData.get('bulkRows'))
@@ -4552,13 +4573,18 @@ async function renderCustomFieldsAdmin() {
       setFormFeedback(form, parsed.parseError)
       return
     }
-    const knownKeys = new Set((state.customFieldSchema.fields || []).map((field) => field.key))
     const preparedRows = parsed.rows.map((row) => {
       const validation = validateCustomFieldInput(row, { requireKey: true })
-      if (validation.payload.key && !knownKeys.has(validation.payload.key)) {
-        validation.fieldErrors.key = `Field ${validation.payload.key} was not found in current schema.`
-      }
       return { payload: validation.payload, fieldErrors: validation.fieldErrors }
+    })
+    const duplicateKeys = new Set()
+    preparedRows.forEach((row, index) => {
+      if (!row.payload.key) return
+      const duplicate = preparedRows.findIndex((entry) => entry.payload.key === row.payload.key)
+      if (duplicate !== index) duplicateKeys.add(row.payload.key)
+    })
+    preparedRows.forEach((row) => {
+      if (duplicateKeys.has(row.payload.key)) row.fieldErrors.key = 'Duplicate key in bulk payload.'
     })
     const hasClientErrors = preparedRows.some((row) => Object.keys(row.fieldErrors).length)
     preparedRows.forEach((row) => {
@@ -4571,51 +4597,61 @@ async function renderCustomFieldsAdmin() {
       setFormFeedback(form, 'Bulk edit contains validation errors. Fix highlighted rows and retry.')
       return
     }
-    const previousSchema = structuredClone(state.customFieldSchema)
-    state.customFieldSchema.fields = (state.customFieldSchema.fields || []).map((field) => {
-      const row = preparedRows.find((entry) => entry.payload.key === field.key)
-      return row ? { ...field, ...row.payload, key: field.key } : field
+    const dryRun = await request(routes.profileCustomFieldSchema({ dryRun: true }), {
+      method: 'POST',
+      body: JSON.stringify({ rows: preparedRows.map((row) => row.payload) })
     })
-    state.customFieldSchema.updatedAt = new Date().toISOString()
-    setFlash('success', `Saving ${preparedRows.length} custom field updates…`)
-    await renderCustomFieldsAdmin()
-    const serverErrors = []
-    for (const row of preparedRows) {
-      try {
-        await request(routes.profileCustomFieldSchemaField(row.payload.key), {
-          method: 'PATCH',
-          body: JSON.stringify({
-            type: row.payload.type,
-            label: row.payload.label,
-            required: row.payload.required,
-            metadata: row.payload.metadata
-          })
-        })
-      } catch (error) {
-        serverErrors.push({ key: row.payload.key, fieldErrors: error?.details?.fieldErrors || {}, error })
-      }
-    }
-    if (serverErrors.length) {
-      state.customFieldSchema = previousSchema
-      setFlash('error', normalizeApiError(serverErrors[0].error, 'bulk update custom fields'))
-      await renderCustomFieldsAdmin()
-      serverErrors.forEach((entry) => {
+    if (!dryRun.valid) {
+      dryRun.validation.forEach((entry) => {
         const targetForm = Array.from(document.querySelectorAll('[data-custom-field-update]')).find(
           (rowForm) => rowForm.dataset.customFieldUpdate === entry.key
         )
-        if (targetForm) applyFieldErrors(targetForm, entry.fieldErrors)
+        if (targetForm) applyFieldErrors(targetForm, entry.fieldErrors || {})
       })
-      const rerenderedBulkForm = document.querySelector('#custom-field-bulk-form')
-      if (rerenderedBulkForm) {
-        const bulkRowsInput = rerenderedBulkForm.elements?.namedItem?.('bulkRows')
-        if (bulkRowsInput) bulkRowsInput.value = String(formData.get('bulkRows') || '')
-        setFormFeedback(rerenderedBulkForm, 'Some rows failed validation on save. Review inline errors and retry.')
-      }
+      setFormFeedback(form, 'Bulk edit contains server validation errors. Fix highlighted rows and retry.')
       return
     }
+    state.customFieldSchema.bulkPreview = { ...dryRun, rawRows: String(formData.get('bulkRows') || '') }
+    setFormFeedback(form, 'Preview generated. Confirm to persist changes.', 'success')
+    await renderCustomFieldsAdmin()
+  })
+
+  document.querySelector('#custom-field-bulk-cancel-preview')?.addEventListener('click', async () => {
+    state.customFieldSchema.bulkPreview = null
+    await renderCustomFieldsAdmin()
+  })
+
+  document.querySelector('#custom-field-bulk-confirm-form')?.addEventListener('submit', async (event) => {
+    event.preventDefault()
+    if (!canManage || !state.customFieldSchema.bulkPreview?.diff) return
+    const form = event.currentTarget
+    clearFormFeedback(form)
+    const preview = state.customFieldSchema.bulkPreview
+    const previousSchema = structuredClone(state.customFieldSchema)
+    setFormFeedback(form, 'Applying confirmed schema changes…', 'success')
+    try {
+      for (const field of preview.diff.added || []) {
+        await request(routes.profileCustomFieldSchema(), { method: 'POST', body: JSON.stringify(field) })
+      }
+      for (const change of preview.diff.updated || []) {
+        await request(routes.profileCustomFieldSchemaField(change.after.key), {
+          method: 'PATCH',
+          body: JSON.stringify(change.after)
+        })
+      }
+      for (const field of preview.diff.removed || []) {
+        await request(routes.profileCustomFieldSchemaField(field.key), { method: 'DELETE' })
+      }
+    } catch (error) {
+      state.customFieldSchema = previousSchema
+      state.customFieldSchema.bulkPreview = preview
+      setFormFeedback(form, normalizeApiError(error, 'apply bulk schema changes'))
+      return
+    }
+    state.customFieldSchema.bulkPreview = null
     state.customFieldSchema.fetched = false
     await refreshSelects()
-    setFlash('success', `Updated ${preparedRows.length} custom fields.`)
+    setFlash('success', 'Bulk schema changes saved.')
     await renderCustomFieldsAdmin()
   })
 
