@@ -75,6 +75,34 @@ Required manifest + approval artifacts:
 - `approval-bundle/`
 - `approval-bundle/bundle-manifest.json`
 
+## Canonical browser-gate policy (CI + local)
+
+Use one policy everywhere for the `test:e2e` browser gate.
+
+### Provisioning
+- Always provision Chromium with `npx playwright install --with-deps chromium` before release-blocking E2E runs (CI and operator preflight).
+- `release:go-no-go --phase preflight` performs this provisioning step before `validate:master`.
+
+### Strictness + fallback behavior
+- CI is strict by policy: `RELEASE_E2E_STRICT_MODE=1` and `RELEASE_E2E_ALLOW_FALLBACK=0`.
+- Operator preflight hard gate is strict by policy: `release:go-no-go` forces the same strict settings when running `validate:master`.
+- Local/manual runs are strict by default unless an operator explicitly opts into local fallback with `RELEASE_E2E_ALLOW_FALLBACK=1` (never allowed in CI).
+
+### Evidence requirements (always required)
+- `e2e-summary.json` must have `status=passed`, an `executionMode`, and `details.artifacts.playwrightJsonReport.{path,valid,suiteCount}`.
+- The Playwright JSON report file must exist at `path`, parse as JSON, and contain at least one suite/spec title.
+- Missing/invalid report evidence is a hard NO-GO; regenerate evidence before approval.
+
+### Deterministic remediation path when E2E fails
+1. Re-provision browser binaries:
+   - `npx playwright install --with-deps chromium`
+2. Re-run the canonical browser gate command:
+   - run the `test:e2e` npm script.
+3. If still failing, run only the failing deterministic flow:
+   - `npx playwright test tests/e2e/workflows.spec.mjs --grep "<failing-flow-name>"`
+4. Re-run the `test:e2e` npm script to regenerate canonical evidence artifacts.
+5. Continue GO/NO-GO only after regenerated `e2e-summary.json` + Playwright JSON report both satisfy evidence rules.
+
 ## Admin shell operations panel quick links
 The admin shell includes an **Operations / Launch readiness** panel that mirrors this runbook and is intended as a fast triage surface.
 

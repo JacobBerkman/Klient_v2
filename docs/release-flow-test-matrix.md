@@ -16,10 +16,8 @@ Deterministic guarantees in this path:
 - isolated reset behavior default (`TEST_RESET_BEHAVIOR=isolated`),
 - strict CI behavior (local fallback is ignored whenever `CI=true`).
 
-CI gate policy:
-
-- Browser provisioning is performed in `.github/workflows/smoke.yml` via `npx playwright install --with-deps chromium` before browser execution in both `hard_release_gate` (`npm run validate:master`) and `e2e_release_blocking` (`npm run test:e2e`).
-- `e2e_release_blocking` is the authoritative release-blocking browser job for merge/release decisions; `hard_release_gate` exists to keep the canonical `validate:master` path parity-tested with the same provisioning expectations.
+For canonical provisioning/fallback/evidence/remediation policy, use:
+`docs/deployment-quick-reference.md#canonical-browser-gate-policy-ci--local`.
 
 ## Preserved flow to deterministic test mapping
 
@@ -91,9 +89,5 @@ If any one condition fails, RC status remains **NO-GO** and freeze is blocked.
 
 ## Browser gate failure remediation
 
-If `npm run test:e2e` fails:
-
-1. Confirm Playwright report validity: JSON must exist and include at least one suite/spec title.
-2. Re-run only impacted deterministic flow with `--grep` for local triage.
-3. If failure is infra-transient, rerun the scoped transient-infra test group once in CI.
-4. Regenerate `e2e-summary.json` and `playwright-report.json` before requesting GO/NO-GO approval.
+If `npm run test:e2e` fails, use only:
+`docs/deployment-quick-reference.md#canonical-browser-gate-policy-ci--local` → **Deterministic remediation path when E2E fails**.
