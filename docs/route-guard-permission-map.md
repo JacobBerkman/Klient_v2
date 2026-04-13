@@ -83,3 +83,12 @@ This matrix documents the runtime path for each guarded API route: HTTP endpoint
 - Forms, households, pipeline, audit, and sensitive-data flows now use domain-specific read permissions.
 - Cross-tenant entity access now uses explicit ownership validation instead of relying solely on implicit `firmId` filtering.
 - Denied RBAC access uses HTTP 403; cross-tenant entity denial uses HTTP 404.
+
+## UI gating assumptions (must stay aligned with route guards)
+
+| UI surface | Read expectation | Write expectation | Route/guard references |
+|---|---|---|---|
+| Forms → Draft sharing panel | Admin/advisor/readonly can open panel and read collaborator membership. | Only admin or advisor draft owner can search/add/remove collaborators. | `GET /api/forms/drafts/:id/collaborators` (`canManageDraftSharing`), `POST/DELETE /api/forms/drafts/:id/collaborators*` (`canManageDraftSharing`) |
+| Templates → Versions / Compare | Admin/advisor/readonly can view version history, transition logs, and compare versions. | N/A (read-only endpoints). | `GET /api/templates/:id/versions`, `/publish-transitions`, `/compare` (`canReadTemplate`) |
+| Templates → Publish / Revert | Admin/advisor can run publish preflight and publish/revert transitions from UI. | Readonly users must see disabled controls and permission messaging. | `POST /api/templates/:id/publish` (`canPublishTemplate`), `POST /api/templates/:id/revert` (`canEditTemplate`) |
+| Operations → Exports queue controls | Admin/advisor can read queue diagnostics. | Admin/advisor can trigger retry-failed; readonly cannot access read/write queue routes. | `GET /api/ops/exports/queue` (`canReadExports`), `POST /api/ops/exports/retry-failed` (`canWriteExports`) |
