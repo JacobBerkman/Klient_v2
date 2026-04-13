@@ -270,6 +270,22 @@ Release-blocking expectation:
 Conditional final step:
 - `npm run check:merge-main` runs after step 11 only when the workspace has git metadata and a local `main` branch (or when `VALIDATE_MASTER_FORCE_MERGE_PARITY=1`).
 
+## Release gate command ownership (six required commands)
+
+These six commands are the canonical release gate checks. CI runs each command as a standalone job with dedicated logs/artifacts so failures are attributable without rerunning the full `validate:master` gate.
+
+| Gate | CI job id | Command owner | Required command | Evidence file (canonical path) | CI job log artifact prefix |
+|---|---|---|---|---|---|
+| API contract | `api_contract` | API Lead | `npm run test:contract` | `artifacts/release-evidence/<release-id>/api-contract-summary.json` | `artifacts/api-contract-gate/` |
+| Integration suites | `full_integration` | QA Lead | `npm run test:integration` | `artifacts/release-evidence/<release-id>/integration-summary.json` | `artifacts/integration-gate/` |
+| Migration checks | `migration_checks` | Data/DB Owner | `npm run check:migrations` | `artifacts/release-evidence/<release-id>/migration-summary.json` | `artifacts/migration-checks-gate/` |
+| Smoke | `smoke_runtime_contract` | Release Manager | `npm run test:smoke` | `artifacts/release-evidence/<release-id>/smoke-summary.json` | `artifacts/smoke-gate/` |
+| E2E browser checks | `e2e_release_blocking` | QA Lead | `npm run test:e2e` (`E2E_GREP='@release-blocking'` in CI) | `artifacts/release-evidence/<release-id>/e2e-summary.json` | `artifacts/e2e-gate/` |
+| Security checks | `security_checks` | Security Owner | `npm run test:security` | `artifacts/release-evidence/<release-id>/security-summary.json` | `artifacts/security-gate/` |
+
+Drift-prevention rule:
+- `npm run check:release-gate-commands` validates that these six commands exist in `package.json`, are wired in `.github/workflows/smoke.yml`, and are referenced consistently in this runbook and `docs/release-ready-checklist.md`.
+
 
 ## Documentation freshness owner
 - **Owner:** Release Operations (Release Manager + SRE primary)

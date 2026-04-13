@@ -65,3 +65,47 @@ test('runCommandProcess completes deterministically for piped stdio tuple across
     assert.equal(result.code, 0)
   }
 })
+
+test('runCommandProcess prefers exit fallback when close is pinned by descendant pipe handles', async () => {
+  const script = [
+    'import { spawn } from "node:child_process";',
+    'const holder = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 5000)"], {',
+    '  stdio: ["ignore", "inherit", "ignore"],',
+    '  detached: true',
+    '});',
+    'holder.unref();',
+    'process.exit(0);'
+  ].join(' ')
+
+  const start = Date.now()
+  const result = await runCommandProcess({
+    command: nodeBin,
+    args: ['-e', script],
+    label: 'exit-fallback-pinned-close',
+    stdio: 'pipe',
+    timeoutMs: 6000
+  })
+
+  const elapsed = Date.now() - start
+  assert.equal(result.code, 0)
+  assert(elapsed >= 900, `expected close fallback grace window to elapse, got ${elapsed}ms`)
+  assert(elapsed < 3000, `expected completion via exit fallback without waiting for descendant stdio, got ${elapsed}ms`)
+})
+
+test('runCommandProcess timeout rejects with explicit stdio context for piped runs', async () => {
+  const start = Date.now()
+  await assert.rejects(
+    () =>
+      runCommandProcess({
+        command: nodeBin,
+        args: ['-e', 'setInterval(() => process.stdout.write("."), 20)'],
+        label: 'timeout-piped-context',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeoutMs: 250
+      }),
+    /timed out after 250ms \(stdio=ignore,pipe,pipe; waiting for close\)/
+  )
+
+  const elapsed = Date.now() - start
+  assert(elapsed < 2000, `expected timeout rejection to settle quickly, got ${elapsed}ms`)
+})

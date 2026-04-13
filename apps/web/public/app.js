@@ -38,7 +38,8 @@ const state = {
     fields: [],
     updatedAt: '',
     lastError: '',
-    bulkPreview: null
+    bulkPreview: null,
+    ui: defaultCustomFieldAdminUiState()
   },
   formsUi: {
     activeDraftSharePanelId: '',
@@ -432,7 +433,15 @@ function normalizeCustomFieldDefinitions(fields = []) {
 
 async function ensureCustomFieldSchema(force = false) {
   if (!state.user || state.user.role === 'client') {
-    state.customFieldSchema = { fetched: true, loading: false, fields: [], updatedAt: '', lastError: '', bulkPreview: null }
+    state.customFieldSchema = {
+      fetched: true,
+      loading: false,
+      fields: [],
+      updatedAt: '',
+      lastError: '',
+      bulkPreview: null,
+      ui: defaultCustomFieldAdminUiState()
+    }
     return state.customFieldSchema.fields
   }
   if (!force && state.customFieldSchema.fetched) return state.customFieldSchema.fields
@@ -1046,7 +1055,15 @@ function updateViewNavState() {
 
 async function refreshSelects() {
   if (!state.user || state.user.role === 'client') {
-    state.customFieldSchema = { fetched: true, loading: false, fields: [], updatedAt: '', lastError: '', bulkPreview: null }
+    state.customFieldSchema = {
+      fetched: true,
+      loading: false,
+      fields: [],
+      updatedAt: '',
+      lastError: '',
+      bulkPreview: null,
+      ui: defaultCustomFieldAdminUiState()
+    }
     customFieldCreateFormMarkup()
     return
   }
@@ -2570,11 +2587,22 @@ async function renderTemplates() {
   const knownPathIndex = normalizedKnownPathIndex(knownPaths)
   const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field.fieldName)).length
   const extraction = template?.extraction || {}
+  const hasExtractionData = extractedFields.length > 0 || Boolean(extraction?.status)
+  const hasMappingData = draftMappings.length > 0 || extractedFields.length > 0
+  const hasPreviewableMappings = draftMappings.length > 0
+  const wizardStepEnabled = {
+    upload: true,
+    extraction: hasExtractionData,
+    mapping: hasMappingData,
+    preview: hasPreviewableMappings,
+    publish: hasPreviewableMappings
+  }
   const wizardSteps = ['upload', 'extraction', 'mapping', 'preview', 'publish']
   const defaultWizardStep = extraction?.status === 'failed' ? 'extraction' : extractedFields.length ? 'mapping' : 'upload'
-  const activeWizardStep = wizardSteps.includes(state.templateWizardStepByTemplateId?.[template?.id])
+  const activeWizardStepCandidate = wizardSteps.includes(state.templateWizardStepByTemplateId?.[template?.id])
     ? state.templateWizardStepByTemplateId[template.id]
     : defaultWizardStep
+  const activeWizardStep = wizardStepEnabled[activeWizardStepCandidate] ? activeWizardStepCandidate : defaultWizardStep
   if (template) state.templateWizardStepByTemplateId[template.id] = activeWizardStep
   const saveState = state.templateSaveStateByTemplateId[template?.id] || { status: 'idle', message: '' }
 
@@ -2613,7 +2641,7 @@ async function renderTemplates() {
           ${wizardSteps
             .map((step, index) => {
               const label = `${index + 1}. ${step.charAt(0).toUpperCase() + step.slice(1)}`
-              return `<button type="button" class="tiny ${activeWizardStep === step ? '' : 'secondary'}" data-template-wizard-step="${step}" aria-pressed="${activeWizardStep === step ? 'true' : 'false'}">${label}</button>`
+              return `<button type="button" class="tiny ${activeWizardStep === step ? '' : 'secondary'}" data-template-wizard-step="${step}" aria-pressed="${activeWizardStep === step ? 'true' : 'false'}" ${wizardStepEnabled[step] ? '' : 'disabled'}>${label}</button>`
             })
             .join('')}
         </div>
@@ -2768,6 +2796,10 @@ async function renderTemplates() {
                 )}</span>`
               : '<span class="badge subtle">Preflight: clear</span>'
           }
+          ${(() => {
+            const selectedConfidence = mappingConfidenceBadge(selectedMapping, knownPathIndex)
+            return `<span class="badge subtle">Confidence: ${escapeHtml(selectedConfidence.label)}</span>`
+          })()}
         </div>
         <p class="muted">Validation hints: ensure PDF Field + Source Path are filled, Source Path exists in known paths, and expression transforms include an expression.</p>
         <datalist id="source-path-options">${[...knownPaths.keys()].map((path) => `<option value="${escapeHtml(path)}"></option>`).join('')}</datalist>
@@ -2789,6 +2821,7 @@ async function renderTemplates() {
         </div>
         <div class="row gap-sm wrap top-gap">
           <button id="inspector-reset-source-path" class="tiny secondary">Clear source path</button>
+          <button id="inspector-reset-source-path-suggested" class="tiny secondary">Reset to suggested source path</button>
           <button id="inspector-reset-transform" class="tiny secondary">Reset transform to none</button>
         </div>
       </section>
@@ -2963,7 +2996,9 @@ async function renderTemplates() {
   document.querySelectorAll('[data-template-wizard-step]').forEach((button) => {
     button.addEventListener('click', async () => {
       if (!template) return
-      state.templateWizardStepByTemplateId[template.id] = button.dataset.templateWizardStep || 'mapping'
+      const requestedStep = String(button.dataset.templateWizardStep || 'mapping')
+      if (!wizardStepEnabled[requestedStep]) return
+      state.templateWizardStepByTemplateId[template.id] = requestedStep
       await rerenderTemplates()
     })
   })
@@ -2992,11 +3027,15 @@ async function renderTemplates() {
     await rerenderTemplates()
   })
 
-  const selectTemplateRow = async (rowIndex, { focusInspector = false, focusField = 'sourcePath', highlightRow = false } = {}) => {
+  const selectTemplateRow = async (
+    rowIndex,
+    { focusInspector = false, focusField = 'sourcePath', highlightRow = false, wizardStep = '' } = {}
+  ) => {
     if (!template) return
     const normalizedRowIndex = Number(rowIndex)
     if (!Number.isFinite(normalizedRowIndex)) return
     state.templateInspector[template.id] = { rowIndex: normalizedRowIndex }
+    if (wizardStep && wizardSteps.includes(wizardStep)) state.templateWizardStepByTemplateId[template.id] = wizardStep
     state.templateInspectorFocusRequestByTemplateId[template.id] = focusInspector ? focusField : ''
     state.templateJumpHighlightByTemplateId[template.id] = highlightRow ? normalizedRowIndex : NaN
     await renderTemplates()
@@ -3009,7 +3048,7 @@ async function renderTemplates() {
   ) => {
     const numericRowIndex = Number(rowIndex)
     if (Number.isFinite(numericRowIndex)) {
-      await selectTemplateRow(numericRowIndex, { focusInspector, focusField, highlightRow })
+      await selectTemplateRow(numericRowIndex, { focusInspector, focusField, highlightRow, wizardStep: 'mapping' })
       return
     }
     const normalizedRowId = String(rowId || '').trim()
@@ -3019,7 +3058,7 @@ async function renderTemplates() {
         ?.rowIndex
     )
     if (Number.isFinite(mappedRowIndex)) {
-      await selectTemplateRow(mappedRowIndex, { focusInspector, focusField, highlightRow })
+      await selectTemplateRow(mappedRowIndex, { focusInspector, focusField, highlightRow, wizardStep: 'mapping' })
     }
   }
 
@@ -3043,8 +3082,11 @@ async function renderTemplates() {
 
   document.querySelector('#jump-to-unmapped-extracted')?.addEventListener('click', async () => {
     if (!template) return
+    const firstUnmappedIndex = draftMappings.findIndex((mapping) => !String(mapping.sourcePath || '').trim())
     state.templateWizardStepByTemplateId[template.id] = 'mapping'
     state.templateMappingFilterByTemplateId[template.id] = 'unmapped'
+    if (firstUnmappedIndex >= 0) state.templateInspector[template.id] = { rowIndex: firstUnmappedIndex }
+    state.templateInspectorFocusRequestByTemplateId[template.id] = 'sourcePath'
     await rerenderTemplates()
   })
 
@@ -3120,6 +3162,16 @@ async function renderTemplates() {
     const sourcePathEl = document.querySelector('#inspector-sourcePath')
     if (!sourcePathEl) return
     sourcePathEl.value = ''
+    await applyInspectorToDraft()
+    await rerenderTemplates()
+  })
+  document.querySelector('#inspector-reset-source-path-suggested')?.addEventListener('click', async () => {
+    if (!template) return
+    const rowIndex = Number(state.templateInspector?.[template.id]?.rowIndex || 0)
+    const suggestion = suggestionByIndex.get(rowIndex)
+    const sourcePathEl = document.querySelector('#inspector-sourcePath')
+    if (!sourcePathEl || !suggestion?.path) return
+    sourcePathEl.value = String(suggestion.path).trim()
     await applyInspectorToDraft()
     await rerenderTemplates()
   })
@@ -4417,11 +4469,30 @@ function customFieldTypeHelpText(type = 'text') {
   return 'Plain text value.'
 }
 
+function defaultCustomFieldAdminUiState() {
+  return {
+    create: { status: '', message: '', fieldErrors: {} },
+    updatesByKey: {},
+    deleteByKey: {},
+    bulk: { status: '', message: '', rowErrorsByKey: {} }
+  }
+}
+
 async function renderCustomFieldsAdmin() {
   await ensureCustomFieldSchema()
   const canManage = canManageCustomFieldSchema()
   const readonlyMessage = !canManage ? customFieldReadonlyMessage() : ''
   const fields = state.customFieldSchema.fields || []
+  state.customFieldSchema.ui = state.customFieldSchema.ui || defaultCustomFieldAdminUiState()
+  const uiState = state.customFieldSchema.ui
+  const createUi = uiState.create || { status: '', message: '', fieldErrors: {} }
+  const bulkUi = uiState.bulk || { status: '', message: '', rowErrorsByKey: {} }
+  const createButtonLabel = createUi.status === 'pending' ? 'Creating…' : 'Create Field'
+  const createButtonDisabled = !canManage || createUi.status === 'pending'
+  const bulkPreviewButtonLabel = bulkUi.status === 'pending-preview' ? 'Generating Preview…' : 'Preview Changes'
+  const bulkPreviewButtonDisabled = !canManage || bulkUi.status === 'pending-preview' || bulkUi.status === 'pending-confirm'
+  const bulkConfirmButtonLabel = bulkUi.status === 'pending-confirm' ? 'Saving Changes…' : 'Confirm + Save Changes'
+  const bulkConfirmButtonDisabled = !canManage || bulkUi.status === 'pending-confirm'
   viewEl.innerHTML = `
     ${flashMarkup()}
     ${alertMarkup()}
@@ -4462,7 +4533,7 @@ async function renderCustomFieldsAdmin() {
         <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="required" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
-        <button type="submit" ${canManage ? '' : 'disabled'}>Create Field</button>
+        <button type="submit" ${createButtonDisabled ? 'disabled' : ''}>${createButtonLabel}</button>
         <p class="muted compact" data-form-feedback aria-live="polite"></p>
       </form>
     </section>
@@ -4477,7 +4548,7 @@ async function renderCustomFieldsAdmin() {
           ${canManage ? '' : 'disabled'}
         >${escapeHtml(state.customFieldSchema.bulkPreview?.rawRows || '')}</textarea>
         <div class="actions-row">
-          <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Preview Changes</button>
+          <button type="submit" class="tiny" ${bulkPreviewButtonDisabled ? 'disabled' : ''}>${bulkPreviewButtonLabel}</button>
         </div>
         <p class="muted compact" data-form-feedback aria-live="polite"></p>
       </form>
@@ -4493,8 +4564,8 @@ async function renderCustomFieldsAdmin() {
           <li>Unchanged: <strong>${state.customFieldSchema.bulkPreview.diff?.counts?.unchanged || 0}</strong></li>
         </ul>
         <form id="custom-field-bulk-confirm-form">
-          <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Confirm + Save Changes</button>
-          <button type="button" class="tiny secondary" id="custom-field-bulk-cancel-preview" ${canManage ? '' : 'disabled'}>Cancel Preview</button>
+          <button type="submit" class="tiny" ${bulkConfirmButtonDisabled ? 'disabled' : ''}>${bulkConfirmButtonLabel}</button>
+          <button type="button" class="tiny secondary" id="custom-field-bulk-cancel-preview" ${bulkConfirmButtonDisabled ? 'disabled' : ''}>Cancel Preview</button>
           <p class="muted compact" data-form-feedback aria-live="polite"></p>
         </form>
       </div>`
@@ -4532,8 +4603,20 @@ async function renderCustomFieldsAdmin() {
                 <p class="field-error-text" data-field-error="required" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
                 <div class="actions-row">
-                  <button type="submit" class="tiny" ${canManage ? '' : 'disabled'}>Update</button>
-                  <button type="button" class="tiny secondary" data-custom-field-delete="${escapeHtml(field.key)}" ${canManage ? '' : 'disabled'}>Delete</button>
+                  <button type="submit" class="tiny" ${
+                    canManage && uiState.updatesByKey?.[field.key]?.status !== 'pending' && uiState.deleteByKey?.[field.key]?.status !== 'pending'
+                      ? ''
+                      : 'disabled'
+                  }>${
+                    uiState.updatesByKey?.[field.key]?.status === 'pending' ? 'Updating…' : 'Update'
+                  }</button>
+                  <button type="button" class="tiny secondary" data-custom-field-delete="${escapeHtml(field.key)}" ${
+                    canManage && uiState.deleteByKey?.[field.key]?.status !== 'pending' && uiState.updatesByKey?.[field.key]?.status !== 'pending'
+                      ? ''
+                      : 'disabled'
+                  }>${
+                    uiState.deleteByKey?.[field.key]?.status === 'pending' ? 'Deleting…' : 'Delete'
+                  }</button>
                 </div>
                 <p class="muted compact" data-form-feedback aria-live="polite"></p>
               </form>
@@ -4633,10 +4716,53 @@ async function renderCustomFieldsAdmin() {
     return { rows, parseError: '' }
   }
 
+  const applyPersistedAdminUiState = () => {
+    const currentCreateForm = document.querySelector('#custom-field-create-form')
+    if (currentCreateForm) {
+      applyFieldErrors(currentCreateForm, state.customFieldSchema.ui?.create?.fieldErrors || {})
+      if (state.customFieldSchema.ui?.create?.message) {
+        setFormFeedback(
+          currentCreateForm,
+          state.customFieldSchema.ui.create.message,
+          state.customFieldSchema.ui.create.status === 'error' ? 'error' : 'success'
+        )
+      }
+    }
+    const currentBulkForm = document.querySelector('#custom-field-bulk-form')
+    if (currentBulkForm && state.customFieldSchema.ui?.bulk?.message) {
+      setFormFeedback(
+        currentBulkForm,
+        state.customFieldSchema.ui.bulk.message,
+        state.customFieldSchema.ui.bulk.status === 'error' ? 'error' : 'success'
+      )
+    }
+    document.querySelectorAll('[data-custom-field-update]').forEach((updateForm) => {
+      const fieldKey = updateForm.dataset.customFieldUpdate
+      const rowErrors =
+        state.customFieldSchema.ui?.bulk?.rowErrorsByKey?.[fieldKey] || state.customFieldSchema.ui?.updatesByKey?.[fieldKey]?.fieldErrors || {}
+      applyFieldErrors(updateForm, rowErrors)
+      const statusEntry = state.customFieldSchema.ui?.updatesByKey?.[fieldKey]
+      if (statusEntry?.message) setFormFeedback(updateForm, statusEntry.message, statusEntry.status === 'error' ? 'error' : 'success')
+      const deleteEntry = state.customFieldSchema.ui?.deleteByKey?.[fieldKey]
+      if (deleteEntry?.status === 'error' && deleteEntry?.message) setFormFeedback(updateForm, deleteEntry.message, 'error')
+      if (deleteEntry?.status === 'success' && deleteEntry?.message) setFormFeedback(updateForm, deleteEntry.message, 'success')
+    })
+    const bulkConfirmForm = document.querySelector('#custom-field-bulk-confirm-form')
+    if (bulkConfirmForm && state.customFieldSchema.ui?.bulk?.confirmMessage) {
+      setFormFeedback(
+        bulkConfirmForm,
+        state.customFieldSchema.ui.bulk.confirmMessage,
+        state.customFieldSchema.ui.bulk.confirmStatus === 'error' ? 'error' : 'success'
+      )
+    }
+  }
+  applyPersistedAdminUiState()
+
   document.querySelector('#custom-field-create-form')?.addEventListener('submit', async (event) => {
     event.preventDefault()
     if (!canManage) return
     const form = event.currentTarget
+    state.customFieldSchema.ui.create = { status: '', message: '', fieldErrors: {} }
     clearFormFeedback(form)
     applyFieldErrors(form, {})
     const formData = new FormData(form)
@@ -4652,7 +4778,12 @@ async function renderCustomFieldsAdmin() {
     )
     applyFieldErrors(form, validation.fieldErrors)
     if (Object.keys(validation.fieldErrors).length) {
-      setFormFeedback(form, Object.values(validation.fieldErrors)[0])
+      state.customFieldSchema.ui.create = {
+        status: 'error',
+        message: Object.values(validation.fieldErrors)[0],
+        fieldErrors: validation.fieldErrors
+      }
+      setFormFeedback(form, state.customFieldSchema.ui.create.message)
       return
     }
     const previousSchema = structuredClone(state.customFieldSchema)
@@ -4660,20 +4791,29 @@ async function renderCustomFieldsAdmin() {
     state.customFieldSchema.fields = [...(state.customFieldSchema.fields || []), optimisticField]
     state.customFieldSchema.updatedAt = new Date().toISOString()
     state.customFieldSchema.lastError = ''
-    setFormFeedback(form, 'Creating custom field…', 'success')
+    state.customFieldSchema.ui.create = { status: 'pending', message: 'Pending: creating custom field…', fieldErrors: {} }
+    setFormFeedback(form, state.customFieldSchema.ui.create.message, 'success')
+    await renderCustomFieldsAdmin()
     try {
       await request(routes.profileCustomFieldSchema(), {
         method: 'POST',
         body: JSON.stringify(validation.payload)
       })
-      setFormFeedback(form, 'Custom field created.', 'success')
+      state.customFieldSchema.ui.create = { status: 'success', message: 'Success: custom field created.', fieldErrors: {} }
       state.customFieldSchema.fetched = false
       await refreshSelects()
       await renderCustomFieldsAdmin()
     } catch (error) {
       state.customFieldSchema = previousSchema
-      applyFieldErrors(form, error?.details?.fieldErrors || {})
-      setFormFeedback(form, normalizeApiError(error, 'create custom field schema'))
+      state.customFieldSchema.ui = state.customFieldSchema.ui || defaultCustomFieldAdminUiState()
+      const serverFieldErrors = error?.details?.fieldErrors || {}
+      state.customFieldSchema.ui.create = {
+        status: 'error',
+        message: `Error: ${normalizeApiError(error, 'create custom field schema')}`,
+        fieldErrors: serverFieldErrors
+      }
+      applyFieldErrors(form, serverFieldErrors)
+      setFormFeedback(form, state.customFieldSchema.ui.create.message)
     }
   })
   const createForm = document.querySelector('#custom-field-create-form')
@@ -4685,13 +4825,21 @@ async function renderCustomFieldsAdmin() {
     event.preventDefault()
     if (!canManage) return
     const form = event.currentTarget
+    state.customFieldSchema.ui.bulk = { status: '', message: '', rowErrorsByKey: {}, confirmStatus: '', confirmMessage: '' }
     clearFormFeedback(form)
     state.customFieldSchema.bulkPreview = null
     document.querySelectorAll('[data-custom-field-update]').forEach((updateForm) => applyFieldErrors(updateForm, {}))
     const formData = new FormData(form)
     const parsed = parseBulkRows(formData.get('bulkRows'))
     if (parsed.parseError) {
-      setFormFeedback(form, parsed.parseError)
+      state.customFieldSchema.ui.bulk = {
+        status: 'error',
+        message: `Error: ${parsed.parseError}`,
+        rowErrorsByKey: {},
+        confirmStatus: '',
+        confirmMessage: ''
+      }
+      setFormFeedback(form, state.customFieldSchema.ui.bulk.message)
       return
     }
     const preparedRows = parsed.rows.map((row) => {
@@ -4708,37 +4856,71 @@ async function renderCustomFieldsAdmin() {
       if (duplicateKeys.has(row.payload.key)) row.fieldErrors.key = 'Duplicate key in bulk payload.'
     })
     const hasClientErrors = preparedRows.some((row) => Object.keys(row.fieldErrors).length)
+    const rowErrorsByKey = {}
     preparedRows.forEach((row) => {
       const targetForm = Array.from(document.querySelectorAll('[data-custom-field-update]')).find(
         (entry) => entry.dataset.customFieldUpdate === row.payload.key
       )
       if (targetForm) applyFieldErrors(targetForm, row.fieldErrors)
+      if (Object.keys(row.fieldErrors).length && row.payload.key) rowErrorsByKey[row.payload.key] = row.fieldErrors
     })
     if (hasClientErrors) {
-      setFormFeedback(form, 'Bulk edit contains validation errors. Fix highlighted rows and retry.')
+      state.customFieldSchema.ui.bulk = {
+        status: 'error',
+        message: 'Error: bulk edit contains validation errors. Fix highlighted rows and retry.',
+        rowErrorsByKey,
+        confirmStatus: '',
+        confirmMessage: ''
+      }
+      setFormFeedback(form, state.customFieldSchema.ui.bulk.message)
       return
     }
+    state.customFieldSchema.ui.bulk = {
+      status: 'pending-preview',
+      message: 'Pending: generating bulk preview…',
+      rowErrorsByKey: {},
+      confirmStatus: '',
+      confirmMessage: ''
+    }
+    await renderCustomFieldsAdmin()
     const dryRun = await request(routes.profileCustomFieldSchema({ dryRun: true }), {
       method: 'POST',
       body: JSON.stringify({ rows: preparedRows.map((row) => row.payload) })
     })
     if (!dryRun.valid) {
+      const serverRowErrorsByKey = {}
       dryRun.validation.forEach((entry) => {
         const targetForm = Array.from(document.querySelectorAll('[data-custom-field-update]')).find(
           (rowForm) => rowForm.dataset.customFieldUpdate === entry.key
         )
         if (targetForm) applyFieldErrors(targetForm, entry.fieldErrors || {})
+        if (entry.key) serverRowErrorsByKey[entry.key] = entry.fieldErrors || {}
       })
-      setFormFeedback(form, 'Bulk edit contains server validation errors. Fix highlighted rows and retry.')
+      state.customFieldSchema.ui.bulk = {
+        status: 'error',
+        message: 'Error: bulk edit contains server validation errors. Fix highlighted rows and retry.',
+        rowErrorsByKey: serverRowErrorsByKey,
+        confirmStatus: '',
+        confirmMessage: ''
+      }
+      setFormFeedback(form, state.customFieldSchema.ui.bulk.message)
       return
     }
     state.customFieldSchema.bulkPreview = { ...dryRun, rawRows: String(formData.get('bulkRows') || '') }
-    setFormFeedback(form, 'Preview generated. Confirm to persist changes.', 'success')
+    state.customFieldSchema.ui.bulk = {
+      status: 'success',
+      message: 'Success: preview generated. Confirm to persist changes.',
+      rowErrorsByKey: {},
+      confirmStatus: '',
+      confirmMessage: ''
+    }
+    setFormFeedback(form, state.customFieldSchema.ui.bulk.message, 'success')
     await renderCustomFieldsAdmin()
   })
 
   document.querySelector('#custom-field-bulk-cancel-preview')?.addEventListener('click', async () => {
     state.customFieldSchema.bulkPreview = null
+    state.customFieldSchema.ui.bulk = { status: '', message: '', rowErrorsByKey: {}, confirmStatus: '', confirmMessage: '' }
     await renderCustomFieldsAdmin()
   })
 
@@ -4749,7 +4931,12 @@ async function renderCustomFieldsAdmin() {
     clearFormFeedback(form)
     const preview = state.customFieldSchema.bulkPreview
     const previousSchema = structuredClone(state.customFieldSchema)
-    setFormFeedback(form, 'Applying confirmed schema changes…', 'success')
+    state.customFieldSchema.ui.bulk = state.customFieldSchema.ui.bulk || {}
+    state.customFieldSchema.ui.bulk.status = 'pending-confirm'
+    state.customFieldSchema.ui.bulk.confirmStatus = 'pending'
+    state.customFieldSchema.ui.bulk.confirmMessage = 'Pending: applying confirmed schema changes…'
+    setFormFeedback(form, state.customFieldSchema.ui.bulk.confirmMessage, 'success')
+    await renderCustomFieldsAdmin()
     try {
       for (const field of preview.diff.added || []) {
         await request(routes.profileCustomFieldSchema(), { method: 'POST', body: JSON.stringify(field) })
@@ -4766,10 +4953,21 @@ async function renderCustomFieldsAdmin() {
     } catch (error) {
       state.customFieldSchema = previousSchema
       state.customFieldSchema.bulkPreview = preview
-      setFormFeedback(form, normalizeApiError(error, 'apply bulk schema changes'))
+      state.customFieldSchema.ui.bulk = state.customFieldSchema.ui.bulk || {}
+      state.customFieldSchema.ui.bulk.status = 'error'
+      state.customFieldSchema.ui.bulk.confirmStatus = 'error'
+      state.customFieldSchema.ui.bulk.confirmMessage = `Error: ${normalizeApiError(error, 'apply bulk schema changes')}`
+      setFormFeedback(form, state.customFieldSchema.ui.bulk.confirmMessage)
       return
     }
     state.customFieldSchema.bulkPreview = null
+    state.customFieldSchema.ui.bulk = {
+      status: 'success',
+      message: 'Success: preview confirmed.',
+      rowErrorsByKey: {},
+      confirmStatus: 'success',
+      confirmMessage: 'Success: bulk schema changes saved.'
+    }
     state.customFieldSchema.fetched = false
     await refreshSelects()
     setFlash('success', 'Bulk schema changes saved.')
@@ -4782,9 +4980,11 @@ async function renderCustomFieldsAdmin() {
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
       if (!canManage) return
+      state.customFieldSchema.ui.updatesByKey = state.customFieldSchema.ui.updatesByKey || {}
       clearFormFeedback(form)
       applyFieldErrors(form, {})
       const fieldKey = form.dataset.customFieldUpdate
+      state.customFieldSchema.ui.updatesByKey[fieldKey] = { status: '', message: '', fieldErrors: {} }
       const formData = new FormData(form)
       const validation = validateCustomFieldInput(
         {
@@ -4797,7 +4997,12 @@ async function renderCustomFieldsAdmin() {
       )
       applyFieldErrors(form, validation.fieldErrors)
       if (Object.keys(validation.fieldErrors).length) {
-        setFormFeedback(form, Object.values(validation.fieldErrors)[0])
+        state.customFieldSchema.ui.updatesByKey[fieldKey] = {
+          status: 'error',
+          message: `Error: ${Object.values(validation.fieldErrors)[0]}`,
+          fieldErrors: validation.fieldErrors
+        }
+        setFormFeedback(form, state.customFieldSchema.ui.updatesByKey[fieldKey].message)
         return
       }
       const previousSchema = structuredClone(state.customFieldSchema)
@@ -4805,20 +5010,33 @@ async function renderCustomFieldsAdmin() {
         field.key === fieldKey ? { ...field, ...validation.payload, key: fieldKey } : field
       )
       state.customFieldSchema.updatedAt = new Date().toISOString()
-      setFormFeedback(form, `Updating ${fieldKey}…`, 'success')
+      state.customFieldSchema.ui.updatesByKey[fieldKey] = { status: 'pending', message: `Pending: updating ${fieldKey}…`, fieldErrors: {} }
+      setFormFeedback(form, state.customFieldSchema.ui.updatesByKey[fieldKey].message, 'success')
+      await renderCustomFieldsAdmin()
       try {
         await request(routes.profileCustomFieldSchemaField(fieldKey), {
           method: 'PATCH',
           body: JSON.stringify(validation.payload)
         })
-        setFormFeedback(form, `Custom field ${fieldKey} updated.`, 'success')
+        state.customFieldSchema.ui.updatesByKey[fieldKey] = {
+          status: 'success',
+          message: `Success: custom field ${fieldKey} updated.`,
+          fieldErrors: {}
+        }
         state.customFieldSchema.fetched = false
         await refreshSelects()
         await renderCustomFieldsAdmin()
       } catch (error) {
         state.customFieldSchema = previousSchema
-        applyFieldErrors(form, error?.details?.fieldErrors || {})
-        setFormFeedback(form, normalizeApiError(error, `update custom field ${fieldKey}`))
+        state.customFieldSchema.ui = state.customFieldSchema.ui || defaultCustomFieldAdminUiState()
+        const serverFieldErrors = error?.details?.fieldErrors || {}
+        state.customFieldSchema.ui.updatesByKey[fieldKey] = {
+          status: 'error',
+          message: `Error: ${normalizeApiError(error, `update custom field ${fieldKey}`)}`,
+          fieldErrors: serverFieldErrors
+        }
+        applyFieldErrors(form, serverFieldErrors)
+        setFormFeedback(form, state.customFieldSchema.ui.updatesByKey[fieldKey].message)
       }
     })
   })
@@ -4827,20 +5045,28 @@ async function renderCustomFieldsAdmin() {
     button.addEventListener('click', async () => {
       if (!canManage) return
       const fieldKey = button.dataset.customFieldDelete
+      state.customFieldSchema.ui.deleteByKey = state.customFieldSchema.ui.deleteByKey || {}
+      state.customFieldSchema.ui.deleteByKey[fieldKey] = { status: 'pending', message: `Pending: deleting custom field ${fieldKey}…` }
       const previousSchema = structuredClone(state.customFieldSchema)
       state.customFieldSchema.fields = (state.customFieldSchema.fields || []).filter((field) => field.key !== fieldKey)
       state.customFieldSchema.updatedAt = new Date().toISOString()
-      setFlash('success', `Deleting custom field ${fieldKey}…`)
+      setFlash('success', `Pending: deleting custom field ${fieldKey}…`)
       await renderCustomFieldsAdmin()
       try {
         await request(routes.profileCustomFieldSchemaField(fieldKey), { method: 'DELETE' })
-        setFlash('success', `Custom field ${fieldKey} deleted.`)
+        state.customFieldSchema.ui.deleteByKey[fieldKey] = { status: 'success', message: `Success: custom field ${fieldKey} deleted.` }
+        setFlash('success', `Success: custom field ${fieldKey} deleted.`)
         state.customFieldSchema.fetched = false
         await refreshSelects()
         await renderCustomFieldsAdmin()
       } catch (error) {
         state.customFieldSchema = previousSchema
-        setFlash('error', normalizeApiError(error, `delete custom field ${fieldKey}`))
+        state.customFieldSchema.ui = state.customFieldSchema.ui || defaultCustomFieldAdminUiState()
+        state.customFieldSchema.ui.deleteByKey[fieldKey] = {
+          status: 'error',
+          message: `Error: ${normalizeApiError(error, `delete custom field ${fieldKey}`)}`
+        }
+        setFlash('error', state.customFieldSchema.ui.deleteByKey[fieldKey].message)
         await renderCustomFieldsAdmin()
       }
     })

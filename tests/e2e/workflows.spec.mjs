@@ -128,20 +128,25 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   await page.getByRole('button', { name: '2. Extraction' }).click()
   await expect(page.getByText('Extracted fields 1')).toBeVisible()
   await page.locator('#jump-to-unmapped-extracted').click()
+  await expect(page.getByRole('button', { name: '3. Mapping' })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.locator('[data-mapping-filter="unmapped"][aria-pressed="true"]')).toBeVisible()
-  await page.getByRole('button', { name: '3. Mapping' }).click()
   await page.locator('[data-mapping-filter="required-only"]').click()
   await expect(page.locator('#mapping-row-0')).toBeVisible()
   await expect(page.locator('[data-apply-suggestion-row="0"]')).toBeVisible()
 
   await page.getByRole('button', { name: '5. Publish' }).click()
+  await expect(page.locator('#publish-template')).toBeDisabled()
   await page.locator('#run-publish-preflight').click()
   await expect(page.getByText('Publish preflight found 1 schema issue(s).')).toBeVisible()
   await page.locator('[data-preflight-rowindex="0"]').click()
+  await expect(page.getByRole('button', { name: '3. Mapping' })).toHaveAttribute('aria-pressed', 'true')
   await expect(page.locator('#inspector-sourcePath')).toBeFocused()
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('profile.unknownPath')
 
-  await page.getByRole('button', { name: '3. Mapping' }).click()
+  await page.locator('#inspector-reset-source-path').click()
+  await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
+  await page.locator('#inspector-reset-source-path-suggested').click()
+  await expect(page.locator('#inspector-sourcePath')).toHaveValue('profile.firstName')
   await page.locator('#inspector-reset-source-path').click()
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
   await page.locator('#clear-unresolved-rows').click()
@@ -159,57 +164,59 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   await page.getByRole('button', { name: '5. Publish' }).click()
   await page.locator('#run-publish-preflight').click()
   await expect(page.getByText('Publish preflight passed with no schema validation issues.')).toBeVisible()
+  await expect(page.locator('#publish-template')).toBeEnabled()
   await page.locator('#publish-template').click()
   await expect(page.getByText('Templates: Template published.')).toBeVisible()
 })
 
-test('@release-blocking custom-field schema CRUD supports profile usage paths', async ({ page, seededRunId, cleanupActions }) => {
+test('@release-blocking custom-field schema CRUD states surface in admin and propagate to profile create/edit UIs', async ({
+  page,
+  seededRunId,
+  cleanupActions
+}) => {
   await waitForAppReady(page)
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'schema')
   await signInFromUi(page, email, password)
 
-  const fieldKey = `custom-field-${seededRunId}`
-  const createResponse = await page.request.post('/api/profiles/custom-fields/schema', {
-    data: {
-      key: fieldKey,
-      type: 'text',
-      label: 'Custom Segment',
-      required: true
-    }
-  })
-  expect(createResponse.status()).toBe(201)
+  const fieldKey = `custom_field_${seededRunId.replace(/[^a-z0-9_]/gi, '_')}`
+  await page.getByRole('button', { name: 'Custom Fields' }).click()
+  await expect(page.getByRole('heading', { name: 'Custom Field Schema' })).toBeVisible()
+  await page.locator('#custom-field-create-form input[name="key"]').fill(fieldKey)
+  await page.locator('#custom-field-create-form input[name="label"]').fill('Custom Segment')
+  await page.locator('#custom-field-create-form button[type="submit"]').click()
+  await expect(page.locator('#custom-field-create-form [data-form-feedback]')).toContainText('Success: custom field created.')
+  await expect(page.getByText(fieldKey)).toBeVisible()
+
+  await page.locator(`[data-custom-field-update="${fieldKey}"] input[name="label"]`).fill('Custom Score')
+  await page.locator(`[data-custom-field-update="${fieldKey}"] select[name="type"]`).selectOption('number')
+  await page.locator(`[data-custom-field-update="${fieldKey}"] button[type="submit"]`).click()
+  await expect(page.locator(`[data-custom-field-update="${fieldKey}"] [data-form-feedback]`)).toContainText(
+    `Success: custom field ${fieldKey} updated.`
+  )
 
   cleanupActions.push(async () => {
     await page.request.delete(`/api/profiles/custom-fields/schema/${fieldKey}`).catch(() => {})
   })
-
-  const updateResponse = await page.request.patch(`/api/profiles/custom-fields/schema/${fieldKey}`, {
-    data: { required: false, metadata: { category: 'household' } }
-  })
-  expect(updateResponse.ok()).toBeTruthy()
-
-  const schemaResponse = await page.request.get('/api/profiles/custom-fields/schema')
-  expect(schemaResponse.ok()).toBeTruthy()
-  const schema = await schemaResponse.json()
-  const updatedField = schema.fields.find((field) => field.key === fieldKey)
-  expect(updatedField).toBeTruthy()
-  expect(updatedField.required).toBe(false)
 
   const profileResponse = await page.request.post('/api/profiles', {
     data: {
       kind: 'client',
       firstName: 'Custom',
       lastName: 'Field',
-      extensions: {
-        schemaVersion: '1.0.0',
-        schema: { properties: { [fieldKey]: { type: 'string' } } },
-        values: { [fieldKey]: 'Platinum segment' }
-      }
+      email: deterministicEmail(seededRunId, 'schema-profile')
     }
   })
   expect(profileResponse.status()).toBe(201)
   const profile = await profileResponse.json()
-  expect(profile.extensions?.values?.[fieldKey]).toBe('Platinum segment')
+
+  await page.getByRole('button', { name: 'Dashboard' }).click()
+  await expect(page.locator(`#profile-custom-fields [name="customField__${fieldKey}"]`)).toBeVisible()
+  await expect(page.locator(`#profile-custom-fields [name="customField__${fieldKey}"]`)).toHaveAttribute('type', 'number')
+
+  await page.getByRole('button', { name: 'Clients' }).click()
+  await page.locator(`[data-edit-profile="${profile.id}"]`).click()
+  await expect(page.locator(`#profile-edit-${profile.id}-${fieldKey}`)).toBeVisible()
+  await expect(page.locator(`#profile-edit-${profile.id}-${fieldKey}`)).toHaveAttribute('type', 'number')
 
   cleanupActions.push(async () => {
     await page.request.delete(`/api/profiles/${profile.id}`).catch(() => {})

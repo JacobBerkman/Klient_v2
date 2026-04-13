@@ -44,6 +44,7 @@ export function runCommandProcess({
     let timeoutId = null
     let closeFallbackId = null
     let exitResult = null
+    const stdioMode = Array.isArray(stdio) ? stdio.join(',') : String(stdio)
 
     const cleanup = () => {
       child.removeListener('error', onError)
@@ -118,7 +119,12 @@ export function runCommandProcess({
     if (timeoutMs > 0) {
       timeoutId = setTimeout(() => {
         child.kill('SIGTERM')
-        settle(reject, new Error(`${displayLabel} timed out after ${timeoutMs}ms`))
+        settle(
+          reject,
+          new Error(
+            `${displayLabel} timed out after ${timeoutMs}ms (stdio=${stdioMode}; waiting for ${shouldPreferClose ? 'close' : 'exit'})`
+          )
+        )
       }, timeoutMs)
       timeoutId.unref()
     }
