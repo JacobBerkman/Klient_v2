@@ -69,6 +69,24 @@ test('release-blocking and hard-release e2e jobs share strict env and report wir
   }
 })
 
+test('release-blocking and hard-release e2e jobs install Playwright before executing blocking command', () => {
+  const workflow = readWorkflow()
+  const e2eJob = getJobBlock(workflow, 'e2e_release_blocking')
+  const hardReleaseJob = getJobBlock(workflow, 'hard_release_gate')
+
+  const installInE2E = e2eJob.indexOf('npx playwright install --with-deps chromium')
+  const executeE2E = e2eJob.indexOf("npm run test:e2e")
+  assert.ok(installInE2E >= 0, 'missing Playwright install in e2e_release_blocking')
+  assert.ok(executeE2E >= 0, 'missing npm run test:e2e in e2e_release_blocking')
+  assert.ok(installInE2E < executeE2E, 'Playwright install must run before npm run test:e2e')
+
+  const installInHardRelease = hardReleaseJob.indexOf('npx playwright install --with-deps chromium')
+  const executeHardRelease = hardReleaseJob.indexOf('npm run validate:master')
+  assert.ok(installInHardRelease >= 0, 'missing Playwright install in hard_release_gate')
+  assert.ok(executeHardRelease >= 0, 'missing npm run validate:master in hard_release_gate')
+  assert.ok(installInHardRelease < executeHardRelease, 'Playwright install must run before npm run validate:master')
+})
+
 test('release-blocking and hard-release upload common Playwright artifact paths', () => {
   const workflow = readWorkflow()
   const e2eJob = getJobBlock(workflow, 'e2e_release_blocking')

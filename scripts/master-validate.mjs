@@ -141,6 +141,10 @@ function envForStep(step) {
   if (step.evidenceFile && step.name === 'Smoke test') env.RELEASE_EVIDENCE_SMOKE_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'E2E browser checks') {
     env.RELEASE_EVIDENCE_E2E_FILE = step.evidenceFile
+    env.RELEASE_E2E_STRICT_MODE = '1'
+    env.RELEASE_E2E_ALLOW_FALLBACK = '0'
+    env.PLAYWRIGHT_JSON_REPORT = resolve(defaultEvidenceDir, 'playwright-report.json')
+    env.RELEASE_E2E_PLAYWRIGHT_REPORT = env.PLAYWRIGHT_JSON_REPORT
   }
   if (step.evidenceFile && step.name === 'Security checks') env.RELEASE_EVIDENCE_SECURITY_FILE = step.evidenceFile
   return env
@@ -200,7 +204,7 @@ function buildFailureMessage({ failureError, failedStep }) {
 
   const evidenceLocation = failedStep.evidenceFile || resolve(defaultEvidenceDir, 'e2e-summary.json')
   const remediation =
-    'Remediation hints: run `npx playwright install --with-deps chromium`, confirm Chromium is available, and rerun `npm run test:e2e`.'
+    'Remediation hints: run `npx playwright install --with-deps chromium`, confirm Chromium is available, verify RELEASE_E2E_STRICT_MODE=1 and RELEASE_E2E_ALLOW_FALLBACK=0, and rerun `npm run test:e2e`.'
 
   return `${defaultMessage}\nE2E browser checks failed. ${remediation}\nEvidence file: ${evidenceLocation}`
 }

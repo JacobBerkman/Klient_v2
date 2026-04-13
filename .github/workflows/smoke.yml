@@ -210,7 +210,7 @@ jobs:
 
       - run: npm ci
 
-      - name: Install Playwright browser
+      - name: Install Playwright browser (required before release-blocking E2E)
         run: npx playwright install --with-deps chromium
 
       - name: Run E2E gate command
@@ -303,7 +303,7 @@ jobs:
 
       - run: npm ci
 
-      - name: Install Playwright browser
+      - name: Install Playwright browser (required before release-blocking E2E)
         run: npx playwright install --with-deps chromium
 
       - name: Run canonical hard release gate
