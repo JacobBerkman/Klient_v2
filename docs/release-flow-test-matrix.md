@@ -18,6 +18,17 @@ Define the minimum deterministic automation matrix that must pass before freezin
 2. Keep smoke coverage in `npm run test:smoke` as the cross-module path check.
 3. Use `npm run test:integration` once as the aggregated integration gate; do not add a second full integration pass unless a failure requires rerun after a fix.
 
+## Operator runbook notes (mapping/preflight diagnostics)
+
+Use this when triaging template publish readiness evidence during RC validation:
+
+- In **Step 2 · Extraction Summary**, confirm extracted/mapped/unmapped counts and use **Review unmapped in mapping** to jump directly into unresolved rows.
+- In **Step 3 · Mapping**, use per-row suggestion confidence and **Apply** actions to capture deterministic remediation evidence for source-path fixes.
+- For source-path/transform rollback proof, use **Clear source path** and **Reset transform to none** in **Field Inspector**, then rerun Save + Preview.
+- In **Step 5 · Publish**, use row jump actions from preflight issue lists/remediation rows to close the “issue found → row fixed → preflight rerun” loop.
+- Attach the result of the deterministic flow test command below to the release handoff evidence set:
+  - `npx playwright test tests/e2e/workflows.spec.mjs --grep "template upload/map/preflight/publish loop executes with issue remediation controls"`
+
 ## Cross-cutting regression gates
 
 Run these after targeted preserved-flow checks:

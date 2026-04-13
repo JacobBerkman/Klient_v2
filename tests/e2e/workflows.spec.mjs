@@ -1,22 +1,8 @@
 import { test, expect, registerAdminViaApi, signInFromUi, waitForAppReady } from './bootstrap.mjs'
 
-test('@release-blocking admin bootstrap registration and login remain stable', async ({ page, seededRunId }) => {
-  const seed = `${seededRunId}-bootstrap`
-  const email = `${seed}@e2e.test`
-  const password = 'StrongPass123!'
-
-async function signInFromUi(page, email, password) {
-  await page.goto('/')
-  await page.getByRole('textbox', { name: 'Email' }).fill(email)
-  await page.getByRole('textbox', { name: 'Password' }).fill(password)
-  await page.locator('[data-e2e="login-submit"]').click()
-  await expect(page.locator('[data-e2e="auth-status"]')).toContainText('Signed in successfully.')
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
-}
-
-async function inviteAndAcceptAdvisor(page, testInfo, label = 'advisor') {
-  const seed = uniqueSeed(testInfo, label)
-  const email = `${seed}@e2e.test`
+async function inviteAndAcceptAdvisor(page, seed, label = 'advisor') {
+  const safeSeed = `${seed}-${label}`
+  const email = `${safeSeed}@e2e.test`
   const password = 'StrongPass123!'
   const inviteResponse = await page.request.post('/api/invites', {
     data: { email, role: 'advisor' }
@@ -35,8 +21,8 @@ async function inviteAndAcceptAdvisor(page, testInfo, label = 'advisor') {
   return { email, password }
 }
 
-test('admin bootstrap registration and login remain stable', async ({ page }, testInfo) => {
-  const seed = uniqueSeed(testInfo, 'bootstrap')
+test('admin bootstrap registration and login remain stable', async ({ page, seededRunId }) => {
+  const seed = `${seededRunId}-bootstrap`
   const email = `${seed}@e2e.test`
   const password = 'StrongPass123!'
 
@@ -58,13 +44,14 @@ test('admin bootstrap registration and login remain stable', async ({ page }, te
 test('template upload/map/preflight/publish loop executes with issue remediation controls', async ({ page, seededRunId }) => {
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'template')
   await signInFromUi(page, email, password)
+  const stableToken = seededRunId.replace(/[^a-z0-9-]/gi, '').slice(0, 24)
 
   const profileResponse = await page.request.post('/api/profiles', {
     data: {
       kind: 'client',
       firstName: 'Template',
       lastName: 'Preview',
-      email: `template-preview-${Date.now()}@e2e.test`
+      email: `template-preview-${stableToken}@e2e.test`
     }
   })
   const profile = await profileResponse.json()
@@ -72,7 +59,7 @@ test('template upload/map/preflight/publish loop executes with issue remediation
 
   const formTemplateResponse = await page.request.post('/api/forms/templates', {
     data: {
-      name: `Template Preview Source ${Date.now()}`,
+      name: `Template Preview Source ${stableToken}`,
       sections: [
         {
           title: 'Client goals',
@@ -96,7 +83,7 @@ test('template upload/map/preflight/publish loop executes with issue remediation
 
   const autoBuildResponse = await page.request.post('/api/templates/auto-build', {
     data: {
-      name: `Auto Build Template ${Date.now()}`,
+      name: `Auto Build Template ${stableToken}`,
       fileName: 'auto-build.pdf',
       fileBytes: [0x25, 0x50, 0x44, 0x46, 0x2d]
     }
@@ -107,7 +94,7 @@ test('template upload/map/preflight/publish loop executes with issue remediation
 
   const remediationTemplateResponse = await page.request.post('/api/templates', {
     data: {
-      name: `Preflight Loop Template ${Date.now()}`,
+      name: `Preflight Loop Template ${stableToken}`,
       extractedFields: ['firstName'],
       mappings: [{ pdfField: 'firstName', fieldLabel: 'First Name', sourcePath: 'profile.unknownPath', required: true }]
     }
@@ -118,9 +105,14 @@ test('template upload/map/preflight/publish loop executes with issue remediation
   await page.goto('/')
   await page.getByRole('button', { name: 'Templates' }).click()
   await page.locator('#template-select').selectOption(remediationTemplate.id)
+  await page.getByRole('button', { name: '2. Extraction' }).click()
+  await expect(page.getByText('Extracted fields 1')).toBeVisible()
+  await page.locator('#jump-to-unmapped-extracted').click()
+  await expect(page.locator('[data-mapping-filter="unmapped"][aria-pressed="true"]')).toBeVisible()
   await page.getByRole('button', { name: '3. Mapping' }).click()
   await page.locator('[data-mapping-filter="required-only"]').click()
   await expect(page.locator('#mapping-row-0')).toBeVisible()
+  await expect(page.locator('[data-apply-suggestion-row="0"]')).toBeVisible()
 
   await page.getByRole('button', { name: '5. Publish' }).click()
   await page.locator('#run-publish-preflight').click()
@@ -130,11 +122,18 @@ test('template upload/map/preflight/publish loop executes with issue remediation
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('profile.unknownPath')
 
   await page.getByRole('button', { name: '3. Mapping' }).click()
+  await page.locator('#inspector-reset-source-path').click()
+  await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
   await page.locator('#clear-unresolved-rows').click()
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
   await page.locator('#auto-map-similar').click()
   await expect(page.getByText('Auto-mapped 1 row(s) by name similarity.')).toBeVisible()
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('profile.firstName')
+  await page.selectOption('#inspector-transformType', 'expression')
+  await page.fill('#inspector-transformExpression', 'value')
+  await page.click('#inspector-reset-transform')
+  await expect(page.locator('#inspector-transformType')).toHaveValue('')
+  await expect(page.locator('#inspector-transformExpression')).toHaveValue('')
   await page.locator('#save-mappings').click()
 
   await page.getByRole('button', { name: '5. Publish' }).click()
@@ -191,8 +190,8 @@ test('custom-field schema CRUD supports profile usage paths', async ({ page, see
   expect(deleteResponse.ok()).toBeTruthy()
 })
 
-test('admin-to-operator custom-field workflow preserves readonly UI and server RBAC enforcement', async ({ page }, testInfo) => {
-  const { email, password } = await registerAdmin(page, testInfo, 'admin-operator')
+test('admin-to-operator custom-field workflow preserves readonly UI and server RBAC enforcement', async ({ page, seededRunId }) => {
+  const { email, password } = await registerAdminViaApi(page, seededRunId, 'admin-operator')
   await signInFromUi(page, email, password)
   const fieldKey = `workflow_field_${Date.now()}`
   const createResponse = await page.request.post('/api/profiles/custom-fields/schema', {
@@ -205,7 +204,7 @@ test('admin-to-operator custom-field workflow preserves readonly UI and server R
   })
   expect(createResponse.status()).toBe(201)
 
-  const advisorCredentials = await inviteAndAcceptAdvisor(page, testInfo, 'operator')
+  const advisorCredentials = await inviteAndAcceptAdvisor(page, seededRunId, 'operator')
   await page.request.post('/api/logout')
   await signInFromUi(page, advisorCredentials.email, advisorCredentials.password)
 
@@ -221,8 +220,8 @@ test('admin-to-operator custom-field workflow preserves readonly UI and server R
   expect(blockedCreateResponse.status()).toBe(403)
 })
 
-test('portal draft then submit lifecycle is stable', async ({ page }, testInfo) => {
-  const { email, password } = await registerAdmin(page, testInfo, 'portal')
+test('portal draft then submit lifecycle is stable', async ({ page, seededRunId }) => {
+  const { email, password } = await registerAdminViaApi(page, seededRunId, 'portal')
   await signInFromUi(page, email, password)
 
   const profileResponse = await page.request.post('/api/profiles', {
