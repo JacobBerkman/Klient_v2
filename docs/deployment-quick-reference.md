@@ -140,6 +140,21 @@ npm run check:release-docs
 npm run check:release-gate-commands
 ```
 
+### 1a) Canonical strict hard-gate invocation (must match CI)
+```bash
+RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master
+```
+
+### 1b) Canonical strict release-blocking E2E invocation (CI gate job contract)
+```bash
+RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e
+```
+
+Evidence validation mode schema markers (used by `scripts/validate-release-evidence.mjs`):
+- `validationMode=local`
+- `validationMode=ci`
+- `validationMode=unpacked-artifact`
+
 ### 2) Preflight (must pass before deploy)
 ```bash
 npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight

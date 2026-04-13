@@ -56,6 +56,23 @@ npm run check:release-docs
 npm run check:release-gate-commands
 ```
 
+Canonical strict hard-gate execution (CI + operator preflight):
+
+```bash
+RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master
+```
+
+Canonical strict release-blocking E2E command (CI gate job):
+
+```bash
+RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e
+```
+
+Evidence validation mode schema markers (must stay contract-identical across docs/scripts/tests):
+- `validationMode=local`
+- `validationMode=ci`
+- `validationMode=unpacked-artifact`
+
 Canonical gate artifact filenames and required evidence bundle contents are maintained in one location:
 `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
 
