@@ -28,6 +28,34 @@ test('validatePlaywrightJsonReport fails when report JSON is invalid', async () 
   await rm(resolve(reportPath, '..'), { recursive: true, force: true })
 })
 
+
+test('validatePlaywrightJsonReport fails when report JSON is empty object', async () => {
+  const reportPath = await writeTempReport('{}')
+  const validation = await validatePlaywrightJsonReport(reportPath)
+
+  assert.equal(validation.ok, false)
+  assert.deepEqual(validation.suiteNames, [])
+  assert.match(validation.artifact.reason, /contains no suite\/spec titles/)
+
+  await rm(resolve(reportPath, '..'), { recursive: true, force: true })
+})
+
+test('validatePlaywrightJsonReport fails when suites/specs are present but untitled', async () => {
+  const reportPath = await writeTempReport(
+    JSON.stringify({
+      suites: [{ specs: [{ tests: [{ status: 'passed' }] }] }],
+      specs: [{}]
+    })
+  )
+  const validation = await validatePlaywrightJsonReport(reportPath)
+
+  assert.equal(validation.ok, false)
+  assert.deepEqual(validation.suiteNames, [])
+  assert.match(validation.artifact.reason, /contains no suite\/spec titles/)
+
+  await rm(resolve(reportPath, '..'), { recursive: true, force: true })
+})
+
 test('gatePlaywrightReportOrFail finalizes failed evidence with report reason', async () => {
   const evidenceFinalizeCalls = []
   const fakeEvidence = {

@@ -15,7 +15,8 @@ export default defineConfig({
   expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,
-  retries: process.env.CI ? 2 : 0,
+  // Retries are opt-in at suite level for known transient-infra cases only.
+  retries: 0,
   ...(process.env.PLAYWRIGHT_GREP ? { grep: new RegExp(process.env.PLAYWRIGHT_GREP, 'i') } : {}),
   reporter: [['list'], ['json', { outputFile: jsonReportFile }]],
   use: {

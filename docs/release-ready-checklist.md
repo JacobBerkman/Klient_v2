@@ -6,6 +6,7 @@ Capture the release package with the standard handoff template at `docs/release-
 Use the canonical operator flow at `docs/deployment-quick-reference.md#canonical-operator-flow-exact-command-sequence` for exact preflight/deploy/postdeploy/restore commands and diagnostics triage.
 Use `docs/deployment-quick-reference.md#canonical-hard-gate-sequence-validatemaster-exact-execution-order` and `docs/deployment-quick-reference.md#deterministic-post-deploy-validation-sequence` as the canonical command ordering references.
 Use the preserved-flow mapping at `docs/release-flow-test-matrix.md` to ensure RC-critical journeys are validated with deterministic targeted tests before freeze.
+Treat `npm run test:e2e` as the canonical browser gate: strict in CI, deterministic host/port, isolated reset default, and stable Playwright JSON evidence output under the release evidence directory.
 
 ## Primary operator command (GO/NO-GO)
 Run the operator workflow (fails fast, deterministic order):
@@ -39,6 +40,8 @@ Hard gate only (legacy/manual mode):
 ```bash
 npm run validate:master
 ```
+
+`validate:master` is fail-fast by design: after syntax checks, `npm run check:conflicts` runs as a blocking guard and must fail on any merge conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) found in tracked text files or release-critical `scripts/*.mjs` files (notably `scripts/e2e-test.mjs`). Do not bypass this failure; remove markers and rerun.
 
 Gate/documentation parity precheck (required before GO/NO-GO execution and mirrored in CI):
 
@@ -75,6 +78,16 @@ Use only `docs/deployment-quick-reference.md#canonical-operator-flow-exact-comma
   - A rollback/remediation plan and expiry time for removing break-glass are documented.
 - Approvers must explicitly verify provider mode and whether any break-glass exception was used.
 
+
+## Browser gate failure remediation (canonical path)
+When `npm run test:e2e` fails, remediation must follow this order:
+
+1. Verify `artifacts/release-evidence/<release-id>/playwright-report.json` exists and is valid JSON with at least one suite/spec title.
+2. Check `artifacts/release-evidence/<release-id>/e2e-summary.json` for `executionMode`, browser status, and report artifact reason.
+3. Re-run only the failing deterministic Playwright flow (`tests/e2e/workflows.spec.mjs --grep ...`) for investigation, then re-run `npm run test:e2e`.
+4. In CI, do not use local fallback (`RELEASE_E2E_ALLOW_FALLBACK=1` is ignored when `CI=true`); fix infra or test issues and regenerate evidence.
+5. Do not proceed to GO until both artifacts are regenerated and PASS criteria are met.
+
 ## Objective pass/fail criteria
 
 | Gate | Owner | Evidence command | Evidence artifact target | PASS criteria | Severity if failed | Rollback trigger (SLO/SLA) |
@@ -85,7 +98,7 @@ Use only `docs/deployment-quick-reference.md#canonical-operator-flow-exact-comma
 | Smoke | Release Manager | `npm run test:smoke` | `artifacts/release-evidence/<release-id>/smoke-summary.json` | Exit code `0`; summary has `status=passed`. | **SEV-1** | Roll back if smoke journey fails twice consecutively post-deploy or any core user journey remains broken for **10 minutes**. |
 | E2E browser checks | QA Lead | `npm run test:e2e` | `artifacts/release-evidence/<release-id>/e2e-summary.json` | Exit code `0`; summary has `status=passed`; `executionMode` present; `details.artifacts.playwrightJsonReport.path` exists; `details.artifacts.playwrightJsonReport.valid=true`; `details.artifacts.playwrightJsonReport.suiteCount>=1`; Playwright JSON artifact parses successfully with collected suite/spec titles. | **SEV-1** | Roll back if core sign-in/dashboard journey fails in production or E2E evidence is missing/inconclusive. |
 | Security checks | Security Owner | `npm run test:security` | `artifacts/release-evidence/<release-id>/security-summary.json` | Exit code `0`; summary has `status=passed`. | **SEV-0/1** | Roll back immediately on auth bypass, PII exposure risk, or crypto regression (SLA/security policy breach). |
-| E2E UI contract checks | QA Lead | `npm run test:ui-contract` | `artifacts/release-evidence/<release-id>/validate-master-summary.json` | Exit code `0`; step status for UI contract checks is `passed` in validate-master summary output. | **SEV-1** | Block GO/NO-GO if UI contract assertions fail or evidence is missing. |
+| E2E UI contract checks | QA Lead | `npm run test:ui-contract` | `artifacts/release-evidence/<release-id>/validate-master-summary.json` | Exit code `0`; step status for UI contract checks is `passed` in validate-master summary output, including custom-field typed render coverage, status/label accessibility semantics, and empty/error recovery states. | **SEV-1** | Block GO/NO-GO if UI contract assertions fail or evidence is missing. |
 | Auth provider mode verification | Security Owner + Release Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/startup-failfast.json` + `docs/release-handoff-template.md` | Production uses `AUTH_PROVIDER=oidc` or `AUTH_PROVIDER=saml`, or break-glass (`AUTH_PROVIDER=local` + `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true`) has explicit recorded approval and expiry/removal plan. | **SEV-1** | Block GO if auth mode is unverified, non-federated without approval, or exception evidence is incomplete. |
 | Branch parity | Engineering Manager | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/branch-parity.txt` | Exit code `0`; branch is merge-compatible with `main`. | **SEV-2** | No runtime rollback trigger by itself; block release until parity is restored. |
 | Backup metadata | SRE / On-call | `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` | `artifacts/release-evidence/<release-id>/backup.json` | Exit code `0`; JSON has `ok=true`, `status=succeeded`, non-empty `artifact.path`, `artifact.sizeBytes>0`, `artifact.sqliteQuickCheck=ok`. | **SEV-1** | Roll back and halt further deploys if deploy proceeds without a verified fresh backup artifact and integrity check. |
