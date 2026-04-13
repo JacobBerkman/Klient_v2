@@ -68,6 +68,10 @@ export class StoreProfileRepository extends ProfileRepository {
     const context = requireFirmContext(firmContext, { method: 'profiles.updateCustomField' })
     return this.store.updateProfileCustomField(context, fieldKey, patch)
   }
+  dryRunCustomFieldSchema(firmContext, input) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.dryRunCustomFieldSchema' })
+    return this.store.previewProfileCustomFieldSchema(context, input)
+  }
   deleteCustomField(firmContext, fieldKey) {
     const context = requireFirmContext(firmContext, { method: 'profiles.deleteCustomField' })
     return this.store.deleteProfileCustomField(context, fieldKey)

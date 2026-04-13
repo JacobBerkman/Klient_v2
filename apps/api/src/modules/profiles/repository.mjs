@@ -31,6 +31,9 @@ export class ProfileRepository {
   updateCustomField(_firmContext, _fieldKey, _patch) {
     throwRepositoryScaffoldError('ProfileRepository', 'updateCustomField')
   }
+  dryRunCustomFieldSchema(_firmContext, _input) {
+    throwRepositoryScaffoldError('ProfileRepository', 'dryRunCustomFieldSchema')
+  }
   deleteCustomField(_firmContext, _fieldKey) {
     throwRepositoryScaffoldError('ProfileRepository', 'deleteCustomField')
   }

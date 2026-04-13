@@ -75,6 +75,10 @@ export function createProfilesService({ profileRepository, policy }) {
       policy.requireGuard(user, 'canManageUsers')
       return profileRepository.updateCustomField(createFirmContext(user), fieldKey, patch)
     },
+    dryRunCustomFieldSchema(user, input) {
+      policy.requireGuard(user, 'canManageUsers')
+      return profileRepository.dryRunCustomFieldSchema(createFirmContext(user), input)
+    },
     deleteCustomField(user, fieldKey) {
       policy.requireGuard(user, 'canManageUsers')
       return profileRepository.deleteCustomField(createFirmContext(user), fieldKey)

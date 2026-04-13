@@ -74,3 +74,28 @@ test('custom field schema mutations require canManageUsers (admin only)', async 
   assert.equal(created.key, 'risk')
   assert.deepEqual(calls, [{ op: 'create', payload: { key: 'risk', type: 'text' } }])
 })
+
+test('custom field schema dry-run delegates to repository without mutation guards bypass', async () => {
+  const calls = []
+  const profileRepository = {
+    dryRunCustomFieldSchema: (_ctx, input) => {
+      calls.push(input)
+      return {
+        dryRun: true,
+        valid: true,
+        validation: [],
+        normalizedRows: input.rows || [],
+        diff: { added: [], updated: [], removed: [], unchanged: [], counts: { added: 0, updated: 0, removed: 0, unchanged: 0 } }
+      }
+    }
+  }
+  const service = createProfilesService({ profileRepository, policy: createPolicy() })
+  const admin = { id: 'admin-1', role: 'admin', firmId: 'firm-1' }
+  const advisor = { id: 'advisor-1', role: 'advisor', firmId: 'firm-1' }
+
+  assert.throws(() => service.dryRunCustomFieldSchema(advisor, { rows: [] }), /Missing permission/)
+  const result = await service.dryRunCustomFieldSchema(admin, { rows: [{ key: 'risk_tolerance', type: 'number' }] })
+  assert.equal(result.dryRun, true)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].rows[0].key, 'risk_tolerance')
+})

@@ -1006,9 +1006,12 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/profiles/custom-fields/schema' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canManageUsers')
-        const result = modules.profiles.createCustomField(user, await parseBody(req))
-        finalizeLog(201)
-        return replyJson(201, result, { 'X-Request-Id': requestId })
+        const dryRun = ['1', 'true', 'yes'].includes(String(url.searchParams.get('dryRun') || '').toLowerCase())
+        const result = dryRun
+          ? modules.profiles.dryRunCustomFieldSchema(user, await parseBody(req))
+          : modules.profiles.createCustomField(user, await parseBody(req))
+        finalizeLog(dryRun ? 200 : 201)
+        return replyJson(dryRun ? 200 : 201, result, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/profiles/custom-fields/schema/') && req.method === 'PATCH') {
         const fieldKey = pathname.split('/')[5]
