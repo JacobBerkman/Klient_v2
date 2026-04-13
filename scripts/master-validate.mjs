@@ -131,6 +131,13 @@ function envForStep(step) {
   return env
 }
 
+function timeoutForStep(step) {
+  if (step.name === 'Aggregate handoff regression') {
+    return Number.parseInt(process.env.VALIDATE_MASTER_HANDOFF_TIMEOUT_MS || '240000', 10)
+  }
+  return 0
+}
+
 async function runStep(step, index, total) {
   process.stdout.write(`\n$ ${formatCommand(step)}\n`)
 
@@ -143,7 +150,8 @@ async function runStep(step, index, total) {
       total,
       stdio: 'inherit',
       shell: process.platform === 'win32',
-      env: envForStep(step)
+      env: envForStep(step),
+      timeoutMs: timeoutForStep(step)
     })
   } catch (error) {
     const message = String(error?.message || error)
@@ -161,7 +169,17 @@ function toIsoTimestamp(dateValue) {
 
 function buildFailureMessage({ failureError, failedStep }) {
   const defaultMessage = String(failureError?.message || failureError)
-  if (!failedStep || failedStep.name !== 'E2E browser checks') {
+  if (!failedStep) {
+    return defaultMessage
+  }
+
+  if (failedStep.name === 'Aggregate handoff regression') {
+    const remediation =
+      'Remediation hints: rerun `npm run test:integration:handoff`, confirm INTEGRATION_SUITES ordering is `integration-templates.mjs,integration-exports.mjs`, and inspect `scripts/integration-aggregate-exports-handoff.mjs` timeout/error context.'
+    return `${defaultMessage}\nAggregate handoff regression failed. ${remediation}`
+  }
+
+  if (failedStep.name !== 'E2E browser checks') {
     return defaultMessage
   }
 

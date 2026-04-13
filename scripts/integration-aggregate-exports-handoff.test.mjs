@@ -14,9 +14,11 @@ test('aggregate exports handoff executes via master runner with deterministic su
   const content = readHandoffScript()
 
   assert.match(content, /const suites = \['integration-templates\.mjs', 'integration-exports\.mjs'\]/)
+  assert.match(content, /const timeoutMs = 180_000/)
   assert.match(content, /args: \['scripts\/master-integration\.mjs'\]/)
   assert.match(content, /INTEGRATION_SUITES: suites\.join\(','\)/)
-  assert.match(content, /timeoutMs: 180_000/)
+  assert.match(content, /timeoutMs/)
+  assert.match(content, /suites=\$\{suites\.join\(' -> '\)\}/)
 
   assert.doesNotMatch(content, /setTimeout\(/)
   assert.doesNotMatch(content, /<<<<<<<|>>>>>>>|=======/)

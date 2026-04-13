@@ -206,7 +206,7 @@ test('validate master skips merge parity and completes from unpacked zip-style a
     const result = await runChildProcess({
       scriptPath: resolve(unpackedRoot, 'scripts/master-validate.mjs'),
       label: 'master-validate-unpacked-artifact',
-      stdio: 'inherit',
+      stdio: ['ignore', 'pipe', 'pipe'],
       timeoutMs: 300000,
       cwd: unpackedRoot,
       env: {
