@@ -54,6 +54,34 @@ test('hard_release_gate installs Playwright before npm run validate:master', () 
   )
 })
 
+test('release-blocking and hard-release e2e jobs share strict env and report wiring', () => {
+  const workflow = readWorkflow()
+  const e2eJob = getJobBlock(workflow, 'e2e_release_blocking')
+  const hardReleaseJob = getJobBlock(workflow, 'hard_release_gate')
+
+  for (const job of [e2eJob, hardReleaseJob]) {
+    assert.match(job, /npx playwright install --with-deps chromium/)
+    assert.match(job, /export RELEASE_E2E_PLAYWRIGHT_REPORT=artifacts\/[a-z0-9-]+\/playwright-report\.json/)
+    assert.match(job, /export PLAYWRIGHT_JSON_REPORT="\$RELEASE_E2E_PLAYWRIGHT_REPORT"/)
+    assert.match(job, /RELEASE_E2E_ALLOW_FALLBACK=0/)
+    assert.match(job, /RELEASE_E2E_STRICT_MODE=1/)
+    assert.match(job, /echo "- playwright report: \$\{RELEASE_E2E_PLAYWRIGHT_REPORT\}"/)
+  }
+})
+
+test('release-blocking and hard-release upload common Playwright artifact paths', () => {
+  const workflow = readWorkflow()
+  const e2eJob = getJobBlock(workflow, 'e2e_release_blocking')
+  const hardReleaseJob = getJobBlock(workflow, 'hard_release_gate')
+
+  for (const job of [e2eJob, hardReleaseJob]) {
+    assert.match(job, /\n\s*test-results\/\*\*\n/)
+    assert.match(job, /\n\s*playwright-report\/\*\*\n/)
+    assert.match(job, /\n\s*snapshots\/\*\*\n/)
+    assert.match(job, /\n\s*tmp\/\*\*\/snapshots\/\*\*\n/)
+  }
+})
+
 test('merge_gate.needs references only existing workflow job IDs', () => {
   const workflow = readWorkflow()
   const jobIdMatches = [...workflow.matchAll(/^  ([a-z0-9_]+):$/gm)]

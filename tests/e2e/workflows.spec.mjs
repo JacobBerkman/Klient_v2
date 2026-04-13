@@ -1,33 +1,11 @@
 import {
   deterministicEmail,
-  inviteAndAcceptAdvisor,
   registerAdminViaApi,
   signInFromUi,
   test,
   expect,
   waitForAppReady
 } from './bootstrap.mjs'
-
-async function inviteAndAcceptAdvisor(page, seed, label = 'advisor') {
-  const safeSeed = `${seed}-${label}`
-  const email = `${safeSeed}@e2e.test`
-  const password = 'StrongPass123!'
-  const inviteResponse = await page.request.post('/api/invites', {
-    data: { email, role: 'advisor' }
-  })
-  expect(inviteResponse.status()).toBe(201)
-  const invite = await inviteResponse.json()
-  const acceptResponse = await page.request.post('/api/invites/accept', {
-    data: {
-      token: invite.token,
-      firstName: 'Ops',
-      lastName: 'Advisor',
-      password
-    }
-  })
-  expect(acceptResponse.ok()).toBeTruthy()
-  return { email, password }
-}
 
 test('admin bootstrap registration and login remain stable', async ({ page, seededRunId }) => {
   const seed = `${seededRunId}-bootstrap`
@@ -257,13 +235,14 @@ test('admin-to-operator custom-field workflow preserves readonly UI and server R
 test('portal draft then submit lifecycle is stable', async ({ page, seededRunId }) => {
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'portal')
   await signInFromUi(page, email, password)
+  const portalToken = seededRunId.replace(/[^a-z0-9-]/gi, '').slice(0, 24)
 
   const profileResponse = await page.request.post('/api/profiles', {
     data: {
       kind: 'client',
       firstName: 'Portal',
       lastName: 'Client',
-      email: `portal-client-${Date.now()}@e2e.test`
+      email: deterministicEmail(seededRunId, 'portal-client')
     }
   })
   const profile = await profileResponse.json()
@@ -271,7 +250,7 @@ test('portal draft then submit lifecycle is stable', async ({ page, seededRunId 
 
   const templateResponse = await page.request.post('/api/forms/templates', {
     data: {
-      name: `Portal Intake ${Date.now()}`,
+      name: `Portal Intake ${portalToken}`,
       sections: [
         {
           title: 'Goals',

@@ -11,18 +11,29 @@ const jsonReportFile =
 
 export default defineConfig({
   testDir: './tests/e2e',
-  timeout: 75_000,
+  timeout: 60_000,
   expect: { timeout: 10_000 },
   fullyParallel: false,
   workers: 1,
-  // Retries are opt-in at suite level for known transient-infra cases only.
+  forbidOnly: process.env.CI === 'true',
+  // Retries remain disabled; release gate reproducibility takes priority over flake masking.
   retries: 0,
   ...(process.env.PLAYWRIGHT_GREP ? { grep: new RegExp(process.env.PLAYWRIGHT_GREP, 'i') } : {}),
   reporter: [['list'], ['json', { outputFile: jsonReportFile }]],
+  projects: [
+    {
+      name: 'chromium',
+      use: {
+        browserName: 'chromium',
+        locale: 'en-US',
+        timezoneId: 'UTC'
+      }
+    }
+  ],
   use: {
     baseURL,
-    actionTimeout: 15_000,
-    navigationTimeout: 20_000,
+    actionTimeout: 10_000,
+    navigationTimeout: 15_000,
     trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: 'off'
