@@ -765,6 +765,8 @@ const preflight = async () => {
     env: {
       ...process.env,
       RELEASE_EVIDENCE_DIR: evidenceDir,
+      PLAYWRIGHT_JSON_REPORT: resolve(evidenceDir, 'playwright-report.json'),
+      RELEASE_E2E_PLAYWRIGHT_REPORT: resolve(evidenceDir, 'playwright-report.json'),
       RELEASE_E2E_STRICT_MODE: process.env.RELEASE_E2E_STRICT_MODE || '1',
       RELEASE_E2E_ALLOW_FALLBACK: '0'
     }

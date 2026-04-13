@@ -10,6 +10,7 @@ const uiContractSuites = ['apps/web/public/ui-contract.test.mjs']
 const browserSuitePattern = 'tests/e2e'
 const executionMode = 'browser'
 const browserFallbackEnvFlag = 'RELEASE_E2E_ALLOW_FALLBACK'
+const strictModeEnvFlag = 'RELEASE_E2E_STRICT_MODE'
 const fallbackSuite = 'playwright-browser-fallback'
 const failureCategories = {
   startupFailure: 'startup-failure',
@@ -30,10 +31,19 @@ const evidence = createEvidenceRecorder({
 })
 
 const releaseEvidenceDir = dirname(evidence.evidenceFile)
-const playwrightReportPath = resolve(
-  process.cwd(),
-  process.env.RELEASE_E2E_PLAYWRIGHT_REPORT || process.env.PLAYWRIGHT_JSON_REPORT || resolve(releaseEvidenceDir, 'playwright-report.json')
-)
+function parseBooleanSignal(value) {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false
+  return null
+}
+
+function resolvePlaywrightReportPath(env = process.env) {
+  const configured = env.RELEASE_E2E_PLAYWRIGHT_REPORT || env.PLAYWRIGHT_JSON_REPORT
+  const fallbackPath = resolve(releaseEvidenceDir, 'playwright-report.json')
+  return resolve(process.cwd(), configured || fallbackPath)
+}
 
 function runCommand(command, args, env, timeoutMs = 0) {
   return new Promise((resolveRun) => {
@@ -104,13 +114,14 @@ function buildPlaywrightReportFailure(path, reason) {
 
 export function browserFallbackMode(env = process.env) {
   const flagEnabled = env[browserFallbackEnvFlag] === '1'
-  const isCi = String(env.CI || '').toLowerCase() === 'true'
+  const strictOverride = parseBooleanSignal(env[strictModeEnvFlag])
+  const strictMode = strictOverride ?? String(env.CI || '').toLowerCase() === 'true'
   return {
-    isCi,
+    strictMode,
     flagEnabled,
-    enabled: flagEnabled && !isCi,
-    reason: isCi
-      ? `CI mode enforces strict browser execution; ${browserFallbackEnvFlag}=1 is ignored`
+    enabled: flagEnabled && !strictMode,
+    reason: strictMode
+      ? `Strict browser execution is enabled (${strictModeEnvFlag}=1); ${browserFallbackEnvFlag}=1 is ignored`
       : flagEnabled
         ? `${browserFallbackEnvFlag}=1 enables local fallback if browser binaries are missing`
         : `${browserFallbackEnvFlag} is disabled`
@@ -224,8 +235,9 @@ export async function main(deps = {}) {
     throw error
   }
   const fallback = browserFallbackMode()
-  const strictMode = !fallback.enabled
+  const strictMode = fallback.strictMode
   const baseUrl = context.baseUrl || `http://127.0.0.1:${context.port}`
+  const playwrightReportPath = resolvePlaywrightReportPath(process.env)
 
   try {
     await removeFile(playwrightReportPath, { force: true })
@@ -237,6 +249,7 @@ export async function main(deps = {}) {
       E2E_BASE_URL: baseUrl,
       PLAYWRIGHT_JSON_REPORT: playwrightReportPath,
       RELEASE_E2E_PLAYWRIGHT_REPORT: playwrightReportPath,
+      RELEASE_E2E_STRICT_MODE: strictMode ? '1' : '0',
       TEST_RESET_BEHAVIOR: process.env.TEST_RESET_BEHAVIOR || 'isolated'
     }
 
