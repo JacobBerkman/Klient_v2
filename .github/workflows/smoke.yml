@@ -215,7 +215,7 @@ jobs:
 
       - name: Run E2E gate command
         run: |
-          mkdir -p artifacts/e2e-gate
+          mkdir -p artifacts/e2e-release-blocking
           {
             echo '# E2E gate readiness summary'
             echo '- command: npm run test:e2e'
@@ -236,7 +236,7 @@ jobs:
           name: e2e-gate-artifacts
           if-no-files-found: warn
           path: |
-            artifacts/e2e-gate/**
+            artifacts/e2e-release-blocking/**
             artifacts/release-evidence/**
             test-results/**
             playwright-report/**
