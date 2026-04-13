@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { dirname, resolve } from 'node:path'
-import { cp, mkdtemp, rm } from 'node:fs/promises'
+import { cp, mkdtemp, readFile, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 import { execFileSync } from 'node:child_process'
@@ -238,4 +238,42 @@ test('aggregate exports handoff regression runner exits cleanly', { concurrency:
   const elapsed = Date.now() - start
   assert.equal(result.code, 0)
   assert(elapsed < 240000, `expected aggregate handoff regression completion before timeout, got ${elapsed}ms`)
+})
+
+test('validate master includes aggregate handoff regression step and exits cleanly', { concurrency: false }, async () => {
+  const evidenceRoot = await mkdtemp(resolve(tmpdir(), 'validate-master-handoff-'))
+  const evidenceFile = resolve(evidenceRoot, 'validate-master-summary.json')
+  const masterValidatePath = resolve(repoRoot, 'scripts/master-validate.mjs')
+  const start = Date.now()
+
+  try {
+    const result = await runChildProcess({
+      scriptPath: masterValidatePath,
+      label: 'master-validate-integration-handoff-only',
+      stdio: 'inherit',
+      timeoutMs: 240000,
+      cwd: repoRoot,
+      env: {
+        ...process.env,
+        VALIDATE_MASTER_STEPS: 'integration-suites,aggregate-handoff-regression',
+        INTEGRATION_SUITES: 'integration-exports.mjs',
+        RELEASE_EVIDENCE_FILE: evidenceFile
+      }
+    })
+
+    const elapsed = Date.now() - start
+    assert.equal(result.code, 0)
+    assert(elapsed < 240000, `expected validate:master completion before timeout, got ${elapsed}ms`)
+
+    const summary = JSON.parse(await readFile(evidenceFile, 'utf8'))
+    const stepNames = summary.steps.map((step) => step.name)
+    assert.deepEqual(stepNames, ['Integration suites', 'Aggregate handoff regression'])
+
+    const handoffStep = summary.steps.find((step) => step.name === 'Aggregate handoff regression')
+    assert.equal(handoffStep?.status, 'passed')
+    assert.equal(typeof handoffStep?.durationMs, 'number')
+    assert(handoffStep.durationMs >= 0, `expected non-negative step duration, got ${handoffStep.durationMs}`)
+  } finally {
+    await rm(evidenceRoot, { recursive: true, force: true })
+  }
 })

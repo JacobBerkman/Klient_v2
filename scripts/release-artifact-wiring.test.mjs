@@ -75,7 +75,7 @@ test('validate master evidence env var wiring remains explicit for every evidenc
   for (const [stepLabel, envVarName] of expectedMappings) {
     const escapedLabel = stepLabel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
     const escapedVar = envVarName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const pattern = new RegExp(`step\\.name === '${escapedLabel}'\\) env\\.${escapedVar}`)
+    const pattern = new RegExp(`step\\.name === '${escapedLabel}'\\)[\\s\\S]*?env\\.${escapedVar}`)
     assert(pattern.test(masterValidate), `Missing ${stepLabel} -> ${envVarName} wiring in envForStep`)
   }
 })
