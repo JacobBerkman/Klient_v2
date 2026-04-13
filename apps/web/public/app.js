@@ -2373,6 +2373,11 @@ function formatSchemaIssue(issue = {}) {
   return `${rowPrefix}${path} — ${message}`
 }
 
+function deriveTemplateIssueRowAnchor(rowIndex) {
+  const rowAnchor = Number.isFinite(Number(rowIndex)) ? `#mapping-row-${Number(rowIndex)}` : ''
+  return rowAnchor
+}
+
 function mappingSaveStateLabel(saveState = {}, statusContext = {}) {
   if (statusContext.hasLocalValidationFailures) return 'Local validation failed'
   if (statusContext.hasPreflightSchemaFailures) return 'Preflight schema failed'
@@ -2427,7 +2432,8 @@ function publishReadinessPanelMarkup({ readiness = null, fallbackIssues = [] }) 
   const renderIssue = (issue) => {
     const rowIndex = Number(issue?.rowIndex)
     const rowId = String(issue?.rowId || issue?.meta?.rowId || '').trim()
-    const anchor = String(issue?.rowAnchor || issue?.meta?.rowAnchor || `#mapping-row-${rowIndex}`)
+    const rowAnchor = deriveTemplateIssueRowAnchor(rowIndex)
+    const anchor = String(issue?.rowAnchor || issue?.meta?.rowAnchor || rowAnchor)
     const inspectorTarget = String(issue?.inspectorTarget || issue?.meta?.inspectorTarget || issue?.field || 'sourcePath')
     const cta = Number.isFinite(rowIndex)
       ? `<a href="${escapeHtml(anchor)}" class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="${escapeHtml(inspectorTarget)}">Row ${rowIndex + 1}</a> · `
@@ -2455,7 +2461,8 @@ function publishReadinessPanelMarkup({ readiness = null, fallbackIssues = [] }) 
               const rowIndex = Number(entry?.rowIndex)
               const rowId = String(entry?.rowId || '').trim()
               if (!Number.isFinite(rowIndex)) return ''
-              return `<a href="${escapeHtml(entry?.anchor || `#mapping-row-${rowIndex}`)}" class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="${escapeHtml(entry?.field || 'sourcePath')}">${escapeHtml(entry?.label || `Row ${rowIndex + 1}`)}</a>`
+              const rowAnchor = deriveTemplateIssueRowAnchor(rowIndex)
+              return `<a href="${escapeHtml(entry?.anchor || rowAnchor)}" class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="${escapeHtml(entry?.field || 'sourcePath')}">${escapeHtml(entry?.label || `Row ${rowIndex + 1}`)}</a>`
             })
             .join(' ')}</p>`
         : '<p class="muted">Quick links appear after preflight finds row-level diagnostics.</p>'
@@ -2775,7 +2782,7 @@ async function renderTemplates() {
       code: issue.errorCode || issue.code || 'issue',
       message: issue.errorMessage || issue.message || 'Preflight validation issue',
       focusField: issue.inspectorTarget || issue?.meta?.inspectorTarget || issue.field || 'sourcePath',
-      anchor: issue.rowAnchor || issue?.meta?.rowAnchor || ''
+      anchor: issue.rowAnchor || issue?.meta?.rowAnchor || deriveTemplateIssueRowAnchor(issue?.rowIndex)
     }))
   ].filter((entry) => Number.isFinite(entry.rowIndex))
   const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
@@ -3041,7 +3048,7 @@ async function renderTemplates() {
                     ? `<ul>${issues
                         .map(
                           (issue) =>
-                            `<li><a href="${escapeHtml(issue.rowAnchor || `#mapping-row-${index}`)}" class="tiny secondary" data-preflight-rowindex="${index}" data-focus-inspector="${escapeHtml(issue.inspectorTarget || 'sourcePath')}">${escapeHtml(issue.code)}</a> · ${escapeHtml(issue.message)}</li>`
+                            `<li><a href="${escapeHtml(issue.rowAnchor || deriveTemplateIssueRowAnchor(index))}" class="tiny secondary" data-preflight-rowindex="${index}" data-focus-inspector="${escapeHtml(issue.inspectorTarget || 'sourcePath')}">${escapeHtml(issue.code)}</a> · ${escapeHtml(issue.message)}</li>`
                         )
                         .join('')}</ul><div class="muted">Hint: update Source Path using known paths and rerun Save Now.</div>`
                     : '<span class="muted">OK</span>'
@@ -3051,7 +3058,8 @@ async function renderTemplates() {
                     ? `<ul>${serverPreflightIssues
                         .map((issue) => {
                           const rowIndex = Number(issue?.rowIndex)
-                          const anchor = issue?.rowAnchor || issue?.meta?.rowAnchor || (Number.isFinite(rowIndex) ? `#mapping-row-${rowIndex}` : '#')
+                          const rowAnchor = deriveTemplateIssueRowAnchor(rowIndex)
+                          const anchor = issue?.rowAnchor || issue?.meta?.rowAnchor || rowAnchor || '#'
                           const inspectorTarget = issue?.inspectorTarget || issue?.meta?.inspectorTarget || issue?.field || 'sourcePath'
                           return `<li><a href="${escapeHtml(anchor)}" class="tiny secondary" data-preflight-rowindex="${Number.isFinite(rowIndex) ? rowIndex : index}" data-preflight-rowid="${escapeHtml(issue?.rowId || issue?.meta?.rowId || '')}" data-focus-inspector="${escapeHtml(inspectorTarget)}">${escapeHtml(issue.issueId || issue.code || 'issue')}</a></li>`
                         })
@@ -3193,7 +3201,7 @@ async function renderTemplates() {
             ? `<h4>Row-level remediation</h4><ul>${remediationRows
                 .map(
                   (item) =>
-                    `<li><a href="${escapeHtml(item.anchor || `#mapping-row-${item.rowIndex}`)}" class="tiny secondary" data-remediate-rowindex="${item.rowIndex}" data-remediate-rowid="${escapeHtml(item.rowId || '')}" data-focus-inspector="${escapeHtml(item.focusField || 'sourcePath')}">Row ${item.rowIndex + 1}</a> · <code>${escapeHtml(item.code)}</code> · ${escapeHtml(item.message)}${item.rowId ? ` · rowId <code>${escapeHtml(item.rowId)}</code>` : ''}${item.blocking ? ' · <strong>blocking</strong>' : ' · non-blocking'}</li>`
+                    `<li><a href="${escapeHtml(item.anchor || deriveTemplateIssueRowAnchor(item.rowIndex))}" class="tiny secondary" data-remediate-rowindex="${item.rowIndex}" data-remediate-rowid="${escapeHtml(item.rowId || '')}" data-focus-inspector="${escapeHtml(item.focusField || 'sourcePath')}">Row ${item.rowIndex + 1}</a> · <code>${escapeHtml(item.code)}</code> · ${escapeHtml(item.message)}${item.rowId ? ` · rowId <code>${escapeHtml(item.rowId)}</code>` : ''}${item.blocking ? ' · <strong>blocking</strong>' : ' · non-blocking'}</li>`
                 )
                 .join('')}</ul>`
             : ''
