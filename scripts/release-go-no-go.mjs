@@ -9,6 +9,10 @@ function fail(message) {
   process.exit(1)
 }
 
+function remediationHint(lines = []) {
+  return lines.filter(Boolean).map((line) => `\n   • ${line}`).join('')
+}
+
 function parseArgs(argv) {
   const options = {
     phase: 'all',
@@ -356,7 +360,10 @@ function evaluatePostdeployPayloads({ releaseId, evidenceDir }) {
   if (failedRules.length > 0) {
     const failedRuleIds = failedRules.map((rule) => rule.id).join(', ')
     throw new Error(
-      `Postdeploy evaluation failed (${failedRules.length} rule(s)): ${failedRuleIds}. See ${relative(process.cwd(), summaryPath)}`
+      `Postdeploy evaluation failed (${failedRules.length} rule(s)): ${failedRuleIds}. See ${relative(process.cwd(), summaryPath)}.${remediationHint([
+        'Use the failed rule ids in postdeploy-evaluation-summary.json to identify the failing gate check.',
+        'Fix the runtime issue, then re-run: npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy.'
+      ])}`
     )
   }
 }
@@ -371,7 +378,12 @@ function ensurePreflightEnvEvidence(preflightFile) {
     typeof report.overall.ready === 'boolean'
 
   if (!valid) {
-    fail(`Preflight env evidence validation failed at ${preflightFile}. Expected schemaVersion/mode/overall.ready.`)
+    fail(
+      `Preflight env evidence validation failed at ${preflightFile}. Expected schemaVersion/mode/overall.ready.${remediationHint([
+        'Re-run preflight to regenerate evidence: npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight.',
+        'Do not hand-edit evidence files; regenerate from canonical release commands.'
+      ])}`
+    )
   }
 
   if (!report.overall.ready) {
@@ -383,7 +395,12 @@ function ensurePreflightEnvEvidence(preflightFile) {
     ]
       .filter(Boolean)
       .join('; ')
-    fail(`Runtime-required env preflight failed. ${details}`)
+    fail(
+      `Runtime-required env preflight failed. ${details}.${remediationHint([
+        'Set missing variables in the deployment environment (names only; never paste secret values).',
+        'Re-run: npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight.'
+      ])}`
+    )
   }
 }
 
@@ -400,7 +417,10 @@ function ensureBackupEvidence(backupFile) {
 
   if (!valid) {
     fail(
-      `Backup evidence validation failed at ${backupFile}. Expected ok=true, status=succeeded, artifact.path, artifact.sizeBytes>0, artifact.sqliteQuickCheck=ok`
+      `Backup evidence validation failed at ${backupFile}. Expected ok=true, status=succeeded, artifact.path, artifact.sizeBytes>0, artifact.sqliteQuickCheck=ok.${remediationHint([
+        'Re-run the preflight phase to regenerate backup evidence.',
+        'If backup command failed, resolve backup storage/integrity issues before retrying preflight.'
+      ])}`
     )
   }
 }
@@ -419,7 +439,10 @@ function ensureRestoreEvidence(restoreFile, expectedMode = 'live-restore') {
 
   if (!valid) {
     throw new Error(
-      `Restore evidence validation failed at ${restoreFile}. Expected ok=true, status=succeeded, executionMode=${expectedMode}, source/restoreTarget sqliteQuickCheck=ok, and checks.sizeMatch/checks.sha256Match=true`
+      `Restore evidence validation failed at ${restoreFile}. Expected ok=true, status=succeeded, executionMode=${expectedMode}, source/restoreTarget sqliteQuickCheck=ok, and checks.sizeMatch/checks.sha256Match=true.${remediationHint([
+        'Re-run restore with the intended backup path and mode.',
+        'Confirm the backup file is readable and integrity checks pass before approving rollback readiness.'
+      ])}`
     )
   }
 }
@@ -452,7 +475,10 @@ function ensureStartupFailfastEvidence(probeFile) {
 
   if (!valid) {
     fail(
-      `Startup fail-fast validation failed at ${probeFile}. Expected ok=true, status=succeeded, and checks exitCodeNonZero/startupBlockedLogged/startupIssuesPresent/listenPrevented=true`
+      `Startup fail-fast validation failed at ${probeFile}. Expected ok=true, status=succeeded, and checks exitCodeNonZero/startupBlockedLogged/startupIssuesPresent/listenPrevented=true.${remediationHint([
+        'Re-run preflight to regenerate startup fail-fast evidence.',
+        'If probe logic changed, verify startup blocks invalid production config before bind/listen.'
+      ])}`
     )
   }
 }

@@ -36,6 +36,11 @@ Required environment variables:
 - `RELEASE_POSTDEPLOY_MAX_QUEUE_FAILED_RETRYABLE` for release-time tuning of allowed retryable-failure count (default `0`).
 - `RESTORE_BACKUP_PATH` only when running `--phase restore` or `--phase restore-drill`.
 
+Operator notes (authoritative policy location):
+- Strict E2E mode + fallback boundaries are defined only in `docs/deployment-quick-reference.md#canonical-browser-gate-policy-ci--local` (CI + `release:go-no-go` preflight are always strict; fallback is local/manual only with explicit opt-in).
+- Release-time environment requirements (including runtime-required app vars) are defined only in `docs/deployment-quick-reference.md#required-environment-variables` and `docs/deployment-quick-reference.md#production-runtime-required-app-variables-from-startup-validation`.
+- Evidence bundle required artifacts are defined only in `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
+
 Hard gate only (legacy/manual mode):
 
 ```bash
