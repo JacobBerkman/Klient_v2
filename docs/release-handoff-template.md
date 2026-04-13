@@ -102,6 +102,8 @@ Checkpoint citation guidance (required when multiple postdeploy runs exist):
 Optional per-file links (if a reviewer requests drill-down):
 - Include the strict hard-gate command transcript line exactly as executed when applicable: `RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master`.
 - Include the strict release-blocking E2E command transcript line exactly as executed in CI: `RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e`.
+- Record the browser provisioning context used by that run (`PLAYWRIGHT_BROWSERS_PATH=<value>` and `npx playwright install --with-deps chromium` transcript line).
+- If local recovery was needed for missing binaries, include the explicit temporary recovery command (`RELEASE_E2E_ALLOW_FALLBACK=1 RELEASE_E2E_STRICT_MODE=0 npm run test:e2e`) and the subsequent strict rerun evidence proving fallback was not used for release approval.
 - Use the canonical required artifact list in `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
 - For E2E proof completeness, include `e2e-summary.json` fields `executionMode`, `details.artifacts.playwrightJsonReport.path`, `details.artifacts.playwrightJsonReport.valid`, and `details.artifacts.playwrightJsonReport.suiteCount`.
 - Add any additional per-phase links relevant to this release (for example: `branch-parity.txt`, `backup.json`, `startup-failfast.json`, `restore.json`, `restore-drill.json`, `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`).

@@ -12,6 +12,11 @@ const executionMode = 'browser'
 const browserFallbackEnvFlag = 'RELEASE_E2E_ALLOW_FALLBACK'
 const strictModeEnvFlag = 'RELEASE_E2E_STRICT_MODE'
 const fallbackSuite = 'playwright-browser-fallback'
+const reportValidationFailureCodes = {
+  missingReport: 'missing-report',
+  invalidJson: 'invalid-json',
+  missingTitles: 'missing-titles'
+}
 const failureCategories = {
   startupFailure: 'startup-failure',
   uiContractFailure: 'ui-contract-failure',
@@ -104,19 +109,25 @@ function collectBrowserSuiteNames(reportNode, output = new Set()) {
   return output
 }
 
-function buildPlaywrightReportFailure(path, reason) {
+function buildPlaywrightReportFailure(path, reason, code = reportValidationFailureCodes.missingTitles) {
   return {
     path,
     valid: false,
-    reason
+    reason,
+    code
   }
 }
 
 export function browserFallbackMode(env = process.env) {
-  const flagEnabled = env[browserFallbackEnvFlag] === '1'
+  const flagEnabled = parseBooleanSignal(env[browserFallbackEnvFlag]) === true
+  const ciSignal = parseBooleanSignal(env.CI)
+  const isCi =
+    ciSignal ??
+    (typeof env.CI === 'string' && env.CI.trim().length > 0)
   const strictOverride = parseBooleanSignal(env[strictModeEnvFlag])
-  const strictMode = strictOverride ?? String(env.CI || '').toLowerCase() === 'true'
+  const strictMode = strictOverride ?? isCi
   return {
+    isCi,
     strictMode,
     flagEnabled,
     enabled: flagEnabled && !strictMode,
@@ -134,7 +145,11 @@ export async function validatePlaywrightJsonReport(reportPath) {
   } catch {
     return {
       ok: false,
-      artifact: buildPlaywrightReportFailure(reportPath, `Missing Playwright JSON report at ${reportPath}`),
+      artifact: buildPlaywrightReportFailure(
+        reportPath,
+        `Missing Playwright JSON report at ${reportPath}`,
+        reportValidationFailureCodes.missingReport
+      ),
       suiteNames: []
     }
   }
@@ -146,7 +161,11 @@ export async function validatePlaywrightJsonReport(reportPath) {
   } catch {
     return {
       ok: false,
-      artifact: buildPlaywrightReportFailure(reportPath, `Invalid JSON in Playwright report at ${reportPath}`),
+      artifact: buildPlaywrightReportFailure(
+        reportPath,
+        `Invalid JSON in Playwright report at ${reportPath}`,
+        reportValidationFailureCodes.invalidJson
+      ),
       suiteNames: []
     }
   }
@@ -157,7 +176,8 @@ export async function validatePlaywrightJsonReport(reportPath) {
       ok: false,
       artifact: buildPlaywrightReportFailure(
         reportPath,
-        `Playwright report at ${reportPath} contains no suite/spec titles; expected at least one title`
+        `Playwright report at ${reportPath} contains no suite/spec titles; expected at least one title`,
+        reportValidationFailureCodes.missingTitles
       ),
       suiteNames
     }
