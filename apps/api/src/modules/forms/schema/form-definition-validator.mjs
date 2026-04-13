@@ -19,6 +19,13 @@ function normalizeSegment(value, fallback = 'field') {
   return base.replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_]/g, '').toLowerCase() || fallback
 }
 
+function normalizeRepeatableSection(section = {}) {
+  if (!isObject(section)) return false
+  if (section.repeatable === true) return true
+  if (section.repeater === true) return true
+  return String(section.type || '').trim().toLowerCase() === 'repeater'
+}
+
 function normalizeLegacySections(input) {
   if (Array.isArray(input)) {
     return {
@@ -113,7 +120,16 @@ export function validateFormDefinitionSchema(input, options = {}) {
       if (section.fields && !Array.isArray(section.fields)) {
         pushIssue(issues, `${sectionPath}/fields`, 'fields must be an array when provided.')
       }
-      collectRepeaterPaths(section.fields || [], '', issues, `${sectionPath}/fields`, repeaterPaths)
+      const isRepeatableSection = normalizeRepeatableSection(section)
+      const sectionKey = normalizeSegment(section.key || section.path || section.id || `section_${sectionIndex + 1}`)
+      const sectionParentPath = isRepeatableSection ? sectionKey : ''
+      if (isRepeatableSection) {
+        if (!String(section.key || section.path || section.id || '').trim()) {
+          pushIssue(issues, `${sectionPath}/key`, 'Repeatable sections require key/path/id metadata.')
+        }
+        repeaterPaths.add(sectionKey)
+      }
+      collectRepeaterPaths(section.fields || [], sectionParentPath, issues, `${sectionPath}/fields`, repeaterPaths)
     })
   }
 

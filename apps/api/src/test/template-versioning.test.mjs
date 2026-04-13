@@ -272,3 +272,56 @@ test('templates service enriches preflight diagnostics into readiness summary', 
   assert.equal(preflight.publishReadiness.warnings.length, 2)
   assert.equal(preflight.publishReadiness.quickLinks[0]?.anchor, '#mapping-row-0')
 })
+
+test('templates service normalizes repeater metadata for preview and publish issues', () => {
+  const templateRepository = {
+    previewTemplateMappings() {
+      return {
+        issues: [
+          {
+            code: 'unknown_repeater_path',
+            field: 'repeaterPath',
+            path: '/mappings/0/repeaterPath',
+            rowIndex: 0,
+            repeaterPath: 'assets[*]',
+            meta: { repeaterPath: 'assets[0]' },
+            message: 'Repeater mismatch'
+          }
+        ]
+      }
+    },
+    publishTemplate() {
+      const error = new Error('Publish blocked')
+      error.details = {
+        issues: [
+          {
+            code: 'required_repeater_path',
+            field: 'repeaterPath',
+            path: '/mappings/0/repeaterPath',
+            rowIndex: 0,
+            meta: { repeaterPath: 'assets[1]' },
+            message: 'Missing repeater path'
+          }
+        ]
+      }
+      throw error
+    }
+  }
+  const service = createTemplatesService({
+    templateRepository,
+    policy: { requireGuard() {} }
+  })
+
+  const preview = service.previewMappings({ id: 'u-1' }, 'tmpl-1', {})
+  assert.equal(preview.issues[0].repeaterPath, 'assets')
+  assert.equal(preview.issues[0].meta?.normalizedRepeaterPath, 'assets')
+
+  assert.throws(
+    () => service.publish({ id: 'u-1' }, 'tmpl-1', {}),
+    (error) => {
+      assert.equal(error.details.issues[0].repeaterPath, 'assets')
+      assert.equal(error.details.issues[0].meta?.normalizedRepeaterPath, 'assets')
+      return true
+    }
+  )
+})

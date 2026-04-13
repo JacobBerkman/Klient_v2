@@ -470,3 +470,65 @@ test('publish blocks when preview contains unresolved required mappings', async 
     }
   )
 })
+
+test('repeatable section mappings stay consistent across preview, publish preflight, and export runtime', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const template = store.createDocumentTemplate(user, {
+    name: 'Repeatable parity template',
+    formSchema: {
+      sections: [
+        {
+          key: 'assets',
+          repeatable: true,
+          fields: [
+            { path: 'accountName', type: 'text' },
+            { path: 'value', type: 'number' }
+          ]
+        }
+      ]
+    },
+    mappings: [
+      { pdfField: 'asset_row', sourcePath: 'assets', repeaterPath: 'assets', required: true },
+      { pdfField: 'asset_count', sourcePath: 'assets', transform: { type: 'expression', expression: 'value' } }
+    ]
+  })
+  const profile = store.createProfile(user, { kind: 'client', firstName: 'Reese', lastName: 'Parity', stage: 'intake' })
+  const formTemplate = store.createFormTemplate(user, {
+    name: 'Repeatable source form',
+    sections: [{ key: 'assets', label: 'Assets', repeatable: true, fields: [{ key: 'accountName', type: 'text' }] }]
+  })
+  const submission = store.createFormSubmission(user, {
+    clientId: profile.id,
+    templateId: formTemplate.id,
+    status: 'submitted',
+    data: { assets: [{ accountName: '401k', value: 100000 }, { accountName: 'Roth IRA', value: 45000 }] }
+  })
+
+  const preview = store.previewTemplateMappings(user, template.id, {
+    clientId: profile.id,
+    submissionId: submission.id
+  })
+  assert.deepEqual(preview.rows[0].value, submission.data.assets)
+  assert.equal(preview.rows[0].warnings.length, 0)
+
+  const published = store.publishTemplate(user, template.id, {
+    versionBump: '1.0.0',
+    changelog: 'Publish repeatable parity template',
+    clientId: profile.id,
+    submissionId: submission.id
+  })
+  assert.equal(published.publishState, 'published')
+
+  const exportJob = store.createExport(user, {
+    templateId: template.id,
+    clientId: profile.id,
+    submissionId: submission.id,
+    type: 'json'
+  })
+  const previewRowByField = Object.fromEntries(preview.rows.map((row) => [row.pdfField, row]))
+  const exportRowByField = Object.fromEntries((exportJob.renderContext?.resolved?.rows || []).map((row) => [row.pdfField, row]))
+  assert.deepEqual(exportRowByField.asset_row?.value, previewRowByField.asset_row?.value)
+  assert.equal(exportJob.renderContext?.resolved?.mappingVersionHash, preview.mappingVersionHash)
+})

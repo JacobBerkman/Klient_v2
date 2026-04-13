@@ -29,13 +29,14 @@ function resolveSubmission(state, firmId, submissionId, clientId) {
 function createRenderContext({ firm, template, client, submission }) {
   const mappings = template?.mappings || []
   const resolved = resolveExportData({ mappings, profile: client, submission })
+  const mappingVersionHash = resolved.mappingVersionHash || computeMappingVersionHash(mappings)
   return {
     template: {
       id: template?.id || null,
       name: template?.name || null,
       version: latestTemplateVersion(template),
       versionHash: latestTemplateVersion(template),
-      mappingVersionHash: resolved.mappingVersionHash || computeMappingVersionHash(mappings),
+      mappingVersionHash,
       mappings
     },
     firm: firm
@@ -64,7 +65,10 @@ function createRenderContext({ firm, template, client, submission }) {
       submittedAt: submission.submittedAt || submission.createdAt || null,
       data: submission.data || {}
     } : null,
-    resolved
+    resolved: {
+      ...resolved,
+      mappingVersionHash
+    }
   }
 }
 
