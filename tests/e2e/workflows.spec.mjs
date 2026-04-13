@@ -163,53 +163,54 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   await expect(page.getByText('Templates: Template published.')).toBeVisible()
 })
 
-test('@release-blocking custom-field schema CRUD supports profile usage paths', async ({ page, seededRunId, cleanupActions }) => {
+test('@release-blocking custom-field schema CRUD states surface in admin and propagate to profile create/edit UIs', async ({
+  page,
+  seededRunId,
+  cleanupActions
+}) => {
   await waitForAppReady(page)
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'schema')
   await signInFromUi(page, email, password)
 
-  const fieldKey = `custom-field-${seededRunId}`
-  const createResponse = await page.request.post('/api/profiles/custom-fields/schema', {
-    data: {
-      key: fieldKey,
-      type: 'text',
-      label: 'Custom Segment',
-      required: true
-    }
-  })
-  expect(createResponse.status()).toBe(201)
+  const fieldKey = `custom_field_${seededRunId.replace(/[^a-z0-9_]/gi, '_')}`
+  await page.getByRole('button', { name: 'Custom Fields' }).click()
+  await expect(page.getByRole('heading', { name: 'Custom Field Schema' })).toBeVisible()
+  await page.locator('#custom-field-create-form input[name="key"]').fill(fieldKey)
+  await page.locator('#custom-field-create-form input[name="label"]').fill('Custom Segment')
+  await page.locator('#custom-field-create-form button[type="submit"]').click()
+  await expect(page.locator('#custom-field-create-form [data-form-feedback]')).toContainText('Success: custom field created.')
+  await expect(page.getByText(fieldKey)).toBeVisible()
+
+  await page.locator(`[data-custom-field-update="${fieldKey}"] input[name="label"]`).fill('Custom Score')
+  await page.locator(`[data-custom-field-update="${fieldKey}"] select[name="type"]`).selectOption('number')
+  await page.locator(`[data-custom-field-update="${fieldKey}"] button[type="submit"]`).click()
+  await expect(page.locator(`[data-custom-field-update="${fieldKey}"] [data-form-feedback]`)).toContainText(
+    `Success: custom field ${fieldKey} updated.`
+  )
 
   cleanupActions.push(async () => {
     await page.request.delete(`/api/profiles/custom-fields/schema/${fieldKey}`).catch(() => {})
   })
-
-  const updateResponse = await page.request.patch(`/api/profiles/custom-fields/schema/${fieldKey}`, {
-    data: { required: false, metadata: { category: 'household' } }
-  })
-  expect(updateResponse.ok()).toBeTruthy()
-
-  const schemaResponse = await page.request.get('/api/profiles/custom-fields/schema')
-  expect(schemaResponse.ok()).toBeTruthy()
-  const schema = await schemaResponse.json()
-  const updatedField = schema.fields.find((field) => field.key === fieldKey)
-  expect(updatedField).toBeTruthy()
-  expect(updatedField.required).toBe(false)
 
   const profileResponse = await page.request.post('/api/profiles', {
     data: {
       kind: 'client',
       firstName: 'Custom',
       lastName: 'Field',
-      extensions: {
-        schemaVersion: '1.0.0',
-        schema: { properties: { [fieldKey]: { type: 'string' } } },
-        values: { [fieldKey]: 'Platinum segment' }
-      }
+      email: deterministicEmail(seededRunId, 'schema-profile')
     }
   })
   expect(profileResponse.status()).toBe(201)
   const profile = await profileResponse.json()
-  expect(profile.extensions?.values?.[fieldKey]).toBe('Platinum segment')
+
+  await page.getByRole('button', { name: 'Dashboard' }).click()
+  await expect(page.locator(`#profile-custom-fields [name="customField__${fieldKey}"]`)).toBeVisible()
+  await expect(page.locator(`#profile-custom-fields [name="customField__${fieldKey}"]`)).toHaveAttribute('type', 'number')
+
+  await page.getByRole('button', { name: 'Clients' }).click()
+  await page.locator(`[data-edit-profile="${profile.id}"]`).click()
+  await expect(page.locator(`#profile-edit-${profile.id}-${fieldKey}`)).toBeVisible()
+  await expect(page.locator(`#profile-edit-${profile.id}-${fieldKey}`)).toHaveAttribute('type', 'number')
 
   cleanupActions.push(async () => {
     await page.request.delete(`/api/profiles/${profile.id}`).catch(() => {})
