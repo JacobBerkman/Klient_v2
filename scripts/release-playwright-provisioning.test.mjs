@@ -30,4 +30,5 @@ test('release preflight provisions Playwright browsers before validate:master', 
 test('master gate keeps canonical E2E browser step label', () => {
   const content = readScript('scripts/master-validate.mjs')
   assert.match(content, /name: 'E2E browser checks'/)
+  assert.match(content, /env\.RELEASE_E2E_ALLOW_FALLBACK = '1'/)
 })

@@ -1552,6 +1552,7 @@ async function renderForms() {
         const panelId = `draft-share-panel-${draft.id}`
         const membershipState = draftShareMembershipState(draft.id)
         const list = membershipState.collaborators
+        const collaboratorCount = Array.isArray(list) ? list.length : 0
         const lookupResults = state.formsUi.userLookupByDraftId[draft.id] || []
         const lookupSearch = state.formsUi.userLookupSearchByDraftId[draft.id] || ''
         const existingCollaboratorIds = new Set((Array.isArray(list) ? list : []).map((entry) => entry.userId || entry.id))
@@ -1569,6 +1570,8 @@ async function renderForms() {
       <td>${escapeHtml(draft.templateId)}</td>
       <td>${draft.revisionId || 1}</td>
       <td>${draft.lock ? `Locked (${escapeHtml(draft.lock.holderUserId)})` : 'Unlocked'}</td>
+      <td>${membershipState.status === 'loaded' ? collaboratorCount : '—'}</td>
+      <td>${draft.updatedAt ? new Date(draft.updatedAt).toLocaleString() : '—'}</td>
       <td>
         <a href="#${appRoutes.clientFormSubmission(draft.clientId, draft.id)}">Edit from profile</a>
         <button data-lock="${draft.id}">${pendingLabel(`lock-${draft.id}`, 'Acquire lock', 'Acquiring…')}</button>
@@ -1579,10 +1582,11 @@ async function renderForms() {
       </td>
     </tr>
     <tr id="${panelId}" data-draft-share-panel="${draft.id}" ${panelVisible ? '' : 'hidden'}>
-      <td colspan="5">
+      <td colspan="7">
         <div class="item compact">
           <h4>Draft sharing</h4>
           <p class="muted compact">Owner: <code>${escapeHtml(draft.createdByUserId || 'unknown')}</code></p>
+          <p class="muted compact">Collaborators: <strong>${collaboratorCount}</strong> ${membershipState.status === 'loaded' ? '' : '(open sharing to load membership)'}</p>
           <form data-search-draft-collaborator-users="${draft.id}">
             <label>Search firm users
               <input name="search" placeholder="name, email, or user id" value="${escapeHtml(lookupSearch)}" ${canManage ? '' : 'disabled'} />
@@ -1657,7 +1661,7 @@ async function renderForms() {
       ${metricCard('templates', templates.length)}
       ${metricCard('drafts', drafts.length)}
     </div>
-    <table><thead><tr><th>Draft ID</th><th>Template</th><th>Revision</th><th>Lock</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="5">No drafts yet. Create or import a form draft to begin collaboration.</td></tr>'}</tbody></table>
+    <table><thead><tr><th>Draft ID</th><th>Template</th><th>Revision</th><th>Lock</th><th>Collaborators</th><th>Updated</th><th>Actions</th></tr></thead><tbody>${rows || '<tr><td colspan="7">No drafts yet. Create or import a form draft to begin collaboration.</td></tr>'}</tbody></table>
     ${
       state.selectedSubmissionId
         ? `
