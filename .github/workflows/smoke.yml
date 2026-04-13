@@ -116,9 +116,11 @@ jobs:
             echo "- seed: ${TEST_SEED}"
             echo "- node: $(node --version)"
             echo "- npm: $(npm --version)"
+            echo "- strict mode: RELEASE_E2E_STRICT_MODE=1"
+            echo "- fallback: RELEASE_E2E_ALLOW_FALLBACK=0"
           } > artifacts/e2e-release-blocking/readiness-summary.md
 
-          E2E_GREP='@release-blocking' npm run test:e2e 2>&1 | tee artifacts/e2e-release-blocking/suite.log
+          RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e 2>&1 | tee artifacts/e2e-release-blocking/suite.log
 
       - name: Upload failure artifacts (e2e release-blocking)
         if: failure()

@@ -5,8 +5,9 @@ A release is **ready** only when every check is an objective **PASS** with captu
 Capture the release package with the standard handoff template at `docs/release-handoff-template.md`.
 Use the canonical operator flow at `docs/deployment-quick-reference.md#canonical-operator-flow-exact-command-sequence` for exact preflight/deploy/postdeploy/restore commands and diagnostics triage.
 Use `docs/deployment-quick-reference.md#canonical-hard-gate-sequence-validatemaster-exact-execution-order` and `docs/deployment-quick-reference.md#deterministic-post-deploy-validation-sequence` as the canonical command ordering references.
+Use `docs/deployment-quick-reference.md#canonical-browser-gate-policy-ci--local` for browser provisioning, strict/fallback behavior, evidence requirements, and deterministic remediation.
 Use the preserved-flow mapping at `docs/release-flow-test-matrix.md` to ensure RC-critical journeys are validated with deterministic targeted tests before freeze.
-Treat `npm run test:e2e` as the canonical browser gate: strict in CI, deterministic host/port, isolated reset default, and stable Playwright JSON evidence output under the release evidence directory.
+Treat `npm run test:e2e` as the canonical browser gate with strict CI/operator behavior and explicit local fallback opt-in only.
 
 ## Primary operator command (GO/NO-GO)
 Run the operator workflow (fails fast, deterministic order):
@@ -80,13 +81,10 @@ Use only `docs/deployment-quick-reference.md#canonical-operator-flow-exact-comma
 
 
 ## Browser gate failure remediation (canonical path)
-When `npm run test:e2e` fails, remediation must follow this order:
+When `npm run test:e2e` fails, follow only:
+`docs/deployment-quick-reference.md#canonical-browser-gate-policy-ci--local` → **Deterministic remediation path when E2E fails**.
 
-1. Verify `artifacts/release-evidence/<release-id>/playwright-report.json` exists and is valid JSON with at least one suite/spec title.
-2. Check `artifacts/release-evidence/<release-id>/e2e-summary.json` for `executionMode`, browser status, and report artifact reason.
-3. Re-run only the failing deterministic Playwright flow (`tests/e2e/workflows.spec.mjs --grep ...`) for investigation, then re-run `npm run test:e2e`.
-4. In CI, do not use local fallback (`RELEASE_E2E_ALLOW_FALLBACK=1` is ignored when `CI=true`); fix infra or test issues and regenerate evidence.
-5. Do not proceed to GO until both artifacts are regenerated and PASS criteria are met.
+Do not use alternate local/CI remediation sequences in release operations.
 
 ## Objective pass/fail criteria
 

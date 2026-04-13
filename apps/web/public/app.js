@@ -2668,6 +2668,7 @@ async function renderTemplates() {
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mappings</h3>
+        <p class="muted compact">Next actions: <strong>Save Now</strong> after edits, use <strong>Filter unresolved</strong> to isolate blockers, then switch to <strong>4. Preview</strong> when validation reads Ready.</p>
         <div class="row gap-sm wrap">
           <button id="add-mapping-row" class="tiny">Add Mapping</button>
           <button id="save-mappings" class="tiny">Save Now</button>
@@ -2676,6 +2677,7 @@ async function renderTemplates() {
           <button id="filter-unresolved-rows" class="tiny secondary">Filter unresolved</button>
           <button id="auto-map-similar" class="tiny secondary">Auto-map similar names</button>
           <button id="clear-unresolved-rows" class="tiny secondary">Clear unresolved rows</button>
+          <button type="button" class="tiny secondary" data-template-wizard-step="preview">Go to Step 4 · Preview</button>
         </div>
         <div class="row gap-sm wrap top-gap">
           ${[
@@ -2792,6 +2794,7 @@ async function renderTemplates() {
       </section>
       <section class="item" data-template-wizard-section="preview" ${activeWizardStep === 'preview' ? '' : 'hidden'}>
         <h3>Mapping Preview</h3>
+        <p class="muted compact">Run Preview after each mapping save. If warnings appear, use <strong>Jump to row</strong> to open the exact mapping row, fix it in Field Inspector, then rerun preview.</p>
         <div class="row gap-sm wrap">
           <select id="preview-client">${clients
             .map(
@@ -2843,7 +2846,10 @@ async function renderTemplates() {
             ? escapeHtml(templateOpsPermissions.readOnlyMessage)
             : 'Write-capable operators can run preflight, publish, and revert from this panel.'
         }</p>
+        <p class="muted compact">Recommended order: <strong>Run Publish Preflight</strong> → remediate listed rows using row actions → rerun preflight until clear → <strong>Publish</strong>.</p>
         <div class="row gap-sm wrap">
+          <button type="button" class="tiny secondary" data-template-wizard-step="mapping">Back to Step 3 · Mapping</button>
+          <button type="button" class="tiny secondary" data-template-wizard-step="preview">Back to Step 4 · Preview</button>
           <button id="run-publish-preflight" class="tiny secondary" ${templateOpsPermissions.canWrite ? '' : 'disabled'}>Run Publish Preflight</button>
           <button id="publish-template" class="tiny publish-action" ${publishDisabled || !templateOpsPermissions.canWrite ? 'disabled' : ''}>Publish</button>
         </div>

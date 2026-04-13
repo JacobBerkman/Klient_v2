@@ -736,7 +736,12 @@ const preflight = async () => {
     name: 'Flow A.4 Hard release gate',
     command: 'npm',
     args: ['run', '--silent', 'validate:master'],
-    env: { ...process.env, RELEASE_EVIDENCE_DIR: evidenceDir }
+    env: {
+      ...process.env,
+      RELEASE_EVIDENCE_DIR: evidenceDir,
+      RELEASE_E2E_STRICT_MODE: process.env.RELEASE_E2E_STRICT_MODE || '1',
+      RELEASE_E2E_ALLOW_FALLBACK: '0'
+    }
   })
 }
 
