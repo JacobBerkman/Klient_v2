@@ -39,6 +39,12 @@ const baseGateSteps = [
     evidenceFile: resolve(defaultEvidenceDir, 'integration-summary.json')
   },
   {
+    name: 'Aggregate handoff regression',
+    command: 'npm',
+    args: ['run', 'test:integration:handoff'],
+    evidenceFile: null
+  },
+  {
     name: 'Migration order checks',
     command: 'npm',
     args: ['run', 'check:migrations'],
