@@ -281,6 +281,7 @@ export function assert(condition, message) {
 
 export async function createTestContext(name) {
   const port = deterministicPort(name)
+  const baseUrl = `http://127.0.0.1:${port}`
   const resetBehavior = process.env.TEST_RESET_BEHAVIOR || 'isolated'
   const testCwd =
     resetBehavior === 'isolated' ? await mkdtemp(join(tmpdir(), `klient-${name}-`)) : resolve(process.cwd())
@@ -294,6 +295,8 @@ export async function createTestContext(name) {
       NODE_ENV: process.env.NODE_ENV || 'test',
       PORT: String(port),
       HOST: '127.0.0.1',
+      KLIENT_BASE_URL: baseUrl,
+      E2E_BASE_URL: baseUrl,
       KLIENT_OPS_TOKEN: opsToken
     },
     stdio: ['ignore', 'pipe', 'pipe']
@@ -328,6 +331,7 @@ export async function createTestContext(name) {
 
         const context = {
           port,
+          baseUrl,
           testCwd,
           opsToken,
           session(name = 'default') {

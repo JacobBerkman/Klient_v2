@@ -207,6 +207,7 @@ export async function main(deps = {}) {
   const context = await createContext('e2e-browser-suite')
   const fallback = browserFallbackMode()
   const strictMode = !fallback.enabled
+  const baseUrl = context.baseUrl || `http://127.0.0.1:${context.port}`
 
   try {
     await removeFile(playwrightReportPath, { force: true })
@@ -214,7 +215,8 @@ export async function main(deps = {}) {
     const baseEnv = {
       ...process.env,
       PORT: String(context.port),
-      KLIENT_BASE_URL: `http://127.0.0.1:${context.port}`,
+      KLIENT_BASE_URL: baseUrl,
+      E2E_BASE_URL: baseUrl,
       PLAYWRIGHT_JSON_REPORT: playwrightReportPath,
       RELEASE_E2E_PLAYWRIGHT_REPORT: playwrightReportPath,
       TEST_RESET_BEHAVIOR: process.env.TEST_RESET_BEHAVIOR || 'isolated'
