@@ -300,6 +300,9 @@ jobs:
 
       - run: npm ci
 
+      - name: Install Playwright browser
+        run: npx playwright install --with-deps chromium
+
       - name: Run canonical hard release gate
         run: |
           mkdir -p artifacts/hard-release-gate
@@ -309,9 +312,11 @@ jobs:
             echo "- seed: ${TEST_SEED}"
             echo "- node: $(node --version)"
             echo "- npm: $(npm --version)"
+            echo "- strict mode: RELEASE_E2E_STRICT_MODE=1"
+            echo "- fallback: RELEASE_E2E_ALLOW_FALLBACK=0"
           } > artifacts/hard-release-gate/readiness-summary.md
 
-          npm run validate:master 2>&1 | tee artifacts/hard-release-gate/suite.log
+          RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master 2>&1 | tee artifacts/hard-release-gate/suite.log
 
       - name: Upload artifacts (hard release gate)
         if: always()
@@ -323,6 +328,7 @@ jobs:
             artifacts/hard-release-gate/**
             artifacts/release-evidence/**
             test-results/**
+            playwright-report/**
             snapshots/**
             tmp/**/snapshots/**
 
