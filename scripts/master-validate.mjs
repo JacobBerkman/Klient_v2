@@ -16,71 +16,89 @@ function shouldIncludeMergeParityStep() {
   return branchCheck.status === 0
 }
 
-const baseGateSteps = [
-  { name: 'Static syntax checks', command: 'npm', args: ['run', 'check:syntax'], evidenceFile: null },
-  { name: 'Conflict marker guard', command: 'npm', args: ['run', 'check:conflicts'], evidenceFile: null },
-  {
-    name: 'API contract tests',
+const baseGateStepDefinitions = {
+  'Static syntax checks': { command: 'npm', args: ['run', 'check:syntax'], evidenceFile: null },
+  'Conflict marker guard': { command: 'npm', args: ['run', 'check:conflicts'], evidenceFile: null },
+  'API contract tests': {
     command: 'npm',
     args: ['run', 'test:contract'],
     evidenceFile: resolve(defaultEvidenceDir, 'api-contract-summary.json')
   },
-  { name: 'Negative-path RBAC checks', command: 'node', args: ['scripts/integration-rbac.mjs'], evidenceFile: null },
-  {
-    name: 'Negative-path tenancy checks',
+  'Negative-path RBAC checks': { command: 'node', args: ['scripts/integration-rbac.mjs'], evidenceFile: null },
+  'Negative-path tenancy checks': {
     command: 'node',
     args: ['scripts/integration-tenancy.mjs'],
     evidenceFile: null
   },
-  {
-    name: 'Integration suites',
+  'Integration suites': {
     command: 'npm',
     args: ['run', 'test:integration'],
     evidenceFile: resolve(defaultEvidenceDir, 'integration-summary.json')
   },
-  {
-    name: 'Aggregate handoff regression',
-    command: 'npm',
-    args: ['run', 'test:integration:handoff'],
-    evidenceFile: null
-  },
-  {
-    name: 'Migration order checks',
+  'Aggregate handoff regression': { command: 'npm', args: ['run', 'test:integration:handoff'], evidenceFile: null },
+  'Migration order checks': {
     command: 'npm',
     args: ['run', 'check:migrations'],
     evidenceFile: resolve(defaultEvidenceDir, 'migration-summary.json')
   },
-  {
-    name: 'Smoke test',
-    command: 'npm',
-    args: ['run', 'test:smoke'],
-    evidenceFile: resolve(defaultEvidenceDir, 'smoke-summary.json')
-  },
-  {
-    name: 'UI contract checks',
-    command: 'npm',
-    args: ['run', 'test:ui-contract'],
-    evidenceFile: null
-  },
-  {
-    name: 'E2E browser checks',
-    command: 'npm',
-    args: ['run', 'test:e2e'],
-    evidenceFile: resolve(defaultEvidenceDir, 'e2e-summary.json')
-  },
-  {
-    name: 'Security checks',
-    command: 'npm',
-    args: ['run', 'test:security'],
-    evidenceFile: resolve(defaultEvidenceDir, 'security-summary.json')
+  'Smoke test': { command: 'npm', args: ['run', 'test:smoke'], evidenceFile: resolve(defaultEvidenceDir, 'smoke-summary.json') },
+  'UI contract checks': { command: 'npm', args: ['run', 'test:ui-contract'], evidenceFile: null },
+  'E2E browser checks': { command: 'npm', args: ['run', 'test:e2e'], evidenceFile: resolve(defaultEvidenceDir, 'e2e-summary.json') },
+  'Security checks': { command: 'npm', args: ['run', 'test:security'], evidenceFile: resolve(defaultEvidenceDir, 'security-summary.json') }
+}
+
+const BASE_GATE_ORDER = Object.freeze([
+  'Static syntax checks',
+  'Conflict marker guard',
+  'API contract tests',
+  'Negative-path RBAC checks',
+  'Negative-path tenancy checks',
+  'Integration suites',
+  'Aggregate handoff regression',
+  'Migration order checks',
+  'Smoke test',
+  'UI contract checks',
+  'E2E browser checks',
+  'Security checks'
+])
+
+function buildOrderedSteps(order, definitions) {
+  return Object.freeze(
+    order.map((name) => {
+      const step = definitions[name]
+      if (!step) throw new Error(`Missing gate step definition: ${name}`)
+      return Object.freeze({ name, ...step })
+    })
+  )
+}
+
+function assertOrderedInvariant(steps, expectedOrder, label) {
+  const observed = steps.map((step) => step.name)
+  if (observed.length !== expectedOrder.length) {
+    throw new Error(`${label} command sequence length drifted. expected=${expectedOrder.length} actual=${observed.length}`)
   }
-]
+  for (let index = 0; index < expectedOrder.length; index += 1) {
+    if (observed[index] !== expectedOrder[index]) {
+      throw new Error(
+        `${label} command sequence changed at index ${index}. expected="${expectedOrder[index]}" actual="${observed[index]}"`
+      )
+    }
+  }
+}
+
+const baseGateSteps = buildOrderedSteps(BASE_GATE_ORDER, baseGateStepDefinitions)
+assertOrderedInvariant(baseGateSteps, BASE_GATE_ORDER, 'baseGateSteps')
 
 const includeMergeParityStep = shouldIncludeMergeParityStep()
 
 const gateSteps = includeMergeParityStep
-  ? [...baseGateSteps, { name: 'Merge/main parity check', command: 'npm', args: ['run', 'check:merge-main'], evidenceFile: null }]
+  ? Object.freeze([...baseGateSteps, { name: 'Merge/main parity check', command: 'npm', args: ['run', 'check:merge-main'], evidenceFile: null }])
   : baseGateSteps
+assertOrderedInvariant(
+  gateSteps,
+  includeMergeParityStep ? [...BASE_GATE_ORDER, 'Merge/main parity check'] : BASE_GATE_ORDER,
+  'gateSteps'
+)
 
 if (!includeMergeParityStep) {
   process.stdout.write(

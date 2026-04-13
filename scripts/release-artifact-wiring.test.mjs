@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 const repoRoot = resolve(new URL('..', import.meta.url).pathname)
@@ -59,11 +59,9 @@ test('validate master evidence env var wiring remains explicit for every evidenc
     ['Security checks', 'RELEASE_EVIDENCE_SECURITY_FILE']
   ]
 
-  const baseGateStepsBlock = masterValidate.match(/const baseGateSteps = \[([\s\S]*?)\n\]/)?.[1] || ''
+  const baseGateStepsBlock = masterValidate.match(/const baseGateStepDefinitions = \{([\s\S]*?)\n\}/)?.[1] || ''
   const evidenceProducingStepLabels = sortedUnique(
-    [...baseGateStepsBlock.matchAll(/\{[^{}]*name:\s*'([^']+)'[^{}]*evidenceFile:\s*resolve\(defaultEvidenceDir,\s*'[^']+'\)[^{}]*\}/g)].map(
-      (match) => match[1]
-    )
+    [...baseGateStepsBlock.matchAll(/'([^']+)':\s*\{[^}]*evidenceFile:\s*resolve\(defaultEvidenceDir,\s*'[^']+'\)/g)].map((match) => match[1])
   )
   const expectedMappingLabels = sortedUnique(expectedMappings.map(([stepLabel]) => stepLabel))
   assert.deepEqual(
@@ -82,10 +80,78 @@ test('validate master evidence env var wiring remains explicit for every evidenc
 
 test('validate:master keeps syntax checks before conflict marker guard', () => {
   const masterValidate = read('scripts/master-validate.mjs')
-  const syntaxIndex = masterValidate.indexOf("name: 'Static syntax checks'")
-  const conflictGuardIndex = masterValidate.indexOf("name: 'Conflict marker guard'")
+  const syntaxIndex = masterValidate.indexOf("'Static syntax checks'")
+  const conflictGuardIndex = masterValidate.indexOf("'Conflict marker guard'")
 
   assert.notEqual(syntaxIndex, -1, 'Expected Static syntax checks gate step to exist')
   assert.notEqual(conflictGuardIndex, -1, 'Expected Conflict marker guard gate step to exist')
   assert.ok(syntaxIndex < conflictGuardIndex, 'Static syntax checks must execute before conflict marker guard')
+})
+
+test('validate:master base gate order is locked as a deterministic invariant', () => {
+  const masterValidate = read('scripts/master-validate.mjs')
+  const orderMatch = masterValidate.match(/const BASE_GATE_ORDER = Object\.freeze\(\[([\s\S]*?)\]\)/)
+  assert.ok(orderMatch, 'BASE_GATE_ORDER must be declared')
+
+  const orderItems = [...orderMatch[1].matchAll(/'([^']+)'/g)].map((match) => match[1])
+  assert.deepEqual(orderItems, [
+    'Static syntax checks',
+    'Conflict marker guard',
+    'API contract tests',
+    'Negative-path RBAC checks',
+    'Negative-path tenancy checks',
+    'Integration suites',
+    'Aggregate handoff regression',
+    'Migration order checks',
+    'Smoke test',
+    'UI contract checks',
+    'E2E browser checks',
+    'Security checks'
+  ])
+  assert.match(masterValidate, /assertOrderedInvariant\(baseGateSteps, BASE_GATE_ORDER, 'baseGateSteps'\)/)
+  assert.match(masterValidate, /assertOrderedInvariant\(\s*gateSteps,/)
+})
+
+test('master-integration suite order is locked as a deterministic invariant', () => {
+  const masterIntegration = read('scripts/master-integration.mjs')
+  const orderMatch = masterIntegration.match(/const INTEGRATION_SUITE_ORDER = Object\.freeze\(\[([\s\S]*?)\]\)/)
+  assert.ok(orderMatch, 'INTEGRATION_SUITE_ORDER must be declared')
+
+  const orderItems = [...orderMatch[1].matchAll(/'([^']+)'/g)].map((match) => match[1])
+  assert.deepEqual(orderItems, [
+    'integration-tenancy.mjs',
+    'integration-rbac.mjs',
+    'integration-rbac-matrix.mjs',
+    'integration-templates.mjs',
+    'integration-exports.mjs',
+    'integration-portal-lifecycle.mjs',
+    'integration-submission-repeatable-items.mjs',
+    'integration-analytics.mjs',
+    'integration-e2e-workflows.mjs',
+    'integration-csrf.mjs',
+    'integration-audit.mjs'
+  ])
+  assert.match(masterIntegration, /assertSuiteOrderInvariant\(integrationSuites, INTEGRATION_SUITE_ORDER\)/)
+})
+
+test('strict-mode E2E semantics are pinned in workflow hard/e2e release gates', () => {
+  const workflow = read('.github/workflows/smoke.yml')
+  assert.match(workflow, /RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e/)
+  assert.match(workflow, /RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master/)
+  assert.match(workflow, /- strict mode: RELEASE_E2E_STRICT_MODE=1/)
+  assert.match(workflow, /- fallback: RELEASE_E2E_ALLOW_FALLBACK=0/)
+})
+
+test('critical release gate scripts are present for artifact/evidence wiring', () => {
+  const requiredFiles = [
+    'scripts/master-validate.mjs',
+    'scripts/master-integration.mjs',
+    'scripts/runner-lifecycle.mjs',
+    'scripts/validate-release-evidence.mjs',
+    'scripts/package-release-evidence.mjs'
+  ]
+
+  for (const file of requiredFiles) {
+    assert.ok(existsSync(resolve(repoRoot, file)), `required release gate file missing: ${file}`)
+  }
 })

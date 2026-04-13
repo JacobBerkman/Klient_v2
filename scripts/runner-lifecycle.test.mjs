@@ -109,3 +109,70 @@ test('runCommandProcess timeout rejects with explicit stdio context for piped ru
   const elapsed = Date.now() - start
   assert(elapsed < 2000, `expected timeout rejection to settle quickly, got ${elapsed}ms`)
 })
+
+test('runCommandProcess does not misclassify fast exits near timeout boundary as timeouts', async () => {
+  const result = await runCommandProcess({
+    command: nodeBin,
+    args: ['-e', 'setTimeout(() => process.exit(0), 40)'],
+    label: 'timeout-boundary-fast-exit',
+    stdio: 'pipe',
+    timeoutMs: 400
+  })
+
+  assert.equal(result.code, 0)
+  assert.equal(typeof result.durationMs, 'number')
+})
+
+test('runCommandProcess handles abrupt non-zero exit with piped stdio', async () => {
+  await assert.rejects(
+    () =>
+      runCommandProcess({
+        command: nodeBin,
+        args: ['-e', 'process.stdout.write("before-abrupt-exit\\n"); process.exit(23)'],
+        label: 'abrupt-exit-non-zero',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeoutMs: 3000
+      }),
+    /abrupt-exit-non-zero exited with code 23/
+  )
+})
+
+test('runCommandProcess preserves suite handoff stability across mixed abrupt and clean exits', async () => {
+  const suites = [
+    { label: 'handoff-clean-1', code: 0 },
+    { label: 'handoff-clean-2', code: 0 },
+    { label: 'handoff-clean-3', code: 0 }
+  ]
+
+  for (const suite of suites) {
+    const result = await runCommandProcess({
+      command: nodeBin,
+      args: ['-e', `process.stdout.write("${suite.label}\\n"); process.exit(${suite.code})`],
+      label: suite.label,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeoutMs: 4000
+    })
+    assert.equal(result.code, 0)
+  }
+
+  await assert.rejects(
+    () =>
+      runCommandProcess({
+        command: nodeBin,
+        args: ['-e', 'process.stderr.write("intentional-failure\\n"); process.exit(31)'],
+        label: 'handoff-abrupt-failure',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeoutMs: 4000
+      }),
+    /handoff-abrupt-failure exited with code 31/
+  )
+
+  const recovery = await runCommandProcess({
+    command: nodeBin,
+    args: ['-e', 'process.stdout.write("handoff-recovery\\n")'],
+    label: 'handoff-recovery',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    timeoutMs: 4000
+  })
+  assert.equal(recovery.code, 0)
+})

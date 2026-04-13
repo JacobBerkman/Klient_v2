@@ -57,6 +57,22 @@ const releaseGateJobs = [
     evidence: 'artifacts/release-evidence/<release-id>/security-summary.json'
   }
 ]
+const canonicalEvidenceSummaries = [
+  'api-contract-summary.json',
+  'integration-summary.json',
+  'migration-summary.json',
+  'smoke-summary.json',
+  'e2e-summary.json',
+  'security-summary.json'
+]
+
+const requiredGateFiles = [
+  'scripts/master-validate.mjs',
+  'scripts/master-integration.mjs',
+  'scripts/runner-lifecycle.mjs',
+  'scripts/validate-release-evidence.mjs',
+  'scripts/package-release-evidence.mjs'
+]
 
 const requiredGateCommands = [
   'npm run validate:master',
@@ -94,6 +110,12 @@ for (const { command, evidence } of releaseGateJobs) {
   assertContains(checklist, command, 'docs/release-ready-checklist.md')
   assertContains(checklist, evidence, 'docs/release-ready-checklist.md')
   assertContains(workflow, command, '.github/workflows/smoke.yml')
+  if (!evidence.startsWith('artifacts/release-evidence/<release-id>/')) {
+    missing.push(`release gate evidence path must be rooted at artifacts/release-evidence/<release-id>/: ${evidence}`)
+  }
+  if (!evidence.endsWith('-summary.json')) {
+    missing.push(`release gate evidence path must end with -summary.json: ${evidence}`)
+  }
 }
 
 for (const { jobId } of releaseGateJobs) {
@@ -138,6 +160,28 @@ if (hardReleaseJob) {
   if (playwrightInstallIndex >= 0 && validateMasterIndex >= 0 && playwrightInstallIndex > validateMasterIndex) {
     missing.push('.github/workflows/smoke.yml hard_release_gate installs Playwright after validate:master (must be before)')
   }
+  if (!/RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master/.test(hardReleaseJob)) {
+    missing.push('.github/workflows/smoke.yml hard_release_gate must execute validate:master with strict E2E env flags')
+  }
+  if (!hardReleaseJob.includes('- strict mode: RELEASE_E2E_STRICT_MODE=1')) {
+    missing.push('.github/workflows/smoke.yml hard_release_gate readiness summary missing strict mode evidence line')
+  }
+  if (!hardReleaseJob.includes('- fallback: RELEASE_E2E_ALLOW_FALLBACK=0')) {
+    missing.push('.github/workflows/smoke.yml hard_release_gate readiness summary missing fallback-disabled evidence line')
+  }
+}
+
+const e2eReleaseBlockingJob = getJobBlock(workflow, 'e2e_release_blocking')
+if (e2eReleaseBlockingJob) {
+  if (!/RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e/.test(e2eReleaseBlockingJob)) {
+    missing.push('.github/workflows/smoke.yml e2e_release_blocking must run test:e2e with strict mode and fallback disabled')
+  }
+  if (!e2eReleaseBlockingJob.includes('- strict mode: RELEASE_E2E_STRICT_MODE=1')) {
+    missing.push('.github/workflows/smoke.yml e2e_release_blocking readiness summary missing strict mode evidence line')
+  }
+  if (!e2eReleaseBlockingJob.includes('- fallback: RELEASE_E2E_ALLOW_FALLBACK=0')) {
+    missing.push('.github/workflows/smoke.yml e2e_release_blocking readiness summary missing fallback-disabled evidence line')
+  }
 }
 
 const jobIds = new Set([...workflow.matchAll(/^  ([a-z0-9_]+):$/gm)].map((entry) => entry[1]))
@@ -161,9 +205,19 @@ if (mergeGateJob) {
 
 const e2eDocsFolder = 'artifacts/e2e-release-blocking'
 assertContains(quickRef, `${e2eDocsFolder}/`, 'docs/deployment-quick-reference.md')
+for (const summaryName of canonicalEvidenceSummaries) {
+  assertContains(quickRef, `artifacts/release-evidence/<release-id>/${summaryName}`, 'docs/deployment-quick-reference.md')
+  assertContains(checklist, `artifacts/release-evidence/<release-id>/${summaryName}`, 'docs/release-ready-checklist.md')
+}
 
 if (workflow.includes('npm run test:runtime-contract')) {
   missing.push('.github/workflows/smoke.yml uses non-canonical command: npm run test:runtime-contract')
+}
+
+for (const relativePath of requiredGateFiles) {
+  if (!existsSync(resolve(process.cwd(), relativePath))) {
+    missing.push(`required release gate file missing: ${relativePath}`)
+  }
 }
 
 const nodeFileMatchers = [/^node\s+([^\s]+\.mjs)$/, /^bash\s+([^\s]+\.sh)$/]
