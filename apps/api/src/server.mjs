@@ -492,13 +492,20 @@ function sendError(res, error, requestId) {
           : /permission|policy denied|access denied|missing permission/i.test(normalizedMessage)
             ? 403
           : 400
+  const fieldErrors = error?.details?.fieldErrors && typeof error.details.fieldErrors === 'object' ? error.details.fieldErrors : null
+  const tightenedMessage =
+    statusCode === 422 && fieldErrors && Object.keys(fieldErrors).length
+      ? `${message} (${Object.entries(fieldErrors)
+          .map(([key, value]) => `${key}: ${value}`)
+          .join('; ')})`
+      : message
   json(
     res,
     statusCode,
     {
-      message,
+      message: tightenedMessage,
       error: {
-        message,
+        message: tightenedMessage,
         code: error?.code || null,
         details: error?.details || null,
         statusCode,

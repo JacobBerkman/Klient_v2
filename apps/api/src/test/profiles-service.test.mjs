@@ -99,3 +99,62 @@ test('custom field schema dry-run delegates to repository without mutation guard
   assert.equal(calls.length, 1)
   assert.equal(calls[0].rows[0].key, 'risk_tolerance')
 })
+
+test('custom field schema responses are sorted by group and metadata.order for stable persistence ordering', () => {
+  const profileRepository = {
+    getCustomFieldSchema: () => ({
+      updatedAt: '2026-04-13T00:00:00.000Z',
+      fields: [
+        { key: 'zeta', label: 'Zeta', type: 'text', metadata: { group: 'B', order: 2 } },
+        { key: 'alpha', label: 'Alpha', type: 'text', metadata: { group: 'A', order: 5 } },
+        { key: 'beta', label: 'Beta', type: 'text', metadata: { group: 'A', order: 1 } }
+      ]
+    })
+  }
+  const service = createProfilesService({ profileRepository, policy: createPolicy() })
+  const user = { id: 'advisor-1', role: 'advisor', firmId: 'firm-1' }
+  const schema = service.getCustomFieldSchema(user)
+  assert.deepEqual(
+    schema.fields.map((field) => field.key),
+    ['beta', 'alpha', 'zeta']
+  )
+})
+
+test('custom field dry-run diff arrays are sorted for deterministic confirm pipelines', async () => {
+  const profileRepository = {
+    dryRunCustomFieldSchema: () => ({
+      dryRun: true,
+      normalizedRows: [
+        { key: 'zeta', label: 'Zeta', type: 'text', metadata: { group: 'B', order: 3 } },
+        { key: 'alpha', label: 'Alpha', type: 'text', metadata: { group: 'A', order: 2 } }
+      ],
+      diff: {
+        added: [
+          { key: 'zeta', label: 'Zeta', type: 'text', metadata: { group: 'B', order: 3 } },
+          { key: 'alpha', label: 'Alpha', type: 'text', metadata: { group: 'A', order: 2 } }
+        ],
+        removed: [],
+        unchanged: [],
+        updated: [
+          { before: { key: 'zeta' }, after: { key: 'zeta' } },
+          { before: { key: 'alpha' }, after: { key: 'alpha' } }
+        ]
+      }
+    })
+  }
+  const service = createProfilesService({ profileRepository, policy: createPolicy() })
+  const admin = { id: 'admin-1', role: 'admin', firmId: 'firm-1' }
+  const preview = await service.dryRunCustomFieldSchema(admin, { rows: [] })
+  assert.deepEqual(
+    preview.normalizedRows.map((field) => field.key),
+    ['alpha', 'zeta']
+  )
+  assert.deepEqual(
+    preview.diff.added.map((field) => field.key),
+    ['alpha', 'zeta']
+  )
+  assert.deepEqual(
+    preview.diff.updated.map((entry) => entry.after.key),
+    ['alpha', 'zeta']
+  )
+})

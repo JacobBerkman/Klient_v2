@@ -213,9 +213,18 @@ test('@release-blocking custom-field schema CRUD states surface in admin and pro
   await expect(page.getByRole('heading', { name: 'Custom Field Schema' })).toBeVisible()
   await page.locator('#custom-field-create-form input[name="key"]').fill(fieldKey)
   await page.locator('#custom-field-create-form input[name="label"]').fill('Custom Segment')
+  await page.locator('#custom-field-create-form input[name="group"]').fill('Planning')
+  await page.locator('#custom-field-create-form input[name="order"]').fill('20')
   await page.locator('#custom-field-create-form button[type="submit"]').click()
   await expect(page.locator('#custom-field-create-form [data-form-feedback]')).toContainText('Success: custom field created.')
   await expect(page.getByText(fieldKey)).toBeVisible()
+  await expect(page.locator('table tbody tr').first()).toContainText('Planning')
+  await expect(page.locator('table tbody tr').first()).toContainText('20')
+
+  await page.locator('#custom-field-create-form input[name="key"]').fill(`invalid_${seededRunId}`)
+  await page.locator('#custom-field-create-form input[name="order"]').fill('-5')
+  await page.locator('#custom-field-create-form button[type="submit"]').click()
+  await expect(page.locator('#custom-field-create-form [data-form-feedback]')).toContainText('Order must be a whole number 0 or higher.')
 
   await page.locator('#custom-field-bulk-add-row').click()
   const bulkRow = page.locator('[data-bulk-row]').last()
@@ -223,7 +232,9 @@ test('@release-blocking custom-field schema CRUD states surface in admin and pro
   await bulkRow.locator('select[name="bulkType"]').selectOption('number')
   await bulkRow.locator('input[name="bulkLabel"]').fill('Custom Score')
   await bulkRow.locator('input[name="bulkRequired"]').fill('true')
-  await bulkRow.locator('input[name="bulkMetadata"]').fill('{"group":"board"}')
+  await bulkRow.locator('input[name="bulkGroup"]').fill('Board')
+  await bulkRow.locator('input[name="bulkOrder"]').fill('5')
+  await bulkRow.locator('input[name="bulkMetadata"]').fill('{"uiHint":"score"}')
   await page.locator('#custom-field-bulk-form button[type="submit"]').click()
   await expect(page.locator('#custom-field-bulk-form [data-form-feedback]')).toContainText(
     'Success: preview generated. Confirm to persist changes.'
@@ -233,6 +244,8 @@ test('@release-blocking custom-field schema CRUD states surface in admin and pro
 
   await page.locator(`[data-custom-field-update="${fieldKey}"] input[name="label"]`).fill('Custom Score')
   await page.locator(`[data-custom-field-update="${fieldKey}"] select[name="type"]`).selectOption('number')
+  await page.locator(`[data-custom-field-update="${fieldKey}"] input[name="group"]`).fill('Board')
+  await page.locator(`[data-custom-field-update="${fieldKey}"] input[name="order"]`).fill('2')
   await page.locator(`[data-custom-field-update="${fieldKey}"] button[type="submit"]`).click()
   await expect(page.locator(`[data-custom-field-update="${fieldKey}"] [data-form-feedback]`)).toContainText(
     `Success: custom field ${fieldKey} updated.`
@@ -256,6 +269,7 @@ test('@release-blocking custom-field schema CRUD states surface in admin and pro
   await page.getByRole('button', { name: 'Dashboard' }).click()
   await expect(page.locator(`#profile-custom-fields [name="customField__${fieldKey}"]`)).toBeVisible()
   await expect(page.locator(`#profile-custom-fields [name="customField__${fieldKey}"]`)).toHaveAttribute('type', 'number')
+  await expect(page.locator('#profile-custom-fields')).toContainText('Board')
 
   await page.getByRole('button', { name: 'Clients' }).click()
   await page.locator(`[data-edit-profile="${profile.id}"]`).click()
