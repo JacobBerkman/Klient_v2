@@ -8,6 +8,16 @@ function normalizeIssueRowIndex(issue = {}) {
   return match ? Number(match[1]) : null
 }
 
+function normalizeRepeaterPath(value) {
+  return String(value || '')
+    .trim()
+    .replace(/\[(\*|\d+)\]/g, '')
+    .split('.')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+    .join('.')
+}
+
 const TEMPLATE_VALIDATION_MESSAGES = {
   unknown_source_path: 'Mapping source path is not recognized by the profile/form schema.',
   required_pdf_field_missing: 'A required PDF field is not mapped.',
@@ -28,6 +38,7 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
   const rowIndex = normalizeIssueRowIndex(issue)
   const message = String(issue?.message || 'Validation issue')
   const sourceMeta = issue?.meta && typeof issue.meta === 'object' ? issue.meta : {}
+  const repeaterPath = normalizeRepeaterPath(issue?.repeaterPath || sourceMeta.repeaterPath || sourceMeta.normalizedRepeaterPath)
   const issueId = sourceMeta.issueId || [code, rowIndex ?? 'global', field || path || index].join(':')
   const rowAnchor = rowIndex != null ? `#mapping-row-${rowIndex}` : ''
   const inspectorTarget = String(sourceMeta.inspectorTarget || field || sourceMeta.fieldKey || 'sourcePath')
@@ -56,12 +67,14 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
       ...(sourceMeta.operator ? { operator: sourceMeta.operator } : {})
     },
     ...(rowId ? { rowId } : {}),
+    ...(repeaterPath ? { repeaterPath } : {}),
     meta: {
       ...sourceMeta,
       issueId,
       rowAnchor,
       inspectorTarget,
       ...(rowId ? { rowId } : {}),
+      ...(repeaterPath ? { repeaterPath, normalizedRepeaterPath: repeaterPath } : {}),
       fieldPath: sourceMeta.fieldPath || path,
       fieldKey: sourceMeta.fieldKey || field || path || 'mapping'
     }

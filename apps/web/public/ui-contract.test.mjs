@@ -176,6 +176,13 @@ test('template versioning and publish preflight controls remain wired in builder
   assert.match(appJs, /id="revert-template-version"/)
 })
 
+test('template mapping sample preview includes repeater and empty-state hints', () => {
+  assert.match(appJs, /function formatTemplateSampleValue\(value, sourcePath = ''\)/)
+  assert.match(appJs, /Repeater empty \(0 items\)/)
+  assert.match(appJs, /Unresolved source/)
+  assert.match(appJs, /Repeater \(\$\{value\.length\} items\)/)
+})
+
 
 test('e2e selectors stay stable for auth, advisor workflows, and portal submission controls', () => {
   assert.match(html, /id="register-form"[^>]*data-e2e="register-form"/)

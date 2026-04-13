@@ -2265,9 +2265,29 @@ function collectTemplateSchemaPaths(fields = [], parentPath = '', output = new M
   return output
 }
 
-function mappingLocalIssues(mapping, knownPaths, rowIndex = null) {
-  const rowAnchor = Number.isFinite(Number(rowIndex)) ? `#mapping-row-${Number(rowIndex)}` : ''
-  const createIssue = (code, message, inspectorTarget) => ({ code, message, inspectorTarget, rowAnchor })
+function formatTemplateSampleValue(value, sourcePath = '') {
+  const normalizedPath = String(sourcePath || '').trim()
+  if (!normalizedPath) return '<span class="muted">No source path</span>'
+  if (value === undefined) return '<span class="error-badge">Unresolved source</span>'
+  if (value === null || value === '') return '<span class="warning-badge">Empty value</span>'
+  if (Array.isArray(value)) {
+    if (!value.length) return '<span class="warning-badge">Repeater empty (0 items)</span>'
+    const preview = value
+      .slice(0, 2)
+      .map((entry) => {
+        if (entry == null) return 'null'
+        if (typeof entry === 'object') return JSON.stringify(entry)
+        return String(entry)
+      })
+      .join(' · ')
+    const suffix = value.length > 2 ? ` (+${value.length - 2} more)` : ''
+    return `<span class="badge subtle">Repeater (${value.length} items)</span><div class="muted compact">${escapeHtml(preview + suffix)}</div>`
+  }
+  if (typeof value === 'object') return `<code>${escapeHtml(JSON.stringify(value))}</code>`
+  return `<span>${escapeHtml(String(value))}</span>`
+}
+
+function mappingLocalIssues(mapping, knownPaths) {
   const issues = []
   const pdfField = String(mapping.pdfField || '').trim()
   const sourcePath = String(mapping.sourcePath || '').trim()
@@ -2981,7 +3001,7 @@ async function renderTemplates() {
                     : '<span class="muted">None</span>'
                 }</td>
                 <td>${hasPreviewWarnings ? '<span class="warning-badge">Preview warning</span>' : '<span class="muted">OK</span>'}</td>
-                <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
+                <td>${formatTemplateSampleValue(sampleValue, mapping.sourcePath)}</td>
               </tr>`
             })
             .join('') || '<tr><td colspan="12" class="muted">No mappings match this filter.</td></tr>'}
