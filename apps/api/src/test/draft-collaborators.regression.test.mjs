@@ -56,11 +56,21 @@ test('draft collaboration regression enforces role + collaborator boundaries for
 
   modules.forms.addDraftCollaborator(admin, draft.id, { userId: advisor.id, permission: 'write' })
   modules.forms.addDraftCollaborator(admin, draft.id, { userId: readonly.id, permission: 'read' })
+  const collaboratorSnapshot = modules.forms.listDraftCollaborators(admin, draft.id)
+  assert.deepEqual(
+    collaboratorSnapshot.map((entry) => [entry.userId, entry.permission]),
+    [
+      [admin.id, 'write'],
+      [advisor.id, 'write'],
+      [readonly.id, 'read']
+    ]
+  )
   assert.throws(() => modules.forms.addDraftCollaborator(admin, draft.id, { userId: advisor.id }), /already added/i)
   assert.throws(() => modules.forms.addDraftCollaborator(advisor, draft.id, { userId: advisor.id }), /already a collaborator/i)
 
   assert.equal(modules.forms.listFormDrafts(advisor).length, 1)
   assert.equal(modules.forms.listFormDrafts(readonly).length, 1)
+  assert.throws(() => modules.forms.listDraftCollaborators(readonly, draft.id), /Missing permission: canManageDraftSharing/)
 
   const lock = modules.forms.acquireDraftLock(advisor, draft.id, { leaseMs: 30_000 })
   assert.equal(lock.ok, true)
