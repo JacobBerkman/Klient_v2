@@ -127,5 +127,5 @@ async function main() {
 main().catch((error) => {
   evidence.finalize({ status: 'failed', error })
   console.error(`\n❌ Integration suite failed: ${error.message}`)
-  process.exit(1)
+  process.exitCode = 1
 })
