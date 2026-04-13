@@ -4,6 +4,7 @@ import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
+import { createTemplatesService } from '../modules/templates/service.mjs'
 
 const previousCwd = process.cwd()
 const tempDir = mkdtempSync(join(tmpdir(), 'klient-template-versioning-'))
@@ -227,4 +228,47 @@ test('mapping inspector edits persist and create version snapshots', () => {
   assert.ok(updated.versions.length >= 2)
   const mappingVersion = updated.versions.find((entry) => entry.event === 'mappings_updated')
   assert.ok(mappingVersion)
+})
+
+test('templates service enriches preflight diagnostics into readiness summary', () => {
+  const templateRepository = {
+    previewTemplateMappings() {
+      return {
+        issues: [
+          { code: 'required_source_path', field: 'sourcePath', path: '/mappings/0/sourcePath', rowIndex: 0, message: 'Missing source path' },
+          {
+            code: 'expression_operator_assignment',
+            field: 'transform.expression',
+            path: '/mappings/1/transform/expression',
+            rowIndex: 1,
+            message: 'Use equality operator',
+            blocking: false,
+            severity: 'warning'
+          },
+          {
+            code: 'unpublished_dependency',
+            field: 'dependency',
+            path: '/dependencies/0',
+            message: 'Template depends on unpublished form',
+            blocking: false,
+            severity: 'warning'
+          }
+        ]
+      }
+    }
+  }
+  const service = createTemplatesService({
+    templateRepository,
+    policy: { requireGuard() {} }
+  })
+
+  const preflight = service.previewMappings({ id: 'u-1' }, 'tmpl-1', {})
+  assert.ok(preflight.publishReadiness)
+  assert.equal(preflight.publishReadiness.summary.status, 'blocked')
+  assert.equal(preflight.publishReadiness.summary.missingMappingsCount, 1)
+  assert.equal(preflight.publishReadiness.summary.invalidTransformsCount, 1)
+  assert.equal(preflight.publishReadiness.summary.unpublishedDependenciesCount, 1)
+  assert.equal(preflight.publishReadiness.blockers.length, 1)
+  assert.equal(preflight.publishReadiness.warnings.length, 2)
+  assert.equal(preflight.publishReadiness.quickLinks[0]?.anchor, '#mapping-row-0')
 })

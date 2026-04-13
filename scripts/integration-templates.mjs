@@ -112,8 +112,19 @@ try {
   assert(suggestionPreview.issues?.[0]?.code === 'unknown_source_path', 'Suggestion preview should flag unknown source path')
   assert(Array.isArray(suggestionPreview.issues?.[0]?.suggestedSourcePaths), 'Suggestion preview should include suggested source paths')
   assert(suggestionPreview.issues?.[0]?.action?.field === 'sourcePath', 'Suggestion preview should include actionable issue metadata')
+  assert(suggestionPreview.publishReadiness?.summary?.status === 'blocked', 'Suggestion preview readiness should be blocked')
+  assert(
+    Number(suggestionPreview.publishReadiness?.summary?.missingMappingsCount || 0) >= 1,
+    'Suggestion preview readiness should count missing mappings'
+  )
+  assert(
+    suggestionPreview.publishReadiness?.quickLinks?.[0]?.anchor === '#mapping-row-0',
+    'Suggestion preview readiness should provide quick-link anchors'
+  )
   assert(suggestedMappingsUpdate.mappings?.[0]?.sourcePath === suggestedPath, 'Suggestion-assisted mapping update failed')
   assert(!Array.isArray(preflightSuccess.issues) || preflightSuccess.issues.length === 0, 'Publish preflight should pass after suggestion-assisted mapping update')
+  assert(preflightSuccess.publishReadiness?.summary?.status === 'ready', 'Publish preflight readiness should be ready after remediation')
+  assert(preflightSuccess.publishReadiness?.summary?.blockersCount === 0, 'Publish preflight readiness blockers should be zero after remediation')
   assert(guardedPublishError.error?.code === 'SCHEMA_VALIDATION_FAILED', 'Publish guard should reject unknown mapping path')
   assert(Array.isArray(guardedPublishError.error?.details?.issues), 'Publish guard should return detailed issues array')
   assert(guardedPublishError.error?.details?.issues?.[0]?.code === 'unknown_source_path', 'Publish guard issue code mismatch')

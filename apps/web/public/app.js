@@ -2097,6 +2097,60 @@ function publishBlockersMarkup({ hasLocalMappingErrors, hasBlockingPreviewWarnin
   return `<div class="publish-blockers" role="status" aria-live="polite"><p class="publish-disabled-reason"><strong>Publish blocked:</strong></p><ul>${blockers.join('')}</ul></div>`
 }
 
+function publishReadinessPanelMarkup({ readiness = null, fallbackIssues = [] }) {
+  const blockers = Array.isArray(readiness?.blockers)
+    ? readiness.blockers
+    : fallbackIssues.filter((issue) => issue?.blocking !== false)
+  const warnings = Array.isArray(readiness?.warnings)
+    ? readiness.warnings
+    : fallbackIssues.filter((issue) => issue?.blocking === false || issue?.severity === 'warning')
+  const quickLinks = Array.isArray(readiness?.quickLinks)
+    ? readiness.quickLinks
+    : blockers
+        .map((issue) => {
+          const rowIndex = Number(issue?.rowIndex)
+          if (!Number.isFinite(rowIndex)) return null
+          const rowId = String(issue?.rowId || issue?.meta?.rowId || '').trim()
+          return { rowIndex, rowId, field: issue?.field || 'sourcePath', label: `Row ${rowIndex + 1}` }
+        })
+        .filter(Boolean)
+  const renderIssue = (issue) => {
+    const rowIndex = Number(issue?.rowIndex)
+    const rowId = String(issue?.rowId || issue?.meta?.rowId || '').trim()
+    const cta = Number.isFinite(rowIndex)
+      ? `<a href="#mapping-row-${rowIndex}" class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="sourcePath">Row ${rowIndex + 1}</a> · `
+      : ''
+    return `<li>${cta}<code>${escapeHtml(issue?.meta?.issueId || issue?.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`
+  }
+  return `<section class="publish-readiness-panel" aria-labelledby="publish-readiness-heading">
+    <h4 id="publish-readiness-heading">Publish readiness</h4>
+    <p class="muted compact">Blockers must be fixed before publish. Warnings are recommended fixes.</p>
+    <div class="grid two">
+      <div>
+        <h5>Blockers (${blockers.length})</h5>
+        ${blockers.length ? `<ul>${blockers.map(renderIssue).join('')}</ul>` : '<p class="muted">No blockers found.</p>'}
+      </div>
+      <div>
+        <h5>Warnings (${warnings.length})</h5>
+        ${warnings.length ? `<ul>${warnings.map(renderIssue).join('')}</ul>` : '<p class="muted">No warnings.</p>'}
+      </div>
+    </div>
+    <h5>Quick links</h5>
+    ${
+      quickLinks.length
+        ? `<p class="row wrap gap-sm">${quickLinks
+            .map((entry) => {
+              const rowIndex = Number(entry?.rowIndex)
+              const rowId = String(entry?.rowId || '').trim()
+              if (!Number.isFinite(rowIndex)) return ''
+              return `<a href="#mapping-row-${rowIndex}" class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="${escapeHtml(entry?.field || 'sourcePath')}">${escapeHtml(entry?.label || `Row ${rowIndex + 1}`)}</a>`
+            })
+            .join(' ')}</p>`
+        : '<p class="muted">Quick links appear after preflight finds row-level diagnostics.</p>'
+    }
+  </section>`
+}
+
 function operationsQueueActionPlanMarkup(snapshot = {}) {
   const queuePayload = snapshot?.queue?.payload
   const queue = queuePayload?.queue || queuePayload || {}
@@ -2367,6 +2421,7 @@ async function renderTemplates() {
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
   const preflight = template ? state.templatePublishPreflightByTemplateId[template.id] : null
   const preflightIssues = Array.isArray(preflight?.issues) ? preflight.issues : []
+  const publishReadiness = preflight?.publishReadiness || null
   const preflightIssuesByRowIndex = new Map()
   const preflightIssuesByRowId = new Map()
   preflightIssues.forEach((issue) => {
@@ -2730,18 +2785,10 @@ async function renderTemplates() {
           <button id="publish-template" class="tiny publish-action" ${publishDisabled || !templateOpsPermissions.canWrite ? 'disabled' : ''}>Publish</button>
         </div>
         ${publishBlockersMarkup({ hasLocalMappingErrors, hasBlockingPreviewWarnings, preflightIssues, preflightIssueRows })}
+        ${publishReadinessPanelMarkup({ readiness: publishReadiness, fallbackIssues: preflightIssues })}
         ${
           preflightIssues.length
-            ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s) across ${preflightIssueRows.size || 0} mapped row(s).</p><ul>${preflightIssues
-                .map((issue) => {
-                  const rowIndex = Number(issue.rowIndex)
-                  const rowId = String(issue?.rowId || issue?.meta?.rowId || '').trim()
-                  const rowCta = Number.isFinite(rowIndex)
-                    ? `<button class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="sourcePath">Row ${rowIndex + 1}</button> · `
-                    : ''
-                  return `<li>${rowCta}<code>${escapeHtml(issue?.meta?.issueId || issue.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`
-                })
-                .join('')}</ul>`
+            ? `<p class="publish-disabled-reason">Publish preflight found ${preflightIssues.length} schema validation issue(s) across ${preflightIssueRows.size || 0} mapped row(s).</p>`
             : '<p class="muted">Run preflight to surface publish-time schema validation (unknown source paths, required mappings, and transform issues) before attempting publish.</p>'
         }
         ${
@@ -3190,7 +3237,8 @@ async function renderTemplates() {
         checkedAt: new Date().toISOString(),
         issues: nextPreview.issues || [],
         warningsCount: nextPreview.warningsCount || 0,
-        blockingWarningsCount: nextPreview.blockingWarningsCount || 0
+        blockingWarningsCount: nextPreview.blockingWarningsCount || 0,
+        publishReadiness: nextPreview.publishReadiness || null
       }
       state.templateWizardStepByTemplateId[template.id] = 'publish'
       if ((nextPreview.issues || []).length) {
@@ -3199,7 +3247,10 @@ async function renderTemplates() {
         setFlash('success', 'Publish preflight passed with no schema validation issues.')
       }
     } catch (error) {
-      state.templatePublishPreflightByTemplateId[template.id] = { issues: error?.details?.issues || [] }
+      state.templatePublishPreflightByTemplateId[template.id] = {
+        issues: error?.details?.issues || [],
+        publishReadiness: error?.details?.publishReadiness || null
+      }
       reportActionError('Template publish preflight', error)
     }
     await rerenderTemplates()
@@ -3270,7 +3321,8 @@ async function renderTemplates() {
         checkedAt: new Date().toISOString(),
         issues: preflightPreview.issues || [],
         warningsCount: preflightPreview.warningsCount || 0,
-        blockingWarningsCount: preflightPreview.blockingWarningsCount || 0
+        blockingWarningsCount: preflightPreview.blockingWarningsCount || 0,
+        publishReadiness: preflightPreview.publishReadiness || null
       }
       const hasBlockingWarnings =
         Number(preflightPreview?.blockingWarningsCount || 0) > 0 || (preflightPreview?.issues || []).some((issue) => issue.blocking)
@@ -3292,7 +3344,8 @@ async function renderTemplates() {
       if (Array.isArray(error?.details?.issues)) {
         state.templatePublishPreflightByTemplateId[template.id] = {
           checkedAt: new Date().toISOString(),
-          issues: error.details.issues
+          issues: error.details.issues,
+          publishReadiness: error.details.publishReadiness || null
         }
       }
       reportActionError('Templates', error)

@@ -30,6 +30,8 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
   const sourceMeta = issue?.meta && typeof issue.meta === 'object' ? issue.meta : {}
   const issueId = sourceMeta.issueId || [code, rowIndex ?? 'global', field || path || index].join(':')
   const rowId = String(issue?.rowId || sourceMeta.rowId || '').trim()
+  const severity = String(issue?.severity || sourceMeta.severity || 'error').toLowerCase() === 'warning' ? 'warning' : 'error'
+  const blocking = issue?.blocking === false || sourceMeta.blocking === false ? false : severity !== 'warning'
   return {
     code,
     errorCode: `TEMPLATE_VALIDATION_${code.toUpperCase()}`,
@@ -38,8 +40,8 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
     rowIndex,
     message,
     errorMessage: TEMPLATE_VALIDATION_MESSAGES[code] || message,
-    severity: 'error',
-    blocking: true,
+    severity,
+    blocking,
     ...(Array.isArray(sourceMeta.suggestedSourcePaths) && sourceMeta.suggestedSourcePaths.length
       ? { suggestedSourcePaths: sourceMeta.suggestedSourcePaths }
       : {}),
@@ -61,6 +63,65 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
 
 function normalizePublishPreflightIssues(issues = []) {
   return Array.isArray(issues) ? issues.map((issue, index) => normalizePublishPreflightIssue(issue, index)) : []
+}
+
+function classifyPreflightCategory(issue = {}) {
+  const code = String(issue.code || '').toLowerCase()
+  if (
+    code.includes('required_pdf_field') ||
+    code.includes('required_source_path') ||
+    code.includes('required_repeater_path') ||
+    code.includes('unresolved_source_path') ||
+    code.includes('unknown_source_path')
+  ) {
+    return 'missingMappings'
+  }
+  if (code.includes('transform') || code.startsWith('expression_')) return 'invalidTransforms'
+  if (code.includes('unpublished_dependenc')) return 'unpublishedDependencies'
+  return null
+}
+
+function buildPublishReadiness(issues = []) {
+  const blockers = issues.filter((issue) => issue.blocking !== false)
+  const warnings = issues.filter((issue) => issue.blocking === false || issue.severity === 'warning')
+  const categories = {
+    missingMappings: [],
+    invalidTransforms: [],
+    unpublishedDependencies: []
+  }
+  issues.forEach((issue) => {
+    const category = classifyPreflightCategory(issue)
+    if (category) categories[category].push(issue)
+  })
+  const quickLinks = issues
+    .map((issue) => {
+      const rowIndex = Number(issue?.rowIndex)
+      if (!Number.isFinite(rowIndex)) return null
+      const rowId = String(issue?.rowId || issue?.meta?.rowId || '').trim()
+      return {
+        rowIndex,
+        ...(rowId ? { rowId } : {}),
+        field: String(issue?.field || issue?.meta?.fieldKey || 'sourcePath'),
+        anchor: `#mapping-row-${rowIndex}`,
+        label: `Row ${rowIndex + 1}`
+      }
+    })
+    .filter(Boolean)
+
+  return {
+    blockers,
+    warnings,
+    categories,
+    quickLinks,
+    summary: {
+      status: blockers.length ? 'blocked' : warnings.length ? 'warning' : 'ready',
+      blockersCount: blockers.length,
+      warningsCount: warnings.length,
+      missingMappingsCount: categories.missingMappings.length,
+      invalidTransformsCount: categories.invalidTransforms.length,
+      unpublishedDependenciesCount: categories.unpublishedDependencies.length
+    }
+  }
 }
 
 export function createTemplatesService({ templateRepository, policy, store = null, templatesCompatibility = null }) {
@@ -91,9 +152,11 @@ export function createTemplatesService({ templateRepository, policy, store = nul
         return templateRepository.publishTemplate(user, templateId, input)
       } catch (error) {
         if (Array.isArray(error?.details?.issues)) {
+          const issues = normalizePublishPreflightIssues(error.details.issues)
           error.details = {
             ...error.details,
-            issues: normalizePublishPreflightIssues(error.details.issues)
+            issues,
+            publishReadiness: buildPublishReadiness(issues)
           }
         }
         throw error
@@ -106,10 +169,11 @@ export function createTemplatesService({ templateRepository, policy, store = nul
     previewMappings(user, templateId, input = {}) {
       policy.requireGuard(user, 'canReadTemplate')
       const preview = templateRepository.previewTemplateMappings(user, templateId, input)
-      if (!Array.isArray(preview?.issues)) return preview
+      const issues = Array.isArray(preview?.issues) ? normalizePublishPreflightIssues(preview.issues) : []
       return {
         ...preview,
-        issues: normalizePublishPreflightIssues(preview.issues)
+        ...(Array.isArray(preview?.issues) ? { issues } : {}),
+        publishReadiness: buildPublishReadiness(issues)
       }
     },
     listVersions(user, templateId) {
