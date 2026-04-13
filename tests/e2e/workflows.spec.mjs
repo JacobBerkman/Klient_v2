@@ -7,6 +7,31 @@ import {
   waitForAppReady
 } from './bootstrap.mjs'
 
+async function inviteAndAcceptUser(page, seed, { label = 'advisor', role = 'advisor', firstName = 'Ops', lastName = 'Advisor' } = {}) {
+  const safeSeed = `${seed}-${label}`
+  const email = `${safeSeed}@e2e.test`
+  const password = 'StrongPass123!'
+  const inviteResponse = await page.request.post('/api/invites', {
+    data: { email, role }
+  })
+  expect(inviteResponse.status()).toBe(201)
+  const invite = await inviteResponse.json()
+  const acceptResponse = await page.request.post('/api/invites/accept', {
+    data: {
+      token: invite.token,
+      firstName,
+      lastName,
+      password
+    }
+  })
+  expect(acceptResponse.ok()).toBeTruthy()
+  return { email, password }
+}
+
+async function inviteAndAcceptAdvisor(page, seed, label = 'advisor') {
+  return inviteAndAcceptUser(page, seed, { label, role: 'advisor' })
+}
+
 test('admin bootstrap registration and login remain stable', async ({ page, seededRunId }) => {
   const seed = `${seededRunId}-bootstrap`
   const email = `${seed}@e2e.test`
@@ -280,6 +305,98 @@ test('admin-to-operator custom-field workflow preserves readonly UI and server R
     data: { key: `blocked-${seededRunId}`, type: 'text' }
   })
   expect(blockedCreateResponse.status()).toBe(403)
+})
+
+test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC boundaries explicit', async ({
+  page,
+  seededRunId,
+  cleanupActions
+}) => {
+  const { email, password } = await registerAdminViaApi(page, seededRunId, 'draft-collab-admin')
+  await signInFromUi(page, email, password)
+
+  const advisor = await inviteAndAcceptUser(page, seededRunId, {
+    label: 'draft-collab-advisor',
+    role: 'advisor',
+    firstName: 'Maya',
+    lastName: 'Advisor'
+  })
+  const readonly = await inviteAndAcceptUser(page, seededRunId, {
+    label: 'draft-collab-readonly',
+    role: 'readonly',
+    firstName: 'Rory',
+    lastName: 'Readonly'
+  })
+
+  const profileResponse = await page.request.post('/api/profiles', {
+    data: {
+      kind: 'client',
+      firstName: 'Collab',
+      lastName: 'Owner',
+      email: deterministicEmail(seededRunId, 'draft-collab-profile')
+    }
+  })
+  expect(profileResponse.status()).toBe(201)
+  const profile = await profileResponse.json()
+
+  const templateResponse = await page.request.post('/api/forms/templates', {
+    data: {
+      name: `Collab Draft Template ${seededRunId}`,
+      sections: [{ title: 'Basics', fields: [{ key: 'notes', label: 'Notes', type: 'text' }] }]
+    }
+  })
+  expect(templateResponse.status()).toBe(201)
+  const template = await templateResponse.json()
+
+  const draftResponse = await page.request.post('/api/forms/submissions', {
+    data: { clientId: profile.id, templateId: template.id, status: 'draft', data: { notes: 'Collab workflow' } }
+  })
+  expect(draftResponse.status()).toBe(201)
+  const draft = await draftResponse.json()
+
+  cleanupActions.push(async () => {
+    await page.request.delete(`/api/forms/templates/${template.id}`).catch(() => {})
+    await page.request.delete(`/api/profiles/${profile.id}`).catch(() => {})
+  })
+
+  await page.goto('/')
+  await page.getByRole('button', { name: 'Forms' }).click()
+  await page.locator(`[data-open-draft-share-panel="${draft.id}"]`).click()
+  await expect(page.locator(`#draft-share-panel-${draft.id}`)).toBeVisible()
+  await expect(page.getByText('owner-manage')).toBeVisible()
+  await expect(page.getByText('Changes use canonical user IDs')).toBeVisible()
+
+  await page.locator(`form[data-search-draft-collaborator-users="${draft.id}"] input[name="search"]`).fill('Maya')
+  await page.locator(`form[data-search-draft-collaborator-users="${draft.id}"] button[type="submit"]`).click()
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Search complete')
+
+  await page.locator(`form[data-add-draft-collaborator="${draft.id}"] select[name="userId"]`).selectOption({ label: /maya advisor/i })
+  await page.locator(`form[data-add-draft-collaborator="${draft.id}"] button[type="submit"]`).click()
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Add complete')
+  await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(advisor.email)
+
+  await page.locator(`[data-refresh-draft-collaborators="${draft.id}"]`).click()
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Collaborator membership refreshed')
+
+  await page
+    .locator(`[data-remove-draft-collaborator="${draft.id}"]`)
+    .filter({ hasText: advisor.email })
+    .getByRole('button', { name: 'Remove' })
+    .click()
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Remove complete')
+
+  await page.request.post('/api/logout')
+  await signInFromUi(page, readonly.email, readonly.password)
+  await page.getByRole('button', { name: 'Forms' }).click()
+  await page.locator(`[data-open-draft-share-panel="${draft.id}"]`).click()
+  await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText('mutating controls are intentionally disabled')
+  await expect(page.locator(`form[data-search-draft-collaborator-users="${draft.id}"] button[type="submit"]`)).toBeDisabled()
+  await expect(page.locator(`form[data-add-draft-collaborator="${draft.id}"] button[type="submit"]`)).toBeDisabled()
+
+  const deniedAddResponse = await page.request.post(`/api/forms/drafts/${draft.id}/collaborators`, {
+    data: { userId: advisor.email }
+  })
+  expect(deniedAddResponse.status()).toBe(403)
 })
 
 test('portal draft then submit lifecycle is stable', async ({ page, seededRunId }) => {
