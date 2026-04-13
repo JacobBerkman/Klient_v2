@@ -79,6 +79,13 @@ try {
     headers: adminHeaders,
     body: JSON.stringify({ profileId: profile.id, maxUses: 10 })
   })
+  const draft = (
+    await context.requestAs('admin', '/api/forms/drafts', {
+      method: 'GET',
+      headers: adminHeaders
+    })
+  )?.[0]
+  assert(draft?.id, 'Expected at least one draft for collaborator RBAC coverage')
 
   const actors = {
     admin: 'admin',
@@ -107,14 +114,49 @@ try {
     { path: '/api/forms/submissions', method: 'GET', guard: 'canReadForms' },
     { path: '/api/forms/submissions', method: 'POST', body: { clientId: profile.id, templateId: formTemplate.id, status: 'draft', data: {} }, guard: 'canWriteForms' },
     { path: '/api/forms/drafts', method: 'GET', guard: 'canReadForms' },
+    {
+      path: `/api/forms/drafts/${draft.id}/collaborators`,
+      method: 'GET',
+      guard: 'canManageDraftSharing',
+      allowedRoles: ['admin'],
+      scopeRoles: ['admin']
+    },
+    {
+      path: `/api/forms/drafts/${draft.id}/collaborators`,
+      method: 'POST',
+      body: { userId: advisorSession.user.id },
+      guard: 'canManageDraftSharing',
+      allowedRoles: ['admin'],
+      scopeRoles: ['admin']
+    },
+    {
+      path: `/api/forms/drafts/${draft.id}/collaborators/${advisorSession.user.id}`,
+      method: 'DELETE',
+      guard: 'canManageDraftSharing',
+      allowedRoles: ['admin'],
+      scopeRoles: ['admin']
+    },
     { path: `/api/forms/submissions/${submission.id}`, method: 'PATCH', body: { status: 'submitted' }, guard: 'canWriteForms' },
     { path: '/api/templates', method: 'GET', guard: 'canReadTemplate' },
     { path: '/api/templates', method: 'POST', body: { name: 'T' }, guard: 'canEditTemplate' },
+    { path: `/api/templates/${docTemplate.id}/versions`, method: 'GET', guard: 'canReadTemplate' },
+    { path: `/api/templates/${docTemplate.id}/publish-transitions`, method: 'GET', guard: 'canReadTemplate' },
+    {
+      path: `/api/templates/${docTemplate.id}/compare?baseVersion=1&targetVersion=1`,
+      method: 'GET',
+      guard: 'canReadTemplate'
+    },
     {
       path: `/api/templates/${docTemplate.id}/publish`,
       method: 'POST',
       body: { versionBump: '1.0.0', changelog: 'RBAC matrix publish check' },
       guard: 'canPublishTemplate'
+    },
+    {
+      path: `/api/templates/${docTemplate.id}/revert`,
+      method: 'POST',
+      body: { targetVersion: 1, changelog: 'RBAC matrix revert check' },
+      guard: 'canEditTemplate'
     },
     { path: '/api/exports', method: 'GET', guard: 'canReadExports' },
     { path: '/api/exports', method: 'POST', body: { clientId: profile.id, templateId: docTemplate.id, type: 'pdf' }, guard: 'canWriteExports' },
@@ -147,7 +189,7 @@ try {
   const observedDenials = new Set()
 
   for (const check of checks) {
-    const allow = allowedRoles(check.guard)
+    const allow = new Set(check.allowedRoles || [...allowedRoles(check.guard)])
     assert(allow.size > 0, `Guard ${check.guard} has no allowed authenticated roles in policy matrix`)
     for (const role of roles) {
       if (Array.isArray(check.scopeRoles) && !check.scopeRoles.includes(role)) {

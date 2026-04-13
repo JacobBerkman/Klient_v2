@@ -104,6 +104,12 @@ test('template builder auto-build + wizard flow keeps upload and publish-preflig
 })
 
 test('template versioning and publish preflight controls remain wired in builder workflow', () => {
+  assert.match(appJs, /function templateOperationPermissions\(/)
+  assert.match(appJs, /Readonly role: version history and diffs are available, while publish and revert stay disabled\./)
+  assert.match(appJs, /Read path: compare is available to readonly, advisor, and admin operators\./)
+  assert.match(appJs, /Write path: revert requires advisor\/admin permissions\./)
+  assert.match(appJs, /const ensureTemplateWriteAccess = async/)
+  assert.match(appJs, /Permission denied: \$\{actionLabel\} requires advisor\/admin template write access\./)
   assert.match(appJs, /routes\.documentTemplateMappingsPreview\(template\.id\)/)
   assert.match(appJs, /state\.templatePublishPreflightByTemplateId\[template\.id\]/)
   assert.match(appJs, /id="auto-map-similar"/)
@@ -211,6 +217,8 @@ test('launch ops panel contract keeps admin gating, read-only copy, and diagnost
 })
 
 test('forms draft sharing contract exposes panel controls, live-region feedback, and role gating rules', () => {
+  assert.match(appJs, /function canViewDraftCollaborators\(/)
+  assert.match(appJs, /function draftShareMembershipState\(draftId\)/)
   assert.match(appJs, /data-open-draft-share-panel="\$\{draft\.id\}" aria-expanded="\$\{panelVisible \? 'true' : 'false'\}" aria-controls="\$\{panelId\}"/)
   assert.match(appJs, /data-draft-share-panel="\$\{draft\.id\}"/)
   assert.match(appJs, /data-search-draft-collaborator-users="\$\{draft\.id\}"/)
@@ -219,8 +227,13 @@ test('forms draft sharing contract exposes panel controls, live-region feedback,
   assert.match(appJs, /data-draft-share-feedback="\$\{draft\.id\}" role="status" aria-live="polite" aria-atomic="true"/)
   assert.match(appJs, /function canManageDraftCollaborators\(draft\)/)
   assert.match(appJs, /function draftCollaboratorDeniedMessage\(draft\)/)
-  assert.match(appJs, /Readonly role: you can view collaborators but cannot add or remove collaborators\./)
-  assert.match(appJs, /Only the draft owner can manage collaborators\. You can still review current sharing access\./)
+  assert.match(appJs, /Readonly role: collaborator membership is visible, but add\/remove actions are disabled\./)
+  assert.match(appJs, /Advisor access is view-only on drafts you do not own\./)
+  assert.match(appJs, /Search complete: \${state\.formsUi\.userLookupByDraftId\[draftId\]\.length} matching firm user\(s\) found\./)
+  assert.match(appJs, /Search complete: no matching firm users found\./)
+  assert.match(appJs, /Add complete: collaborator \${userId} now has draft access\./)
+  assert.match(appJs, /Remove complete: collaborator \${userId} no longer has draft access\./)
+  assert.match(appJs, /Loading collaborator membership…/)
   assert.match(appJs, /routes\.users\(\{ mode: 'lookup', search, limit: 25 \}\)/)
   assert.match(appJs, /routes\.formDraftCollaborators\(draftId\)/)
   assert.match(appJs, /routes\.formDraftCollaborator\(draftId, userId\)/)

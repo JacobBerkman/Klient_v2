@@ -116,6 +116,7 @@ Decision rule (must match artifact + mode):
 - **Known risks / mitigations**: `<summary>`
 - **Feature flags touched**: `<summary>`
 - **Customer-facing impact summary**: `<summary>`
+- **Operator flow expectation updates**: `<note any UI/operator read-write expectation changes (draft collaborator management, template publish/revert visibility, exports queue controls) and reference updated UI contract + RBAC integration evidence>`
 
 ## 6) Approver signatures
 All required approvers must sign before GO.

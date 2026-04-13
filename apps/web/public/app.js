@@ -902,13 +902,16 @@ function canManageDraftCollaborators(draft) {
 }
 
 function draftCollaboratorDeniedMessage(draft) {
+  if (!state.user) {
+    return 'Sign in again to view draft sharing members.'
+  }
   if (state.user?.role === 'readonly') {
-    return 'Readonly role: you can view collaborators but cannot add or remove collaborators.'
+    return 'Readonly role: collaborator membership is visible, but add/remove actions are disabled.'
   }
   if (state.user?.role === 'advisor' && !isDraftOwner(draft)) {
-    return 'Only the draft owner can manage collaborators. You can still review current sharing access.'
+    return 'Advisor access is view-only on drafts you do not own. Ask the draft owner (or an admin) to change collaborators.'
   }
-  return 'You do not have access to manage draft collaborators.'
+  return 'You do not have permission to manage collaborators for this draft.'
 }
 
 function collaboratorLookupLabel(user = {}) {
@@ -917,6 +920,25 @@ function collaboratorLookupLabel(user = {}) {
   const role = String(user.role || '').trim()
   const pieces = [name || user.id, email && email !== name ? `<${email}>` : '', role ? `(${role})` : ''].filter(Boolean)
   return pieces.join(' ')
+}
+
+function draftShareMembershipState(draftId) {
+  const collaborators = state.formsUi.collaboratorsByDraftId[draftId]
+  if (!Array.isArray(collaborators)) return { status: 'not-loaded', collaborators: [] }
+  return { status: 'loaded', collaborators }
+}
+
+function canViewDraftCollaborators() {
+  return roleAllowed('admin,advisor,readonly')
+}
+
+function templateOperationPermissions() {
+  const role = state.user?.role || ''
+  return {
+    canRead: roleAllowed('admin,advisor,readonly'),
+    canWrite: roleAllowed('admin,advisor'),
+    readOnlyMessage: role === 'readonly' ? 'Readonly role: version history and diffs are available, while publish and revert stay disabled.' : ''
+  }
 }
 
 function canReadDiagnostics() {
@@ -1481,7 +1503,8 @@ async function renderForms() {
       (draft) => {
         const panelVisible = state.formsUi.activeDraftSharePanelId === draft.id
         const panelId = `draft-share-panel-${draft.id}`
-        const list = state.formsUi.collaboratorsByDraftId[draft.id]
+        const membershipState = draftShareMembershipState(draft.id)
+        const list = membershipState.collaborators
         const lookupResults = state.formsUi.userLookupByDraftId[draft.id] || []
         const lookupSearch = state.formsUi.userLookupSearchByDraftId[draft.id] || ''
         const existingCollaboratorIds = new Set((Array.isArray(list) ? list : []).map((entry) => entry.userId || entry.id))
@@ -1489,6 +1512,8 @@ async function renderForms() {
           (entry) => entry?.id && entry.id !== state.user?.id && !existingCollaboratorIds.has(entry.id)
         )
         const canManage = canManageDraftCollaborators(draft)
+        const isLookupLoading = Boolean(state.pendingActions[`draft-share-search-${draft.id}`])
+        const isMembershipLoading = Boolean(state.pendingActions[`draft-share-fetch-${draft.id}`])
         const deniedMessage = draftCollaboratorDeniedMessage(draft)
         const shareFeedback = state.formsUi.shareFeedbackByDraftId[draft.id] || ''
         return `
@@ -1528,12 +1553,25 @@ async function renderForms() {
             </label>
             <button type="submit" ${canManage ? '' : 'disabled'}>${pendingLabel(`draft-share-add-${draft.id}`, 'Add', 'Adding…')}</button>
           </form>
+          <p class="muted compact">
+            ${
+              isLookupLoading
+                ? 'Searching firm users…'
+                : lookupResults.length
+                  ? `${lookupResults.length} user option(s) loaded.`
+                  : lookupSearch
+                    ? 'No lookup matches yet. Try a different name, email, or user ID.'
+                    : 'Search to load firm users you can add as collaborators.'
+            }
+          </p>
           <p class="muted compact" data-draft-share-feedback="${draft.id}" role="status" aria-live="polite" aria-atomic="true">
             ${escapeHtml(shareFeedback || (!canManage ? deniedMessage : ''))}
           </p>
           ${
-            Array.isArray(list)
-              ? list.length
+            isMembershipLoading
+              ? '<p class="muted compact">Loading collaborator membership…</p>'
+              : membershipState.status === 'loaded'
+                ? list.length
                 ? `<ul>${list
                     .map(
                       (collaborator) => `<li>
@@ -1550,8 +1588,8 @@ async function renderForms() {
                   </li>`
                     )
                     .join('')}</ul>`
-                : '<p class="muted compact">No collaborators added.</p>'
-              : '<p class="muted compact">Load draft sharing to manage collaborators.</p>'
+                : '<p class="muted compact">No collaborators assigned yet. Search and add a firm user to grant draft access.</p>'
+                : '<p class="muted compact">Open sharing to load current collaborator membership.</p>'
           }
         </div>
       </td>
@@ -1711,7 +1749,7 @@ async function renderForms() {
         return
       }
       const draft = drafts.find((entry) => entry.id === draftId)
-      if (!canManageDraftCollaborators(draft)) {
+      if (!canViewDraftCollaborators()) {
         state.formsUi.shareFeedbackByDraftId[draftId] = draftCollaboratorDeniedMessage(draft)
         await renderForms()
         return
@@ -1724,9 +1762,15 @@ async function renderForms() {
           request(routes.users({ mode: 'lookup', limit: 25 }))
         ])
         state.formsUi.collaboratorsByDraftId[draftId] = Array.isArray(collaborators) ? collaborators : collaborators?.collaborators || []
-        state.formsUi.userLookupByDraftId[draftId] = Array.isArray(userLookup?.users) ? userLookup.users : []
+        state.formsUi.userLookupByDraftId[draftId] = canManageDraftCollaborators(draft)
+          ? Array.isArray(userLookup?.users)
+            ? userLookup.users
+            : []
+          : []
         state.formsUi.userLookupSearchByDraftId[draftId] = ''
-        state.formsUi.shareFeedbackByDraftId[draftId] = 'Collaborators loaded.'
+        state.formsUi.shareFeedbackByDraftId[draftId] = canManageDraftCollaborators(draft)
+          ? 'Collaborator membership loaded. Search firm users to add access.'
+          : 'Collaborator membership loaded in view-only mode.'
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'load draft collaborators')
         reportActionError('Forms', error)
@@ -1755,8 +1799,8 @@ async function renderForms() {
         const userLookup = await request(routes.users({ mode: 'lookup', search, limit: 25 }))
         state.formsUi.userLookupByDraftId[draftId] = Array.isArray(userLookup?.users) ? userLookup.users : []
         state.formsUi.shareFeedbackByDraftId[draftId] = state.formsUi.userLookupByDraftId[draftId].length
-          ? `Found ${state.formsUi.userLookupByDraftId[draftId].length} matching firm users.`
-          : 'No matching firm users found.'
+          ? `Search complete: ${state.formsUi.userLookupByDraftId[draftId].length} matching firm user(s) found.`
+          : 'Search complete: no matching firm users found.'
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'search firm users')
         reportActionError('Forms', error)
@@ -1779,7 +1823,7 @@ async function renderForms() {
       }
       const userId = String(new FormData(form).get('userId') || '').trim()
       if (!userId) {
-        state.formsUi.shareFeedbackByDraftId[draftId] = 'Select a collaborator from the firm user results.'
+        state.formsUi.shareFeedbackByDraftId[draftId] = 'Add failed: select a collaborator from the firm user lookup results.'
         await renderForms()
         return
       }
@@ -1797,7 +1841,7 @@ async function renderForms() {
         state.formsUi.userLookupByDraftId[draftId] = (state.formsUi.userLookupByDraftId[draftId] || []).filter(
           (candidate) => candidate.id !== userId
         )
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Collaborator ${userId} added.`
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Add complete: collaborator ${userId} now has draft access.`
         reportActionSuccess('Forms', `Collaborator ${userId} added to draft ${draftId}.`)
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'add a draft collaborator')
@@ -1833,7 +1877,7 @@ async function renderForms() {
             { id: userId, label: userId, email: '', role: '' }
           ]
         }
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Collaborator ${userId} removed.`
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Remove complete: collaborator ${userId} no longer has draft access.`
         reportActionSuccess('Forms', `Collaborator ${userId} removed from draft ${draftId}.`)
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'remove a draft collaborator')
@@ -2263,6 +2307,7 @@ async function renderTemplates() {
     .map((entry) => `<option value="${entry.version}">${entry.version} · ${escapeHtml(entry.changeType || 'update')}</option>`)
     .join('')
   const latestVersion = versions?.[0]?.version || ''
+  const templateOpsPermissions = templateOperationPermissions()
 
   const knownPaths = knownProfileSourcePaths()
   ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
@@ -2614,9 +2659,14 @@ async function renderTemplates() {
       </section>
       <section class="item" data-template-wizard-section="publish" ${activeWizardStep === 'publish' ? '' : 'hidden'}>
         <h3>Publish</h3>
+        <p class="muted compact">${
+          templateOpsPermissions.readOnlyMessage
+            ? escapeHtml(templateOpsPermissions.readOnlyMessage)
+            : 'Write-capable operators can run preflight, publish, and revert from this panel.'
+        }</p>
         <div class="row gap-sm wrap">
-          <button id="run-publish-preflight" class="tiny secondary">Run Publish Preflight</button>
-          <button id="publish-template" class="tiny publish-action" ${publishDisabled ? 'disabled' : ''}>Publish</button>
+          <button id="run-publish-preflight" class="tiny secondary" ${templateOpsPermissions.canWrite ? '' : 'disabled'}>Run Publish Preflight</button>
+          <button id="publish-template" class="tiny publish-action" ${publishDisabled || !templateOpsPermissions.canWrite ? 'disabled' : ''}>Publish</button>
         </div>
         ${publishBlockersMarkup({ hasLocalMappingErrors, hasBlockingPreviewWarnings, preflightIssues, preflightIssueRows })}
         ${
@@ -2656,6 +2706,7 @@ async function renderTemplates() {
       </section>
       <section class="item">
         <h3>Compare Versions</h3>
+        <p class="muted compact">Read path: compare is available to readonly, advisor, and admin operators.</p>
         <div class="row gap-sm wrap">
           <select id="compare-base">${versionOptions}</select>
           <select id="compare-target">${versionOptions}</select>
@@ -2665,9 +2716,10 @@ async function renderTemplates() {
       </section>
       <section class="item">
         <h3>Revert Version</h3>
+        <p class="muted compact">Write path: revert requires advisor/admin permissions.</p>
         <div class="row gap-sm wrap">
           <select id="revert-version">${versionOptions}</select>
-          <button id="revert-template-version" class="tiny secondary">Revert to selected version</button>
+          <button id="revert-template-version" class="tiny secondary" ${templateOpsPermissions.canWrite ? '' : 'disabled'}>Revert to selected version</button>
         </div>
       </section>
       <section class="item">
@@ -2687,6 +2739,12 @@ async function renderTemplates() {
   const rerenderTemplates = async (selector = '#templates-heading') => {
     queueViewFocus(selector)
     await renderTemplates()
+  }
+  const ensureTemplateWriteAccess = async (actionLabel) => {
+    if (templateOperationPermissions().canWrite) return true
+    reportActionError('Templates', { message: `Permission denied: ${actionLabel} requires advisor/admin template write access.` })
+    await rerenderTemplates()
+    return false
   }
 
   const persistMappings = async ({ autosave = false } = {}) => {
@@ -3009,6 +3067,7 @@ async function renderTemplates() {
   })
 
   document.querySelector('#run-publish-preflight')?.addEventListener('click', async () => {
+    if (!(await ensureTemplateWriteAccess('publish preflight'))) return
     try {
       const clientId = document.querySelector('#preview-client')?.value
       const submissionId = document.querySelector('#preview-submission')?.value
@@ -3088,6 +3147,7 @@ async function renderTemplates() {
   }
 
   document.querySelector('#publish-template')?.addEventListener('click', async () => {
+    if (!(await ensureTemplateWriteAccess('template publish'))) return
     try {
       const clientId = document.querySelector('#preview-client')?.value
       const submissionId = document.querySelector('#preview-submission')?.value
@@ -3154,6 +3214,7 @@ async function renderTemplates() {
   })
 
   document.querySelector('#revert-template-version')?.addEventListener('click', async () => {
+    if (!(await ensureTemplateWriteAccess('template revert'))) return
     try {
       const targetVersion = Number(document.querySelector('#revert-version')?.value)
       if (!Number.isFinite(targetVersion)) throw new Error('Select a valid version to revert to.')
