@@ -4910,7 +4910,7 @@ async function renderCustomFieldsAdmin() {
     <section class="item">
       <h3>Bulk Edit Existing Fields</h3>
       <form id="custom-field-bulk-form">
-        <p class="muted compact">Use guided rows (key, type, label, required, group, order, metadata). JSON import is optional.</p>
+        <p class="muted compact">Use guided rows (key, type, label, required, metadata). JSON import is optional.</p>
         <table><thead><tr><th>Key</th><th>Type</th><th>Label</th><th>Required</th><th>Group</th><th>Order</th><th>Metadata</th><th>Row</th></tr></thead><tbody>
           ${bulkDraftRows
             .map((row, index) => `<tr data-bulk-row="${index}">
