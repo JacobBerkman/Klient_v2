@@ -2265,19 +2265,25 @@ function collectTemplateSchemaPaths(fields = [], parentPath = '', output = new M
   return output
 }
 
-function mappingLocalIssues(mapping, knownPaths) {
+function mappingLocalIssues(mapping, knownPaths, rowIndex = null) {
+  const rowAnchor = Number.isFinite(Number(rowIndex)) ? `#mapping-row-${Number(rowIndex)}` : ''
+  const createIssue = (code, message, inspectorTarget) => ({ code, message, inspectorTarget, rowAnchor })
   const issues = []
   const pdfField = String(mapping.pdfField || '').trim()
   const sourcePath = String(mapping.sourcePath || '').trim()
   const targetType = String(mapping.targetType || '').trim()
   const transformType = String(mapping.transformType || '').trim()
   const transformExpression = String(mapping.transformExpression || '').trim()
-  if (!pdfField) issues.push('Missing PDF field')
-  if (!sourcePath) issues.push('Missing source path')
-  if (sourcePath && !knownPaths.has(sourcePath)) issues.push('Unknown source path')
+  if (!pdfField) issues.push(createIssue('required_pdf_field', 'Missing PDF field', 'pdfField'))
+  if (!sourcePath) issues.push(createIssue('required_source_path', 'Missing source path', 'sourcePath'))
+  if (sourcePath && !knownPaths.has(sourcePath)) issues.push(createIssue('unknown_source_path', 'Unknown source path', 'sourcePath'))
   const sourceType = sourcePath ? knownPaths.get(sourcePath) : ''
-  if (sourceType && targetType && sourceType !== targetType) issues.push(`Type mismatch (${sourceType} → ${targetType})`)
-  if (transformType === 'expression' && !transformExpression) issues.push('Missing transform expression')
+  if (sourceType && targetType && sourceType !== targetType) {
+    issues.push(createIssue('target_type_mismatch', `Type mismatch (${sourceType} → ${targetType})`, 'targetType'))
+  }
+  if (transformType === 'expression' && !transformExpression) {
+    issues.push(createIssue('missing_transform_expression', 'Missing transform expression', 'transformExpression'))
+  }
   return issues
 }
 
@@ -2289,7 +2295,10 @@ function formatSchemaIssue(issue = {}) {
   return `${rowPrefix}${path} — ${message}`
 }
 
-function mappingSaveStateLabel(saveState = {}) {
+function mappingSaveStateLabel(saveState = {}, statusContext = {}) {
+  if (statusContext.hasLocalValidationFailures) return 'Local validation failed'
+  if (statusContext.hasPreflightSchemaFailures) return 'Preflight schema failed'
+  if (statusContext.publishReady) return 'Publish-ready'
   const savedAt = saveState.savedAt ? new Date(saveState.savedAt).toLocaleTimeString() : ''
   if (saveState.status === 'saving') return 'Saving…'
   if (saveState.status === 'dirty') return 'Unsaved edits · autosave pending'
@@ -2303,7 +2312,7 @@ function publishBlockersMarkup({ hasLocalMappingErrors, hasBlockingPreviewWarnin
   const blockers = []
   if (hasLocalMappingErrors) {
     blockers.push(
-      '<li><strong>Local mapping validation failed.</strong> Fix rows marked in <em>Local validation</em>, then run <em>Save Now</em> to clear this blocker.</li>'
+      '<li><strong>Local validation failures.</strong> Fix rows marked in <em>Local validation</em>, then run <em>Save Now</em>.</li>'
     )
   }
   if (hasBlockingPreviewWarnings) {
@@ -2313,7 +2322,7 @@ function publishBlockersMarkup({ hasLocalMappingErrors, hasBlockingPreviewWarnin
   }
   if (preflightIssues.length) {
     blockers.push(
-      `<li><strong>Publish preflight failed.</strong> ${preflightIssues.length} schema issue(s) across ${preflightIssueRows.size || 0} row(s). Resolve listed issue IDs and rerun preflight.</li>`
+      `<li><strong>Preflight schema failures.</strong> ${preflightIssues.length} issue(s) across ${preflightIssueRows.size || 0} row(s). Resolve listed issue IDs and rerun preflight.</li>`
     )
   }
   if (!blockers.length) return ''
@@ -2340,14 +2349,16 @@ function publishReadinessPanelMarkup({ readiness = null, fallbackIssues = [] }) 
   const renderIssue = (issue) => {
     const rowIndex = Number(issue?.rowIndex)
     const rowId = String(issue?.rowId || issue?.meta?.rowId || '').trim()
+    const anchor = String(issue?.rowAnchor || issue?.meta?.rowAnchor || `#mapping-row-${rowIndex}`)
+    const inspectorTarget = String(issue?.inspectorTarget || issue?.meta?.inspectorTarget || issue?.field || 'sourcePath')
     const cta = Number.isFinite(rowIndex)
-      ? `<a href="#mapping-row-${rowIndex}" class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="sourcePath">Row ${rowIndex + 1}</a> · `
+      ? `<a href="${escapeHtml(anchor)}" class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="${escapeHtml(inspectorTarget)}">Row ${rowIndex + 1}</a> · `
       : ''
-    return `<li>${cta}<code>${escapeHtml(issue?.meta?.issueId || issue?.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`
+    return `<li>${cta}<code>${escapeHtml(issue?.issueId || issue?.meta?.issueId || issue?.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`
   }
   return `<section class="publish-readiness-panel" aria-labelledby="publish-readiness-heading">
     <h4 id="publish-readiness-heading">Publish readiness</h4>
-    <p class="muted compact">Blockers must be fixed before publish. Warnings are recommended fixes.</p>
+    <p class="muted compact">Local validation and preflight schema failures block publish; publish-ready means both are clear.</p>
     <div class="grid two">
       <div>
         <h5>Blockers (${blockers.length})</h5>
@@ -2366,7 +2377,7 @@ function publishReadinessPanelMarkup({ readiness = null, fallbackIssues = [] }) 
               const rowIndex = Number(entry?.rowIndex)
               const rowId = String(entry?.rowId || '').trim()
               if (!Number.isFinite(rowIndex)) return ''
-              return `<a href="#mapping-row-${rowIndex}" class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="${escapeHtml(entry?.field || 'sourcePath')}">${escapeHtml(entry?.label || `Row ${rowIndex + 1}`)}</a>`
+              return `<a href="${escapeHtml(entry?.anchor || `#mapping-row-${rowIndex}`)}" class="tiny secondary" data-preflight-rowindex="${rowIndex}" data-preflight-rowid="${escapeHtml(rowId)}" data-focus-inspector="${escapeHtml(entry?.field || 'sourcePath')}">${escapeHtml(entry?.label || `Row ${rowIndex + 1}`)}</a>`
             })
             .join(' ')}</p>`
         : '<p class="muted">Quick links appear after preflight finds row-level diagnostics.</p>'
@@ -2482,7 +2493,7 @@ function bestSourcePathSuggestion({ mapping = {}, knownPathIndex, localIssues = 
   const currentPath = String(mapping.sourcePath || '').trim()
   const sourceLabel = String(mapping.fieldLabel || mapping.pdfField || '').trim()
   const hasUnknownPathIssue =
-    localIssues.includes('Unknown source path') ||
+    localIssues.some((issue) => issue.code === 'unknown_source_path') ||
     serverPreflightIssues.some((issue) => String(issue.code || '').includes('unknown_source_path'))
   const isMissingPath = !currentPath
   if (!isMissingPath && !hasUnknownPathIssue) return null
@@ -2642,7 +2653,7 @@ async function renderTemplates() {
   ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
   const knownPathIndex = normalizedKnownPathIndex(knownPaths)
 
-  const mappingIssuesByIndex = new Map(draftMappings.map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
+  const mappingIssuesByIndex = new Map(draftMappings.map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths, index)]))
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
   const preflight = template ? state.templatePublishPreflightByTemplateId[template.id] : null
   const preflightIssues = Array.isArray(preflight?.issues) ? preflight.issues : []
@@ -2684,7 +2695,9 @@ async function renderTemplates() {
       rowId: issue?.meta?.rowId || '',
       blocking: true,
       code: issue.errorCode || issue.code || 'issue',
-      message: issue.errorMessage || issue.message || 'Preflight validation issue'
+      message: issue.errorMessage || issue.message || 'Preflight validation issue',
+      focusField: issue.inspectorTarget || issue?.meta?.inspectorTarget || issue.field || 'sourcePath',
+      anchor: issue.rowAnchor || issue?.meta?.rowAnchor || ''
     }))
   ].filter((entry) => Number.isFinite(entry.rowIndex))
   const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
@@ -2709,7 +2722,10 @@ async function renderTemplates() {
     const previewRow = previewRowsByIndex.get(index)
     const rowId = String(previewRow?.rowId || '').trim()
     const serverPreflightIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
-    const unresolved = !String(mapping.sourcePath || '').trim() || rowIssues.includes('Unknown source path') || serverPreflightIssues.length > 0
+    const unresolved =
+      !String(mapping.sourcePath || '').trim() ||
+      rowIssues.some((issue) => issue.code === 'unknown_source_path') ||
+      serverPreflightIssues.length > 0
     if (unresolved) unresolvedRowsCount += 1
     const persistedSuggestion = suggestionDraftByIndex[index]
     if (persistedSuggestion?.path) {
@@ -2831,8 +2847,16 @@ async function renderTemplates() {
         <div class="row wrap gap-sm">
           <span class="badge">Mapped ${draftMappings.filter((entry) => entry.enabled !== false && String(entry.pdfField || '').trim()).length}</span>
           <span class="badge subtle">Unmapped ${Math.max(0, extractedFields.length - mappedExtractedCount)}</span>
-          <span class="badge ${hasLocalMappingErrors ? 'error-badge' : 'warning-badge'}">Validation ${hasLocalMappingErrors ? 'Needs fixes' : 'Ready'}</span>
-          <span class="badge subtle">Autosave: ${escapeHtml(mappingSaveStateLabel(saveState))}</span>
+          <span class="badge ${hasLocalMappingErrors ? 'error-badge' : 'warning-badge'}">Local validation ${hasLocalMappingErrors ? 'Failed' : 'Clear'}</span>
+          <span class="badge ${preflightIssues.length ? 'error-badge' : 'subtle'}">Preflight schema ${preflightIssues.length ? 'Failed' : 'Clear'}</span>
+          <span class="badge ${publishDisabled ? 'warning-badge' : 'subtle'}">Publish state ${publishDisabled ? 'Blocked' : 'Ready'}</span>
+          <span class="badge subtle">Autosave: ${escapeHtml(
+            mappingSaveStateLabel(saveState, {
+              hasLocalValidationFailures: hasLocalMappingErrors,
+              hasPreflightSchemaFailures: preflightIssues.length > 0,
+              publishReady: !publishDisabled
+            })
+          )}</span>
         </div>
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
@@ -2892,7 +2916,10 @@ async function renderTemplates() {
               const rowId = String(previewRow?.rowId || '').trim()
               const serverPreflightIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
               const isUnmapped = !String(mapping.pdfField || '').trim()
-              const isUnresolved = !String(mapping.sourcePath || '').trim() || issues.includes('Unknown source path') || serverPreflightIssues.length > 0
+              const isUnresolved =
+                !String(mapping.sourcePath || '').trim() ||
+                issues.some((issue) => issue.code === 'unknown_source_path') ||
+                serverPreflightIssues.length > 0
               const showRow =
                 activeTemplateFilter === 'all' ||
                 (activeTemplateFilter === 'needs-fix' && (issues.length > 0 || serverPreflightIssues.length > 0)) ||
@@ -2931,8 +2958,28 @@ async function renderTemplates() {
                 }</td>
                 <td>${escapeHtml(mapping.fieldLabel || '')}</td>
                 <td><span class="badge subtle">${escapeHtml(confidence.label)}</span></td>
-                <td>${issues.length ? `<span class="error-badge">${escapeHtml(issues.join('; '))}</span><div class="muted">Hint: update Source Path using known paths and rerun Save Now.</div>` : '<span class="muted">OK</span>'}</td>
-                <td>${serverPreflightIssues.length ? `<span class="error-badge">${escapeHtml(serverPreflightIssues.map((issue) => issue.code || issue.message || 'issue').join(', '))}</span>` : '<span class="muted">None</span>'}</td>
+                <td>${
+                  issues.length
+                    ? `<ul>${issues
+                        .map(
+                          (issue) =>
+                            `<li><a href="${escapeHtml(issue.rowAnchor || `#mapping-row-${index}`)}" class="tiny secondary" data-preflight-rowindex="${index}" data-focus-inspector="${escapeHtml(issue.inspectorTarget || 'sourcePath')}">${escapeHtml(issue.code)}</a> · ${escapeHtml(issue.message)}</li>`
+                        )
+                        .join('')}</ul><div class="muted">Hint: update Source Path using known paths and rerun Save Now.</div>`
+                    : '<span class="muted">OK</span>'
+                }</td>
+                <td>${
+                  serverPreflightIssues.length
+                    ? `<ul>${serverPreflightIssues
+                        .map((issue) => {
+                          const rowIndex = Number(issue?.rowIndex)
+                          const anchor = issue?.rowAnchor || issue?.meta?.rowAnchor || (Number.isFinite(rowIndex) ? `#mapping-row-${rowIndex}` : '#')
+                          const inspectorTarget = issue?.inspectorTarget || issue?.meta?.inspectorTarget || issue?.field || 'sourcePath'
+                          return `<li><a href="${escapeHtml(anchor)}" class="tiny secondary" data-preflight-rowindex="${Number.isFinite(rowIndex) ? rowIndex : index}" data-preflight-rowid="${escapeHtml(issue?.rowId || issue?.meta?.rowId || '')}" data-focus-inspector="${escapeHtml(inspectorTarget)}">${escapeHtml(issue.issueId || issue.code || 'issue')}</a></li>`
+                        })
+                        .join('')}</ul>`
+                    : '<span class="muted">None</span>'
+                }</td>
                 <td>${hasPreviewWarnings ? '<span class="warning-badge">Preview warning</span>' : '<span class="muted">OK</span>'}</td>
                 <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
               </tr>`
@@ -2956,7 +3003,7 @@ async function renderTemplates() {
           }
           ${
             (mappingIssuesByIndex.get(safeSelectedRowIndex) || []).length
-              ? `<span class="error-badge">Local issues: ${escapeHtml((mappingIssuesByIndex.get(safeSelectedRowIndex) || []).join('; '))}</span>`
+              ? `<span class="error-badge">Local issues: ${escapeHtml((mappingIssuesByIndex.get(safeSelectedRowIndex) || []).map((issue) => issue.message).join('; '))}</span>`
               : '<span class="badge subtle">Local validation: OK</span>'
           }
           ${
@@ -3068,7 +3115,7 @@ async function renderTemplates() {
             ? `<h4>Row-level remediation</h4><ul>${remediationRows
                 .map(
                   (item) =>
-                    `<li><button class="tiny secondary" data-remediate-rowindex="${item.rowIndex}" data-remediate-rowid="${escapeHtml(item.rowId || '')}" data-focus-inspector="sourcePath">Row ${item.rowIndex + 1}</button> · <code>${escapeHtml(item.code)}</code> · ${escapeHtml(item.message)}${item.rowId ? ` · rowId <code>${escapeHtml(item.rowId)}</code>` : ''}${item.blocking ? ' · <strong>blocking</strong>' : ' · non-blocking'}</li>`
+                    `<li><a href="${escapeHtml(item.anchor || `#mapping-row-${item.rowIndex}`)}" class="tiny secondary" data-remediate-rowindex="${item.rowIndex}" data-remediate-rowid="${escapeHtml(item.rowId || '')}" data-focus-inspector="${escapeHtml(item.focusField || 'sourcePath')}">Row ${item.rowIndex + 1}</a> · <code>${escapeHtml(item.code)}</code> · ${escapeHtml(item.message)}${item.rowId ? ` · rowId <code>${escapeHtml(item.rowId)}</code>` : ''}${item.blocking ? ' · <strong>blocking</strong>' : ' · non-blocking'}</li>`
                 )
                 .join('')}</ul>`
             : ''
@@ -3426,7 +3473,10 @@ async function renderTemplates() {
       const previewRow = previewRowsByIndex.get(index)
       const rowId = String(previewRow?.rowId || '').trim()
       const serverIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
-      const unresolved = !String(mapping.sourcePath || '').trim() || rowIssues.includes('Unknown source path') || serverIssues.length > 0
+      const unresolved =
+        !String(mapping.sourcePath || '').trim() ||
+        rowIssues.some((issue) => issue.code === 'unknown_source_path') ||
+        serverIssues.length > 0
       if (!unresolved) return
       if (String(mapping.sourcePath || '').trim() === suggestion.path) return
       nextDraft[index] = { ...mapping, sourcePath: suggestion.path }
@@ -3474,7 +3524,10 @@ async function renderTemplates() {
       const previewRow = previewRowsByIndex.get(index)
       const rowId = String(previewRow?.rowId || '').trim()
       const serverIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
-      const unresolved = !String(mapping.sourcePath || '').trim() || rowIssues.includes('Unknown source path') || serverIssues.length > 0
+      const unresolved =
+        !String(mapping.sourcePath || '').trim() ||
+        rowIssues.some((issue) => issue.code === 'unknown_source_path') ||
+        serverIssues.length > 0
       if (!unresolved) return
       if (String(mapping.sourcePath || '').trim() === suggestion.path) return
       nextDraft[index] = { ...mapping, sourcePath: suggestion.path }
@@ -3499,7 +3552,7 @@ async function renderTemplates() {
     nextDraft.forEach((mapping, index) => {
       const previewWarnings = previewRowsByIndex.get(index)?.warnings || []
       const hasUnresolvedPreviewIssue = previewWarnings.some((warning) => String(warning.code || '') === 'UNRESOLVED_SOURCE_PATH')
-      const hasUnknownLocalPath = (mappingIssuesByIndex.get(index) || []).includes('Unknown source path')
+      const hasUnknownLocalPath = (mappingIssuesByIndex.get(index) || []).some((issue) => issue.code === 'unknown_source_path')
       if (!hasUnresolvedPreviewIssue && !hasUnknownLocalPath) return
       if (!String(mapping.sourcePath || '').trim()) return
       nextDraft[index] = { ...mapping, sourcePath: '' }
