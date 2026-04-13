@@ -15,7 +15,7 @@ export const test = base.extend({
   seededRunId: async ({}, use, testInfo) => {
     const seed = sanitizeToken(process.env.TEST_SEED || 'klient-seed')
     const title = sanitizeToken(testInfo.title)
-    await use(`${seed}-${testInfo.parallelIndex}-${title}`)
+    await use(`${seed}-p${testInfo.parallelIndex}-r${testInfo.retry}-${title}`)
   },
   cleanupActions: async ({}, use) => {
     const actions = []

@@ -11,6 +11,12 @@ const browserSuitePattern = 'tests/e2e'
 const executionMode = 'browser'
 const browserFallbackEnvFlag = 'RELEASE_E2E_ALLOW_FALLBACK'
 const fallbackSuite = 'playwright-browser-fallback'
+const failureCategories = {
+  startupFailure: 'startup-failure',
+  uiContractFailure: 'ui-contract-failure',
+  browserLaunchFailure: 'browser-launch-failure',
+  reportValidationFailure: 'report-validation-failure'
+}
 
 const evidence = createEvidenceRecorder({
   gate: 'e2e',
@@ -167,6 +173,7 @@ export async function gatePlaywrightReportOrFail({ reportPath, evidenceRecorder 
     fields: { executionMode },
     error,
     details: {
+      failureCategory: failureCategories.reportValidationFailure,
       suites: {
         uiContract: uiContractSuites,
         browser: [browserSuitePattern]
@@ -204,7 +211,18 @@ export async function main(deps = {}) {
     writeFallbackReport = writeFallbackPlaywrightReport
   } = deps
 
-  const context = await createContext('e2e-browser-suite')
+  let context
+  try {
+    context = await createContext('e2e-browser-suite')
+  } catch (error) {
+    evidenceRecorder.finalize({
+      status: 'failed',
+      fields: { executionMode },
+      error,
+      details: { failureCategory: failureCategories.startupFailure }
+    })
+    throw error
+  }
   const fallback = browserFallbackMode()
   const strictMode = !fallback.enabled
   const baseUrl = context.baseUrl || `http://127.0.0.1:${context.port}`
@@ -230,6 +248,7 @@ export async function main(deps = {}) {
           : `UI contract checks failed with exit code ${uiContractResult.code}`
       )
       return finalizeFailure(evidenceRecorder, error, {
+        failureCategory: failureCategories.uiContractFailure,
         suites: {
           uiContract: uiContractSuites,
           browser: [browserSuitePattern]
@@ -246,6 +265,7 @@ export async function main(deps = {}) {
           `Playwright browser binaries are missing and strict mode is enabled (${browserFallbackEnvFlag}=1 to allow local fallback).`
         )
         return finalizeFailure(evidenceRecorder, error, {
+          failureCategory: failureCategories.browserLaunchFailure,
           suites: {
             uiContract: uiContractSuites,
             browser: [browserSuitePattern]
@@ -267,6 +287,7 @@ export async function main(deps = {}) {
       if (!fallbackValidation.ok) {
         const error = new Error(fallbackValidation.artifact.reason)
         return finalizeFailure(evidenceRecorder, error, {
+          failureCategory: failureCategories.reportValidationFailure,
           suites: {
             uiContract: uiContractSuites,
             browser: [browserSuitePattern]
@@ -315,6 +336,7 @@ export async function main(deps = {}) {
       if (strictMode) {
         const error = new Error(errorMessage)
         return finalizeFailure(evidenceRecorder, error, {
+          failureCategory: failureCategories.browserLaunchFailure,
           suites: {
             uiContract: uiContractSuites,
             browser: [browserSuitePattern]
@@ -375,7 +397,12 @@ export async function main(deps = {}) {
     })
     return 0
   } catch (error) {
-    evidenceRecorder.finalize({ status: 'failed', fields: { executionMode }, error })
+    evidenceRecorder.finalize({
+      status: 'failed',
+      fields: { executionMode },
+      error,
+      details: { failureCategory: failureCategories.startupFailure }
+    })
     throw error
   } finally {
     await context.shutdown()
