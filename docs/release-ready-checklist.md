@@ -40,6 +40,8 @@ Hard gate only (legacy/manual mode):
 npm run validate:master
 ```
 
+`validate:master` is fail-fast by design: after syntax checks, `npm run check:conflicts` runs as a blocking guard and must fail on any merge conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) found in tracked text files or release-critical `scripts/*.mjs` files (notably `scripts/e2e-test.mjs`). Do not bypass this failure; remove markers and rerun.
+
 Gate/documentation parity precheck (required before GO/NO-GO execution and mirrored in CI):
 
 ```bash

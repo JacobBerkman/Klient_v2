@@ -235,6 +235,10 @@ When running `npm run validate:master`, the hard gate executes these commands in
 10. `npm run test:e2e`
 11. `npm run test:security`
 
+Release-blocking expectation:
+- Step 2 (`npm run check:conflicts`) is intentionally a hard fail guard. Any merge conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) found in tracked text files **or release-critical scripts under `scripts/*.mjs` (including `scripts/e2e-test.mjs`)** must terminate `validate:master` with a non-zero exit code.
+- Operators should treat this as a deterministic preflight block-by-design and must resolve markers before rerunning.
+
 Conditional final step:
 - `npm run check:merge-main` runs after step 11 only when the workspace has git metadata and a local `main` branch (or when `VALIDATE_MASTER_FORCE_MERGE_PARITY=1`).
 
