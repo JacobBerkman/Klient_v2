@@ -2,7 +2,7 @@ import { execFileSync } from 'node:child_process'
 import { readdirSync, readFileSync, statSync } from 'node:fs'
 import { resolve } from 'node:path'
 
-const MARKER_PATTERN = /^(<<<<<<<|=======|>>>>>>>)\b/m
+const MARKER_PATTERN = /^(<<<<<<<|=======|>>>>>>>)(?=\s|$)/m
 const TRACKED_TEXT_EXTENSIONS = new Set([
   '.md',
   '.mdx',
@@ -46,6 +46,19 @@ const SKIP_DIRECTORIES = new Set([
   '.cache',
   '.turbo'
 ])
+
+const RELEASE_CRITICAL_SCRIPTS = [
+  'scripts/master-validate.mjs',
+  'scripts/check-conflict-markers.mjs',
+  'scripts/api-contract-test.mjs',
+  'scripts/integration-rbac.mjs',
+  'scripts/integration-tenancy.mjs',
+  'scripts/master-integration.mjs',
+  'scripts/migration-order-check.mjs',
+  'scripts/smoke-test.mjs',
+  'scripts/e2e-test.mjs',
+  'scripts/security-checks.mjs'
+]
 
 function isTrackedTextFile(pathname) {
   const lowered = pathname.toLowerCase()
@@ -110,8 +123,16 @@ function listTrackedFilesFromFilesystem(rootDir) {
 }
 
 function listTrackedFiles(rootDir) {
-  if (canUseGit(rootDir)) return listTrackedFilesFromGit(rootDir)
-  return listTrackedFilesFromFilesystem(rootDir)
+  const tracked = canUseGit(rootDir) ? listTrackedFilesFromGit(rootDir) : listTrackedFilesFromFilesystem(rootDir)
+  const releaseCriticalExisting = RELEASE_CRITICAL_SCRIPTS.filter((relativePath) => {
+    try {
+      const fileStats = statSync(resolve(rootDir, relativePath))
+      return fileStats.isFile()
+    } catch {
+      return false
+    }
+  })
+  return [...new Set([...tracked, ...releaseCriticalExisting])].sort((a, b) => a.localeCompare(b))
 }
 
 const rootDir = process.cwd()
@@ -123,7 +144,7 @@ for (const file of listTrackedFiles(rootDir)) {
 
   const lines = contents.split(/\r?\n/)
   lines.forEach((line, index) => {
-    if (/^(<<<<<<<|=======|>>>>>>>)\b/.test(line)) {
+    if (/^(<<<<<<<|=======|>>>>>>>)(?=\s|$)/.test(line)) {
       offenders.push(`${file}:${index + 1}: ${line}`)
     }
   })

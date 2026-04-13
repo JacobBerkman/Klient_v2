@@ -79,3 +79,13 @@ test('validate master evidence env var wiring remains explicit for every evidenc
     assert(pattern.test(masterValidate), `Missing ${stepLabel} -> ${envVarName} wiring in envForStep`)
   }
 })
+
+test('validate:master keeps syntax checks before conflict marker guard', () => {
+  const masterValidate = read('scripts/master-validate.mjs')
+  const syntaxIndex = masterValidate.indexOf("name: 'Static syntax checks'")
+  const conflictGuardIndex = masterValidate.indexOf("name: 'Conflict marker guard'")
+
+  assert.notEqual(syntaxIndex, -1, 'Expected Static syntax checks gate step to exist')
+  assert.notEqual(conflictGuardIndex, -1, 'Expected Conflict marker guard gate step to exist')
+  assert.ok(syntaxIndex < conflictGuardIndex, 'Static syntax checks must execute before conflict marker guard')
+})
