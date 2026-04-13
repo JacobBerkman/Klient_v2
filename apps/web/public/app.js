@@ -47,7 +47,9 @@ const state = {
     membershipRefreshedAtByDraftId: {},
     shareFeedbackByDraftId: {},
     userLookupByDraftId: {},
-    userLookupSearchByDraftId: {}
+    userLookupSearchByDraftId: {},
+    selectedUserIdByDraftId: {},
+    lastShareFocusByDraftId: {}
   },
   workflowStatusMessage: '',
   operations: {
@@ -980,10 +982,59 @@ function collaboratorLookupLabel(user = {}) {
   return pieces.join(' ')
 }
 
+function findKnownFirmUserById(userId) {
+  const normalizedUserId = String(userId || '').trim()
+  if (!normalizedUserId) return null
+  if (state.user?.id === normalizedUserId) {
+    return {
+      id: state.user.id,
+      label: `${state.user.firstName || ''} ${state.user.lastName || ''}`.trim() || state.user.email || state.user.id,
+      email: state.user.email || '',
+      role: state.user.role || ''
+    }
+  }
+  for (const list of Object.values(state.formsUi.userLookupByDraftId)) {
+    const found = (Array.isArray(list) ? list : []).find((entry) => String(entry?.id || '') === normalizedUserId)
+    if (found) return found
+  }
+  return null
+}
+
+function collaboratorIdentityLabel(userId, { fallbackLabel = '' } = {}) {
+  const known = findKnownFirmUserById(userId)
+  if (!known) return fallbackLabel || String(userId || 'unknown user')
+  const contextual = collaboratorLookupLabel(known)
+  return contextual || fallbackLabel || String(userId || 'unknown user')
+}
+
+function renderCollaboratorIdentity(userId, { fallbackLabel = '' } = {}) {
+  const canonicalId = String(userId || '').trim() || 'unknown-user-id'
+  const contextualLabel = collaboratorIdentityLabel(canonicalId, { fallbackLabel })
+  if (!contextualLabel || contextualLabel === canonicalId) return `<code>${escapeHtml(canonicalId)}</code>`
+  return `${escapeHtml(contextualLabel)} <span class="muted">(<code>${escapeHtml(canonicalId)}</code>)</span>`
+}
+
 function draftShareMembershipState(draftId) {
   const collaborators = state.formsUi.collaboratorsByDraftId[draftId]
   if (!Array.isArray(collaborators)) return { status: 'not-loaded', collaborators: [] }
   return { status: 'loaded', collaborators }
+}
+
+function normalizeDraftShareError(error, action = 'complete this collaborator action') {
+  const message = String(error?.message || '').toLowerCase()
+  if (isConflictError(error) || Number(error?.status) === 409) {
+    return 'Membership changed on another session. Refresh membership, review current collaborators, and retry.'
+  }
+  if (message.includes('already added') || message.includes('already a collaborator')) {
+    return 'That user already has draft access. Refresh membership to confirm current collaborator state.'
+  }
+  if (message.includes('not assigned')) {
+    return 'That collaborator is already removed. Refresh membership to sync the latest server state.'
+  }
+  if (message.includes('cannot be removed')) {
+    return 'Draft owner membership is immutable and cannot be removed.'
+  }
+  return normalizeApiError(error, action)
 }
 
 function draftShareCapabilitySummary(draft, membershipState) {
@@ -1606,6 +1657,16 @@ async function renderForms() {
         const canManage = capability.canManage
         const shareFeedback = state.formsUi.shareFeedbackByDraftId[draft.id] || ''
         const refreshedAt = state.formsUi.membershipRefreshedAtByDraftId[draft.id] || ''
+        const selectedLookupUserId = state.formsUi.selectedUserIdByDraftId[draft.id] || ''
+        const currentUserRole = state.user?.role || 'unknown'
+        const ownerIdentity = renderCollaboratorIdentity(draft.createdByUserId, { fallbackLabel: 'unknown owner' })
+        const capabilityTone = canManage
+          ? capability.isOwner
+            ? 'owner-manage'
+            : 'admin-override'
+          : capability.isCollaborator
+            ? 'collaborator-readonly'
+            : 'no-access'
         return `
     <tr>
       <td>${escapeHtml(draft.id)}</td>
@@ -1627,14 +1688,21 @@ async function renderForms() {
       <td colspan="7">
         <div class="item compact">
           <h4>Draft sharing</h4>
-          <p class="muted compact">Owner: <code>${escapeHtml(draft.createdByUserId || 'unknown')}</code></p>
+          <p class="muted compact">Owner: ${ownerIdentity}</p>
           <p class="muted compact">Collaborators: <strong>${collaboratorCount}</strong> ${membershipState.status === 'loaded' ? '' : '(open sharing to load membership)'}</p>
           <p class="muted compact">Capabilities:
+            <span class="badge subtle">role: ${escapeHtml(currentUserRole)}</span>
             <span class="badge subtle">${capability.isOwner ? 'owner' : 'not owner'}</span>
             <span class="badge subtle">${capability.isCollaborator ? 'collaborator' : 'not collaborator'}</span>
-            ${capability.cannotManageReason ? `<span class="badge subtle">cannot-manage: ${escapeHtml(capability.cannotManageReason)}</span>` : ''}
+            <span class="badge subtle">${escapeHtml(capabilityTone)}</span>
+            ${capability.cannotManageReason ? `<span class="badge subtle">manage disabled</span>` : ''}
           </p>
           <p class="muted compact">Action hint: ${escapeHtml(capability.actionHint)}</p>
+          ${
+            canManage
+              ? '<p class="muted compact">You can search, add, and remove collaborators. Changes use canonical user IDs even when names/emails are shown.</p>'
+              : '<p class="muted compact">This panel is visible for transparency, but mutating controls are intentionally disabled by RBAC.</p>'
+          }
           <p class="muted compact">Membership refreshed: ${membershipState.status === 'loaded' ? (refreshedAt ? escapeHtml(new Date(refreshedAt).toLocaleString()) : 'just now') : 'not loaded yet'}
             <button data-refresh-draft-collaborators="${draft.id}" ${canViewDraftCollaborators() ? '' : 'disabled'}>${pendingLabel(`draft-share-refresh-${draft.id}`, 'Refresh membership', 'Refreshing…')}</button>
           </p>
@@ -1649,7 +1717,10 @@ async function renderForms() {
               <select name="userId" ${canManage ? '' : 'disabled'}>
                 <option value="">Select a firm user…</option>
                 ${selectableLookupResults
-                  .map((user) => `<option value="${escapeHtml(user.id || '')}">${escapeHtml(collaboratorLookupLabel(user))}</option>`)
+                  .map(
+                    (user) =>
+                      `<option value="${escapeHtml(user.id || '')}" ${String(user.id || '') === selectedLookupUserId ? 'selected' : ''}>${escapeHtml(collaboratorLookupLabel(user))}</option>`
+                  )
                   .join('')}
               </select>
             </label>
@@ -1677,7 +1748,7 @@ async function renderForms() {
                 ? `<ul>${list
                     .map(
                       (collaborator) => `<li>
-                    <code>${escapeHtml(collaborator.userId || collaborator.id || '')}</code>
+                    <span>${renderCollaboratorIdentity(collaborator.userId || collaborator.id || '', { fallbackLabel: collaborator.label || '' })}</span>
                     <button data-remove-draft-collaborator="${draft.id}" data-collaborator-user-id="${escapeHtml(collaborator.userId || collaborator.id || '')}" ${
                       canManage ? '' : 'disabled'
                     }>
@@ -1880,6 +1951,7 @@ async function renderForms() {
       } finally {
         clearActionPending(actionKey)
       }
+      queueViewFocus(state.formsUi.lastShareFocusByDraftId[draftId] || `#draft-share-panel-${draftId} h4`)
       await renderForms()
     })
   })
@@ -1906,14 +1978,18 @@ async function renderForms() {
       } finally {
         clearActionPending(actionKey)
       }
+      queueViewFocus(state.formsUi.lastShareFocusByDraftId[draftId] || `[data-refresh-draft-collaborators="${draftId}"]`)
       await renderForms()
     })
   })
 
   document.querySelectorAll('form[data-search-draft-collaborator-users]').forEach((form) => {
+    const draftId = form.dataset.searchDraftCollaboratorUsers
+    form.querySelector('input[name="search"]')?.addEventListener('focus', () => {
+      state.formsUi.lastShareFocusByDraftId[draftId] = `form[data-search-draft-collaborator-users="${draftId}"] input[name="search"]`
+    })
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
-      const draftId = form.dataset.searchDraftCollaboratorUsers
       const draft = drafts.find((entry) => entry.id === draftId)
       if (!canManageDraftCollaborators(draft)) {
         state.formsUi.shareFeedbackByDraftId[draftId] = draftCollaboratorDeniedMessage(draft)
@@ -1936,14 +2012,22 @@ async function renderForms() {
       } finally {
         clearActionPending(actionKey)
       }
+      queueViewFocus(state.formsUi.lastShareFocusByDraftId[draftId] || `form[data-search-draft-collaborator-users="${draftId}"] input[name="search"]`)
       await renderForms()
     })
   })
 
   document.querySelectorAll('form[data-add-draft-collaborator]').forEach((form) => {
+    const draftId = form.dataset.addDraftCollaborator
+    const selectEl = form.querySelector('select[name="userId"]')
+    selectEl?.addEventListener('change', () => {
+      state.formsUi.selectedUserIdByDraftId[draftId] = String(selectEl.value || '').trim()
+    })
+    selectEl?.addEventListener('focus', () => {
+      state.formsUi.lastShareFocusByDraftId[draftId] = `form[data-add-draft-collaborator="${draftId}"] select[name="userId"]`
+    })
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
-      const draftId = form.dataset.addDraftCollaborator
       const draft = drafts.find((entry) => entry.id === draftId)
       if (!canManageDraftCollaborators(draft)) {
         state.formsUi.shareFeedbackByDraftId[draftId] = draftCollaboratorDeniedMessage(draft)
@@ -1951,13 +2035,28 @@ async function renderForms() {
         return
       }
       const userId = String(new FormData(form).get('userId') || '').trim()
+      state.formsUi.selectedUserIdByDraftId[draftId] = userId
       if (!userId) {
         state.formsUi.shareFeedbackByDraftId[draftId] = 'Add failed: select a collaborator from the firm user lookup results.'
         await renderForms()
         return
       }
+      const optimisticUser = findKnownFirmUserById(userId) || { id: userId, userId, label: userId, email: '', role: '', permission: 'read' }
       const actionKey = `draft-share-add-${draftId}`
+      const previousCollaborators = Array.isArray(state.formsUi.collaboratorsByDraftId[draftId])
+        ? [...state.formsUi.collaboratorsByDraftId[draftId]]
+        : []
+      const previousLookup = [...(state.formsUi.userLookupByDraftId[draftId] || [])]
       setActionPending(actionKey, 'pending')
+      if (!previousCollaborators.some((entry) => (entry.userId || entry.id) === userId)) {
+        state.formsUi.collaboratorsByDraftId[draftId] = [
+          ...previousCollaborators,
+          { userId, id: userId, permission: optimisticUser.permission || 'read', label: optimisticUser.label, email: optimisticUser.email }
+        ]
+      }
+      state.formsUi.userLookupByDraftId[draftId] = previousLookup.filter((candidate) => candidate.id !== userId)
+      state.formsUi.shareFeedbackByDraftId[draftId] = `Pending: adding ${collaboratorIdentityLabel(userId)}…`
+      await renderForms()
       try {
         await request(routes.formDraftCollaborators(draftId), {
           method: 'POST',
@@ -1971,19 +2070,31 @@ async function renderForms() {
         state.formsUi.userLookupByDraftId[draftId] = (state.formsUi.userLookupByDraftId[draftId] || []).filter(
           (candidate) => candidate.id !== userId
         )
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Add complete: collaborator ${userId} now has draft access.`
+        state.formsUi.selectedUserIdByDraftId[draftId] = ''
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Add complete: ${collaboratorIdentityLabel(userId)} now has draft access.`
         reportActionSuccess('Forms', `Collaborator ${userId} added to draft ${draftId}.`)
       } catch (error) {
-        state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'add a draft collaborator')
+        state.formsUi.collaboratorsByDraftId[draftId] = previousCollaborators
+        state.formsUi.userLookupByDraftId[draftId] = previousLookup
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Add rolled back: ${normalizeDraftShareError(
+          error,
+          'add a draft collaborator'
+        )}`
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
       }
+      queueViewFocus(state.formsUi.lastShareFocusByDraftId[draftId] || `form[data-add-draft-collaborator="${draftId}"] select[name="userId"]`)
       await renderForms()
     })
   })
 
   document.querySelectorAll('[data-remove-draft-collaborator]').forEach((button) => {
+    const initialDraftId = button.dataset.removeDraftCollaborator
+    button.addEventListener('focus', () => {
+      const candidateUserId = button.dataset.collaboratorUserId
+      state.formsUi.lastShareFocusByDraftId[initialDraftId] = `[data-remove-draft-collaborator="${initialDraftId}"][data-collaborator-user-id="${candidateUserId}"]`
+    })
     button.addEventListener('click', async () => {
       const draftId = button.dataset.removeDraftCollaborator
       const userId = button.dataset.collaboratorUserId
@@ -1994,7 +2105,22 @@ async function renderForms() {
         return
       }
       const actionKey = `draft-share-remove-${draftId}-${userId}`
+      const previousCollaborators = Array.isArray(state.formsUi.collaboratorsByDraftId[draftId])
+        ? [...state.formsUi.collaboratorsByDraftId[draftId]]
+        : []
+      const removedCollaborator =
+        previousCollaborators.find((entry) => (entry.userId || entry.id) === userId) || findKnownFirmUserById(userId) || { id: userId, label: userId }
+      const previousLookup = [...(state.formsUi.userLookupByDraftId[draftId] || [])]
       setActionPending(actionKey, 'pending')
+      state.formsUi.collaboratorsByDraftId[draftId] = previousCollaborators.filter((entry) => (entry.userId || entry.id) !== userId)
+      if (!previousLookup.some((candidate) => candidate.id === userId)) {
+        state.formsUi.userLookupByDraftId[draftId] = [
+          ...previousLookup,
+          { id: userId, label: removedCollaborator.label || userId, email: removedCollaborator.email || '', role: removedCollaborator.role || '' }
+        ]
+      }
+      state.formsUi.shareFeedbackByDraftId[draftId] = `Pending: removing ${collaboratorIdentityLabel(userId)}…`
+      await renderForms()
       try {
         await request(routes.formDraftCollaborator(draftId, userId), { method: 'DELETE' })
         const collaborators = await request(routes.formDraftCollaborators(draftId))
@@ -2008,14 +2134,25 @@ async function renderForms() {
             { id: userId, label: userId, email: '', role: '' }
           ]
         }
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Remove complete: collaborator ${userId} no longer has draft access.`
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Remove complete: ${collaboratorIdentityLabel(
+          userId
+        )} no longer has draft access.`
         reportActionSuccess('Forms', `Collaborator ${userId} removed from draft ${draftId}.`)
       } catch (error) {
-        state.formsUi.shareFeedbackByDraftId[draftId] = normalizeApiError(error, 'remove a draft collaborator')
+        state.formsUi.collaboratorsByDraftId[draftId] = previousCollaborators
+        state.formsUi.userLookupByDraftId[draftId] = previousLookup
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Remove rolled back: ${normalizeDraftShareError(
+          error,
+          'remove a draft collaborator'
+        )}`
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
       }
+      queueViewFocus(
+        state.formsUi.lastShareFocusByDraftId[draftId] ||
+          `[data-remove-draft-collaborator="${draftId}"][data-collaborator-user-id="${userId}"]`
+      )
       await renderForms()
     })
   })
