@@ -17,6 +17,8 @@ test('e2e harness enforces strict CI browser runs and allows opt-in local fallba
   assert.match(content, /const strictModeEnvFlag = 'RELEASE_E2E_STRICT_MODE'/)
   assert.match(content, /function resolvePlaywrightReportPath\(env = process\.env\)/)
   assert.match(content, /export function browserFallbackMode\(env = process\.env\)/)
+  assert.match(content, /const ciSignal = parseBooleanSignal\(env\.CI\)/)
+  assert.match(content, /const strictMode = strictOverride \?\? isCi/)
   assert.match(content, /const fallback = browserFallbackMode\(\)/)
   assert.match(content, /const strictMode = fallback\.strictMode/)
   assert.match(content, /Strict browser execution is enabled \(\$\{strictModeEnvFlag\}=1\); \$\{browserFallbackEnvFlag\}=1 is ignored/)

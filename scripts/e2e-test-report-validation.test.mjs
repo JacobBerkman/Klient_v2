@@ -12,6 +12,7 @@ test('validatePlaywrightJsonReport fails when report is missing', async () => {
 
   assert.equal(validation.ok, false)
   assert.equal(validation.suiteNames.length, 0)
+  assert.equal(validation.artifact.code, 'missing-report')
   assert.match(validation.artifact.reason, /Missing Playwright JSON report/)
 
   await rm(tempDir, { recursive: true, force: true })
@@ -23,6 +24,7 @@ test('validatePlaywrightJsonReport fails when report JSON is invalid', async () 
 
   assert.equal(validation.ok, false)
   assert.equal(validation.suiteNames.length, 0)
+  assert.equal(validation.artifact.code, 'invalid-json')
   assert.match(validation.artifact.reason, /Invalid JSON in Playwright report/)
 
   await rm(resolve(reportPath, '..'), { recursive: true, force: true })
@@ -35,6 +37,7 @@ test('validatePlaywrightJsonReport fails when report JSON is empty object', asyn
 
   assert.equal(validation.ok, false)
   assert.deepEqual(validation.suiteNames, [])
+  assert.equal(validation.artifact.code, 'missing-titles')
   assert.match(validation.artifact.reason, /contains no suite\/spec titles/)
 
   await rm(resolve(reportPath, '..'), { recursive: true, force: true })
@@ -51,6 +54,7 @@ test('validatePlaywrightJsonReport fails when suites/specs are present but untit
 
   assert.equal(validation.ok, false)
   assert.deepEqual(validation.suiteNames, [])
+  assert.equal(validation.artifact.code, 'missing-titles')
   assert.match(validation.artifact.reason, /contains no suite\/spec titles/)
 
   await rm(resolve(reportPath, '..'), { recursive: true, force: true })
@@ -77,6 +81,7 @@ test('gatePlaywrightReportOrFail finalizes failed evidence with report reason', 
   assert.equal(evidenceFinalizeCalls.length, 1)
   assert.equal(evidenceFinalizeCalls[0].status, 'failed')
   assert.equal(evidenceFinalizeCalls[0].details.failureCategory, 'report-validation-failure')
+  assert.equal(evidenceFinalizeCalls[0].details.artifacts.playwrightJsonReport.code, 'missing-report')
   assert.match(evidenceFinalizeCalls[0].details.artifacts.playwrightJsonReport.reason, /Missing Playwright JSON report/)
 
   await rm(tempDir, { recursive: true, force: true })
@@ -103,32 +108,62 @@ test('validatePlaywrightJsonReport collects suite/spec titles for release eviden
 
 test('browser fallback remains disabled in CI even when local fallback flag is set', () => {
   const mode = browserFallbackMode({
-    CI: 'true',
+    CI: '1',
     RELEASE_E2E_ALLOW_FALLBACK: '1'
   })
 
   assert.equal(mode.enabled, false)
   assert.equal(mode.flagEnabled, true)
   assert.equal(mode.isCi, true)
+  assert.equal(mode.strictMode, true)
+})
+
+test('browser fallback defaults to local strict=false when CI signal is absent', () => {
+  const mode = browserFallbackMode({
+    RELEASE_E2E_ALLOW_FALLBACK: '1'
+  })
+
+  assert.equal(mode.isCi, false)
+  assert.equal(mode.strictMode, false)
+  assert.equal(mode.enabled, true)
+})
+
+test('browser fallback parses deterministic boolean env overrides', () => {
+  const strictOffInCi = browserFallbackMode({
+    CI: 'true',
+    RELEASE_E2E_ALLOW_FALLBACK: 'yes',
+    RELEASE_E2E_STRICT_MODE: '0'
+  })
+
+  assert.equal(strictOffInCi.isCi, true)
+  assert.equal(strictOffInCi.strictMode, false)
+  assert.equal(strictOffInCi.enabled, true)
 })
 
 test('main fails in strict mode when browser binaries are missing', async () => {
   const finalizeCalls = []
-  const exitCode = await main({
-    createContext: async () => ({ port: 4100, shutdown: async () => {} }),
-    run: async () => ({ code: 0, signal: null }),
-    hasBrowser: async () => false,
-    evidenceRecorder: { finalize: (payload) => finalizeCalls.push(payload) },
-    removeFile: async () => {},
-    validateReport: async () => ({ ok: true, suiteNames: ['playwright-browser-fallback'], artifact: { path: 'x', valid: true } }),
-    writeFallbackReport: async () => {}
-  })
+  const originalStrictMode = process.env.RELEASE_E2E_STRICT_MODE
+  process.env.RELEASE_E2E_STRICT_MODE = '1'
+  try {
+    const exitCode = await main({
+      createContext: async () => ({ port: 4100, shutdown: async () => {} }),
+      run: async () => ({ code: 0, signal: null }),
+      hasBrowser: async () => false,
+      evidenceRecorder: { finalize: (payload) => finalizeCalls.push(payload) },
+      removeFile: async () => {},
+      validateReport: async () => ({ ok: true, suiteNames: ['playwright-browser-fallback'], artifact: { path: 'x', valid: true } }),
+      writeFallbackReport: async () => {}
+    })
 
-  assert.equal(exitCode, 1)
-  assert.equal(finalizeCalls.at(-1).status, 'failed')
-  assert.equal(finalizeCalls.at(-1).details.failureCategory, 'browser-launch-failure')
-  assert.equal(finalizeCalls.at(-1).details.browser.status, 'failed')
-  assert.equal(finalizeCalls.at(-1).details.artifacts.playwrightJsonReport.valid, false)
+    assert.equal(exitCode, 1)
+    assert.equal(finalizeCalls.at(-1).status, 'failed')
+    assert.equal(finalizeCalls.at(-1).details.failureCategory, 'browser-launch-failure')
+    assert.equal(finalizeCalls.at(-1).details.browser.status, 'failed')
+    assert.equal(finalizeCalls.at(-1).details.artifacts.playwrightJsonReport.valid, false)
+  } finally {
+    if (originalStrictMode === undefined) delete process.env.RELEASE_E2E_STRICT_MODE
+    else process.env.RELEASE_E2E_STRICT_MODE = originalStrictMode
+  }
 })
 
 test('main succeeds in fallback mode when browser binaries are missing', async () => {
@@ -163,26 +198,33 @@ test('main succeeds in fallback mode when browser binaries are missing', async (
 
 test('main fails in strict mode when Playwright process fails', async () => {
   const finalizeCalls = []
-  const exitCode = await main({
-    createContext: async () => ({ port: 4300, shutdown: async () => {} }),
-    run: async (command) => {
-      if (command === process.execPath) return { code: 0, signal: null }
-      return { code: 2, signal: null }
-    },
-    hasBrowser: async () => true,
-    evidenceRecorder: { finalize: (payload) => finalizeCalls.push(payload) },
-    removeFile: async () => {}
-  })
+  const originalStrictMode = process.env.RELEASE_E2E_STRICT_MODE
+  process.env.RELEASE_E2E_STRICT_MODE = '1'
+  try {
+    const exitCode = await main({
+      createContext: async () => ({ port: 4300, shutdown: async () => {} }),
+      run: async (command) => {
+        if (command === process.execPath) return { code: 0, signal: null }
+        return { code: 2, signal: null }
+      },
+      hasBrowser: async () => true,
+      evidenceRecorder: { finalize: (payload) => finalizeCalls.push(payload) },
+      removeFile: async () => {}
+    })
 
-  assert.equal(exitCode, 1)
-  assert.equal(finalizeCalls.at(-1).status, 'failed')
-  assert.equal(finalizeCalls.at(-1).details.failureCategory, 'browser-launch-failure')
-  assert.equal(finalizeCalls.at(-1).details.browser.exitCode, 2)
-  assert.equal(finalizeCalls.at(-1).details.artifacts.playwrightJsonReport.valid, false)
-  assert.match(
-    finalizeCalls.at(-1).details.artifacts.playwrightJsonReport.reason,
-    /Playwright process failed before report validation/
-  )
+    assert.equal(exitCode, 1)
+    assert.equal(finalizeCalls.at(-1).status, 'failed')
+    assert.equal(finalizeCalls.at(-1).details.failureCategory, 'browser-launch-failure')
+    assert.equal(finalizeCalls.at(-1).details.browser.exitCode, 2)
+    assert.equal(finalizeCalls.at(-1).details.artifacts.playwrightJsonReport.valid, false)
+    assert.match(
+      finalizeCalls.at(-1).details.artifacts.playwrightJsonReport.reason,
+      /Playwright process failed before report validation/
+    )
+  } finally {
+    if (originalStrictMode === undefined) delete process.env.RELEASE_E2E_STRICT_MODE
+    else process.env.RELEASE_E2E_STRICT_MODE = originalStrictMode
+  }
 })
 
 test('main classifies UI contract failures for one-hop triage', async () => {

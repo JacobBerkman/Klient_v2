@@ -38,6 +38,8 @@ Required environment variables:
 
 Operator notes (authoritative policy location):
 - Strict E2E mode + fallback boundaries are defined only in `docs/deployment-quick-reference.md#canonical-browser-gate-policy-ci--local` (CI + `release:go-no-go` preflight are always strict; fallback is local/manual only with explicit opt-in).
+- Required E2E env flags are `RELEASE_E2E_STRICT_MODE`, `RELEASE_E2E_ALLOW_FALLBACK`, `CI`, and `PLAYWRIGHT_JSON_REPORT`/`RELEASE_E2E_PLAYWRIGHT_REPORT`; keep values command-visible in logs for deterministic triage.
+- Expected browser provisioning cache path is `PLAYWRIGHT_BROWSERS_PATH` (default Playwright-managed path when unset/`0`); CI should keep this path stable between install and test steps.
 - Release-time environment requirements (including runtime-required app vars) are defined only in `docs/deployment-quick-reference.md#required-environment-variables` and `docs/deployment-quick-reference.md#production-runtime-required-app-variables-from-startup-validation`.
 - Evidence bundle required artifacts are defined only in `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
 
