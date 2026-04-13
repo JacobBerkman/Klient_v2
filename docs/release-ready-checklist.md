@@ -92,6 +92,19 @@ When `npm run test:e2e` fails, remediation must follow this order:
 
 ## Objective pass/fail criteria
 
+### Six required command gates (ownership + evidence)
+
+These six gate commands are release-required and must remain command-identical across CI, this checklist, and the runbook.
+
+| Gate | Command owner | Required command | Evidence file (canonical path) | CI attribution job id |
+|---|---|---|---|---|
+| API contract | API Lead | `npm run test:contract` | `artifacts/release-evidence/<release-id>/api-contract-summary.json` | `api_contract` |
+| Integration suites | QA Lead | `npm run test:integration` | `artifacts/release-evidence/<release-id>/integration-summary.json` | `full_integration` |
+| Migration checks | Data/DB Owner | `npm run check:migrations` | `artifacts/release-evidence/<release-id>/migration-summary.json` | `migration_checks` |
+| Smoke | Release Manager | `npm run test:smoke` | `artifacts/release-evidence/<release-id>/smoke-summary.json` | `smoke_runtime_contract` |
+| E2E browser checks | QA Lead | `npm run test:e2e` | `artifacts/release-evidence/<release-id>/e2e-summary.json` | `e2e_release_blocking` |
+| Security checks | Security Owner | `npm run test:security` | `artifacts/release-evidence/<release-id>/security-summary.json` | `security_checks` |
+
 | Gate | Owner | Evidence command | Evidence artifact target | PASS criteria | Severity if failed | Rollback trigger (SLO/SLA) |
 |---|---|---|---|---|---|---|
 | API contract | API Lead | `npm run test:contract` | `artifacts/release-evidence/<release-id>/api-contract-summary.json` | Exit code `0`; summary has `status=passed`. | **SEV-1** | Roll back immediately if post-deploy contract checks fail for any public endpoint for more than **5 minutes** (SLO breach) or if external consumers report incompatible responses in production (**SLA breach**). |

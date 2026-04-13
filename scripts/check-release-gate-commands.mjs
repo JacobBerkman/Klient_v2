@@ -20,9 +20,42 @@ const requiredScripts = [
   'test:integration',
   'check:migrations',
   'test:smoke',
-  'test:ui-contract',
   'test:e2e',
-  'test:security'
+  'test:security',
+  'test:ui-contract'
+]
+
+const releaseGateJobs = [
+  {
+    jobId: 'api_contract',
+    command: 'npm run test:contract',
+    evidence: 'artifacts/release-evidence/<release-id>/api-contract-summary.json'
+  },
+  {
+    jobId: 'full_integration',
+    command: 'npm run test:integration',
+    evidence: 'artifacts/release-evidence/<release-id>/integration-summary.json'
+  },
+  {
+    jobId: 'migration_checks',
+    command: 'npm run check:migrations',
+    evidence: 'artifacts/release-evidence/<release-id>/migration-summary.json'
+  },
+  {
+    jobId: 'smoke_runtime_contract',
+    command: 'npm run test:smoke',
+    evidence: 'artifacts/release-evidence/<release-id>/smoke-summary.json'
+  },
+  {
+    jobId: 'e2e_release_blocking',
+    command: 'npm run test:e2e',
+    evidence: 'artifacts/release-evidence/<release-id>/e2e-summary.json'
+  },
+  {
+    jobId: 'security_checks',
+    command: 'npm run test:security',
+    evidence: 'artifacts/release-evidence/<release-id>/security-summary.json'
+  }
 ]
 
 const requiredGateCommands = [
@@ -43,6 +76,19 @@ function assertContains(content, needle, label) {
 for (const cmd of requiredGateCommands) {
   assertContains(quickRef, cmd, 'docs/deployment-quick-reference.md')
   assertContains(checklist, cmd, 'docs/release-ready-checklist.md')
+}
+
+for (const { command, evidence } of releaseGateJobs) {
+  assertContains(quickRef, command, 'docs/deployment-quick-reference.md')
+  assertContains(quickRef, evidence, 'docs/deployment-quick-reference.md')
+  assertContains(checklist, command, 'docs/release-ready-checklist.md')
+  assertContains(checklist, evidence, 'docs/release-ready-checklist.md')
+  assertContains(workflow, command, '.github/workflows/smoke.yml')
+}
+
+for (const { jobId } of releaseGateJobs) {
+  assertContains(workflow, `${jobId}:`, '.github/workflows/smoke.yml')
+  assertContains(workflow, `- ${jobId}`, '.github/workflows/smoke.yml merge gate needs')
 }
 
 assertContains(workflow, 'npm run validate:master', '.github/workflows/smoke.yml')

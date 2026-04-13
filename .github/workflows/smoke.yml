@@ -44,17 +44,161 @@ jobs:
             npm run check:release-gate-commands
           } 2>&1 | tee artifacts/docs-and-gate-config/suite.log
 
-      - name: Upload failure artifacts (docs + gate config)
-        if: failure()
+      - name: Upload artifacts (docs + gate config)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: docs-and-gate-config-failure-artifacts
+          name: docs-and-gate-config-artifacts
           if-no-files-found: warn
           path: |
             artifacts/docs-and-gate-config/**
 
-  hard_release_gate:
-    name: 2) hard release gate (validate:master)
+  api_contract:
+    name: 2) api contract gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run API contract gate command
+        run: |
+          mkdir -p artifacts/api-contract-gate
+          {
+            echo '# API contract gate readiness summary'
+            echo '- command: npm run test:contract'
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/api-contract-gate/readiness-summary.md
+
+          npm run test:contract 2>&1 | tee artifacts/api-contract-gate/suite.log
+
+      - name: Upload artifacts (api contract gate)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-contract-gate-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/api-contract-gate/**
+            artifacts/release-evidence/**
+
+  full_integration:
+    name: 3) integration gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run integration gate command
+        run: |
+          mkdir -p artifacts/integration-gate
+          {
+            echo '# Integration gate readiness summary'
+            echo '- command: npm run test:integration'
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/integration-gate/readiness-summary.md
+
+          npm run test:integration 2>&1 | tee artifacts/integration-gate/suite.log
+
+      - name: Upload artifacts (integration gate)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-gate-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/integration-gate/**
+            artifacts/release-evidence/**
+
+  migration_checks:
+    name: 4) migration checks gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run migration checks gate command
+        run: |
+          mkdir -p artifacts/migration-checks-gate
+          {
+            echo '# Migration checks gate readiness summary'
+            echo '- command: npm run check:migrations'
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/migration-checks-gate/readiness-summary.md
+
+          npm run check:migrations 2>&1 | tee artifacts/migration-checks-gate/suite.log
+
+      - name: Upload artifacts (migration checks gate)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: migration-checks-gate-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/migration-checks-gate/**
+            artifacts/release-evidence/**
+
+  smoke_runtime_contract:
+    name: 5) smoke gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run smoke gate command
+        run: |
+          mkdir -p artifacts/smoke-gate
+          {
+            echo '# Smoke gate readiness summary'
+            echo '- command: npm run test:smoke'
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/smoke-gate/readiness-summary.md
+
+          npm run test:smoke 2>&1 | tee artifacts/smoke-gate/suite.log
+
+      - name: Upload artifacts (smoke gate)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: smoke-gate-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/smoke-gate/**
+            artifacts/release-evidence/**
+
+  e2e_release_blocking:
+    name: 6) e2e release-blocking gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -69,12 +213,97 @@ jobs:
       - name: Install Playwright browser
         run: npx playwright install --with-deps chromium
 
+      - name: Run E2E gate command
+        run: |
+          mkdir -p artifacts/e2e-gate
+          {
+            echo '# E2E gate readiness summary'
+            echo '- command: npm run test:e2e'
+            echo '- filter: E2E_GREP=@release-blocking'
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/e2e-gate/readiness-summary.md
+
+          E2E_GREP='@release-blocking' npm run test:e2e 2>&1 | tee artifacts/e2e-gate/suite.log
+
+      - name: Upload artifacts (e2e gate)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: e2e-gate-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/e2e-gate/**
+            artifacts/release-evidence/**
+            test-results/**
+            playwright-report/**
+            snapshots/**
+            tmp/**/snapshots/**
+
+  security_checks:
+    name: 7) security gate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Run security gate command
+        run: |
+          mkdir -p artifacts/security-gate
+          {
+            echo '# Security gate readiness summary'
+            echo '- command: npm run test:security'
+            echo "- seed: ${TEST_SEED}"
+            echo "- node: $(node --version)"
+            echo "- npm: $(npm --version)"
+          } > artifacts/security-gate/readiness-summary.md
+
+          npm run test:security 2>&1 | tee artifacts/security-gate/suite.log
+
+      - name: Upload artifacts (security gate)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-gate-artifacts
+          if-no-files-found: warn
+          path: |
+            artifacts/security-gate/**
+            artifacts/release-evidence/**
+
+  hard_release_gate:
+    name: 8) hard release gate (validate:master)
+    runs-on: ubuntu-latest
+    needs:
+      - docs_and_gate_config
+      - api_contract
+      - full_integration
+      - migration_checks
+      - smoke_runtime_contract
+      - e2e_release_blocking
+      - security_checks
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
       - name: Run canonical hard release gate
         run: |
           mkdir -p artifacts/hard-release-gate
           {
-            echo "# Hard release gate readiness summary"
-            echo "- suite: validate:master"
+            echo '# Hard release gate readiness summary'
+            echo '- suite: validate:master'
             echo "- seed: ${TEST_SEED}"
             echo "- node: $(node --version)"
             echo "- npm: $(npm --version)"
@@ -82,58 +311,16 @@ jobs:
 
           npm run validate:master 2>&1 | tee artifacts/hard-release-gate/suite.log
 
-      - name: Upload failure artifacts (hard release gate)
-        if: failure()
+      - name: Upload artifacts (hard release gate)
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: hard-release-gate-failure-artifacts
+          name: hard-release-gate-artifacts
           if-no-files-found: warn
           path: |
             artifacts/hard-release-gate/**
-            test-results/**
-            snapshots/**
-            tmp/**/snapshots/**
-
-  e2e_release_blocking:
-    name: 6) e2e release-blocking
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-          cache: npm
-
-      - run: npm ci
-
-      - name: Install Playwright browser
-        run: npx playwright install --with-deps chromium
-
-      - name: Run release-blocking E2E suite
-        run: |
-          mkdir -p artifacts/e2e-release-blocking
-          {
-            echo "# E2E release-blocking readiness summary"
-            echo "- suite: e2e release-blocking"
-            echo "- seed: ${TEST_SEED}"
-            echo "- node: $(node --version)"
-            echo "- npm: $(npm --version)"
-          } > artifacts/e2e-release-blocking/readiness-summary.md
-
-          E2E_GREP='@release-blocking' npm run test:e2e 2>&1 | tee artifacts/e2e-release-blocking/suite.log
-
-      - name: Upload failure artifacts (e2e release-blocking)
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: e2e-release-blocking-failure-artifacts
-          if-no-files-found: warn
-          path: |
-            artifacts/e2e-release-blocking/**
             artifacts/release-evidence/**
             test-results/**
-            playwright-report/**
             snapshots/**
             tmp/**/snapshots/**
 
@@ -142,23 +329,33 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       - docs_and_gate_config
-      - hard_release_gate
+      - api_contract
+      - full_integration
+      - migration_checks
+      - smoke_runtime_contract
       - e2e_release_blocking
+      - security_checks
+      - hard_release_gate
     if: always()
     steps:
       - name: Enforce green CI before merge
         run: |
           results=(
             "${{ needs.docs_and_gate_config.result }}"
-            "${{ needs.hard_release_gate.result }}"
+            "${{ needs.api_contract.result }}"
+            "${{ needs.full_integration.result }}"
+            "${{ needs.migration_checks.result }}"
+            "${{ needs.smoke_runtime_contract.result }}"
             "${{ needs.e2e_release_blocking.result }}"
+            "${{ needs.security_checks.result }}"
+            "${{ needs.hard_release_gate.result }}"
           )
 
           for result in "${results[@]}"; do
             if [ "$result" != "success" ]; then
-              echo "At least one required suite failed; merge gate is red."
+              echo 'At least one required suite failed; merge gate is red.'
               exit 1
             fi
           done
 
-          echo "All required suites passed; merge gate is green."
+          echo 'All required suites passed; merge gate is green.'
