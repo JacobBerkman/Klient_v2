@@ -65,6 +65,46 @@ function normalizePublishPreflightIssues(issues = []) {
   return Array.isArray(issues) ? issues.map((issue, index) => normalizePublishPreflightIssue(issue, index)) : []
 }
 
+function normalizeExtractionEnvelope(extraction = {}) {
+  const reasonCode = String(extraction?.reasonCode || '').trim() || null
+  const rawError = extraction?.error && typeof extraction.error === 'object' ? extraction.error : {}
+  const normalizedError =
+    extraction?.status === 'failed'
+      ? {
+          reasonCode,
+          code: String(rawError.code || 'TEMPLATE_INGESTION_FAILED'),
+          message: String(rawError.message || 'Template ingestion failed.')
+        }
+      : null
+  const diagnostics = Array.isArray(extraction?.diagnostics)
+    ? extraction.diagnostics.map((diagnostic = {}) => ({
+        type: String(diagnostic.type || 'ingestion'),
+        severity: String(diagnostic.severity || 'error'),
+        reasonCode: String(diagnostic.reasonCode || reasonCode || ''),
+        code: String(diagnostic.code || normalizedError?.code || 'TEMPLATE_INGESTION_FAILED'),
+        message: String(diagnostic.message || normalizedError?.message || 'Template ingestion failed.'),
+        details: diagnostic.details && typeof diagnostic.details === 'object' ? diagnostic.details : {}
+      }))
+    : normalizedError
+      ? [
+          {
+            type: 'ingestion',
+            severity: 'error',
+            reasonCode: reasonCode || '',
+            code: normalizedError.code,
+            message: normalizedError.message,
+            details: {}
+          }
+        ]
+      : []
+  return {
+    status: extraction?.status === 'failed' ? 'failed' : 'completed',
+    reasonCode,
+    error: normalizedError,
+    diagnostics
+  }
+}
+
 function classifyPreflightCategory(issue = {}) {
   const code = String(issue.code || '').toLowerCase()
   if (
@@ -144,7 +184,11 @@ export function createTemplatesService({ templateRepository, policy, store = nul
     },
     autoBuild(user, input) {
       policy.requireGuard(user, 'canEditTemplate')
-      return runMutation(() => templateRepository.autoBuildTemplate(user, input))
+      const template = runMutation(() => templateRepository.autoBuildTemplate(user, input))
+      return {
+        ...template,
+        extraction: normalizeExtractionEnvelope(template?.extraction || {})
+      }
     },
     publish(user, templateId, input) {
       policy.requireGuard(user, 'canPublishTemplate')

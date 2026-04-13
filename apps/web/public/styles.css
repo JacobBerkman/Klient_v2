@@ -458,6 +458,11 @@ textarea {
   cursor: pointer;
 }
 
+.mapping-row-item.has-blocker td:first-child,
+.mapping-row-item.is-required-unmapped td:first-child {
+  border-left: 3px solid #ef4444;
+}
+
 .mapping-row-item.is-selected {
   outline: 1px solid #60a5fa;
   outline-offset: -1px;
@@ -467,6 +472,11 @@ textarea {
 .mapping-row-item.is-jumped {
   outline: 2px solid #f59e0b;
   outline-offset: -2px;
+  background: rgba(245, 158, 11, 0.12);
+}
+
+.mapping-row-item.is-required-unmapped {
+  background: rgba(127, 29, 29, 0.18);
 }
 
 .mapping-row-item.is-selected:focus-visible,
@@ -520,6 +530,16 @@ textarea {
   margin: 6px 0 0;
   display: grid;
   gap: 6px;
+}
+
+.sticky-remediation-actions {
+  position: sticky;
+  top: 42px;
+  z-index: 2;
+  padding: 8px;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.95);
 }
 
 table {

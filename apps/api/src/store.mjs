@@ -3484,7 +3484,8 @@ export function createStore({
         extraction: {
           status: extraction.status,
           reasonCode: extraction.reasonCode,
-          error: extraction.error || null
+          error: extraction.error || null,
+          diagnostics: Array.isArray(extraction.diagnostics) ? extraction.diagnostics : []
         }
       })
     },

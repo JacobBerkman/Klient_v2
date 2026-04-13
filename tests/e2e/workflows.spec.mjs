@@ -113,6 +113,27 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
     }
   })
   expect(autoBuildResponse.status()).toBe(201)
+  const malformedAutoBuild = await autoBuildResponse.json()
+  expect(malformedAutoBuild.extraction.status).toBe('failed')
+  expect(malformedAutoBuild.extraction.reasonCode).toBe('malformed_pdf')
+  expect(malformedAutoBuild.extraction.diagnostics[0].code).toBe('TEMPLATE_INGESTION_MALFORMED_PDF')
+
+  const noFieldsResponse = await page.request.post('/api/templates/auto-build', {
+    data: {
+      name: `No Fields Auto Build ${stableToken}`,
+      fileName: 'no-fields.pdf',
+      fileBytes: Array.from(
+        Buffer.from(
+          '%PDF-1.4\n1 0 obj\n<< /Type /Catalog /AcroForm 2 0 R >>\nendobj\n2 0 obj\n<< /Fields [] >>\nendobj\n%%EOF',
+          'latin1'
+        )
+      )
+    }
+  })
+  expect(noFieldsResponse.status()).toBe(201)
+  const noFieldsAutoBuild = await noFieldsResponse.json()
+  expect(noFieldsAutoBuild.extraction.reasonCode).toBe('no_fields')
+  expect(noFieldsAutoBuild.extraction.error.code).toBe('TEMPLATE_INGESTION_NO_FIELDS')
 
   const remediationTemplateName = `Preflight Loop Template ${seededRunId}`
   const remediationTemplateResponse = await page.request.post('/api/templates', {
@@ -152,6 +173,12 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('profile.firstName')
   await page.locator('#inspector-reset-source-path').click()
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
+  await page.getByRole('button', { name: '5. Publish' }).click()
+  await page.locator('#run-publish-preflight').click()
+  await expect(page.getByText('Publish preflight found 1 schema issue(s).')).toBeVisible()
+  await expect(page.getByText('required_source_path')).toBeVisible()
+  await page.locator('[data-preflight-rowindex="0"]').click()
+  await expect(page.locator('#inspector-sourcePath')).toBeFocused()
   await page.locator('#clear-unresolved-rows').click()
   await expect(page.locator('#inspector-sourcePath')).toHaveValue('')
   await page.locator('#auto-map-similar').click()
@@ -190,6 +217,20 @@ test('@release-blocking custom-field schema CRUD states surface in admin and pro
   await expect(page.locator('#custom-field-create-form [data-form-feedback]')).toContainText('Success: custom field created.')
   await expect(page.getByText(fieldKey)).toBeVisible()
 
+  await page.locator('#custom-field-bulk-add-row').click()
+  const bulkRow = page.locator('[data-bulk-row]').last()
+  await bulkRow.locator('input[name="bulkKey"]').fill(fieldKey)
+  await bulkRow.locator('select[name="bulkType"]').selectOption('number')
+  await bulkRow.locator('input[name="bulkLabel"]').fill('Custom Score')
+  await bulkRow.locator('input[name="bulkRequired"]').fill('true')
+  await bulkRow.locator('input[name="bulkMetadata"]').fill('{"group":"board"}')
+  await page.locator('#custom-field-bulk-form button[type="submit"]').click()
+  await expect(page.locator('#custom-field-bulk-form [data-form-feedback]')).toContainText(
+    'Success: preview generated. Confirm to persist changes.'
+  )
+  await page.locator('#custom-field-bulk-confirm-form button[type="submit"]').click()
+  await expect(page.getByText('Bulk schema changes saved.')).toBeVisible()
+
   await page.locator(`[data-custom-field-update="${fieldKey}"] input[name="label"]`).fill('Custom Score')
   await page.locator(`[data-custom-field-update="${fieldKey}"] select[name="type"]`).selectOption('number')
   await page.locator(`[data-custom-field-update="${fieldKey}"] button[type="submit"]`).click()
@@ -220,6 +261,15 @@ test('@release-blocking custom-field schema CRUD states surface in admin and pro
   await page.locator(`[data-edit-profile="${profile.id}"]`).click()
   await expect(page.locator(`#profile-edit-${profile.id}-${fieldKey}`)).toBeVisible()
   await expect(page.locator(`#profile-edit-${profile.id}-${fieldKey}`)).toHaveAttribute('type', 'number')
+
+  await page.locator(`#profile-edit-${profile.id} input[name="firstName"]`).fill('CustomEdited')
+  await page.request.patch(`/api/profiles/${profile.id}`, { data: { firstName: 'ServerChanged' } })
+  await page.locator(`#profile-edit-${profile.id} button[type="submit"]`).click()
+  await expect(page.locator(`[data-inline-feedback="${profile.id}"]`)).toContainText('Your unsaved edits were preserved')
+  await expect(page.locator(`#profile-edit-${profile.id} input[name="firstName"]`)).toHaveValue('CustomEdited')
+  await page.locator(`[data-inline-conflict-refresh="${profile.id}"]`).click()
+  await expect(page.locator(`[data-inline-feedback="${profile.id}"]`)).toContainText('Reloaded latest server values')
+  await expect(page.locator(`#profile-edit-${profile.id} input[name="firstName"]`)).toHaveValue('CustomEdited')
 
   cleanupActions.push(async () => {
     await page.request.delete(`/api/profiles/${profile.id}`).catch(() => {})
@@ -352,13 +402,14 @@ test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC
 test('portal draft then submit lifecycle is stable', async ({ page, seededRunId }) => {
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'portal')
   await signInFromUi(page, email, password)
+  const portalToken = seededRunId.replace(/[^a-z0-9-]/gi, '').slice(0, 24)
 
   const profileResponse = await page.request.post('/api/profiles', {
     data: {
       kind: 'client',
       firstName: 'Portal',
       lastName: 'Client',
-      email: `portal-client-${Date.now()}@e2e.test`
+      email: deterministicEmail(seededRunId, 'portal-client')
     }
   })
   const profile = await profileResponse.json()
@@ -366,7 +417,7 @@ test('portal draft then submit lifecycle is stable', async ({ page, seededRunId 
 
   const templateResponse = await page.request.post('/api/forms/templates', {
     data: {
-      name: `Portal Intake ${Date.now()}`,
+      name: `Portal Intake ${portalToken}`,
       sections: [
         {
           title: 'Goals',

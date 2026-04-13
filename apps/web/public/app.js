@@ -32,6 +32,7 @@ const state = {
   templateMappingSuggestionsByTemplateId: {},
   templateInspectorFocusRequestByTemplateId: {},
   templateJumpHighlightByTemplateId: {},
+  templateNavigationRequestByTemplateId: {},
   customFieldSchema: {
     fetched: false,
     loading: false,
@@ -643,6 +644,7 @@ function ensureInlineProfileState(kind, profileId, card = null) {
       dirty: false,
       saving: false,
       conflictMessage: '',
+      conflictRecoveryHint: '',
       lastSaveMessage: '',
       lastSaveWasError: false,
       isEditing: false
@@ -698,7 +700,9 @@ function completeInlineSave(kind, profileId, card = null) {
 function failInlineSave(kind, profileId, conflictMessage = '') {
   const entry = ensureInlineProfileState(kind, profileId)
   entry.saving = false
-  entry.conflictMessage = conflictMessage || 'Unable to save right now. Retry after reloading latest profile data.'
+  entry.conflictMessage =
+    conflictMessage || 'Unable to save right now. Retry after reloading latest profile data.'
+  entry.conflictRecoveryHint = 'Your unsaved edits are still in the form. Reload latest server values, then retry save.'
   entry.lastSaveMessage = entry.conflictMessage
   entry.lastSaveWasError = true
 }
@@ -709,6 +713,7 @@ function cancelInlineDraft(kind, profileId, card = null) {
   entry.dirty = false
   entry.saving = false
   entry.conflictMessage = ''
+  entry.conflictRecoveryHint = ''
   entry.lastSaveMessage = ''
   entry.lastSaveWasError = false
   entry.isEditing = false
@@ -736,6 +741,7 @@ function inlineStatusMarkup(entry) {
       <span class="muted inline-status-text" role="${entry.conflictMessage ? 'alert' : 'status'}" aria-live="${
         entry.conflictMessage ? 'assertive' : 'polite'
       }">${message}</span>
+      ${entry.conflictRecoveryHint ? `<span class="muted inline-status-text">${escapeHtml(entry.conflictRecoveryHint)}</span>` : ''}
     </div>
   `
 }
@@ -2592,6 +2598,7 @@ async function renderTemplates() {
   if (!state.templateMappingSuggestionsByTemplateId) state.templateMappingSuggestionsByTemplateId = {}
   if (!state.templateInspectorFocusRequestByTemplateId) state.templateInspectorFocusRequestByTemplateId = {}
   if (!state.templateJumpHighlightByTemplateId) state.templateJumpHighlightByTemplateId = {}
+  if (!state.templateNavigationRequestByTemplateId) state.templateNavigationRequestByTemplateId = {}
 
   const mappingDraftFromServer = (mapping = {}) => mappingDraftFromAnyShape(mapping)
   const normalizeMappingDraft = (draft = {}) => {
@@ -2633,6 +2640,7 @@ async function renderTemplates() {
 
   const knownPaths = knownProfileSourcePaths()
   ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
+  const knownPathIndex = normalizedKnownPathIndex(knownPaths)
 
   const mappingIssuesByIndex = new Map(draftMappings.map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
@@ -2687,7 +2695,12 @@ async function renderTemplates() {
   const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unresolved-only', 'unmapped', 'preview-warning', 'required-only'])
   const activeTemplateFilter = allowedTemplateFilters.has(templateFilter) ? templateFilter : 'all'
   if (template && activeTemplateFilter !== templateFilter) state.templateMappingFilterByTemplateId[template.id] = activeTemplateFilter
-  const rowJumpHighlight = template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
+  const navigationRequest = template ? state.templateNavigationRequestByTemplateId[template.id] || null : null
+  const rowJumpHighlight = Number.isFinite(Number(navigationRequest?.rowIndex))
+    ? Number(navigationRequest.rowIndex)
+    : template
+      ? Number(state.templateJumpHighlightByTemplateId[template.id])
+      : NaN
   const suggestionDraftByIndex = template ? state.templateMappingSuggestionsByTemplateId[template.id] || {} : {}
   const suggestionByIndex = new Map()
   let unresolvedRowsCount = 0
@@ -2721,7 +2734,17 @@ async function renderTemplates() {
 
   const mappedFieldSet = new Set(draftMappings.map((entry) => String(entry.pdfField || '').trim()).filter(Boolean))
   const extractedFields = normalizedExtractedFields(template)
-  const knownPathIndex = normalizedKnownPathIndex(knownPaths)
+  const extractedFieldMetaByName = new Map(
+    extractedFields.map((field) => [String(field.fieldName || '').trim(), field]).filter(([name]) => Boolean(name))
+  )
+  const extractedFieldsForReconciliation = [...extractedFields].sort((left, right) => {
+    const leftUnmapped = mappedFieldSet.has(left.fieldName) ? 0 : 1
+    const rightUnmapped = mappedFieldSet.has(right.fieldName) ? 0 : 1
+    const leftPriority = (left.required ? 2 : 0) + leftUnmapped
+    const rightPriority = (right.required ? 2 : 0) + rightUnmapped
+    if (leftPriority !== rightPriority) return rightPriority - leftPriority
+    return String(left.fieldName || '').localeCompare(String(right.fieldName || ''))
+  })
   const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field.fieldName)).length
   const extraction = template?.extraction || {}
   const hasExtractionData = extractedFields.length > 0 || Boolean(extraction?.status)
@@ -2814,10 +2837,11 @@ async function renderTemplates() {
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Extracted AcroForm Fields</h3>
-        <ul>${extractedFields
+        <p class="muted compact">Priority order surfaces <strong>unmapped required</strong> fields first for faster remediation.</p>
+        <ul>${extractedFieldsForReconciliation
           .map((field) => {
             const mapped = mappedFieldSet.has(field.fieldName)
-            return `<li><strong>${escapeHtml(field.fieldName)}</strong> <span class="badge">${escapeHtml(field.fieldType)}</span>${field.required ? ' <span class="badge warning-badge">Required</span>' : ''}${field.readOnly ? ' <span class="badge subtle">Read-only</span>' : ''}${field.pageIndex != null ? ` <span class="badge subtle">Page ${field.pageIndex + 1}</span>` : ''} <span class="badge ${mapped ? 'subtle' : ''}">${mapped ? 'Mapped' : 'Unmapped'}</span><button data-remove-extracted="${field.index}" class="secondary tiny">Remove</button></li>`
+            return `<li><strong>${escapeHtml(field.fieldName)}</strong> <span class="badge">${escapeHtml(field.fieldType)}</span>${field.required ? ' <span class="badge warning-badge">Required</span>' : ''}${field.readOnly ? ' <span class="badge subtle">Read-only</span>' : ''}${field.pageIndex != null ? ` <span class="badge subtle">Page ${field.pageIndex + 1}</span>` : ''} <span class="badge ${mapped ? 'subtle' : 'error-badge'}">${mapped ? 'Mapped' : 'Unmapped'}</span><button data-remove-extracted="${field.index}" class="secondary tiny">Remove</button></li>`
           })
           .join('') || '<li class="muted">No extracted fields yet.</li>'}</ul>
         <div class="row gap-sm">
@@ -2834,7 +2858,7 @@ async function renderTemplates() {
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mappings</h3>
         <p class="muted compact">Next actions: <strong>Save Now</strong> after edits, use <strong>Filter unresolved</strong> to isolate blockers, then switch to <strong>4. Preview</strong> when validation reads Ready.</p>
-        <div class="row gap-sm wrap">
+        <div class="row gap-sm wrap sticky-remediation-actions">
           <button id="add-mapping-row" class="tiny">Add Mapping</button>
           <button id="save-mappings" class="tiny">Save Now</button>
           <button id="suggest-source-paths" class="tiny secondary">Suggest source paths</button>
@@ -2859,7 +2883,7 @@ async function renderTemplates() {
             )
             .join('')}
         </div>
-        <table><thead><tr><th>#</th><th>State</th><th>PDF Field</th><th>Source Path</th><th>Suggested</th><th>Label</th><th>Confidence</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
+        <table><thead><tr><th>#</th><th>State</th><th>PDF Field</th><th>Field context</th><th>Source Path</th><th>Suggested</th><th>Label</th><th>Confidence</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
           ${draftMappings
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
@@ -2879,8 +2903,11 @@ async function renderTemplates() {
               if (!showRow) return ''
               const sampleValue = resolveSampleValue(mapping.sourcePath)
               const rowClasses = ['mapping-row-item']
+              const extractedMeta = extractedFieldMetaByName.get(String(mapping.pdfField || '').trim()) || null
               if (index === safeSelectedRowIndex) rowClasses.push('is-selected')
               if (index === rowJumpHighlight) rowClasses.push('is-jumped')
+              if (mapping.required === true && !String(mapping.sourcePath || '').trim()) rowClasses.push('is-required-unmapped')
+              if (issues.length || serverPreflightIssues.length) rowClasses.push('has-blocker')
               const confidence = mappingConfidenceBadge(mapping, knownPathIndex)
               const suggestion = suggestionByIndex.get(index)
               const stateBadge =
@@ -2895,6 +2922,7 @@ async function renderTemplates() {
                 <td>${index + 1}</td>
                 <td>${stateBadge}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
+                <td>${extractedMeta ? `<span class="badge subtle">${escapeHtml(extractedMeta.fieldType || 'unknown')}</span>${extractedMeta.required ? ' <span class="warning-badge">Required</span>' : ''}${extractedMeta.readOnly ? ' <span class="badge subtle">Read-only</span>' : ''}${extractedMeta.pageIndex != null ? ` <span class="badge subtle">Page ${Number(extractedMeta.pageIndex) + 1}</span>` : ''}` : '<span class="muted">No extraction metadata</span>'}</td>
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
                 <td>${
                   suggestion
@@ -2909,12 +2937,17 @@ async function renderTemplates() {
                 <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
               </tr>`
             })
-            .join('') || '<tr><td colspan="11" class="muted">No mappings match this filter.</td></tr>'}
+            .join('') || '<tr><td colspan="12" class="muted">No mappings match this filter.</td></tr>'}
         </tbody></table>
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Field Inspector</h3>
         <div class="muted">Selected row ${safeSelectedRowIndex + 1} of ${Math.max(1, draftMappings.length)}${selectedMapping.enabled === false ? ' (disabled)' : ''}</div>
+        ${(() => {
+          const inspectorMeta = extractedFieldMetaByName.get(String(selectedMapping.pdfField || '').trim()) || null
+          if (!inspectorMeta) return '<p class="muted compact">No extracted metadata for this row yet.</p>'
+          return `<div class="row wrap gap-sm"><span class="badge">Type: ${escapeHtml(inspectorMeta.fieldType || 'unknown')}</span>${inspectorMeta.required ? '<span class="warning-badge">Required field</span>' : '<span class="badge subtle">Optional field</span>'}${inspectorMeta.readOnly ? '<span class="badge subtle">Read-only</span>' : '<span class="badge subtle">Editable</span>'}${inspectorMeta.pageIndex != null ? `<span class="badge subtle">Page ${Number(inspectorMeta.pageIndex) + 1}</span>` : '<span class="badge subtle">Page n/a</span>'}</div>`
+        })()}
         <div class="row wrap gap-sm">
           ${
             selectedMapping.enabled === false
@@ -3175,6 +3208,14 @@ async function renderTemplates() {
     if (wizardStep && wizardSteps.includes(wizardStep)) state.templateWizardStepByTemplateId[template.id] = wizardStep
     state.templateInspectorFocusRequestByTemplateId[template.id] = focusInspector ? focusField : ''
     state.templateJumpHighlightByTemplateId[template.id] = highlightRow ? normalizedRowIndex : NaN
+    state.templateNavigationRequestByTemplateId[template.id] =
+      focusInspector || highlightRow
+        ? {
+            rowIndex: normalizedRowIndex,
+            focusField: focusInspector ? focusField : '',
+            remainingRenders: 3
+          }
+        : null
     await renderTemplates()
   }
 
@@ -3222,7 +3263,14 @@ async function renderTemplates() {
     const firstUnmappedIndex = draftMappings.findIndex((mapping) => !String(mapping.sourcePath || '').trim())
     state.templateWizardStepByTemplateId[template.id] = 'mapping'
     state.templateMappingFilterByTemplateId[template.id] = 'unmapped'
-    if (firstUnmappedIndex >= 0) state.templateInspector[template.id] = { rowIndex: firstUnmappedIndex }
+    if (firstUnmappedIndex >= 0) {
+      state.templateInspector[template.id] = { rowIndex: firstUnmappedIndex }
+      state.templateNavigationRequestByTemplateId[template.id] = {
+        rowIndex: firstUnmappedIndex,
+        focusField: 'sourcePath',
+        remainingRenders: 3
+      }
+    }
     state.templateInspectorFocusRequestByTemplateId[template.id] = 'sourcePath'
     await rerenderTemplates()
   })
@@ -3333,6 +3381,14 @@ async function renderTemplates() {
   })
 
   document.querySelector('#save-mappings')?.addEventListener('click', async () => {
+    if (template) {
+      const currentRowIndex = Number(state.templateInspector?.[template.id]?.rowIndex || 0)
+      state.templateNavigationRequestByTemplateId[template.id] = {
+        rowIndex: currentRowIndex,
+        focusField: 'sourcePath',
+        remainingRenders: 2
+      }
+    }
     await persistMappings({ autosave: false })
     await rerenderTemplates()
   })
@@ -3548,21 +3604,32 @@ async function renderTemplates() {
     })
   })
 
-  const pendingInspectorFocusField = template ? state.templateInspectorFocusRequestByTemplateId[template.id] : ''
+  const pendingNavigation = template ? state.templateNavigationRequestByTemplateId[template.id] || null : null
+  const pendingInspectorFocusField = pendingNavigation?.focusField || (template ? state.templateInspectorFocusRequestByTemplateId[template.id] : '')
   if (pendingInspectorFocusField) {
     const inspectorEl = document.querySelector(`#inspector-${pendingInspectorFocusField}`)
     inspectorEl?.focus({ preventScroll: true })
-    state.templateInspectorFocusRequestByTemplateId[template.id] = ''
+    if (template && !pendingNavigation) state.templateInspectorFocusRequestByTemplateId[template.id] = ''
   }
-  const pendingJumpRow = template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
+  const pendingJumpRow = Number.isFinite(Number(pendingNavigation?.rowIndex))
+    ? Number(pendingNavigation.rowIndex)
+    : template
+      ? Number(state.templateJumpHighlightByTemplateId[template.id])
+      : NaN
   if (Number.isFinite(pendingJumpRow)) {
     const target = document.querySelector(`#mapping-row-${pendingJumpRow}`)
     target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     target?.focus({ preventScroll: true })
-    setTimeout(() => {
-      if (template) state.templateJumpHighlightByTemplateId[template.id] = NaN
-      renderTemplates()
-    }, 1500)
+  }
+  if (template && pendingNavigation) {
+    const remainingRenders = Math.max(0, Number(pendingNavigation.remainingRenders || 0) - 1)
+    if (remainingRenders > 0) {
+      state.templateNavigationRequestByTemplateId[template.id] = { ...pendingNavigation, remainingRenders }
+    } else {
+      state.templateNavigationRequestByTemplateId[template.id] = null
+      state.templateJumpHighlightByTemplateId[template.id] = NaN
+      state.templateInspectorFocusRequestByTemplateId[template.id] = ''
+    }
   }
 
   document.querySelector('#publish-template')?.addEventListener('click', async () => {
@@ -3723,23 +3790,27 @@ function boardCardMarkup(card, kind) {
       ${workflowActionsMarkup}
       <div class="row gap-sm wrap top-gap">
         <label class="sr-only" for="stage-${card.id}">Move ${escapeHtml(displayName)} to stage</label>
-        <select id="stage-${card.id}" data-stage-select="${card.id}">
+        <select id="stage-${card.id}" data-stage-select="${card.id}" ${canEdit ? '' : 'disabled'}>
           ${stageSelectOptionsMarkup(cardStage)}
         </select>
       </div>
       <form id="profile-edit-${card.id}" class="inline-edit hidden top-gap" data-edit-form="${card.id}" data-updated-at="${escapeHtml(card.updatedAt || '')}" aria-live="polite">
         <div class="grid two">
-          <input name="firstName" value="${escapeHtml(inlineState.draft.firstName || '')}" placeholder="First name" required />
-          <input name="lastName" value="${escapeHtml(inlineState.draft.lastName || '')}" placeholder="Last name" required />
+          <input name="firstName" value="${escapeHtml(inlineState.draft.firstName || '')}" placeholder="First name" required ${canEdit ? '' : 'disabled'} />
+          <input name="lastName" value="${escapeHtml(inlineState.draft.lastName || '')}" placeholder="Last name" required ${canEdit ? '' : 'disabled'} />
         </div>
-        <input name="email" type="email" value="${escapeHtml(inlineState.draft.email || '')}" placeholder="Email" />
-        <input name="phone" value="${escapeHtml(inlineState.draft.phone || '')}" placeholder="Phone" />
+        <input name="email" type="email" value="${escapeHtml(inlineState.draft.email || '')}" placeholder="Email" ${canEdit ? '' : 'disabled'} />
+        <input name="phone" value="${escapeHtml(inlineState.draft.phone || '')}" placeholder="Phone" ${canEdit ? '' : 'disabled'} />
         ${
           state.customFieldSchema.fields.length
             ? `<div class="item compact">
               <h4>Custom Fields</h4>
-              <div class="grid two">
-                ${state.customFieldSchema.fields
+              ${Object.entries(customFieldGroups)
+                .map(
+                  ([groupName, fields]) => `<div class="top-gap">
+                  <h5>${escapeHtml(groupName)}</h5>
+                  <div class="grid two">
+                ${fields
                   .map((field) =>
                     customFieldControlMarkup(field, inlineState.draft[customFieldInputName(field.key)] || '', {
                       disabled: !canEdit,
@@ -3748,7 +3819,9 @@ function boardCardMarkup(card, kind) {
                     })
                   )
                   .join('')}
-              </div>
+              </div></div>`
+                )
+                .join('')}
               <p class="muted compact">Where these appear: profile detail + draft/resume flows for advisor operators.</p>
               <p class="muted compact" data-inline-custom-field-errors="${card.id}" role="status" aria-live="polite"></p>
             </div>`
@@ -3757,6 +3830,7 @@ function boardCardMarkup(card, kind) {
         <div class="actions-row">
           <button type="submit" class="tiny" ${canEdit && inlineState.dirty && !inlineState.saving ? '' : 'disabled'}>${inlineState.saving ? 'Saving…' : 'Save'}</button>
           <button type="button" class="secondary tiny" data-inline-retry-save="${card.id}" ${canEdit && inlineState.lastSaveWasError && !inlineState.saving ? '' : 'hidden'}>Retry save</button>
+          <button type="button" class="secondary tiny" data-inline-conflict-refresh="${card.id}" ${canEdit && inlineState.lastSaveWasError && !inlineState.saving ? '' : 'hidden'}>Reload latest (keep my edits)</button>
           <button type="button" class="secondary tiny" data-cancel-edit="${card.id}" ${canEdit && !inlineState.saving ? '' : 'disabled'}>Cancel</button>
         </div>
         <p class="muted compact" data-inline-feedback="${card.id}" role="${inlineState.lastSaveWasError ? 'alert' : 'status'}" aria-live="${inlineState.lastSaveWasError ? 'assertive' : 'polite'}">${escapeHtml(
@@ -3850,12 +3924,20 @@ async function saveInlineProfile(kind, profileId, patch, expectedUpdatedAt = '')
   }
 }
 
-async function refreshInlineProfileFromLatestBoard(kind, profileId) {
+async function refreshInlineProfileFromLatestBoard(kind, profileId, { preserveDraft = false } = {}) {
   const boardKey = boardKeyForKind(kind)
   const latest = await request(routes.profileDetail(profileId))
   const latestProfile = latest?.profile || latest
   if (!latestProfile?.id) return
   state[boardKey] = updateCardInBoard(state[boardKey], profileId, latestProfile)
+  if (preserveDraft) {
+    const entry = ensureInlineProfileState(kind, profileId, latestProfile)
+    entry.latest = editableProfileFieldsFromCard(latestProfile)
+    entry.expectedUpdatedAt = latestProfile.updatedAt || ''
+    entry.conflictRecoveryHint = 'Reloaded latest server values. Your unsaved edits remain in the form.'
+    updateInlineDirtyState(kind, profileId)
+    return
+  }
   cancelInlineDraft(kind, profileId, latestProfile)
 }
 
@@ -3951,6 +4033,13 @@ function wireBoardInteractions(kind) {
       form?.requestSubmit()
     })
   })
+  document.querySelectorAll('[data-inline-conflict-refresh]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      const profileId = button.dataset.inlineConflictRefresh
+      await refreshInlineProfileFromLatestBoard(kind, profileId, { preserveDraft: true })
+      await renderCurrentView()
+    })
+  })
   document.querySelectorAll('[data-edit-form]').forEach((form) => {
     const profileId = form.dataset.editForm
     form.querySelectorAll('input, select, textarea').forEach((input) => {
@@ -3965,6 +4054,7 @@ function wireBoardInteractions(kind) {
     })
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
+      if (!canMutate) return
       const inlineState = ensureInlineProfileState(kind, profileId)
       const feedbackEl = form.querySelector('[data-inline-feedback]')
       const payload = {
@@ -4027,7 +4117,7 @@ function wireBoardInteractions(kind) {
       } catch (error) {
         const message = normalizeApiError(error, 'save this profile')
         setAlert('error', message)
-        if (feedbackEl) feedbackEl.textContent = `${message} Use retry to attempt save again.`
+        if (feedbackEl) feedbackEl.textContent = `${message} Your unsaved edits were preserved. Use retry, or reload latest and keep edits.`
         setWorkflowStatus(message)
         reportActionError('Profiles', error)
       } finally {
@@ -4600,10 +4690,10 @@ function customFieldReadonlyMessage() {
 }
 
 function customFieldTypeHelpText(type = 'text') {
-  if (type === 'number') return 'Numbers only (decimals allowed). Leave blank to store no value.'
-  if (type === 'date') return 'Use YYYY-MM-DD format.'
-  if (type === 'boolean') return 'Stores true/false and renders as a toggle in profile edit.'
-  return 'Plain text value.'
+  if (type === 'number') return 'Numbers only. Decimals allowed (example: 125000.50).'
+  if (type === 'date') return 'Date only in YYYY-MM-DD format.'
+  if (type === 'boolean') return 'Boolean true/false. UI renders as select/toggle controls.'
+  return 'Text value. Keep labels concise for board card readability.'
 }
 
 function defaultCustomFieldAdminUiState() {
@@ -4611,7 +4701,7 @@ function defaultCustomFieldAdminUiState() {
     create: { status: '', message: '', fieldErrors: {} },
     updatesByKey: {},
     deleteByKey: {},
-    bulk: { status: '', message: '', rowErrorsByKey: {} }
+    bulk: { status: '', message: '', rowErrorsByKey: {}, draftRows: [] }
   }
 }
 
@@ -4623,7 +4713,13 @@ async function renderCustomFieldsAdmin() {
   state.customFieldSchema.ui = state.customFieldSchema.ui || defaultCustomFieldAdminUiState()
   const uiState = state.customFieldSchema.ui
   const createUi = uiState.create || { status: '', message: '', fieldErrors: {} }
-  const bulkUi = uiState.bulk || { status: '', message: '', rowErrorsByKey: {} }
+  const bulkUi = uiState.bulk || { status: '', message: '', rowErrorsByKey: {}, draftRows: [] }
+  const bulkDraftRows = Array.isArray(bulkUi.draftRows) && bulkUi.draftRows.length
+    ? bulkUi.draftRows
+    : [{ key: '', type: 'text', label: '', required: '', metadata: '' }]
+  const bulkValidationSummaryItems = Object.entries(bulkUi.rowErrorsByKey || {})
+    .flatMap(([key, errors]) => Object.values(errors || {}).map((message) => `<li><strong>${escapeHtml(key || 'row')}</strong>: ${escapeHtml(message)}</li>`))
+    .join('')
   const createButtonLabel = createUi.status === 'pending' ? 'Creating…' : 'Create Field'
   const createButtonDisabled = !canManage || createUi.status === 'pending'
   const bulkPreviewButtonLabel = bulkUi.status === 'pending-preview' ? 'Generating Preview…' : 'Preview Changes'
@@ -4667,6 +4763,7 @@ async function renderCustomFieldsAdmin() {
         <p class="muted compact" data-type-help>Field type help: Plain text value.</p>
         <p class="muted compact">Metadata is optional JSON object used for grouping and UI hints.</p>
         <p class="field-error-text" data-field-error="key" role="alert" aria-live="polite"></p>
+        <p class="field-error-text" data-field-error="label" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="required" role="alert" aria-live="polite"></p>
         <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
@@ -4677,15 +4774,44 @@ async function renderCustomFieldsAdmin() {
     <section class="item">
       <h3>Bulk Edit Existing Fields</h3>
       <form id="custom-field-bulk-form">
-        <p class="muted compact">Paste JSON array or tab-separated rows (key, type, label, required, metadata).</p>
-        <textarea
-          name="bulkRows"
-          rows="8"
-          placeholder='[{"key":"risk_tolerance","type":"number","label":"Risk Tolerance","required":false,"metadata":{"group":"planning"}}]'
-          ${canManage ? '' : 'disabled'}
-        >${escapeHtml(state.customFieldSchema.bulkPreview?.rawRows || '')}</textarea>
+        <p class="muted compact">Use guided rows (key, type, label, required, metadata). JSON import is optional.</p>
+        <table><thead><tr><th>Key</th><th>Type</th><th>Label</th><th>Required</th><th>Metadata</th><th>Row</th></tr></thead><tbody>
+          ${bulkDraftRows
+            .map((row, index) => `<tr data-bulk-row="${index}">
+              <td><input name="bulkKey" data-bulk-col="key" value="${escapeHtml(row.key || '')}" placeholder="field_key" ${canManage ? '' : 'disabled'} /></td>
+              <td>
+                <select name="bulkType" data-bulk-col="type" ${canManage ? '' : 'disabled'}>
+                  <option value="text" ${row.type === 'text' ? 'selected' : ''}>text</option>
+                  <option value="number" ${row.type === 'number' ? 'selected' : ''}>number</option>
+                  <option value="boolean" ${row.type === 'boolean' ? 'selected' : ''}>boolean</option>
+                  <option value="date" ${row.type === 'date' ? 'selected' : ''}>date</option>
+                </select>
+              </td>
+              <td><input name="bulkLabel" data-bulk-col="label" value="${escapeHtml(row.label || '')}" placeholder="Display label" ${canManage ? '' : 'disabled'} /></td>
+              <td><input name="bulkRequired" data-bulk-col="required" value="${escapeHtml(String(row.required ?? ''))}" placeholder="true/false" ${canManage ? '' : 'disabled'} /></td>
+              <td><input name="bulkMetadata" data-bulk-col="metadata" value="${escapeHtml(String(row.metadata ?? ''))}" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} /></td>
+              <td><button type="button" class="tiny secondary" data-remove-bulk-row="${index}" ${canManage && bulkDraftRows.length > 1 ? '' : 'disabled'}>Remove</button></td>
+            </tr>`)
+            .join('')}
+        </tbody></table>
+        <div class="actions-row">
+          <button type="button" class="tiny secondary" id="custom-field-bulk-add-row" ${canManage ? '' : 'disabled'}>Add row</button>
+        </div>
+        <details class="top-gap">
+          <summary>Import from raw JSON/TSV</summary>
+          <textarea
+            name="bulkRowsRaw"
+            rows="5"
+            placeholder='[{"key":"risk_tolerance","type":"number","label":"Risk Tolerance","required":false,"metadata":{"group":"planning"}}]'
+            ${canManage ? '' : 'disabled'}
+          >${escapeHtml(state.customFieldSchema.bulkPreview?.rawRows || '')}</textarea>
+          <button type="button" class="tiny secondary top-gap" id="custom-field-bulk-import-raw" ${canManage ? '' : 'disabled'}>Import rows</button>
+        </details>
         <div class="actions-row">
           <button type="submit" class="tiny" ${bulkPreviewButtonDisabled ? 'disabled' : ''}>${bulkPreviewButtonLabel}</button>
+        </div>
+        <div id="custom-field-bulk-validation-summary" class="${bulkValidationSummaryItems ? 'error-banner' : 'muted compact'}" role="status" aria-live="polite">
+          ${bulkValidationSummaryItems ? `<p>Validation summary:</p><ul>${bulkValidationSummaryItems}</ul>` : 'No row validation issues.'}
         </div>
         <p class="muted compact" data-form-feedback aria-live="polite"></p>
       </form>
@@ -4736,6 +4862,7 @@ async function renderCustomFieldsAdmin() {
                 <input name="metadata" value="${escapeHtml(JSON.stringify(field.metadata || {}))}" placeholder='{"group":"planning"}' ${canManage ? '' : 'disabled'} />
                 <p class="muted compact" data-type-help>Field type help: ${escapeHtml(customFieldTypeHelpText(field.type))}</p>
                 <p class="field-error-text" data-field-error="key" role="alert" aria-live="polite"></p>
+                <p class="field-error-text" data-field-error="label" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="type" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="required" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
@@ -4774,7 +4901,7 @@ async function renderCustomFieldsAdmin() {
     if (errorEl) errorEl.textContent = message || ''
   }
   const applyFieldErrors = (form, fieldErrors = {}) => {
-    ;['key', 'type', 'required', 'metadata'].forEach((fieldName) =>
+    ;['key', 'label', 'type', 'required', 'metadata'].forEach((fieldName) =>
       markFieldError(form, fieldName, fieldErrors[fieldName] || '')
     )
   }
@@ -4819,6 +4946,7 @@ async function renderCustomFieldsAdmin() {
     }
     const fieldErrors = {}
     if (requireKey && !payload.key) fieldErrors.key = 'Key is required (letters, numbers, underscore).'
+    if (!payload.label) fieldErrors.label = 'Label is required so operators understand what this field captures.'
     if (!new Set(['text', 'number', 'boolean', 'date']).has(payload.type)) {
       fieldErrors.type = 'Type must be one of: text, number, boolean, date.'
     }
@@ -4851,6 +4979,21 @@ async function renderCustomFieldsAdmin() {
       return { key, type, label, required, metadata }
     })
     return { rows, parseError: '' }
+  }
+  const collectBulkRowsFromForm = (form) => {
+    const keys = Array.from(form.querySelectorAll('input[name="bulkKey"]')).map((input) => input.value)
+    const types = Array.from(form.querySelectorAll('select[name="bulkType"]')).map((input) => input.value)
+    const labels = Array.from(form.querySelectorAll('input[name="bulkLabel"]')).map((input) => input.value)
+    const required = Array.from(form.querySelectorAll('input[name="bulkRequired"]')).map((input) => input.value)
+    const metadata = Array.from(form.querySelectorAll('input[name="bulkMetadata"]')).map((input) => input.value)
+    const size = Math.max(keys.length, types.length, labels.length, required.length, metadata.length)
+    return Array.from({ length: size }, (_, index) => ({
+      key: keys[index] || '',
+      type: types[index] || 'text',
+      label: labels[index] || '',
+      required: required[index] || '',
+      metadata: metadata[index] || ''
+    })).filter((row) => Object.values(row).some((value) => String(value || '').trim()))
   }
 
   const applyPersistedAdminUiState = () => {
@@ -4962,24 +5105,32 @@ async function renderCustomFieldsAdmin() {
     event.preventDefault()
     if (!canManage) return
     const form = event.currentTarget
-    state.customFieldSchema.ui.bulk = { status: '', message: '', rowErrorsByKey: {}, confirmStatus: '', confirmMessage: '' }
+    state.customFieldSchema.ui.bulk = {
+      status: '',
+      message: '',
+      rowErrorsByKey: {},
+      confirmStatus: '',
+      confirmMessage: '',
+      draftRows: state.customFieldSchema.ui.bulk?.draftRows || []
+    }
     clearFormFeedback(form)
     state.customFieldSchema.bulkPreview = null
     document.querySelectorAll('[data-custom-field-update]').forEach((updateForm) => applyFieldErrors(updateForm, {}))
-    const formData = new FormData(form)
-    const parsed = parseBulkRows(formData.get('bulkRows'))
-    if (parsed.parseError) {
+    const enteredRows = collectBulkRowsFromForm(form)
+    state.customFieldSchema.ui.bulk.draftRows = enteredRows.length ? enteredRows : [{ key: '', type: 'text', label: '', required: '', metadata: '' }]
+    if (!enteredRows.length) {
       state.customFieldSchema.ui.bulk = {
         status: 'error',
-        message: `Error: ${parsed.parseError}`,
+        message: 'Error: add at least one non-empty row before preview.',
         rowErrorsByKey: {},
         confirmStatus: '',
-        confirmMessage: ''
+        confirmMessage: '',
+        draftRows: state.customFieldSchema.ui.bulk.draftRows
       }
       setFormFeedback(form, state.customFieldSchema.ui.bulk.message)
       return
     }
-    const preparedRows = parsed.rows.map((row) => {
+    const preparedRows = enteredRows.map((row) => {
       const validation = validateCustomFieldInput(row, { requireKey: true })
       return { payload: validation.payload, fieldErrors: validation.fieldErrors }
     })
@@ -5007,7 +5158,8 @@ async function renderCustomFieldsAdmin() {
         message: 'Error: bulk edit contains validation errors. Fix highlighted rows and retry.',
         rowErrorsByKey,
         confirmStatus: '',
-        confirmMessage: ''
+        confirmMessage: '',
+        draftRows: enteredRows
       }
       setFormFeedback(form, state.customFieldSchema.ui.bulk.message)
       return
@@ -5017,7 +5169,8 @@ async function renderCustomFieldsAdmin() {
       message: 'Pending: generating bulk preview…',
       rowErrorsByKey: {},
       confirmStatus: '',
-      confirmMessage: ''
+      confirmMessage: '',
+      draftRows: enteredRows
     }
     await renderCustomFieldsAdmin()
     const dryRun = await request(routes.profileCustomFieldSchema({ dryRun: true }), {
@@ -5038,26 +5191,89 @@ async function renderCustomFieldsAdmin() {
         message: 'Error: bulk edit contains server validation errors. Fix highlighted rows and retry.',
         rowErrorsByKey: serverRowErrorsByKey,
         confirmStatus: '',
-        confirmMessage: ''
+        confirmMessage: '',
+        draftRows: enteredRows
       }
       setFormFeedback(form, state.customFieldSchema.ui.bulk.message)
       return
     }
-    state.customFieldSchema.bulkPreview = { ...dryRun, rawRows: String(formData.get('bulkRows') || '') }
+    state.customFieldSchema.bulkPreview = { ...dryRun, rawRows: JSON.stringify(enteredRows, null, 2) }
     state.customFieldSchema.ui.bulk = {
       status: 'success',
       message: 'Success: preview generated. Confirm to persist changes.',
       rowErrorsByKey: {},
       confirmStatus: '',
-      confirmMessage: ''
+      confirmMessage: '',
+      draftRows: enteredRows
     }
     setFormFeedback(form, state.customFieldSchema.ui.bulk.message, 'success')
     await renderCustomFieldsAdmin()
   })
+  document.querySelector('#custom-field-bulk-import-raw')?.addEventListener('click', async () => {
+    const form = document.querySelector('#custom-field-bulk-form')
+    if (!form || !canManage) return
+    const raw = form.elements?.namedItem?.('bulkRowsRaw')?.value || ''
+    const parsed = parseBulkRows(raw)
+    if (parsed.parseError) {
+      state.customFieldSchema.ui.bulk = {
+        ...(state.customFieldSchema.ui.bulk || {}),
+        status: 'error',
+        message: `Error: ${parsed.parseError}`
+      }
+      setFormFeedback(form, state.customFieldSchema.ui.bulk.message)
+      return
+    }
+    state.customFieldSchema.ui.bulk = {
+      ...(state.customFieldSchema.ui.bulk || {}),
+      status: 'success',
+      message: `Imported ${parsed.rows.length} row(s) from raw input.`,
+      draftRows: parsed.rows.map((row) => ({
+        key: row.key || '',
+        type: row.type || 'text',
+        label: row.label || '',
+        required: row.required ?? '',
+        metadata:
+          typeof row.metadata === 'object' && row.metadata
+            ? JSON.stringify(row.metadata)
+            : row.metadata == null
+              ? ''
+              : String(row.metadata)
+      }))
+    }
+    await renderCustomFieldsAdmin()
+  })
+  document.querySelector('#custom-field-bulk-add-row')?.addEventListener('click', async () => {
+    if (!canManage) return
+    state.customFieldSchema.ui.bulk = state.customFieldSchema.ui.bulk || {}
+    const existing = state.customFieldSchema.ui.bulk.draftRows || []
+    state.customFieldSchema.ui.bulk.draftRows = [...existing, { key: '', type: 'text', label: '', required: '', metadata: '' }]
+    await renderCustomFieldsAdmin()
+  })
+  document.querySelectorAll('[data-remove-bulk-row]').forEach((button) => {
+    button.addEventListener('click', async () => {
+      if (!canManage) return
+      const index = Number(button.dataset.removeBulkRow)
+      const rows = [...(state.customFieldSchema.ui.bulk?.draftRows || [])]
+      if (!Number.isInteger(index) || index < 0 || index >= rows.length) return
+      rows.splice(index, 1)
+      state.customFieldSchema.ui.bulk = state.customFieldSchema.ui.bulk || {}
+      state.customFieldSchema.ui.bulk.draftRows = rows.length
+        ? rows
+        : [{ key: '', type: 'text', label: '', required: '', metadata: '' }]
+      await renderCustomFieldsAdmin()
+    })
+  })
 
   document.querySelector('#custom-field-bulk-cancel-preview')?.addEventListener('click', async () => {
     state.customFieldSchema.bulkPreview = null
-    state.customFieldSchema.ui.bulk = { status: '', message: '', rowErrorsByKey: {}, confirmStatus: '', confirmMessage: '' }
+    state.customFieldSchema.ui.bulk = {
+      status: '',
+      message: '',
+      rowErrorsByKey: {},
+      confirmStatus: '',
+      confirmMessage: '',
+      draftRows: state.customFieldSchema.ui.bulk?.draftRows || []
+    }
     await renderCustomFieldsAdmin()
   })
 
@@ -5103,7 +5319,8 @@ async function renderCustomFieldsAdmin() {
       message: 'Success: preview confirmed.',
       rowErrorsByKey: {},
       confirmStatus: 'success',
-      confirmMessage: 'Success: bulk schema changes saved.'
+      confirmMessage: 'Success: bulk schema changes saved.',
+      draftRows: state.customFieldSchema.ui.bulk?.draftRows || []
     }
     state.customFieldSchema.fetched = false
     await refreshSelects()
@@ -5835,3 +6052,9 @@ window.addEventListener('hashchange', async () => {
   await renderCurrentView()
 })
 await renderCurrentView()
+  const customFieldGroups = state.customFieldSchema.fields.reduce((groups, field) => {
+    const groupName = String(field?.metadata?.group || 'General').trim() || 'General'
+    if (!groups[groupName]) groups[groupName] = []
+    groups[groupName].push(field)
+    return groups
+  }, {})

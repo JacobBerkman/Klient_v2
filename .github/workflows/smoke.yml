@@ -216,10 +216,13 @@ jobs:
       - name: Run E2E gate command
         run: |
           mkdir -p artifacts/e2e-release-blocking
+          export RELEASE_E2E_PLAYWRIGHT_REPORT=artifacts/e2e-release-blocking/playwright-report.json
+          export PLAYWRIGHT_JSON_REPORT="$RELEASE_E2E_PLAYWRIGHT_REPORT"
           {
             echo '# E2E gate readiness summary'
             echo '- command: npm run test:e2e'
             echo '- filter: E2E_GREP=@release-blocking'
+            echo "- playwright report: ${RELEASE_E2E_PLAYWRIGHT_REPORT}"
             echo "- seed: ${TEST_SEED}"
             echo "- node: $(node --version)"
             echo "- npm: $(npm --version)"
@@ -306,9 +309,12 @@ jobs:
       - name: Run canonical hard release gate
         run: |
           mkdir -p artifacts/hard-release-gate
+          export RELEASE_E2E_PLAYWRIGHT_REPORT=artifacts/hard-release-gate/playwright-report.json
+          export PLAYWRIGHT_JSON_REPORT="$RELEASE_E2E_PLAYWRIGHT_REPORT"
           {
             echo '# Hard release gate readiness summary'
             echo '- suite: validate:master'
+            echo "- playwright report: ${RELEASE_E2E_PLAYWRIGHT_REPORT}"
             echo "- seed: ${TEST_SEED}"
             echo "- node: $(node --version)"
             echo "- npm: $(npm --version)"
