@@ -32,6 +32,7 @@ const state = {
   templateMappingSuggestionsByTemplateId: {},
   templateInspectorFocusRequestByTemplateId: {},
   templateJumpHighlightByTemplateId: {},
+  templateNavigationRequestByTemplateId: {},
   customFieldSchema: {
     fetched: false,
     loading: false,
@@ -2455,6 +2456,7 @@ async function renderTemplates() {
   if (!state.templateMappingSuggestionsByTemplateId) state.templateMappingSuggestionsByTemplateId = {}
   if (!state.templateInspectorFocusRequestByTemplateId) state.templateInspectorFocusRequestByTemplateId = {}
   if (!state.templateJumpHighlightByTemplateId) state.templateJumpHighlightByTemplateId = {}
+  if (!state.templateNavigationRequestByTemplateId) state.templateNavigationRequestByTemplateId = {}
 
   const mappingDraftFromServer = (mapping = {}) => mappingDraftFromAnyShape(mapping)
   const normalizeMappingDraft = (draft = {}) => {
@@ -2496,6 +2498,7 @@ async function renderTemplates() {
 
   const knownPaths = knownProfileSourcePaths()
   ;(template?.formSchema?.sections || []).forEach((section) => collectTemplateSchemaPaths(section.fields || [], '', knownPaths))
+  const knownPathIndex = normalizedKnownPathIndex(knownPaths)
 
   const mappingIssuesByIndex = new Map(draftMappings.map((mapping, index) => [index, mappingLocalIssues(mapping, knownPaths)]))
   const preview = template ? state.templatePreviewByTemplateId[template.id] : null
@@ -2550,7 +2553,12 @@ async function renderTemplates() {
   const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unresolved-only', 'unmapped', 'preview-warning', 'required-only'])
   const activeTemplateFilter = allowedTemplateFilters.has(templateFilter) ? templateFilter : 'all'
   if (template && activeTemplateFilter !== templateFilter) state.templateMappingFilterByTemplateId[template.id] = activeTemplateFilter
-  const rowJumpHighlight = template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
+  const navigationRequest = template ? state.templateNavigationRequestByTemplateId[template.id] || null : null
+  const rowJumpHighlight = Number.isFinite(Number(navigationRequest?.rowIndex))
+    ? Number(navigationRequest.rowIndex)
+    : template
+      ? Number(state.templateJumpHighlightByTemplateId[template.id])
+      : NaN
   const suggestionDraftByIndex = template ? state.templateMappingSuggestionsByTemplateId[template.id] || {} : {}
   const suggestionByIndex = new Map()
   let unresolvedRowsCount = 0
@@ -2584,7 +2592,17 @@ async function renderTemplates() {
 
   const mappedFieldSet = new Set(draftMappings.map((entry) => String(entry.pdfField || '').trim()).filter(Boolean))
   const extractedFields = normalizedExtractedFields(template)
-  const knownPathIndex = normalizedKnownPathIndex(knownPaths)
+  const extractedFieldMetaByName = new Map(
+    extractedFields.map((field) => [String(field.fieldName || '').trim(), field]).filter(([name]) => Boolean(name))
+  )
+  const extractedFieldsForReconciliation = [...extractedFields].sort((left, right) => {
+    const leftUnmapped = mappedFieldSet.has(left.fieldName) ? 0 : 1
+    const rightUnmapped = mappedFieldSet.has(right.fieldName) ? 0 : 1
+    const leftPriority = (left.required ? 2 : 0) + leftUnmapped
+    const rightPriority = (right.required ? 2 : 0) + rightUnmapped
+    if (leftPriority !== rightPriority) return rightPriority - leftPriority
+    return String(left.fieldName || '').localeCompare(String(right.fieldName || ''))
+  })
   const mappedExtractedCount = extractedFields.filter((field) => mappedFieldSet.has(field.fieldName)).length
   const extraction = template?.extraction || {}
   const hasExtractionData = extractedFields.length > 0 || Boolean(extraction?.status)
@@ -2677,10 +2695,11 @@ async function renderTemplates() {
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Extracted AcroForm Fields</h3>
-        <ul>${extractedFields
+        <p class="muted compact">Priority order surfaces <strong>unmapped required</strong> fields first for faster remediation.</p>
+        <ul>${extractedFieldsForReconciliation
           .map((field) => {
             const mapped = mappedFieldSet.has(field.fieldName)
-            return `<li><strong>${escapeHtml(field.fieldName)}</strong> <span class="badge">${escapeHtml(field.fieldType)}</span>${field.required ? ' <span class="badge warning-badge">Required</span>' : ''}${field.readOnly ? ' <span class="badge subtle">Read-only</span>' : ''}${field.pageIndex != null ? ` <span class="badge subtle">Page ${field.pageIndex + 1}</span>` : ''} <span class="badge ${mapped ? 'subtle' : ''}">${mapped ? 'Mapped' : 'Unmapped'}</span><button data-remove-extracted="${field.index}" class="secondary tiny">Remove</button></li>`
+            return `<li><strong>${escapeHtml(field.fieldName)}</strong> <span class="badge">${escapeHtml(field.fieldType)}</span>${field.required ? ' <span class="badge warning-badge">Required</span>' : ''}${field.readOnly ? ' <span class="badge subtle">Read-only</span>' : ''}${field.pageIndex != null ? ` <span class="badge subtle">Page ${field.pageIndex + 1}</span>` : ''} <span class="badge ${mapped ? 'subtle' : 'error-badge'}">${mapped ? 'Mapped' : 'Unmapped'}</span><button data-remove-extracted="${field.index}" class="secondary tiny">Remove</button></li>`
           })
           .join('') || '<li class="muted">No extracted fields yet.</li>'}</ul>
         <div class="row gap-sm">
@@ -2697,7 +2716,7 @@ async function renderTemplates() {
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mappings</h3>
         <p class="muted compact">Next actions: <strong>Save Now</strong> after edits, use <strong>Filter unresolved</strong> to isolate blockers, then switch to <strong>4. Preview</strong> when validation reads Ready.</p>
-        <div class="row gap-sm wrap">
+        <div class="row gap-sm wrap sticky-remediation-actions">
           <button id="add-mapping-row" class="tiny">Add Mapping</button>
           <button id="save-mappings" class="tiny">Save Now</button>
           <button id="suggest-source-paths" class="tiny secondary">Suggest source paths</button>
@@ -2722,7 +2741,7 @@ async function renderTemplates() {
             )
             .join('')}
         </div>
-        <table><thead><tr><th>#</th><th>State</th><th>PDF Field</th><th>Source Path</th><th>Suggested</th><th>Label</th><th>Confidence</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
+        <table><thead><tr><th>#</th><th>State</th><th>PDF Field</th><th>Field context</th><th>Source Path</th><th>Suggested</th><th>Label</th><th>Confidence</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
           ${draftMappings
             .map((mapping, index) => {
               const issues = mappingIssuesByIndex.get(index) || []
@@ -2742,8 +2761,11 @@ async function renderTemplates() {
               if (!showRow) return ''
               const sampleValue = resolveSampleValue(mapping.sourcePath)
               const rowClasses = ['mapping-row-item']
+              const extractedMeta = extractedFieldMetaByName.get(String(mapping.pdfField || '').trim()) || null
               if (index === safeSelectedRowIndex) rowClasses.push('is-selected')
               if (index === rowJumpHighlight) rowClasses.push('is-jumped')
+              if (mapping.required === true && !String(mapping.sourcePath || '').trim()) rowClasses.push('is-required-unmapped')
+              if (issues.length || serverPreflightIssues.length) rowClasses.push('has-blocker')
               const confidence = mappingConfidenceBadge(mapping, knownPathIndex)
               const suggestion = suggestionByIndex.get(index)
               const stateBadge =
@@ -2758,6 +2780,7 @@ async function renderTemplates() {
                 <td>${index + 1}</td>
                 <td>${stateBadge}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
+                <td>${extractedMeta ? `<span class="badge subtle">${escapeHtml(extractedMeta.fieldType || 'unknown')}</span>${extractedMeta.required ? ' <span class="warning-badge">Required</span>' : ''}${extractedMeta.readOnly ? ' <span class="badge subtle">Read-only</span>' : ''}${extractedMeta.pageIndex != null ? ` <span class="badge subtle">Page ${Number(extractedMeta.pageIndex) + 1}</span>` : ''}` : '<span class="muted">No extraction metadata</span>'}</td>
                 <td>${escapeHtml(mapping.sourcePath || '')}</td>
                 <td>${
                   suggestion
@@ -2772,12 +2795,17 @@ async function renderTemplates() {
                 <td>${escapeHtml(sampleValue == null ? '' : String(sampleValue))}</td>
               </tr>`
             })
-            .join('') || '<tr><td colspan="11" class="muted">No mappings match this filter.</td></tr>'}
+            .join('') || '<tr><td colspan="12" class="muted">No mappings match this filter.</td></tr>'}
         </tbody></table>
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Field Inspector</h3>
         <div class="muted">Selected row ${safeSelectedRowIndex + 1} of ${Math.max(1, draftMappings.length)}${selectedMapping.enabled === false ? ' (disabled)' : ''}</div>
+        ${(() => {
+          const inspectorMeta = extractedFieldMetaByName.get(String(selectedMapping.pdfField || '').trim()) || null
+          if (!inspectorMeta) return '<p class="muted compact">No extracted metadata for this row yet.</p>'
+          return `<div class="row wrap gap-sm"><span class="badge">Type: ${escapeHtml(inspectorMeta.fieldType || 'unknown')}</span>${inspectorMeta.required ? '<span class="warning-badge">Required field</span>' : '<span class="badge subtle">Optional field</span>'}${inspectorMeta.readOnly ? '<span class="badge subtle">Read-only</span>' : '<span class="badge subtle">Editable</span>'}${inspectorMeta.pageIndex != null ? `<span class="badge subtle">Page ${Number(inspectorMeta.pageIndex) + 1}</span>` : '<span class="badge subtle">Page n/a</span>'}</div>`
+        })()}
         <div class="row wrap gap-sm">
           ${
             selectedMapping.enabled === false
@@ -3038,6 +3066,14 @@ async function renderTemplates() {
     if (wizardStep && wizardSteps.includes(wizardStep)) state.templateWizardStepByTemplateId[template.id] = wizardStep
     state.templateInspectorFocusRequestByTemplateId[template.id] = focusInspector ? focusField : ''
     state.templateJumpHighlightByTemplateId[template.id] = highlightRow ? normalizedRowIndex : NaN
+    state.templateNavigationRequestByTemplateId[template.id] =
+      focusInspector || highlightRow
+        ? {
+            rowIndex: normalizedRowIndex,
+            focusField: focusInspector ? focusField : '',
+            remainingRenders: 3
+          }
+        : null
     await renderTemplates()
   }
 
@@ -3085,7 +3121,14 @@ async function renderTemplates() {
     const firstUnmappedIndex = draftMappings.findIndex((mapping) => !String(mapping.sourcePath || '').trim())
     state.templateWizardStepByTemplateId[template.id] = 'mapping'
     state.templateMappingFilterByTemplateId[template.id] = 'unmapped'
-    if (firstUnmappedIndex >= 0) state.templateInspector[template.id] = { rowIndex: firstUnmappedIndex }
+    if (firstUnmappedIndex >= 0) {
+      state.templateInspector[template.id] = { rowIndex: firstUnmappedIndex }
+      state.templateNavigationRequestByTemplateId[template.id] = {
+        rowIndex: firstUnmappedIndex,
+        focusField: 'sourcePath',
+        remainingRenders: 3
+      }
+    }
     state.templateInspectorFocusRequestByTemplateId[template.id] = 'sourcePath'
     await rerenderTemplates()
   })
@@ -3196,6 +3239,14 @@ async function renderTemplates() {
   })
 
   document.querySelector('#save-mappings')?.addEventListener('click', async () => {
+    if (template) {
+      const currentRowIndex = Number(state.templateInspector?.[template.id]?.rowIndex || 0)
+      state.templateNavigationRequestByTemplateId[template.id] = {
+        rowIndex: currentRowIndex,
+        focusField: 'sourcePath',
+        remainingRenders: 2
+      }
+    }
     await persistMappings({ autosave: false })
     await rerenderTemplates()
   })
@@ -3411,21 +3462,32 @@ async function renderTemplates() {
     })
   })
 
-  const pendingInspectorFocusField = template ? state.templateInspectorFocusRequestByTemplateId[template.id] : ''
+  const pendingNavigation = template ? state.templateNavigationRequestByTemplateId[template.id] || null : null
+  const pendingInspectorFocusField = pendingNavigation?.focusField || (template ? state.templateInspectorFocusRequestByTemplateId[template.id] : '')
   if (pendingInspectorFocusField) {
     const inspectorEl = document.querySelector(`#inspector-${pendingInspectorFocusField}`)
     inspectorEl?.focus({ preventScroll: true })
-    state.templateInspectorFocusRequestByTemplateId[template.id] = ''
+    if (template && !pendingNavigation) state.templateInspectorFocusRequestByTemplateId[template.id] = ''
   }
-  const pendingJumpRow = template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
+  const pendingJumpRow = Number.isFinite(Number(pendingNavigation?.rowIndex))
+    ? Number(pendingNavigation.rowIndex)
+    : template
+      ? Number(state.templateJumpHighlightByTemplateId[template.id])
+      : NaN
   if (Number.isFinite(pendingJumpRow)) {
     const target = document.querySelector(`#mapping-row-${pendingJumpRow}`)
     target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
     target?.focus({ preventScroll: true })
-    setTimeout(() => {
-      if (template) state.templateJumpHighlightByTemplateId[template.id] = NaN
-      renderTemplates()
-    }, 1500)
+  }
+  if (template && pendingNavigation) {
+    const remainingRenders = Math.max(0, Number(pendingNavigation.remainingRenders || 0) - 1)
+    if (remainingRenders > 0) {
+      state.templateNavigationRequestByTemplateId[template.id] = { ...pendingNavigation, remainingRenders }
+    } else {
+      state.templateNavigationRequestByTemplateId[template.id] = null
+      state.templateJumpHighlightByTemplateId[template.id] = NaN
+      state.templateInspectorFocusRequestByTemplateId[template.id] = ''
+    }
   }
 
   document.querySelector('#publish-template')?.addEventListener('click', async () => {
