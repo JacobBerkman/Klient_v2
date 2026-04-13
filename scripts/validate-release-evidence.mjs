@@ -212,13 +212,22 @@ function isReleaseRefEnvironment(env) {
   return false
 }
 
-function determineStrictE2EMode(env) {
+function determineValidationMode(env) {
+  const unpackedArtifact = parseBooleanSignal(env.RELEASE_EVIDENCE_UNPACKED_ARTIFACT)
+  if (unpackedArtifact === true) return 'unpacked-artifact'
+  const ci = parseBooleanSignal(env.CI)
+  if (ci === true) return 'ci'
+  return 'local'
+}
+
+function determineStrictE2EMode(env, { validationMode }) {
   const override = parseBooleanSignal(env.RELEASE_E2E_STRICT_MODE)
   if (override !== null) return override
+  if (validationMode === 'ci' || validationMode === 'unpacked-artifact') return true
   return isReleaseRefEnvironment(env)
 }
 
-function validateE2ESummary(evidenceDir, { strictMode }) {
+function validateE2ESummary(evidenceDir, { strictMode, validationMode }) {
   const e2eSummaryPath = resolve(evidenceDir, 'e2e-summary.json')
   const e2eSummary = parseJson(e2eSummaryPath, 'E2E summary')
   assertPassedGateSummary(e2eSummary, { fileName: 'e2e-summary.json', gateName: 'e2e' })
@@ -235,7 +244,7 @@ function validateE2ESummary(evidenceDir, { strictMode }) {
 
   if (strictMode && mode !== 'browser') {
     fail(
-      `E2E strict mode is required for release refs, but e2e-summary.json executionMode=${mode}.${remediationHint([
+      `E2E strict mode is required for validationMode=${validationMode}, but e2e-summary.json executionMode=${mode}.${remediationHint([
         'Re-provision browser binaries: npx playwright install --with-deps chromium.',
         'Re-run npm run test:e2e with strict settings: RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0.'
       ])}`
@@ -435,8 +444,11 @@ const phasesToValidate =
 validateArtifacts(evidenceDir, phasesToValidate)
 validateSummaryFiles(evidenceDir, phasesToValidate)
 validateKeyGateSummarySemantics(evidenceDir, phasesToValidate)
+const validationMode = determineValidationMode(process.env)
+const strictE2EMode = determineStrictE2EMode(process.env, { validationMode })
+
 if (phasesToValidate.includes('preflight')) {
-  validateE2ESummary(evidenceDir, { strictMode: determineStrictE2EMode(process.env) })
+  validateE2ESummary(evidenceDir, { strictMode: strictE2EMode, validationMode })
 }
 
 const manifestPath = resolve(evidenceDir, 'manifest.json')
@@ -450,4 +462,4 @@ if (options.checkHandoffPlaceholders) {
   validateHandoffDoc(options.handoffFile)
 }
 
-process.stdout.write(`✅ Release evidence validation passed for release ${options.releaseId} (phase=${options.phase}).\n`)
+process.stdout.write(`✅ Release evidence validation passed for release ${options.releaseId} (phase=${options.phase}, validationMode=${validationMode}, strictE2E=${strictE2EMode ? 'true' : 'false'}).\n`)

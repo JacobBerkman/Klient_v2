@@ -33,6 +33,7 @@ async function createEvidenceDir({ e2eFixtureName }) {
 
   await writeFile(resolve(evidenceDir, 'backup.json'), '{"ok":true}\n', 'utf8')
   await writeFile(resolve(evidenceDir, 'branch-parity.txt'), 'ok\n', 'utf8')
+  await writeFile(resolve(evidenceDir, 'preflight-env-summary.json'), '{"overall":{"ready":true}}\n', 'utf8')
   await writeFile(resolve(evidenceDir, 'startup-failfast.json'), '{"ok":true}\n', 'utf8')
   await writeFile(resolve(evidenceDir, 'startup-failfast.txt'), 'ok\n', 'utf8')
 
@@ -64,40 +65,72 @@ function runValidate({ evidenceDir, env = {} }) {
   })
 }
 
-test('strict mode passes on release refs when executionMode=browser', async () => {
-  const context = await createEvidenceDir({ e2eFixtureName: 'browser.json' })
+test('release ref validation mode enforces strict browser execution', async () => {
+  const context = await createEvidenceDir({ e2eFixtureName: 'fallback-clean.json' })
 
   const result = runValidate({
     evidenceDir: context.evidenceDir,
     env: { GITHUB_REF: 'refs/heads/release/2026-04-10' }
   })
 
-  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /validationMode=local/)
+  assert.match(result.stderr, /strict mode is required/)
   await rm(context.root, { recursive: true, force: true })
 })
 
-test('strict mode fails on release tags when executionMode=fallback', async () => {
-  const context = await createEvidenceDir({ e2eFixtureName: 'fallback-clean.json' })
+test('local mode allows fallback and emits mode schema in success report', async () => {
+  const context = await createEvidenceDir({ e2eFixtureName: 'fallback-with-warning.json' })
+
+  const result = runValidate({ evidenceDir: context.evidenceDir, env: { GITHUB_REF: 'refs/heads/feature/local-test', CI: '0' } })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.match(result.stdout, /validationMode=local/)
+  assert.match(result.stdout, /strictE2E=false/)
+  await rm(context.root, { recursive: true, force: true })
+})
+
+test('ci mode is strict even without release refs', async () => {
+  const context = await createEvidenceDir({ e2eFixtureName: 'fallback-with-warning.json' })
 
   const result = runValidate({
     evidenceDir: context.evidenceDir,
-    env: { GITHUB_REF: 'refs/tags/release-2026-04-10' }
+    env: { GITHUB_REF: 'refs/heads/feature/non-release', CI: 'true' }
   })
 
   assert.notEqual(result.status, 0)
-  assert.match(result.stderr, /E2E strict mode is required/)
+  assert.match(result.stderr, /validationMode=ci/)
+  assert.match(result.stderr, /strict mode is required/)
   await rm(context.root, { recursive: true, force: true })
 })
 
-test('local validation allows fallback mode when ref is not release', async () => {
-  const context = await createEvidenceDir({ e2eFixtureName: 'fallback-with-warning.json' })
+test('ci mode succeeds with browser execution and reports strict schema', async () => {
+  const context = await createEvidenceDir({ e2eFixtureName: 'browser.json' })
 
-  const result = runValidate({ evidenceDir: context.evidenceDir, env: { GITHUB_REF: 'refs/heads/feature/local-test' } })
+  const result = runValidate({
+    evidenceDir: context.evidenceDir,
+    env: { CI: 'true', GITHUB_REF: 'refs/heads/feature/non-release' }
+  })
 
   assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.match(result.stdout, /validationMode=ci/)
+  assert.match(result.stdout, /strictE2E=true/)
   await rm(context.root, { recursive: true, force: true })
 })
 
+test('unpacked-artifact mode is strict and encoded in output schema', async () => {
+  const context = await createEvidenceDir({ e2eFixtureName: 'browser.json' })
+
+  const result = runValidate({
+    evidenceDir: context.evidenceDir,
+    env: { RELEASE_EVIDENCE_UNPACKED_ARTIFACT: '1', CI: '0', GITHUB_REF: 'refs/heads/feature/non-release' }
+  })
+
+  assert.equal(result.status, 0, result.stderr || result.stdout)
+  assert.match(result.stdout, /validationMode=unpacked-artifact/)
+  assert.match(result.stdout, /strictE2E=true/)
+  await rm(context.root, { recursive: true, force: true })
+})
 
 test('fails when e2e summary is missing playwright report metadata fields', async () => {
   const context = await createEvidenceDir({ e2eFixtureName: 'browser.json' })

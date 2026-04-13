@@ -74,6 +74,14 @@ Verification commands:
 
 - `npm run validate:release-evidence -- --release-id <release-id> --phase all`
 - `npm run check:release-docs`
+- `npm run check:release-gate-commands`
+- `RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master`
+- `RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e`
+
+Evidence validation mode schema markers (must remain stable in validation output contracts):
+- `validationMode=local`
+- `validationMode=ci`
+- `validationMode=unpacked-artifact`
 
 ## RC freeze rule
 

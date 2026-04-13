@@ -59,7 +59,7 @@ function assertContains(content, needle, label) {
 function assertContainsInOrder(content, orderedNeedles, label) {
   let previousIndex = -1
   for (const needle of orderedNeedles) {
-    const index = content.indexOf(needle)
+    const index = content.indexOf(needle, previousIndex + 1)
     if (index === -1) {
       fail(`${label} is missing required ordered text: ${needle}`)
     }

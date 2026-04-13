@@ -86,6 +86,7 @@ Attach links or paths to the objective release evidence.
 Use one canonical manifest link for approvers; include optional direct links only when a reviewer asks for a specific file.
 Canonical required bundle contents are defined at `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
 Strict E2E mode/fallback policy boundaries are defined at `docs/deployment-quick-reference.md#canonical-browser-gate-policy-ci--local`.
+Evidence validation mode schema markers from `scripts/validate-release-evidence.mjs` (record whichever run context applies): `validationMode=local`, `validationMode=ci`, `validationMode=unpacked-artifact`.
 
 | Evidence package | Artifact link or path |
 |---|---|
@@ -99,6 +100,8 @@ Checkpoint citation guidance (required when multiple postdeploy runs exist):
 - Include at least one explicit checkpoint timestamp in Section 7 rationale when mitigations or transient failures occurred.
 
 Optional per-file links (if a reviewer requests drill-down):
+- Include the strict hard-gate command transcript line exactly as executed when applicable: `RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master`.
+- Include the strict release-blocking E2E command transcript line exactly as executed in CI: `RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e`.
 - Use the canonical required artifact list in `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
 - For E2E proof completeness, include `e2e-summary.json` fields `executionMode`, `details.artifacts.playwrightJsonReport.path`, `details.artifacts.playwrightJsonReport.valid`, and `details.artifacts.playwrightJsonReport.suiteCount`.
 - Add any additional per-phase links relevant to this release (for example: `branch-parity.txt`, `backup.json`, `startup-failfast.json`, `restore.json`, `restore-drill.json`, `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`).

@@ -4,13 +4,17 @@ import { resolve } from 'node:path'
 const packageJsonPath = resolve(process.cwd(), 'package.json')
 const workflowPath = resolve(process.cwd(), '.github/workflows/smoke.yml')
 const checklistPath = resolve(process.cwd(), 'docs/release-ready-checklist.md')
+const testMatrixPath = resolve(process.cwd(), 'docs/release-flow-test-matrix.md')
 const quickRefPath = resolve(process.cwd(), 'docs/deployment-quick-reference.md')
+const handoffPath = resolve(process.cwd(), 'docs/release-handoff-template.md')
 
 const pkg = JSON.parse(readFileSync(packageJsonPath, 'utf8'))
 const scripts = pkg.scripts || {}
 const workflow = readFileSync(workflowPath, 'utf8')
 const checklist = readFileSync(checklistPath, 'utf8')
+const testMatrix = readFileSync(testMatrixPath, 'utf8')
 const quickRef = readFileSync(quickRefPath, 'utf8')
+const handoff = readFileSync(handoffPath, 'utf8')
 
 const requiredScripts = [
   'validate:master',
@@ -80,6 +84,13 @@ const requiredGateCommands = [
   'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy'
 ]
 
+const requiredStrictGateCommands = [
+  'RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master',
+  "RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e"
+]
+
+const requiredEvidenceValidationModes = ['validationMode=local', 'validationMode=ci', 'validationMode=unpacked-artifact']
+
 const missing = []
 for (const scriptName of requiredScripts) {
   if (!scripts[scriptName]) missing.push(`missing package.json script: ${scriptName}`)
@@ -102,6 +113,19 @@ function getJobBlock(content, jobId) {
 for (const cmd of requiredGateCommands) {
   assertContains(quickRef, cmd, 'docs/deployment-quick-reference.md')
   assertContains(checklist, cmd, 'docs/release-ready-checklist.md')
+}
+
+for (const cmd of requiredStrictGateCommands) {
+  assertContains(quickRef, cmd, 'docs/deployment-quick-reference.md')
+  assertContains(checklist, cmd, 'docs/release-ready-checklist.md')
+  assertContains(testMatrix, cmd, 'docs/release-flow-test-matrix.md')
+}
+
+for (const modeMarker of requiredEvidenceValidationModes) {
+  assertContains(quickRef, modeMarker, 'docs/deployment-quick-reference.md')
+  assertContains(checklist, modeMarker, 'docs/release-ready-checklist.md')
+  assertContains(testMatrix, modeMarker, 'docs/release-flow-test-matrix.md')
+  assertContains(handoff, modeMarker, 'docs/release-handoff-template.md')
 }
 
 for (const { command, evidence } of releaseGateJobs) {
