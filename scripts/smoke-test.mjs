@@ -1,5 +1,7 @@
 import { assert, createTestContext } from './test-harness.mjs'
 import { createEvidenceRecorder } from './release-evidence.mjs'
+import { spawnSync } from 'node:child_process'
+import { resolve } from 'node:path'
 
 const evidence = createEvidenceRecorder({
   gate: 'smoke',
@@ -9,19 +11,48 @@ const evidence = createEvidenceRecorder({
 })
 
 const context = await createTestContext('smoke')
+const workerScript = resolve(new URL('./export-worker.mjs', import.meta.url).pathname)
 
-async function waitForExportCompletion(ctx, exportIds, { maxTicks = 24 } = {}) {
+function wait(ms) {
+  return new Promise((resolveWait) => setTimeout(resolveWait, ms))
+}
+
+function runWorkerTick(ctx, extraEnv = {}) {
+  const result = spawnSync(process.execPath, [workerScript], {
+    cwd: ctx.testCwd,
+    env: {
+      ...process.env,
+      EXPORT_WORKER_ONCE: '1',
+      EXPORT_WORKER_POLL_MS: '25',
+      EXPORT_WORKER_LEASE_MS: '5000',
+      EXPORT_WORKER_BATCH_SIZE: '10',
+      NODE_ENV: 'test',
+      ALLOW_DEV_FALLBACK_APP_SECRET: 'true',
+      ...extraEnv
+    },
+    encoding: 'utf8'
+  })
+  if (result.status !== 0) {
+    throw new Error(`Export worker tick failed (${result.status}): ${result.stderr || result.stdout}`)
+  }
+  return result.stdout
+}
+
+async function waitForExportCompletion(ctx, exportIds, { maxTicks = 30 } = {}) {
+  const remaining = new Set(exportIds)
   for (let attempt = 0; attempt < maxTicks; attempt += 1) {
+    runWorkerTick(ctx)
     const exportsList = await ctx.request('/api/exports?sort=updatedAt_desc', {
       headers: ctx.authHeaders()
     })
-    const job = exportsList.find(
-      (entry) => exportIds.includes(entry.id) && ['completed', 'failed', 'dead-letter'].includes(entry.status)
-    )
-    if (job) return job
-    await ctx.request('/api/exports/process', { method: 'POST', headers: ctx.authHeaders() })
+    for (const entry of exportsList) {
+      if (!remaining.has(entry.id)) continue
+      if (entry.status === 'completed') remaining.delete(entry.id)
+    }
+    if (remaining.size === 0) return exportsList.filter((entry) => exportIds.includes(entry.id))
+    await wait(125)
   }
-  return null
+  return []
 }
 
 try {
@@ -103,41 +134,32 @@ try {
     })
   })
 
-  await context.request('/api/exports/process', { method: 'POST', headers })
-  await context.request('/api/exports/process', { method: 'POST', headers })
-  await context.request(`/api/exports/${flakyJob.id}/retry`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({})
-  })
-  await context.request('/api/exports/process', { method: 'POST', headers })
-  const completedExport = await waitForExportCompletion(context, [exportJob.id, flakyJob.id])
+  const completedExports = await waitForExportCompletion(context, [exportJob.id, flakyJob.id])
   const exportsList = await context.request('/api/exports?sort=updatedAt_desc', { headers: context.authHeaders() })
   const queueHealth = await context.request('/api/ops/exports/queue', { headers: context.opsHeaders() })
 
   assert(exportsList.some((entry) => entry.id === exportJob.id), 'Export job missing from export list.')
   assert(exportsList.some((entry) => entry.id === flakyJob.id), 'Flaky export job missing from export list.')
-  const trackedSmokeExport = completedExport || exportsList.find((entry) => entry.id === exportJob.id) || null
-  assert(
-    ['queued', 'retrying', 'running', 'completed', 'failed', 'dead-letter'].includes(trackedSmokeExport?.status),
-    'Primary smoke export did not remain in an expected lifecycle state.'
-  )
+  const trackedSmokeExport = exportsList.find((entry) => entry.id === exportJob.id) || null
+  const trackedFlakyExport = exportsList.find((entry) => entry.id === flakyJob.id) || null
+  assert(completedExports.length === 2, 'Smoke export jobs did not both complete via worker execution.')
+  assert(trackedSmokeExport?.status === 'completed', 'Primary smoke export did not complete.')
+  assert(trackedFlakyExport?.status === 'completed', 'Flaky smoke export did not recover and complete.')
   assert(publishResult.status === 'published', 'Template publish failed.')
   assert(typeof queueHealth?.queue?.pending === 'number', 'Queue health pending counter missing.')
   assert(typeof queueHealth?.queue?.machineState?.completed?.count === 'number', 'Queue machine completed count missing.')
   assert(typeof queueHealth?.queue?.machineState?.deadLetter?.count === 'number', 'Queue machine dead-letter count missing.')
+  assert(queueHealth?.queue?.stalled === 0, 'Queue health should not report stalled worker leases in smoke.')
 
-  if (trackedSmokeExport?.status === 'completed') {
-    assert(trackedSmokeExport?.artifactAvailable === true, 'Completed smoke export artifact should be marked ready.')
-    const completedDownloadTarget = exportsList.find((entry) => entry.id === trackedSmokeExport.id && entry.status === 'completed')
-    assert(Boolean(completedDownloadTarget), 'Completed smoke export should be available in export listing.')
-    const download = await fetch(`http://127.0.0.1:${context.port}/api/exports/${completedDownloadTarget.id}/download`, {
-      headers: context.authHeaders()
-    })
-    assert(download.status === 200, 'Completed smoke export should be downloadable.')
-    const downloadType = download.headers.get('content-type') || ''
-    assert(downloadType === 'application/pdf', 'Completed smoke export download should return PDF content type.')
-  }
+  assert(trackedSmokeExport?.artifactAvailable === true, 'Completed smoke export artifact should be marked ready.')
+  const completedDownloadTarget = exportsList.find((entry) => entry.id === trackedSmokeExport.id && entry.status === 'completed')
+  assert(Boolean(completedDownloadTarget), 'Completed smoke export should be available in export listing.')
+  const download = await context.rawRequest(`/api/exports/${completedDownloadTarget.id}/download`, {
+    headers: { Cookie: context.sessionCookie }
+  })
+  assert(download.status === 200, 'Completed smoke export should be downloadable.')
+  const downloadType = download.headers.get('content-type') || ''
+  assert(downloadType === 'application/pdf', 'Completed smoke export download should return PDF content type.')
 
   const summary = {
     ok: true,
@@ -148,7 +170,8 @@ try {
     exportArtifactReady: exportsList.find((entry) => entry.id === (trackedSmokeExport?.id || exportJob.id))?.artifactAvailable,
     flakyJobId: flakyJob.id,
     flakyStatus: exportsList.find((entry) => entry.id === flakyJob.id)?.status,
-    queuePending: queueHealth?.queue?.pending
+    queuePending: queueHealth?.queue?.pending,
+    queueStalled: queueHealth?.queue?.stalled
   }
 
   evidence.finalize({ status: 'passed', details: summary })

@@ -1,5 +1,7 @@
 import { createEvidenceRecorder } from './release-evidence.mjs'
 import { assert, createTestContext } from './test-harness.mjs'
+import { spawnSync } from 'node:child_process'
+import { resolve } from 'node:path'
 
 const evidence = createEvidenceRecorder({
   gate: 'e2e',
@@ -9,6 +11,30 @@ const evidence = createEvidenceRecorder({
 })
 
 const context = await createTestContext('e2e-workflows')
+const workerScript = resolve(new URL('./export-worker.mjs', import.meta.url).pathname)
+
+function wait(ms) {
+  return new Promise((resolveWait) => setTimeout(resolveWait, ms))
+}
+
+function runWorkerTick() {
+  const result = spawnSync(process.execPath, [workerScript], {
+    cwd: context.testCwd,
+    env: {
+      ...process.env,
+      EXPORT_WORKER_ONCE: '1',
+      EXPORT_WORKER_POLL_MS: '25',
+      EXPORT_WORKER_LEASE_MS: '5000',
+      EXPORT_WORKER_BATCH_SIZE: '10',
+      NODE_ENV: 'test',
+      ALLOW_DEV_FALLBACK_APP_SECRET: 'true'
+    },
+    encoding: 'utf8'
+  })
+  if (result.status !== 0) {
+    throw new Error(`E2E worker tick failed (${result.status}): ${result.stderr || result.stdout}`)
+  }
+}
 
 try {
   const registration = await context.request('/api/register', {
@@ -125,6 +151,29 @@ try {
   )
   assert(profileDetail.profile?.extensions?.values?.onboard_date === profile.extensions?.values?.onboard_date, 'Profile detail should preserve custom field date parity.')
   assert(profileDetail.profile?.extensions?.values?.vip_client === profile.extensions?.values?.vip_client, 'Profile detail should preserve custom field boolean parity.')
+  const updatedProfile = await context.requestAs('advisor', `/api/profiles/${profile.id}`, {
+    method: 'PATCH',
+    headers: advisorHeaders,
+    body: JSON.stringify({
+      stage: 'analysis',
+      phone: '+15555550123',
+      extensions: {
+        schemaVersion: '1.0.0',
+        values: {
+          ...profile.extensions.values,
+          client_note: 'Updated from integration release-blocking path'
+        }
+      }
+    })
+  })
+  assert(updatedProfile.stage === 'analysis', 'Profile inline update should persist stage and profile edits.')
+
+  const stageMove = await context.requestAs('advisor', `/api/profiles/${profile.id}/stage`, {
+    method: 'PATCH',
+    headers: advisorHeaders,
+    body: JSON.stringify({ stage: 'completed' })
+  })
+  assert(stageMove?.moved?.stage === 'completed', 'Pipeline board move should persist profile stage transition.')
 
   const formTemplate = await context.requestAs('advisor', '/api/forms/templates', {
     method: 'POST',
@@ -228,6 +277,28 @@ try {
     })
   })
   assert(submittedForm.status === 'submitted', 'Advisor submission should be persisted as submitted.')
+  const exportJob = await context.requestAs('advisor', '/api/exports', {
+    method: 'POST',
+    headers: advisorHeaders,
+    body: JSON.stringify({
+      clientId: profile.id,
+      submissionId: submittedForm.id,
+      templateId: template.id,
+      type: 'pdf',
+      metadata: { simulateFailuresRemaining: 1 }
+    })
+  })
+
+  let exportCompleted = null
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    runWorkerTick()
+    const exportList = await context.requestAs('advisor', '/api/exports?sort=updatedAt_desc', { headers: advisorHeaders })
+    exportCompleted = exportList.find((entry) => entry.id === exportJob.id) || null
+    if (exportCompleted?.status === 'completed') break
+    await wait(125)
+  }
+  assert(exportCompleted?.status === 'completed', 'Release-blocking e2e export should complete through worker lifecycle.')
+  assert(exportCompleted?.artifactAvailable === true, 'Completed export should report artifact availability metadata.')
 
   const portalLink = await context.requestAs('advisor', '/api/portal-links', {
     method: 'POST',
@@ -277,6 +348,7 @@ try {
       documentTemplateId: template.id,
       advisorDraftId: draft.id,
       advisorSubmissionId: submittedForm.id,
+      exportJobId: exportJob.id,
       portalDraftId: portalDraft.id,
       portalSubmissionId: portalSubmitted.id
     },
