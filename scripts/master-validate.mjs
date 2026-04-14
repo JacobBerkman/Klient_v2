@@ -215,9 +215,9 @@ export function resolveValidateMasterE2EStrictMode({
   if (!gitCheckout) {
     return {
       mode: 'diagnostic_local',
-      strictMode: false,
-      allowFallback: true,
-      warningLine: '⚠️ NON-APPROVING DIAGNOSTIC MODE: E2E fallback is enabled and cannot be used for release approval.'
+      strictMode: true,
+      allowFallback: false,
+      warningLine: null
     }
   }
 
