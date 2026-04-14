@@ -679,6 +679,35 @@ li button {
 .inline-status-text {
   font-size: 12px;
 }
+.collaborator-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 4px 0 8px;
+}
+.collaborator-chip {
+  font-size: 11px;
+}
+.collaborator-action-hint {
+  border-left: 2px solid #334155;
+  padding-left: 8px;
+}
+.collaborator-feedback {
+  border-radius: 8px;
+  padding: 8px 10px;
+}
+.disabled-control-reason {
+  color: #fbbf24;
+  font-size: 12px;
+}
+.collaborator-recovery-hint {
+  border: 1px solid #92400e;
+  background: #1f2937;
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: grid;
+  gap: 8px;
+}
 .inline-status-dirty {
   background: #78350f;
   color: #fde68a;
