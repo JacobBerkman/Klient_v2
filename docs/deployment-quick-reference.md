@@ -150,9 +150,9 @@ npm run check:release-docs
 npm run check:release-gate-commands
 ```
 
-### 1a) Canonical strict hard-gate invocation (must match CI)
+### 1a) Canonical release approval hard-gate invocation (single strict path; must match CI)
 ```bash
-RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master
+RELEASE_APPROVAL_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master
 ```
 
 ### 1b) Canonical strict release-blocking E2E invocation (CI gate job contract)
@@ -164,6 +164,10 @@ Evidence validation mode schema markers (used by `scripts/validate-release-evide
 - `validationMode=local`
 - `validationMode=ci`
 - `validationMode=unpacked-artifact`
+
+Approval policy reminder:
+- `RELEASE_APPROVAL_MODE=1` activates release approval behavior in `validate:master`, which forces strict E2E (`RELEASE_E2E_STRICT_MODE=1`) and disables fallback (`RELEASE_E2E_ALLOW_FALLBACK=0`) even if conflicting values are provided.
+- Any fallback run is diagnostic-only (non-approving).
 
 ### 2) Preflight (must pass before deploy)
 ```bash

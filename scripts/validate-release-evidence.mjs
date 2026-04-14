@@ -244,10 +244,16 @@ function validateE2ESummary(evidenceDir, { strictMode, validationMode }) {
 
   if (strictMode && mode !== 'browser') {
     fail(
-      `E2E strict mode is required for validationMode=${validationMode}, but e2e-summary.json executionMode=${mode}.${remediationHint([
+      `Prohibited approval fallback: validationMode=${validationMode} requires browser execution, but e2e-summary.json executionMode=${mode}.${remediationHint([
         'Re-provision browser binaries: npx playwright install --with-deps chromium.',
         'Re-run npm run test:e2e with strict settings: RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0.'
       ])}`
+    )
+  }
+
+  if (!strictMode && mode === 'fallback') {
+    process.stdout.write(
+      `⚠ Accepted diagnostic fallback (non-approving): validationMode=${validationMode}, e2e-summary.json executionMode=fallback.\n`
     )
   }
 
@@ -462,4 +468,6 @@ if (options.checkHandoffPlaceholders) {
   validateHandoffDoc(options.handoffFile)
 }
 
-process.stdout.write(`✅ Release evidence validation passed for release ${options.releaseId} (phase=${options.phase}, validationMode=${validationMode}, strictE2E=${strictE2EMode ? 'true' : 'false'}).\n`)
+process.stdout.write(
+  `✅ Release evidence validation passed for release ${options.releaseId} (phase=${options.phase}, validationMode=${validationMode}, strictE2E=${strictE2EMode ? 'true' : 'false'}, e2eApprovalPolicy=${strictE2EMode ? 'release_approval' : 'diagnostic_local'}).\n`
+)

@@ -145,6 +145,9 @@ function envForStep(step) {
       allowFallbackOverride: process.env.RELEASE_E2E_ALLOW_FALLBACK,
       gitCheckout: isGitCheckout()
     })
+    if (strictMode.warningLine) {
+      process.stdout.write(`\n${strictMode.warningLine}\n`)
+    }
     env.RELEASE_EVIDENCE_E2E_FILE = step.evidenceFile
     env.RELEASE_E2E_STRICT_MODE = strictMode.strictMode ? '1' : '0'
     env.RELEASE_E2E_ALLOW_FALLBACK = strictMode.allowFallback ? '1' : '0'
@@ -163,31 +166,66 @@ function parseBooleanSignal(value) {
   return null
 }
 
+function isReleaseRefEnvironment(env) {
+  const githubRef = String(env.GITHUB_REF || '').trim()
+  const githubRefName = String(env.GITHUB_REF_NAME || '').trim()
+  const gitlabTag = String(env.CI_COMMIT_TAG || '').trim()
+  const gitlabRefName = String(env.CI_COMMIT_REF_NAME || '').trim()
+
+  if (githubRef.startsWith('refs/tags/')) return true
+  if (githubRef.startsWith('refs/heads/release/') || githubRef.startsWith('refs/heads/release-')) return true
+  if (githubRefName.startsWith('release/') || githubRefName.startsWith('release-')) return true
+  if (gitlabTag) return true
+  if (gitlabRefName.startsWith('release/') || gitlabRefName.startsWith('release-')) return true
+  return false
+}
+
 export function resolveValidateMasterE2EStrictMode({
   strictOverride,
   allowFallbackOverride,
   gitCheckout
 }) {
+  const approvalSignal = parseBooleanSignal(process.env.RELEASE_APPROVAL_MODE)
+  const ciSignal = parseBooleanSignal(process.env.CI)
+  const isApprovalMode = approvalSignal === true || ciSignal === true || isReleaseRefEnvironment(process.env)
+  if (isApprovalMode) {
+    return {
+      mode: 'release_approval',
+      strictMode: true,
+      allowFallback: false,
+      warningLine: null
+    }
+  }
+
   const strictSignal = parseBooleanSignal(strictOverride)
   const fallbackSignal = parseBooleanSignal(allowFallbackOverride)
   if (strictSignal !== null || fallbackSignal !== null) {
     const strictMode = strictSignal ?? !fallbackSignal
     return {
+      mode: 'diagnostic_local',
       strictMode,
-      allowFallback: fallbackSignal ?? !strictMode
+      allowFallback: fallbackSignal ?? !strictMode,
+      warningLine:
+        !strictMode && (fallbackSignal ?? !strictMode)
+          ? '⚠️ NON-APPROVING DIAGNOSTIC MODE: E2E fallback is enabled and cannot be used for release approval.'
+          : null
     }
   }
 
   if (!gitCheckout) {
     return {
+      mode: 'diagnostic_local',
       strictMode: false,
-      allowFallback: true
+      allowFallback: true,
+      warningLine: '⚠️ NON-APPROVING DIAGNOSTIC MODE: E2E fallback is enabled and cannot be used for release approval.'
     }
   }
 
   return {
+    mode: 'diagnostic_local',
     strictMode: true,
-    allowFallback: false
+    allowFallback: false,
+    warningLine: null
   }
 }
 

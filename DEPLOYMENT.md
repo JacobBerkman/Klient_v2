@@ -88,11 +88,19 @@ Required environment variables:
 - One of `KLIENT_OPS_TOKEN_ACTIVE` / `KLIENT_OPS_TOKEN_PREVIOUS` / `KLIENT_OPS_TOKENS` / `KLIENT_OPS_TOKEN` for authenticated post-deploy diagnostics.
 - `RESTORE_BACKUP_PATH` only when running `--phase restore` or `--phase restore-drill`.
 
-Hard gate only (manual mode):
+Hard gate only (non-approval diagnostic/manual mode):
 
 ```bash
 npm run validate:master
 ```
+
+Release approval hard-gate command (single strict path; CI-compatible):
+
+```bash
+RELEASE_APPROVAL_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master
+```
+
+In release approval mode, fallback is prohibited and any fallback evidence is non-approving.
 
 Evidence artifacts (machine-readable, emitted automatically):
 
