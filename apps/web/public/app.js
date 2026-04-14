@@ -1112,7 +1112,7 @@ function normalizeDraftShareError(error, action = 'complete this collaborator ac
     return 'Draft owner membership is immutable and cannot be removed.'
   }
   if (isConflictError(error) || Number(error?.status) === 409) {
-    return 'Membership changed on another session. Refresh membership, review current collaborators, and retry.'
+    return 'Membership changed on another session. Refresh membership first, then retry with the latest revision.'
   }
   if (message.includes('already added') || message.includes('already a collaborator')) {
     return 'That user already has draft access. Refresh membership to confirm current collaborator state.'
@@ -1124,6 +1124,25 @@ function normalizeDraftShareError(error, action = 'complete this collaborator ac
     return 'Draft owner membership is immutable and cannot be removed.'
   }
   return normalizeApiError(error, action)
+}
+
+function collaboratorDisabledReason(draft, control) {
+  if (!state.user) return 'Sign in again to continue.'
+  if (control === 'refresh' && !canViewDraftCollaborators()) {
+    return 'Your role cannot view collaborator membership for this draft.'
+  }
+  if (canManageDraftCollaborators(draft)) return ''
+  if (state.user.role === 'readonly') {
+    if (control === 'search') return 'Readonly role can review membership but cannot run collaborator search.'
+    if (control === 'add') return 'Readonly role cannot add collaborators.'
+    if (control === 'remove') return 'Readonly role cannot remove collaborators.'
+  }
+  if (state.user.role === 'advisor' && !isDraftOwner(draft)) {
+    if (control === 'search') return 'Only the draft owner or an admin can search and stage collaborator changes.'
+    if (control === 'add') return 'Only the draft owner or an admin can add collaborators.'
+    if (control === 'remove') return 'Only the draft owner or an admin can remove collaborators.'
+  }
+  return draftCollaboratorDeniedMessage(draft)
 }
 
 function draftShareCapabilitySummary(draft, membershipState) {
@@ -1771,16 +1790,18 @@ async function renderForms() {
         const capability = draftShareCapabilitySummary(draft, membershipState)
         const canManage = capability.canManage
         const shareFeedback = state.formsUi.shareFeedbackByDraftId[draft.id] || ''
+        const isShareFeedbackError = /^Error:/.test(shareFeedback)
+        const isShareFeedbackSuccess = /^Success:/.test(shareFeedback)
+        const showRefreshFirstCta = shareFeedback.toLowerCase().includes('refresh membership first')
         const selectedLookupUserId = state.formsUi.selectedUserIdByDraftId[draft.id] || ''
         const currentUserRole = state.user?.role || 'unknown'
         const ownerIdentity = renderCollaboratorIdentity(draft.createdByUserId, { fallbackLabel: 'unknown owner' })
-        const capabilityTone = canManage
-          ? capability.isOwner
-            ? 'owner-manage'
-            : 'admin-override'
-          : capability.isCollaborator
-            ? 'collaborator-readonly'
-            : 'no-access'
+        const searchDisabledReason = collaboratorDisabledReason(draft, 'search')
+        const addDisabledReason = collaboratorDisabledReason(draft, 'add')
+        const removeDisabledReason = collaboratorDisabledReason(draft, 'remove')
+        const refreshDisabledReason = collaboratorDisabledReason(draft, 'refresh')
+        const roleChip = canManage ? (capability.isOwner ? 'Owner manager' : 'Admin manager') : 'View-only'
+        const accessChip = capability.isCollaborator ? 'Has draft access' : 'No draft access'
         return `
     <tr>
       <td>${escapeHtml(draft.id)}</td>
@@ -1805,33 +1826,26 @@ async function renderForms() {
           <h4>Draft sharing</h4>
           <p class="muted compact">Owner: ${ownerIdentity}</p>
           <p class="muted compact">Collaborators: <strong>${collaboratorCount}</strong> ${membershipState.status === 'loaded' ? '' : '(open sharing to load membership)'}</p>
-          <p class="muted compact">Capabilities:
-            <span class="badge subtle">role: ${escapeHtml(currentUserRole)}</span>
-            <span class="badge subtle">${capability.isOwner ? 'owner' : 'not owner'}</span>
-            <span class="badge subtle">${capability.isCollaborator ? 'collaborator' : 'not collaborator'}</span>
-            <span class="badge subtle">${escapeHtml(capabilityTone)}</span>
-            <span class="badge subtle">${escapeHtml(capability.roleStateLabel)}</span>
-            ${capability.cannotManageReason ? `<span class="badge subtle">manage disabled</span>` : ''}
-          </p>
-          <p class="muted compact">Current access state before any action: owner=<strong>${capability.isOwner ? 'yes' : 'no'}</strong>, collaborator=<strong>${capability.isCollaborator ? 'yes' : 'no'}</strong>, can-manage=<strong>${canManage ? 'yes' : 'no'}</strong>.</p>
-          <p class="muted compact">Action hint: ${escapeHtml(capability.actionHint)}</p>
-          ${
-            canManage
-              ? '<p class="muted compact">You can search, add, and remove collaborators. Changes use canonical user IDs even when names/emails are shown.</p>'
-              : '<p class="muted compact">This panel is visible for transparency, but mutating controls are intentionally disabled by RBAC.</p>'
-          }
+          <div class="collaborator-status-row">
+            <span class="badge subtle collaborator-chip">Role: ${escapeHtml(currentUserRole)}</span>
+            <span class="badge subtle collaborator-chip">${escapeHtml(roleChip)}</span>
+            <span class="badge subtle collaborator-chip">${escapeHtml(accessChip)}</span>
+          </div>
+          <p class="muted compact collaborator-action-hint">${escapeHtml(capability.actionHint)}</p>
           <p class="muted compact">Membership refreshed: ${escapeHtml(draftMembershipRefreshLabel(draft.id, membershipState))}
-            <button data-refresh-draft-collaborators="${draft.id}" ${canViewDraftCollaborators() ? '' : 'disabled'}>${pendingLabel(`draft-share-refresh-${draft.id}`, 'Refresh membership', 'Refreshing…')}</button>
+            <button data-refresh-draft-collaborators="${draft.id}" ${canViewDraftCollaborators() ? '' : 'disabled'} aria-describedby="${!canViewDraftCollaborators() ? `refresh-reason-${draft.id}` : ''}">${pendingLabel(`draft-share-refresh-${draft.id}`, 'Refresh membership', 'Refreshing…')}</button>
           </p>
+          ${!canViewDraftCollaborators() ? `<p id="refresh-reason-${draft.id}" class="muted compact disabled-control-reason">${escapeHtml(refreshDisabledReason)}</p>` : ''}
           <form data-search-draft-collaborator-users="${draft.id}">
             <label>Search firm users
-              <input name="search" placeholder="name, email, or user id" value="${escapeHtml(lookupSearch)}" ${canManage ? '' : 'disabled'} />
+              <input name="search" placeholder="name, email, or user id" value="${escapeHtml(lookupSearch)}" ${canManage ? '' : 'disabled'} aria-describedby="${!canManage ? `search-reason-${draft.id}` : ''}" />
             </label>
-            <button type="submit" ${canManage ? '' : 'disabled'}>${pendingLabel(`draft-share-search-${draft.id}`, 'Find users', 'Searching…')}</button>
+            <button type="submit" ${canManage ? '' : 'disabled'} aria-describedby="${!canManage ? `search-reason-${draft.id}` : ''}">${pendingLabel(`draft-share-search-${draft.id}`, 'Find users', 'Searching…')}</button>
           </form>
+          ${!canManage ? `<p id="search-reason-${draft.id}" class="muted compact disabled-control-reason">${escapeHtml(searchDisabledReason)}</p>` : ''}
           <form data-add-draft-collaborator="${draft.id}">
             <label>Add collaborator
-              <select name="userId" ${canManage ? '' : 'disabled'}>
+              <select name="userId" ${canManage ? '' : 'disabled'} aria-describedby="${!canManage ? `add-reason-${draft.id}` : ''}">
                 <option value="">Select a firm user…</option>
                 ${selectableLookupResults
                   .map(
@@ -1841,8 +1855,9 @@ async function renderForms() {
                   .join('')}
               </select>
             </label>
-            <button type="submit" ${canManage ? '' : 'disabled'}>${pendingLabel(`draft-share-add-${draft.id}`, 'Add', 'Adding…')}</button>
+            <button type="submit" ${canManage ? '' : 'disabled'} aria-describedby="${!canManage ? `add-reason-${draft.id}` : ''}">${pendingLabel(`draft-share-add-${draft.id}`, 'Add', 'Adding…')}</button>
           </form>
+          ${!canManage ? `<p id="add-reason-${draft.id}" class="muted compact disabled-control-reason">${escapeHtml(addDisabledReason)}</p>` : ''}
           <p class="muted compact">
             ${
               isLookupLoading
@@ -1854,9 +1869,14 @@ async function renderForms() {
                     : 'Search to load firm users you can add as collaborators.'
             }
           </p>
-          <p class="muted compact" data-draft-share-feedback="${draft.id}" role="status" aria-live="polite" aria-atomic="true">
+          <p class="muted compact collaborator-feedback ${isShareFeedbackError ? 'error-banner' : isShareFeedbackSuccess ? 'success-banner' : ''}" data-draft-share-feedback="${draft.id}" role="status" aria-live="polite" aria-atomic="true">
             ${escapeHtml(shareFeedback || (!canManage ? capability.cannotManageReason : ''))}
           </p>
+          ${
+            showRefreshFirstCta
+              ? `<div class="collaborator-recovery-hint"><p class="muted compact">Recovery: refresh membership first, then retry with the latest revision. Your in-panel draft context is preserved.</p><button data-refresh-draft-collaborators="${draft.id}" class="tiny">Refresh first</button></div>`
+              : ''
+          }
           ${
             isMembershipLoading
               ? '<p class="muted compact">Loading collaborator membership…</p>'
@@ -1868,7 +1888,7 @@ async function renderForms() {
                     <span>${renderCollaboratorIdentity(collaborator.userId || collaborator.id || '', { fallbackLabel: collaborator.label || '' })}</span>
                     <button data-remove-draft-collaborator="${draft.id}" data-collaborator-user-id="${escapeHtml(collaborator.userId || collaborator.id || '')}" ${
                       canManage ? '' : 'disabled'
-                    }>
+                    } aria-describedby="${!canManage ? `remove-reason-${draft.id}` : ''}">
                       ${pendingLabel(
                         `draft-share-remove-${draft.id}-${collaborator.userId || collaborator.id || ''}`,
                         'Remove',
@@ -1879,8 +1899,9 @@ async function renderForms() {
                     )
                     .join('')}</ul>`
                 : '<p class="muted compact">No collaborators assigned yet. Search and add a firm user to grant draft access.</p>'
-                : '<p class="muted compact">Open sharing to load current collaborator membership.</p>'
+              : '<p class="muted compact">Open sharing to load current collaborator membership.</p>'
           }
+          ${!canManage ? `<p id="remove-reason-${draft.id}" class="muted compact disabled-control-reason">${escapeHtml(removeDisabledReason)}</p>` : ''}
           ${
             membershipState.status === 'loaded' && !isMembershipLoading
               ? '<p class="muted compact">Membership list shown here is the latest loaded snapshot for this panel.</p>'
@@ -2065,10 +2086,10 @@ async function renderForms() {
           : []
         state.formsUi.userLookupSearchByDraftId[draftId] = ''
         state.formsUi.shareFeedbackByDraftId[draftId] = canManageDraftCollaborators(draft)
-          ? 'Membership loaded successfully. Next: search firm users, select one, then add or remove collaborators.'
-          : 'Membership loaded successfully in view-only mode. Your role can review membership but cannot add/remove users.'
+          ? 'Success: membership loaded. Next: search users, then add/remove collaborators.'
+          : 'Success: membership loaded in view-only mode. Next: refresh membership to monitor changes.'
       } catch (error) {
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Load failed: ${normalizeApiError(error, 'load draft collaborators')}`
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalizeApiError(error, 'load draft collaborators')} Next: refresh membership and retry.`
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -2093,9 +2114,9 @@ async function renderForms() {
         const collaborators = await request(routes.formDraftCollaborators(draftId))
         state.formsUi.collaboratorsByDraftId[draftId] = draftShareCollaboratorsFromResponse(collaborators)
         markDraftMembershipRefreshedAt(draftId)
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Refresh complete: membership synced from server (${state.formsUi.collaboratorsByDraftId[draftId].length} collaborator(s)).`
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Success: membership refreshed (${state.formsUi.collaboratorsByDraftId[draftId].length} collaborator(s)). Next: retry with latest revision.`
       } catch (error) {
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Refresh failed: ${normalizeApiError(error, 'refresh draft collaborators')}`
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalizeApiError(error, 'refresh draft collaborators')} Next: retry refresh membership.`
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -2127,10 +2148,10 @@ async function renderForms() {
         state.formsUi.userLookupByDraftId[draftId] = Array.isArray(userLookup?.users) ? userLookup.users : []
         const visibleCandidateCount = state.formsUi.userLookupByDraftId[draftId].filter((entry) => entry?.id && entry.id !== state.user?.id).length
         state.formsUi.shareFeedbackByDraftId[draftId] = visibleCandidateCount
-          ? `Search complete: ${visibleCandidateCount} candidate user(s) found. Select one and choose Add collaborator.`
-          : 'Search complete: no matching firm users available to add. Refine your query and retry.'
+          ? `Success: ${visibleCandidateCount} user option(s) found. Next: select one and add collaborator.`
+          : 'Error: no matching firm users available to add. Next: retry with a broader search.'
       } catch (error) {
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Search failed: ${normalizeApiError(error, 'search firm users')}`
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalizeApiError(error, 'search firm users')} Next: retry with latest revision.`
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -2160,7 +2181,7 @@ async function renderForms() {
       const userId = String(new FormData(form).get('userId') || '').trim()
       state.formsUi.selectedUserIdByDraftId[draftId] = userId
       if (!userId) {
-        state.formsUi.shareFeedbackByDraftId[draftId] = 'Add failed: select a collaborator from the firm user lookup results.'
+        state.formsUi.shareFeedbackByDraftId[draftId] = 'Error: select a collaborator from lookup results. Next: search users, then retry add.'
         await renderForms()
         return
       }
@@ -2178,7 +2199,7 @@ async function renderForms() {
         ]
       }
       state.formsUi.userLookupByDraftId[draftId] = previousLookup.filter((candidate) => candidate.id !== userId)
-      state.formsUi.shareFeedbackByDraftId[draftId] = `Add in progress: granting draft access to ${collaboratorIdentityLabel(userId)}…`
+      state.formsUi.shareFeedbackByDraftId[draftId] = `Working: granting draft access to ${collaboratorIdentityLabel(userId)}…`
       await renderForms()
       try {
         await request(routes.formDraftCollaborators(draftId), {
@@ -2192,15 +2213,16 @@ async function renderForms() {
           (candidate) => candidate.id !== userId
         )
         state.formsUi.selectedUserIdByDraftId[draftId] = ''
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Add success: ${collaboratorIdentityLabel(userId)} now has draft access. Membership reloaded from server.`
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Success: ${collaboratorIdentityLabel(userId)} added. Next: refresh membership if other sessions are active.`
         reportActionSuccess('Forms', `Collaborator ${userId} added to draft ${draftId}.`)
       } catch (error) {
         state.formsUi.collaboratorsByDraftId[draftId] = previousCollaborators
         state.formsUi.userLookupByDraftId[draftId] = previousLookup
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Add failed (rolled back): ${normalizeDraftShareError(
-          error,
-          'add a draft collaborator'
-        )}`
+        const normalized = normalizeDraftShareError(error, 'add a draft collaborator')
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalized} Next: ${normalized.toLowerCase().includes('refresh membership first') ? 'refresh membership first.' : 'retry with latest revision.'}`
+        if (normalized.toLowerCase().includes('refresh membership first')) {
+          state.formsUi.lastShareFocusByDraftId[draftId] = `[data-refresh-draft-collaborators="${draftId}"]`
+        }
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -2240,7 +2262,7 @@ async function renderForms() {
           { id: userId, label: removedCollaborator.label || userId, email: removedCollaborator.email || '', role: removedCollaborator.role || '' }
         ]
       }
-      state.formsUi.shareFeedbackByDraftId[draftId] = `Remove in progress: revoking draft access for ${collaboratorIdentityLabel(userId)}…`
+      state.formsUi.shareFeedbackByDraftId[draftId] = `Working: revoking draft access for ${collaboratorIdentityLabel(userId)}…`
       await renderForms()
       try {
         await request(routes.formDraftCollaborator(draftId, userId), { method: 'DELETE' })
@@ -2253,17 +2275,16 @@ async function renderForms() {
             { id: userId, label: userId, email: '', role: '' }
           ]
         }
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Remove success: ${collaboratorIdentityLabel(
-          userId
-        )} no longer has draft access. Membership reloaded from server.`
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Success: ${collaboratorIdentityLabel(userId)} removed. Next: refresh membership if any race is suspected.`
         reportActionSuccess('Forms', `Collaborator ${userId} removed from draft ${draftId}.`)
       } catch (error) {
         state.formsUi.collaboratorsByDraftId[draftId] = previousCollaborators
         state.formsUi.userLookupByDraftId[draftId] = previousLookup
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Remove failed (rolled back): ${normalizeDraftShareError(
-          error,
-          'remove a draft collaborator'
-        )}`
+        const normalized = normalizeDraftShareError(error, 'remove a draft collaborator')
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalized} Next: ${normalized.toLowerCase().includes('refresh membership first') ? 'refresh membership first.' : 'retry with latest revision.'}`
+        if (normalized.toLowerCase().includes('refresh membership first')) {
+          state.formsUi.lastShareFocusByDraftId[draftId] = `[data-refresh-draft-collaborators="${draftId}"]`
+        }
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
