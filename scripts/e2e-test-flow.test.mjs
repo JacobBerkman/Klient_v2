@@ -24,8 +24,10 @@ test('e2e harness enforces strict CI browser runs and allows opt-in local fallba
   assert.match(content, /Strict browser execution is enabled \(\$\{strictModeEnvFlag\}=1\); \$\{browserFallbackEnvFlag\}=1 is ignored/)
   assert.match(content, /\$\{browserFallbackEnvFlag\}=1 enables local fallback if browser binaries are missing/)
   assert.match(content, /\$\{browserFallbackEnvFlag\} is disabled/)
-  assert.match(content, /PLAYWRIGHT_JSON_REPORT: playwrightReportPath/)
-  assert.match(content, /RELEASE_E2E_PLAYWRIGHT_REPORT: playwrightReportPath/)
+  assert.match(content, /resolvePlaywrightLinkageEnv\(/)
+  assert.match(content, /RELEASE_E2E_PROVISIONING_ARTIFACT/)
+  assert.match(content, /RELEASE_E2E_PROVISIONING_VERSION/)
+  assert.match(content, /provisionChromium\(/)
   assert.match(content, /RELEASE_E2E_STRICT_MODE: strictMode \? '1' : '0'/)
   assert.match(content, /browser: reportValidation\.suiteNames/)
 
@@ -34,9 +36,9 @@ test('e2e harness enforces strict CI browser runs and allows opt-in local fallba
   assert.doesNotMatch(content, /existsSync\(/)
   assert.doesNotMatch(content, /readFileSync\(/)
 
-  const playwrightRunCalls = [...content.matchAll(/await run\(command, \['playwright', 'test', browserSuitePattern\], baseEnv\)/g)]
+  const playwrightRunCalls = [...content.matchAll(/await run\(command, \['playwright', 'test', browserSuitePattern\], runtimeEnv\)/g)]
   assert.equal(playwrightRunCalls.length, 1, 'expected exactly one Playwright execution path via injected run(...)')
-  assert.doesNotMatch(content, /runCommand\(command, \['playwright', 'test', browserSuitePattern\], baseEnv\)/)
+  assert.doesNotMatch(content, /runCommand\(command, \['playwright', 'test', browserSuitePattern\], runtimeEnv\)/)
   assert.doesNotMatch(content, /process\.exit\(/)
 })
 
