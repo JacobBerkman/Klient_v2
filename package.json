@@ -30,6 +30,7 @@
     "test:e2e:browser": "node scripts/e2e-test.mjs",
     "test:e2e:release-blocking": "E2E_GREP='@release-blocking' node scripts/e2e-test.mjs",
     "test:integration": "node scripts/master-integration.mjs",
+    "test:release-flow": "node scripts/release-canonical-flow.mjs",
     "test:integration:handoff": "node scripts/integration-aggregate-exports-handoff.mjs",
     "test:security": "node scripts/security-checks.mjs",
     "test:smoke": "node scripts/smoke-test.mjs",

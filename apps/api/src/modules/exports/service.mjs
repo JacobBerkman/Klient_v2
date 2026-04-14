@@ -38,10 +38,12 @@ function normalizeRetryState(job = {}) {
 
 function normalizeExportJobPayload(job = {}) {
   const retryState = normalizeRetryState(job)
+  const artifactReady = Boolean(job?.status === 'completed' && (job?.artifactAvailable ?? job?.output?.object?.key))
   return {
     ...job,
     ...retryState,
-    artifactAvailable: Boolean(job?.artifactAvailable ?? job?.output?.object?.key),
+    artifactAvailable: artifactReady,
+    artifactReady,
     deadLetterReason: job?.failure?.reason || null,
     failureReason: job?.failure?.lastError || job?.errorMessage || null
   }

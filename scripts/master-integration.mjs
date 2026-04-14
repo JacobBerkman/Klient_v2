@@ -12,6 +12,9 @@ const integrationSuiteDefinitions = {
   },
   'integration-templates.mjs': { invariant: 'Template lifecycle remains consistent across create/update/publish pathways.' },
   'integration-exports.mjs': { invariant: 'Export workflows maintain expected lifecycle transitions and retry behavior.' },
+  'integration-export-stress.mjs': {
+    invariant: 'Export queue remains stable under concurrent load, retry backoff, and stuck-job recovery conditions.'
+  },
   'integration-portal-lifecycle.mjs': { invariant: 'Portal access lifecycle enforces token, submission, and upload requirements.' },
   'integration-submission-repeatable-items.mjs': {
     invariant: 'Repeatable submission data remains stable through create/update flows.'
@@ -33,6 +36,7 @@ const INTEGRATION_SUITE_ORDER = Object.freeze([
   'integration-rbac-matrix.mjs',
   'integration-templates.mjs',
   'integration-exports.mjs',
+  'integration-export-stress.mjs',
   'integration-portal-lifecycle.mjs',
   'integration-submission-repeatable-items.mjs',
   'integration-analytics.mjs',

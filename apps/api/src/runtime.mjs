@@ -2,7 +2,8 @@ import { hostname } from 'node:os'
 import {
   readAuthProviderFromEnv,
   readPiiKeyProviderFromEnv,
-  readStorageProviderFromEnv
+  readStorageProviderFromEnv,
+  evaluateRuntimeRequiredEnvPresence
 } from './runtime-requirements.mjs'
 
 const DEFAULT_APP_SECRET = 'kinetic-klient-dev-secret'
@@ -255,6 +256,7 @@ export const runtime = {
 export function validateRuntimeConfig() {
   const issues = []
   const warnings = []
+  const requiredEnv = evaluateRuntimeRequiredEnvPresence(process.env)
 
   if (!runtime.host) issues.push('HOST must be provided.')
   if (!runtime.serviceName) issues.push('SERVICE_NAME must be provided.')
@@ -272,6 +274,18 @@ export function validateRuntimeConfig() {
       if (runtime.nodeEnv === 'production') issues.push(message)
       else warnings.push(message)
     }
+  }
+
+  if (!requiredEnv.overall.ready) {
+    const segments = [
+      requiredEnv.auth.ready ? null : `auth missing: ${requiredEnv.auth.missing.join(', ')}`,
+      requiredEnv.opsTokens.ready ? null : 'ops tokens missing: configure at least one KLIENT_OPS_TOKEN* value',
+      requiredEnv.pii.ready ? null : `pii missing: ${requiredEnv.pii.missing.join(', ')}`,
+      requiredEnv.storage.ready ? null : `storage missing: ${requiredEnv.storage.missing.join(', ')}`
+    ].filter(Boolean)
+    const message = `Required environment is incomplete (${segments.join(' | ')})`
+    if (runtime.nodeEnv === 'production') issues.push(message)
+    else warnings.push(message)
   }
 
   if (runtime.authStartupDiagnostics.issues.length) {
@@ -399,7 +413,8 @@ export function validateRuntimeConfig() {
       storageBuckets: {
         documents: runtime.storageBucketDocuments,
         exports: runtime.storageBucketExports
-      }
+      },
+      requiredEnvChecks: requiredEnv.overall
     }
   }
 }
