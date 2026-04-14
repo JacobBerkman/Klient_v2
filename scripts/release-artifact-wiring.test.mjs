@@ -142,6 +142,18 @@ test('strict-mode E2E semantics are pinned in workflow hard/e2e release gates', 
   assert.match(workflow, /- fallback: RELEASE_E2E_ALLOW_FALLBACK=0/)
 })
 
+test('E2E grep signal wiring propagates from workflow command to Playwright config env', () => {
+  const workflow = read('.github/workflows/smoke.yml')
+  const e2eScript = read('scripts/e2e-test.mjs')
+  const playwrightConfig = read('playwright.config.mjs')
+
+  assert.match(workflow, /E2E_GREP='@release-blocking' npm run test:e2e/)
+  assert.match(e2eScript, /function resolvePlaywrightGrep\(env = process\.env\)/)
+  assert.match(e2eScript, /const e2eGrep = String\(env\.E2E_GREP \|\| ''\)\.trim\(\)/)
+  assert.match(e2eScript, /if \(grepSignal\) baseEnv\.PLAYWRIGHT_GREP = grepSignal/)
+  assert.match(playwrightConfig, /grep: new RegExp\(process\.env\.PLAYWRIGHT_GREP, 'i'\)/)
+})
+
 test('critical release gate scripts are present for artifact/evidence wiring', () => {
   const requiredFiles = [
     'scripts/master-validate.mjs',
@@ -160,8 +172,8 @@ test('E2E evidence wiring includes Playwright report and provisioning linkage me
   const e2eScript = read('scripts/e2e-test.mjs')
   const releaseValidator = read('scripts/validate-release-evidence.mjs')
 
-  assert.match(e2eScript, /function resolvePlaywrightEvidenceLinkage\(env = process\.env, reportPath = ''\)/)
-  assert.match(e2eScript, /playwrightEvidenceLinkage: resolvePlaywrightEvidenceLinkage\(env, reportPath\)/)
+  assert.match(e2eScript, /function resolveEvidenceLinkageFromRuntime\(env = process\.env, reportPath = ''\)/)
+  assert.match(e2eScript, /playwrightEvidenceLinkage: resolveEvidenceLinkageFromRuntime\(env, reportPath\)/)
   assert.match(e2eScript, /RELEASE_E2E_PROVISIONING_ARTIFACT/)
   assert.match(e2eScript, /RELEASE_E2E_PROVISIONING_VERSION/)
 

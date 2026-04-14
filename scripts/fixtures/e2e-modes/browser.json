@@ -8,6 +8,13 @@
         "path": "playwright-report.json",
         "valid": true,
         "suiteCount": 1
+      },
+      "playwrightEvidenceLinkage": {
+        "reportPath": "playwright-report.json",
+        "reportPathAbsolute": "/tmp/release-evidence/test-release/playwright-report.json",
+        "provisioningArtifactPath": "playwright-provisioning.txt",
+        "provisioningArtifactPathAbsolute": "/tmp/release-evidence/test-release/playwright-provisioning.txt",
+        "provisioningVersion": "1.55.0"
       }
     },
     "downgradeWarnings": []

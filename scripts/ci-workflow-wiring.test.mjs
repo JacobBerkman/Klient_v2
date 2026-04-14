@@ -67,6 +67,9 @@ test('release-blocking and hard-release e2e jobs share strict env and report wir
     assert.match(job, /RELEASE_E2E_STRICT_MODE=1/)
     assert.match(job, /echo "- playwright report: \$\{RELEASE_E2E_PLAYWRIGHT_REPORT\}"/)
   }
+
+  assert.match(e2eJob, /echo '- filter: E2E_GREP=@release-blocking'/)
+  assert.match(e2eJob, /E2E_GREP='@release-blocking' npm run test:e2e/)
 })
 
 test('release-blocking and hard-release e2e jobs install Playwright before executing blocking command', () => {

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { createEvidenceRecorder } from './release-evidence.mjs'
 import { createTestContext } from './test-harness.mjs'
-import { provisionChromiumForStrictMode, resolvePlaywrightLinkageEnv } from './playwright-provisioning.mjs'
+import { provisionChromiumForStrictMode, resolvePlaywrightEvidenceLinkage, resolvePlaywrightLinkageEnv } from './playwright-provisioning.mjs'
 
 const uiContractSuites = ['apps/web/public/ui-contract.test.mjs']
 const browserSuitePattern = 'tests/e2e'
@@ -45,28 +45,40 @@ function parseBooleanSignal(value) {
   return null
 }
 
+function resolvePlaywrightGrep(env = process.env) {
+  const e2eGrep = String(env.E2E_GREP || '').trim()
+  if (e2eGrep) return e2eGrep
+  const playwrightGrep = String(env.PLAYWRIGHT_GREP || '').trim()
+  return playwrightGrep || null
+}
+
 function resolvePlaywrightReportPath(env = process.env) {
   const configured = env.RELEASE_E2E_PLAYWRIGHT_REPORT || env.PLAYWRIGHT_JSON_REPORT
   const fallbackPath = resolve(releaseEvidenceDir, 'playwright-report.json')
   return resolve(process.cwd(), configured || fallbackPath)
 }
 
-function resolvePlaywrightEvidenceLinkage(env = process.env, reportPath = '') {
-  const configuredReportPath = reportPath || resolvePlaywrightReportPath(env)
-  const provisioningArtifactPath = String(env.RELEASE_E2E_PROVISIONING_ARTIFACT || '').trim()
-  const provisioningVersion = String(env.RELEASE_E2E_PROVISIONING_VERSION || '').trim()
-
-  return {
-    reportPath: configuredReportPath,
-    provisioningArtifactPath: provisioningArtifactPath || null,
-    provisioningVersion: provisioningVersion || null
+function resolveEvidenceLinkageFromRuntime(env = process.env, reportPath = '') {
+  const linkage = resolvePlaywrightEvidenceLinkage(
+    {
+      ...env,
+      RELEASE_E2E_PLAYWRIGHT_REPORT: reportPath || resolvePlaywrightReportPath(env),
+      PLAYWRIGHT_JSON_REPORT: reportPath || resolvePlaywrightReportPath(env)
+    },
+    { evidenceDir: releaseEvidenceDir }
+  )
+  const provisioningConfigured = String(env.RELEASE_E2E_PROVISIONING_ARTIFACT || '').trim()
+  if (!provisioningConfigured) {
+    linkage.provisioningArtifactPath = null
+    linkage.provisioningArtifactPathAbsolute = null
   }
+  return linkage
 }
 
 function buildArtifactDetails(playwrightJsonReport, env = process.env, reportPath = '') {
   return {
     playwrightJsonReport,
-    playwrightEvidenceLinkage: resolvePlaywrightEvidenceLinkage(env, reportPath)
+    playwrightEvidenceLinkage: resolveEvidenceLinkageFromRuntime(env, reportPath)
   }
 }
 
@@ -291,6 +303,8 @@ export async function main(deps = {}) {
       RELEASE_E2E_STRICT_MODE: strictMode ? '1' : '0',
       TEST_RESET_BEHAVIOR: process.env.TEST_RESET_BEHAVIOR || 'isolated'
     }
+    const grepSignal = resolvePlaywrightGrep(baseEnv)
+    if (grepSignal) baseEnv.PLAYWRIGHT_GREP = grepSignal
     const linkageEnv = resolvePlaywrightLinkageEnv(
       {
         ...baseEnv,

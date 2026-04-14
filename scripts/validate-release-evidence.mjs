@@ -1,5 +1,5 @@
 import { existsSync, readFileSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { isAbsolute, resolve } from 'node:path'
 
 const VALID_PHASES = new Set(['all', 'preflight', 'postdeploy', 'restore', 'restore-drill'])
 
@@ -227,6 +227,12 @@ function determineStrictE2EMode(env, { validationMode }) {
   return isReleaseRefEnvironment(env)
 }
 
+function resolveEvidenceLinkedPath(evidenceDir, pathValue) {
+  if (typeof pathValue !== 'string' || pathValue.trim().length === 0) return null
+  const normalized = pathValue.trim()
+  return isAbsolute(normalized) ? normalized : resolve(evidenceDir, normalized)
+}
+
 function validateE2ESummary(evidenceDir, { strictMode, validationMode }) {
   const e2eSummaryPath = resolve(evidenceDir, 'e2e-summary.json')
   const e2eSummary = parseJson(e2eSummaryPath, 'E2E summary')
@@ -323,6 +329,37 @@ function validateE2ESummary(evidenceDir, { strictMode, validationMode }) {
     )
   }
 
+  const resolvedReportPathFromLinkage = resolveEvidenceLinkedPath(evidenceDir, evidenceLinkage.reportPath)
+  if (!resolvedReportPathFromLinkage || !existsSync(resolvedReportPathFromLinkage)) {
+    fail(
+      `Playwright report linkage target is missing: ${String(evidenceLinkage.reportPath)}.${remediationHint([
+        'Ensure details.artifacts.playwrightEvidenceLinkage.reportPath is relative to evidence-dir and points to playwright-report.json.',
+        'Re-run npm run test:e2e to regenerate canonical E2E evidence artifacts.'
+      ])}`
+    )
+  }
+
+  if (resolve(playwrightReportPath) !== resolve(resolvedReportPathFromLinkage)) {
+    fail(
+      `Playwright linkage mismatch: details.artifacts.playwrightJsonReport.path=${playwrightReport.path} does not resolve to details.artifacts.playwrightEvidenceLinkage.reportPath=${evidenceLinkage.reportPath}.${remediationHint([
+        'Keep both linkage/report paths under the active evidence directory.',
+        'Do not hand-edit e2e-summary.json; regenerate with npm run test:e2e.'
+      ])}`
+    )
+  }
+
+  if (typeof evidenceLinkage.reportPathAbsolute === 'string' && evidenceLinkage.reportPathAbsolute.trim().length > 0) {
+    const absoluteLinkagePath = resolveEvidenceLinkedPath(evidenceDir, evidenceLinkage.reportPathAbsolute)
+    if (!absoluteLinkagePath || resolve(absoluteLinkagePath) !== resolve(resolvedReportPathFromLinkage)) {
+      fail(
+        `Playwright linkage reportPathAbsolute does not match reportPath canonical target.${remediationHint([
+          'Emit reportPath as evidence-dir relative path and keep reportPathAbsolute aligned to the same file.',
+          'Re-run npm run test:e2e to regenerate linkage metadata.'
+        ])}`
+      )
+    }
+  }
+
   if (strictMode && mode === 'browser') {
     if (typeof evidenceLinkage.provisioningArtifactPath !== 'string' || evidenceLinkage.provisioningArtifactPath.trim().length === 0) {
       fail(
@@ -333,7 +370,7 @@ function validateE2ESummary(evidenceDir, { strictMode, validationMode }) {
       )
     }
 
-    const provisioningArtifactPath = resolve(evidenceDir, evidenceLinkage.provisioningArtifactPath)
+    const provisioningArtifactPath = resolveEvidenceLinkedPath(evidenceDir, evidenceLinkage.provisioningArtifactPath)
     if (!existsSync(provisioningArtifactPath)) {
       fail(
         `Playwright provisioning artifact referenced by e2e-summary.json is missing: ${evidenceLinkage.provisioningArtifactPath}.${remediationHint([
@@ -341,6 +378,21 @@ function validateE2ESummary(evidenceDir, { strictMode, validationMode }) {
           'Re-run release preflight to regenerate provisioning + E2E evidence artifacts.'
         ])}`
       )
+    }
+
+    if (
+      typeof evidenceLinkage.provisioningArtifactPathAbsolute === 'string' &&
+      evidenceLinkage.provisioningArtifactPathAbsolute.trim().length > 0
+    ) {
+      const absoluteProvisioningPath = resolveEvidenceLinkedPath(evidenceDir, evidenceLinkage.provisioningArtifactPathAbsolute)
+      if (!absoluteProvisioningPath || resolve(absoluteProvisioningPath) !== resolve(provisioningArtifactPath)) {
+        fail(
+          `Playwright linkage provisioningArtifactPathAbsolute does not match provisioningArtifactPath canonical target.${remediationHint([
+            'Emit provisioningArtifactPath as evidence-dir relative path and keep provisioningArtifactPathAbsolute aligned.',
+            'Re-run release preflight and npm run test:e2e to regenerate artifacts.'
+          ])}`
+        )
+      }
     }
   }
 
