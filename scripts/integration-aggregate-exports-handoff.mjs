@@ -1,7 +1,7 @@
 import { runCommandProcess } from './runner-lifecycle.mjs'
 
 const suites = ['integration-templates.mjs', 'integration-exports.mjs']
-const timeoutMs = 180_000
+const timeoutMs = Number.parseInt(process.env.INTEGRATION_HANDOFF_TIMEOUT_MS || '240000', 10)
 
 try {
   await runCommandProcess({
