@@ -2428,6 +2428,45 @@ function formatSchemaIssue(issue = {}) {
   return `${rowPrefix}${path} — ${message}`
 }
 
+function formatTemplateVersionLabel(version = null) {
+  const value = Number(version)
+  return Number.isFinite(value) ? `v${value}` : 'vN/A'
+}
+
+function transitionStateChipMarkup(transition = {}) {
+  const fromState = String(transition?.from || transition?.fromVersion || '').trim()
+  const toState = String(transition?.to || transition?.toVersion || '').trim()
+  const stableStates = new Set(['published', 'active', 'released'])
+  const regressed = Boolean(fromState && toState && fromState !== toState && !stableStates.has(toState))
+  const chipClass = regressed ? 'warning-badge' : 'subtle'
+  const label = regressed ? 'Rollback/Unpublish' : 'Publish progression'
+  return `<span class="badge ${chipClass}">${escapeHtml(label)}</span>`
+}
+
+function templateCompareSummaryMarkup(diff = {}) {
+  const changed = diff?.changed === true
+  const summaryItems = [
+    ['Blueprint', Boolean(diff?.diff?.blueprintChanged)],
+    ['Mappings', Boolean(diff?.diff?.mappingsChanged)],
+    ['Publish state', Boolean(diff?.diff?.publishStateChanged)]
+  ]
+  const mappingDelta = Number(diff?.target?.mappings?.length || 0) - Number(diff?.base?.mappings?.length || 0)
+  return `<div class="stack gap-sm">
+    <div class="row wrap gap-sm">
+      <span class="badge ${changed ? 'warning-badge' : 'subtle'}">${changed ? 'Changed' : 'No changes'}</span>
+      ${summaryItems
+        .map(([label, value]) => `<span class="badge ${value ? 'warning-badge' : 'subtle'}">${escapeHtml(label)} ${value ? 'Δ' : 'same'}</span>`)
+        .join('')}
+      <span class="badge subtle">Mapping rows Δ ${mappingDelta >= 0 ? '+' : ''}${mappingDelta}</span>
+    </div>
+    <div class="muted compact">Base ${formatTemplateVersionLabel(diff?.baseVersion)} (${escapeHtml(diff?.base?.changeType || 'update')}) → Target ${formatTemplateVersionLabel(diff?.targetVersion)} (${escapeHtml(diff?.target?.changeType || 'update')})</div>
+    <details>
+      <summary>Raw diff payload</summary>
+      <pre>${escapeHtml(JSON.stringify(diff, null, 2))}</pre>
+    </details>
+  </div>`
+}
+
 function deriveTemplateIssueRowAnchor(rowIndex) {
   const rowAnchor = Number.isFinite(Number(rowIndex)) ? `#mapping-row-${Number(rowIndex)}` : ''
   return rowAnchor
@@ -3299,7 +3338,7 @@ async function renderTemplates() {
           <select id="compare-target">${versionOptions}</select>
           <button id="compare-template-versions" class="tiny">Compare</button>
         </div>
-        <div id="compare-results" class="muted">Select two versions to compare field + mapping changes.</div>
+        <div id="compare-results" class="muted">Select two versions to compare field + mapping changes. Compare highlights blueprint, mapping, and publish-state deltas with version context.</div>
       </section>
       <section class="item">
         <h3>Revert Version</h3>
@@ -3313,9 +3352,11 @@ async function renderTemplates() {
         <h3>Publish Transition Log</h3>
         <table><thead><tr><th>From</th><th>To</th><th>When</th><th>By</th></tr></thead><tbody>
           ${(transitions || [])
-            .map(
-              (entry) => `<tr><td>${entry.fromVersion ?? 'N/A'}</td><td>${entry.toVersion ?? 'N/A'}</td><td>${escapeHtml(new Date(entry.createdAt || Date.now()).toLocaleString())}</td><td>${escapeHtml(entry.createdByUserId || 'system')}</td></tr>`
-            )
+            .map((entry) => {
+              const fromLabel = formatTemplateVersionLabel(entry.fromVersion ?? entry.from)
+              const toLabel = formatTemplateVersionLabel(entry.toVersion ?? entry.to)
+              return `<tr><td>${fromLabel}</td><td>${toLabel}</td><td>${escapeHtml(new Date(entry.createdAt || entry.at || Date.now()).toLocaleString())}</td><td>${escapeHtml(entry.createdByUserId || entry.actorUserId || 'system')}<div class="muted compact">${transitionStateChipMarkup(entry)}</div></td></tr>`
+            })
             .join('') || '<tr><td colspan="4">No publish transitions yet.</td></tr>'}
         </tbody></table>
       </section>`
@@ -3947,7 +3988,7 @@ async function renderTemplates() {
       if (!Number.isFinite(baseVersion) || !Number.isFinite(targetVersion)) throw new Error('Select two valid versions to compare.')
       if (baseVersion === targetVersion) throw new Error('Choose different versions to compare changes.')
       const diff = await request(routes.documentTemplateCompare(template.id, { baseVersion, targetVersion }))
-      document.querySelector('#compare-results').innerHTML = `<pre>${escapeHtml(JSON.stringify(diff, null, 2))}</pre>`
+      document.querySelector('#compare-results').innerHTML = templateCompareSummaryMarkup(diff)
       reportActionSuccess('Templates', `Compared versions ${baseVersion} and ${targetVersion}.`)
     } catch (error) {
       reportActionError('Templates', error)
@@ -4750,7 +4791,7 @@ async function renderExports() {
               (job) => `<tr>
           <td><input data-select-export="${job.id}" type="checkbox" aria-label="Select export ${escapeHtml(job.id)}" ${viewState.selectedIds.has(job.id) ? 'checked' : ''} ${exportSelectionState(job, canMutate).selectable ? '' : 'disabled'} /></td>
           <td>${escapeHtml(job.id)}</td>
-          <td>${escapeHtml(job.statusLabel || job.status)}</td>
+          <td><span class="badge ${isDownloadableExport(job) ? 'subtle' : String(job.status || '').toLowerCase() === 'failed' || String(job.status || '').toLowerCase() === 'dead-letter' ? 'error-badge' : 'warning-badge'}">${escapeHtml(job.statusLabel || job.status)}</span><div class="muted compact">${escapeHtml(job.retryState?.hint || 'No retry hint')}</div></td>
           <td>${escapeHtml(exportSelectionState(job, canMutate).failureClass)}</td>
           <td>${job.attempts || 0}/${job.maxAttempts || 0}</td>
           <td>
@@ -4765,7 +4806,7 @@ async function renderExports() {
                     <div class="muted">Checksum: <code>${escapeHtml(job.artifact?.checksum || 'n/a')}</code></div>
                     <div><code>${escapeHtml(job.output.object.key)}</code></div>
                   </div>`
-                : '<span class="muted">Not ready</span>'
+                : `<span class="muted">Not ready</span><div class="muted compact">${escapeHtml(job.failureReason || job.deadLetterReason || job.retryState?.hint || 'Artifact will appear after successful completion.')}</div>`
             }
           </td>
           <td>${
