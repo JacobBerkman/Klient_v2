@@ -75,7 +75,7 @@ test('release ref validation mode enforces strict browser execution', async () =
 
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /validationMode=local/)
-  assert.match(result.stderr, /strict mode is required/)
+  assert.match(result.stderr, /Prohibited approval fallback/)
   await rm(context.root, { recursive: true, force: true })
 })
 
@@ -87,6 +87,8 @@ test('local mode allows fallback and emits mode schema in success report', async
   assert.equal(result.status, 0, result.stderr || result.stdout)
   assert.match(result.stdout, /validationMode=local/)
   assert.match(result.stdout, /strictE2E=false/)
+  assert.match(result.stdout, /Accepted diagnostic fallback \(non-approving\)/)
+  assert.match(result.stdout, /e2eApprovalPolicy=diagnostic_local/)
   await rm(context.root, { recursive: true, force: true })
 })
 
@@ -100,7 +102,7 @@ test('ci mode is strict even without release refs', async () => {
 
   assert.notEqual(result.status, 0)
   assert.match(result.stderr, /validationMode=ci/)
-  assert.match(result.stderr, /strict mode is required/)
+  assert.match(result.stderr, /Prohibited approval fallback/)
   await rm(context.root, { recursive: true, force: true })
 })
 
@@ -115,6 +117,7 @@ test('ci mode succeeds with browser execution and reports strict schema', async 
   assert.equal(result.status, 0, result.stderr || result.stdout)
   assert.match(result.stdout, /validationMode=ci/)
   assert.match(result.stdout, /strictE2E=true/)
+  assert.match(result.stdout, /e2eApprovalPolicy=release_approval/)
   await rm(context.root, { recursive: true, force: true })
 })
 
@@ -129,6 +132,7 @@ test('unpacked-artifact mode is strict and encoded in output schema', async () =
   assert.equal(result.status, 0, result.stderr || result.stdout)
   assert.match(result.stdout, /validationMode=unpacked-artifact/)
   assert.match(result.stdout, /strictE2E=true/)
+  assert.match(result.stdout, /e2eApprovalPolicy=release_approval/)
   await rm(context.root, { recursive: true, force: true })
 })
 

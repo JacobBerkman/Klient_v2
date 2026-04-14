@@ -43,7 +43,7 @@ Operator notes (authoritative policy location):
 - Release-time environment requirements (including runtime-required app vars) are defined only in `docs/deployment-quick-reference.md#required-environment-variables` and `docs/deployment-quick-reference.md#production-runtime-required-app-variables-from-startup-validation`.
 - Evidence bundle required artifacts are defined only in `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
 
-Hard gate only (legacy/manual mode):
+Hard gate only (non-approval diagnostic/manual mode):
 
 ```bash
 npm run validate:master
@@ -58,11 +58,15 @@ npm run check:release-docs
 npm run check:release-gate-commands
 ```
 
-Canonical strict hard-gate execution (CI + operator preflight):
+Canonical release approval hard-gate execution (single strict path for CI + operator preflight):
 
 ```bash
-RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master
+RELEASE_APPROVAL_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master
 ```
+
+Approval policy reminder:
+- `RELEASE_APPROVAL_MODE=1` is the release-approval switch. In this mode, `validate:master` forces strict E2E and ignores fallback-enabling inputs.
+- Any `executionMode=fallback` evidence is diagnostic-only and is not approvable release evidence.
 
 Canonical strict release-blocking E2E command (CI gate job):
 
