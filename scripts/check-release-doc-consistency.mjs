@@ -6,6 +6,7 @@ const filesToRead = {
   quickRef: 'docs/deployment-quick-reference.md',
   checklist: 'docs/release-ready-checklist.md',
   handoff: 'docs/release-handoff-template.md',
+  testMatrix: 'docs/release-flow-test-matrix.md',
   operationsUi: 'apps/web/public/app.js'
 }
 
@@ -13,7 +14,10 @@ const canonicalE2EEvidenceFields = [
   'executionMode',
   'details.artifacts.playwrightJsonReport.path',
   'details.artifacts.playwrightJsonReport.valid',
-  'details.artifacts.playwrightJsonReport.suiteCount'
+  'details.artifacts.playwrightJsonReport.suiteCount',
+  'details.artifacts.playwrightEvidenceLinkage.reportPath',
+  'details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath',
+  'details.artifacts.playwrightEvidenceLinkage.provisioningVersion'
 ]
 
 const canonicalArtifacts = [
@@ -31,6 +35,11 @@ const canonicalCommandLabels = [
   'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy',
   'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore --restore-path "$RESTORE_BACKUP_PATH"',
   'npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase restore-drill --restore-path "$RESTORE_BACKUP_PATH"'
+]
+
+const canonicalStrictGateCommands = [
+  'RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master',
+  "RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e"
 ]
 
 const canonicalHardGateSequence = [
@@ -134,6 +143,15 @@ assertContains(
 for (const e2eField of canonicalE2EEvidenceFields) {
   assertContains(contentByKey.quickRef, e2eField, filesToRead.quickRef)
   assertContains(contentByKey.checklist, e2eField, filesToRead.checklist)
+  assertContains(contentByKey.handoff, e2eField, filesToRead.handoff)
+  assertContains(contentByKey.testMatrix, e2eField, filesToRead.testMatrix)
+}
+
+for (const command of canonicalStrictGateCommands) {
+  assertContains(contentByKey.quickRef, command, filesToRead.quickRef)
+  assertContains(contentByKey.checklist, command, filesToRead.checklist)
+  assertContains(contentByKey.handoff, command, filesToRead.handoff)
+  assertContains(contentByKey.testMatrix, command, filesToRead.testMatrix)
 }
 
 process.stdout.write('✅ Release doc consistency checks passed.\n')

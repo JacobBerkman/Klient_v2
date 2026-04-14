@@ -105,7 +105,7 @@ Optional per-file links (if a reviewer requests drill-down):
 - Record the browser provisioning context used by that run (`PLAYWRIGHT_BROWSERS_PATH=<value>` and `npx playwright install --with-deps chromium` transcript line).
 - If local recovery was needed for missing binaries, include the explicit temporary recovery command (`RELEASE_E2E_ALLOW_FALLBACK=1 RELEASE_E2E_STRICT_MODE=0 npm run test:e2e`) and the subsequent strict rerun evidence proving fallback was not used for release approval.
 - Use the canonical required artifact list in `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts`.
-- For E2E proof completeness, include `e2e-summary.json` fields `executionMode`, `details.artifacts.playwrightJsonReport.path`, `details.artifacts.playwrightJsonReport.valid`, and `details.artifacts.playwrightJsonReport.suiteCount`.
+- For E2E proof completeness, include `e2e-summary.json` fields `executionMode`, `details.artifacts.playwrightJsonReport.path`, `details.artifacts.playwrightJsonReport.valid`, `details.artifacts.playwrightJsonReport.suiteCount`, `details.artifacts.playwrightEvidenceLinkage.reportPath`, `details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath`, and `details.artifacts.playwrightEvidenceLinkage.provisioningVersion`.
 - Add any additional per-phase links relevant to this release (for example: `branch-parity.txt`, `backup.json`, `startup-failfast.json`, `restore.json`, `restore-drill.json`, `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`).
 
 ## 4) Rollback readiness
