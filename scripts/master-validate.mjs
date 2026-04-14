@@ -143,7 +143,8 @@ function envForStep(step) {
     const strictMode = resolveValidateMasterE2EStrictMode({
       strictOverride: process.env.RELEASE_E2E_STRICT_MODE,
       allowFallbackOverride: process.env.RELEASE_E2E_ALLOW_FALLBACK,
-      gitCheckout: isGitCheckout()
+      gitCheckout: isGitCheckout(),
+      unpackedArtifactIntent: parseBooleanSignal(process.env.RELEASE_EVIDENCE_UNPACKED_ARTIFACT) === true
     })
     if (strictMode.warningLine) {
       process.stdout.write(`\n${strictMode.warningLine}\n`)
@@ -183,7 +184,8 @@ function isReleaseRefEnvironment(env) {
 export function resolveValidateMasterE2EStrictMode({
   strictOverride,
   allowFallbackOverride,
-  gitCheckout
+  gitCheckout,
+  unpackedArtifactIntent = false
 }) {
   const approvalSignal = parseBooleanSignal(process.env.RELEASE_APPROVAL_MODE)
   const ciSignal = parseBooleanSignal(process.env.CI)
@@ -199,6 +201,25 @@ export function resolveValidateMasterE2EStrictMode({
 
   const strictSignal = parseBooleanSignal(strictOverride)
   const fallbackSignal = parseBooleanSignal(allowFallbackOverride)
+  const hasDiagnosticOverride = strictSignal !== null || fallbackSignal !== null
+  if (unpackedArtifactIntent) {
+    return {
+      mode: 'unpacked_artifact',
+      strictMode: true,
+      allowFallback: false,
+      warningLine: null
+    }
+  }
+
+  if (!gitCheckout && !hasDiagnosticOverride) {
+    return {
+      mode: 'diagnostic_local',
+      strictMode: true,
+      allowFallback: false,
+      warningLine: null
+    }
+  }
+
   if (strictSignal !== null || fallbackSignal !== null) {
     const strictMode = strictSignal ?? !fallbackSignal
     return {
@@ -209,15 +230,6 @@ export function resolveValidateMasterE2EStrictMode({
         !strictMode && (fallbackSignal ?? !strictMode)
           ? '⚠️ NON-APPROVING DIAGNOSTIC MODE: E2E fallback is enabled and cannot be used for release approval.'
           : null
-    }
-  }
-
-  if (!gitCheckout) {
-    return {
-      mode: 'diagnostic_local',
-      strictMode: false,
-      allowFallback: true,
-      warningLine: '⚠️ NON-APPROVING DIAGNOSTIC MODE: E2E fallback is enabled and cannot be used for release approval.'
     }
   }
 
