@@ -4994,11 +4994,13 @@ function customFieldTypeHelpText(type = 'text') {
 
 function defaultCustomFieldAdminUiState() {
   return {
-    create: { status: '', message: '', fieldErrors: {} },
+    create: { status: '', message: '', fieldErrors: {}, dirty: false },
     updatesByKey: {},
     deleteByKey: {},
     bulk: { status: '', message: '', rowErrorsByKey: {}, draftRows: [] },
-    optimisticBanner: { status: '', message: '' }
+    optimisticBanner: { status: '', message: '' },
+    dirtyByKey: {},
+    saveStatus: { state: 'idle', message: '', savedAt: '', retryTarget: '', conflictHint: '' }
   }
 }
 
@@ -5009,9 +5011,13 @@ async function renderCustomFieldsAdmin() {
   const fields = state.customFieldSchema.fields || []
   state.customFieldSchema.ui = state.customFieldSchema.ui || defaultCustomFieldAdminUiState()
   const uiState = state.customFieldSchema.ui
-  const createUi = uiState.create || { status: '', message: '', fieldErrors: {} }
+  const createUi = uiState.create || { status: '', message: '', fieldErrors: {}, dirty: false }
   const bulkUi = uiState.bulk || { status: '', message: '', rowErrorsByKey: {}, draftRows: [] }
   const optimisticBanner = uiState.optimisticBanner || { status: '', message: '' }
+  const saveStatus = uiState.saveStatus || { state: 'idle', message: '', savedAt: '', retryTarget: '', conflictHint: '' }
+  const dirtyByKey = uiState.dirtyByKey || {}
+  const dirtyCount = Number(Boolean(createUi.dirty)) + Object.values(dirtyByKey).filter(Boolean).length
+  const saveStatusToneClass = saveStatus.state === 'error' ? 'error-banner' : 'muted compact'
   const bulkDraftRows = Array.isArray(bulkUi.draftRows) && bulkUi.draftRows.length
     ? bulkUi.draftRows
     : [{ key: '', type: 'text', label: '', required: '', group: '', order: '', metadata: '' }]
@@ -5032,8 +5038,36 @@ async function renderCustomFieldsAdmin() {
         <h2 id="custom-fields-heading">Custom Field Schema</h2>
         <p class="muted">Manage firm-level profile custom fields (key, type, label, required, metadata).</p>
       </div>
-      <span class="badge subtle">${state.customFieldSchema.updatedAt ? `Updated ${new Date(state.customFieldSchema.updatedAt).toLocaleString()}` : 'No updates yet'}</span>
+      <div class="stack gap-sm">
+        <span class="badge subtle">${state.customFieldSchema.updatedAt ? `Updated ${new Date(state.customFieldSchema.updatedAt).toLocaleString()}` : 'No updates yet'}</span>
+        ${
+          dirtyCount
+            ? `<span class="badge warning" data-custom-field-unsaved-badge>${dirtyCount} unsaved change${dirtyCount === 1 ? '' : 's'}</span>`
+            : '<span class="badge success" data-custom-field-unsaved-badge>All changes saved</span>'
+        }
+      </div>
     </div>
+    <section class="item">
+      <p id="custom-field-admin-save-status" class="${saveStatusToneClass}" role="${saveStatus.state === 'error' ? 'alert' : 'status'}" aria-live="${
+        saveStatus.state === 'error' ? 'assertive' : 'polite'
+      }" aria-atomic="true">
+        ${
+          saveStatus.state === 'saving'
+            ? 'Saving custom field schema changes…'
+            : saveStatus.state === 'saved'
+              ? `Saved at ${escapeHtml(new Date(saveStatus.savedAt || Date.now()).toLocaleTimeString())}.`
+              : saveStatus.state === 'error'
+                ? escapeHtml(saveStatus.message || 'Save failed. You can retry without losing local edits.')
+                : 'No save operations yet in this session.'
+        }
+        ${saveStatus.conflictHint ? `<span class="muted"> ${escapeHtml(saveStatus.conflictHint)}</span>` : ''}
+      </p>
+      ${
+        saveStatus.state === 'error' && saveStatus.retryTarget
+          ? `<button type="button" class="tiny secondary top-gap" data-custom-field-retry-last-save="${escapeHtml(saveStatus.retryTarget)}">Retry last save</button>`
+          : ''
+      }
+    </section>
     ${
       readonlyMessage
         ? `<p class="error-banner" role="status" aria-live="polite">${escapeHtml(readonlyMessage)}</p>`
@@ -5054,20 +5088,21 @@ async function renderCustomFieldsAdmin() {
         : ''
     }
     <section class="item">
-      <h3>Create Field</h3>
+      <h3>Create Field <span class="badge ${createUi.status === 'pending' ? 'warning' : createUi.dirty ? 'warning' : 'success'}" data-custom-field-create-dirty>${createUi.status === 'pending' ? 'Saving…' : createUi.dirty ? 'Unsaved changes' : 'Saved'}</span></h3>
       <form id="custom-field-create-form" class="grid two">
-        <input name="key" placeholder="field_key" ${canManage ? '' : 'disabled'} />
-        <select name="type" ${canManage ? '' : 'disabled'}>
+        <div class="validation-summary" data-validation-summary role="region" aria-live="polite" aria-label="Create field validation summary"></div>
+        <input id="custom-field-create-key" name="key" placeholder="field_key" ${canManage ? '' : 'disabled'} />
+        <select id="custom-field-create-type" name="type" ${canManage ? '' : 'disabled'}>
           <option value="text">text</option>
           <option value="number">number</option>
           <option value="boolean">boolean</option>
           <option value="date">date</option>
         </select>
-        <input name="label" placeholder="Display label" ${canManage ? '' : 'disabled'} />
-        <label><input name="required" type="checkbox" ${canManage ? '' : 'disabled'} /> Required</label>
-        <input name="group" placeholder="Group (default: General)" ${canManage ? '' : 'disabled'} />
-        <input name="order" type="number" step="1" placeholder="Order (optional)" ${canManage ? '' : 'disabled'} />
-        <input name="metadata" placeholder='{"uiHint":"currency"}' ${canManage ? '' : 'disabled'} />
+        <input id="custom-field-create-label" name="label" placeholder="Display label" ${canManage ? '' : 'disabled'} />
+        <label><input id="custom-field-create-required" name="required" type="checkbox" ${canManage ? '' : 'disabled'} /> Required</label>
+        <input id="custom-field-create-group" name="group" placeholder="Group (default: General)" ${canManage ? '' : 'disabled'} />
+        <input id="custom-field-create-order" name="order" type="number" step="1" placeholder="Order (optional)" ${canManage ? '' : 'disabled'} />
+        <input id="custom-field-create-metadata" name="metadata" placeholder='{"uiHint":"currency"}' ${canManage ? '' : 'disabled'} />
         <p class="muted compact">Key uses letters, numbers, and underscores only.</p>
         <p class="muted compact" data-type-help>Field type help: Plain text value.</p>
         <p class="muted compact">Metadata is optional JSON object used for grouping and UI hints.</p>
@@ -5166,17 +5201,18 @@ async function renderCustomFieldsAdmin() {
             <td>
               <form data-custom-field-update="${escapeHtml(field.key)}" class="grid two">
                 <input type="hidden" name="key" value="${escapeHtml(field.key)}" />
-                <input name="label" value="${escapeHtml(field.label || '')}" placeholder="Label" ${canManage ? '' : 'disabled'} />
-                <select name="type" ${canManage ? '' : 'disabled'}>
+                <div class="validation-summary" data-validation-summary role="region" aria-live="polite" aria-label="Update field validation summary"></div>
+                <input id="custom-field-${escapeHtml(field.key)}-label" name="label" value="${escapeHtml(field.label || '')}" placeholder="Label" ${canManage ? '' : 'disabled'} />
+                <select id="custom-field-${escapeHtml(field.key)}-type" name="type" ${canManage ? '' : 'disabled'}>
                   <option value="text" ${field.type === 'text' ? 'selected' : ''}>text</option>
                   <option value="number" ${field.type === 'number' ? 'selected' : ''}>number</option>
                   <option value="boolean" ${field.type === 'boolean' ? 'selected' : ''}>boolean</option>
                   <option value="date" ${field.type === 'date' ? 'selected' : ''}>date</option>
                 </select>
-                <label><input name="required" type="checkbox" ${field.required ? 'checked' : ''} ${canManage ? '' : 'disabled'} /> Required</label>
-                <input name="group" value="${escapeHtml(customFieldGroupName(field))}" placeholder="Group (default: General)" ${canManage ? '' : 'disabled'} />
-                <input name="order" type="number" step="1" value="${Number.isFinite(customFieldSortOrder(field)) ? escapeHtml(String(customFieldSortOrder(field))) : ''}" placeholder="Order (optional)" ${canManage ? '' : 'disabled'} />
-                <input name="metadata" value="${escapeHtml(JSON.stringify(field.metadata || {}))}" placeholder='{"uiHint":"currency"}' ${canManage ? '' : 'disabled'} />
+                <label><input id="custom-field-${escapeHtml(field.key)}-required" name="required" type="checkbox" ${field.required ? 'checked' : ''} ${canManage ? '' : 'disabled'} /> Required</label>
+                <input id="custom-field-${escapeHtml(field.key)}-group" name="group" value="${escapeHtml(customFieldGroupName(field))}" placeholder="Group (default: General)" ${canManage ? '' : 'disabled'} />
+                <input id="custom-field-${escapeHtml(field.key)}-order" name="order" type="number" step="1" value="${Number.isFinite(customFieldSortOrder(field)) ? escapeHtml(String(customFieldSortOrder(field))) : ''}" placeholder="Order (optional)" ${canManage ? '' : 'disabled'} />
+                <input id="custom-field-${escapeHtml(field.key)}-metadata" name="metadata" value="${escapeHtml(JSON.stringify(field.metadata || {}))}" placeholder='{"uiHint":"currency"}' ${canManage ? '' : 'disabled'} />
                 <p class="muted compact" data-type-help>Field type help: ${escapeHtml(customFieldTypeHelpText(field.type))}</p>
                 <p class="field-error-text" data-field-error="key" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="label" role="alert" aria-live="polite"></p>
@@ -5186,6 +5222,9 @@ async function renderCustomFieldsAdmin() {
                 <p class="field-error-text" data-field-error="order" role="alert" aria-live="polite"></p>
                 <p class="field-error-text" data-field-error="metadata" role="alert" aria-live="polite"></p>
                 <div class="actions-row">
+                  <span class="badge ${uiState.updatesByKey?.[field.key]?.status === 'pending' ? 'warning' : dirtyByKey[field.key] ? 'warning' : 'success'}" data-custom-field-dirty-badge="${escapeHtml(
+                    field.key
+                  )}">${uiState.updatesByKey?.[field.key]?.status === 'pending' ? 'Saving…' : dirtyByKey[field.key] ? 'Unsaved changes' : 'Saved'}</span>
                   <button type="submit" class="tiny" ${
                     canManage && uiState.updatesByKey?.[field.key]?.status !== 'pending' && uiState.deleteByKey?.[field.key]?.status !== 'pending'
                       ? ''
@@ -5207,22 +5246,54 @@ async function renderCustomFieldsAdmin() {
           </tr>`
               )
               .join('')
-          : '<tr><td colspan="8"><p class="empty-state" role="status">No custom fields configured. Create your first field to enable profile extensions.</p></td></tr>'
+          : '<tr><td colspan="8"><div class="empty-state" role="status"><p>No custom fields configured. Create your first field to enable profile extensions.</p><p>No custom fields configured yet. Create your first field to capture firm-specific profile and workflow context.</p><button type="button" class="tiny" data-scroll-create-field>Create first field</button><p class="muted compact">Expected outcome: new fields appear on profile create/edit forms and are available in draft/operator review context.</p></div></td></tr>'
       }
       </tbody></table>
     </section>
   `
 
+  const validationLinkTargetId = (form, fieldName) => {
+    const key = form?.dataset?.customFieldUpdate || 'create'
+    return `custom-field-${key}-${fieldName}`
+  }
+  const renderValidationSummary = (form, fieldErrors = {}) => {
+    const summary = form?.querySelector('[data-validation-summary]')
+    if (!summary) return
+    const entries = Object.entries(fieldErrors).filter(([, message]) => message)
+    if (!entries.length) {
+      summary.className = 'validation-summary muted compact'
+      summary.innerHTML = 'No validation issues.'
+      return
+    }
+    summary.className = 'validation-summary error-banner'
+    const links = entries
+      .map(([fieldName, message]) => {
+        const targetId = validationLinkTargetId(form, fieldName)
+        return `<li><a href="#${escapeHtml(targetId)}" data-validation-jump="${escapeHtml(targetId)}">${escapeHtml(message)}</a></li>`
+      })
+      .join('')
+    summary.innerHTML = `<p>Validation summary:</p><ul>${links}</ul>`
+  }
   const markFieldError = (form, fieldName, message) => {
     const field = form?.elements?.namedItem?.(fieldName)
-    if (field?.setAttribute) field.setAttribute('aria-invalid', message ? 'true' : 'false')
+    if (field?.setAttribute) {
+      field.setAttribute('aria-invalid', message ? 'true' : 'false')
+      const targetId = validationLinkTargetId(form, fieldName)
+      if (!field.id) field.id = targetId
+      if (message) field.setAttribute('aria-describedby', `${targetId}-error`)
+      else field.removeAttribute('aria-describedby')
+    }
     const errorEl = form?.querySelector(`[data-field-error="${fieldName}"]`)
-    if (errorEl) errorEl.textContent = message || ''
+    if (errorEl) {
+      errorEl.textContent = message || ''
+      errorEl.id = `${validationLinkTargetId(form, fieldName)}-error`
+    }
   }
   const applyFieldErrors = (form, fieldErrors = {}) => {
     ;['key', 'label', 'type', 'required', 'group', 'order', 'metadata'].forEach((fieldName) =>
       markFieldError(form, fieldName, fieldErrors[fieldName] || '')
     )
+    renderValidationSummary(form, fieldErrors)
   }
   const updateTypeHelp = (form) => {
     const type = String(form?.elements?.namedItem?.('type')?.value || 'text').toLowerCase()
@@ -5344,6 +5415,23 @@ async function renderCustomFieldsAdmin() {
       metadata: metadata[index] || ''
     })).filter((row) => Object.values(row).some((value) => String(value || '').trim()))
   }
+  const markCreateDirty = (dirty = true) => {
+    state.customFieldSchema.ui.create = state.customFieldSchema.ui.create || { status: '', message: '', fieldErrors: {}, dirty: false }
+    state.customFieldSchema.ui.create.dirty = Boolean(dirty)
+  }
+  const markFieldDirty = (fieldKey, dirty = true) => {
+    state.customFieldSchema.ui.dirtyByKey = state.customFieldSchema.ui.dirtyByKey || {}
+    state.customFieldSchema.ui.dirtyByKey[fieldKey] = Boolean(dirty)
+  }
+  const setSaveStatusState = ({ state: status = 'idle', message = '', retryTarget = '', conflictHint = '' } = {}) => {
+    state.customFieldSchema.ui.saveStatus = {
+      state: status,
+      message,
+      retryTarget,
+      conflictHint,
+      savedAt: status === 'saved' ? new Date().toISOString() : state.customFieldSchema.ui.saveStatus?.savedAt || ''
+    }
+  }
 
   const applyPersistedAdminUiState = () => {
     const currentCreateForm = document.querySelector('#custom-field-create-form')
@@ -5386,13 +5474,21 @@ async function renderCustomFieldsAdmin() {
     }
   }
   applyPersistedAdminUiState()
+  viewEl.querySelectorAll('[data-validation-jump]').forEach((link) => {
+    link.addEventListener('click', (event) => {
+      event.preventDefault()
+      const target = document.getElementById(link.dataset.validationJump)
+      if (target) focusLiveRegion(target)
+    })
+  })
   if (optimisticBanner.message) focusWithinView('#custom-field-admin-optimistic-banner')
 
   document.querySelector('#custom-field-create-form')?.addEventListener('submit', async (event) => {
     event.preventDefault()
     if (!canManage) return
     const form = event.currentTarget
-    state.customFieldSchema.ui.create = { status: '', message: '', fieldErrors: {} }
+    state.customFieldSchema.ui.create = { status: '', message: '', fieldErrors: {}, dirty: false }
+    markCreateDirty(false)
     clearFormFeedback(form)
     applyFieldErrors(form, {})
     const formData = new FormData(form)
@@ -5413,7 +5509,8 @@ async function renderCustomFieldsAdmin() {
       state.customFieldSchema.ui.create = {
         status: 'error',
         message: Object.values(validation.fieldErrors)[0],
-        fieldErrors: validation.fieldErrors
+        fieldErrors: validation.fieldErrors,
+        dirty: true
       }
       setFormFeedback(form, state.customFieldSchema.ui.create.message)
       return
@@ -5423,7 +5520,8 @@ async function renderCustomFieldsAdmin() {
       state.customFieldSchema.ui.create = {
         status: 'error',
         message: duplicateError.key,
-        fieldErrors: duplicateError
+        fieldErrors: duplicateError,
+        dirty: true
       }
       applyFieldErrors(form, duplicateError)
       setFormFeedback(form, duplicateError.key)
@@ -5434,7 +5532,8 @@ async function renderCustomFieldsAdmin() {
     state.customFieldSchema.fields = [...(state.customFieldSchema.fields || []), optimisticField]
     state.customFieldSchema.updatedAt = new Date().toISOString()
     state.customFieldSchema.lastError = ''
-    state.customFieldSchema.ui.create = { status: 'pending', message: 'Pending: creating custom field…', fieldErrors: {} }
+    state.customFieldSchema.ui.create = { status: 'pending', message: 'Pending: creating custom field…', fieldErrors: {}, dirty: false }
+    setSaveStatusState({ state: 'saving' })
     state.customFieldSchema.ui.optimisticBanner = {
       status: 'pending',
       message: `Saving new field ${validation.payload.key}…`
@@ -5447,7 +5546,9 @@ async function renderCustomFieldsAdmin() {
         method: 'POST',
         body: JSON.stringify(validation.payload)
       })
-      state.customFieldSchema.ui.create = { status: 'success', message: 'Success: custom field created.', fieldErrors: {} }
+      state.customFieldSchema.ui.create = { status: 'success', message: 'Success: custom field created.', fieldErrors: {}, dirty: false }
+      markCreateDirty(false)
+      setSaveStatusState({ state: 'saved', message: 'Custom field created.' })
       state.customFieldSchema.ui.optimisticBanner = {
         status: 'success',
         message: `Field ${validation.payload.key} created.`
@@ -5462,8 +5563,16 @@ async function renderCustomFieldsAdmin() {
       state.customFieldSchema.ui.create = {
         status: 'error',
         message: `Error: ${normalizeApiError(error, 'create custom field schema')}`,
-        fieldErrors: serverFieldErrors
+        fieldErrors: serverFieldErrors,
+        dirty: true
       }
+      const createErrorMessage = normalizeApiError(error, 'create custom field schema')
+      setSaveStatusState({
+        state: 'error',
+        message: `Save failed while creating field: ${createErrorMessage}. Retry to keep your edits.`,
+        retryTarget: 'create',
+        conflictHint: isConflictError(error) ? normalizeConflictMessage(error) : ''
+      })
       state.customFieldSchema.ui.optimisticBanner = {
         status: 'error',
         message: `Create failed and changes were rolled back: ${normalizeApiError(error, 'create custom field schema')}`
@@ -5476,6 +5585,14 @@ async function renderCustomFieldsAdmin() {
   if (createForm) {
     updateTypeHelp(createForm)
     createForm.elements?.namedItem?.('type')?.addEventListener('change', () => updateTypeHelp(createForm))
+    createForm.querySelectorAll('input,select,textarea').forEach((input) => {
+      input.addEventListener('input', () => {
+        markCreateDirty(true)
+      })
+      input.addEventListener('change', () => {
+        markCreateDirty(true)
+      })
+    })
   }
   document.querySelector('#custom-field-bulk-form')?.addEventListener('submit', async (event) => {
     event.preventDefault()
@@ -5669,6 +5786,7 @@ async function renderCustomFieldsAdmin() {
     state.customFieldSchema.ui.bulk.status = 'pending-confirm'
     state.customFieldSchema.ui.bulk.confirmStatus = 'pending'
     state.customFieldSchema.ui.bulk.confirmMessage = 'Pending: applying confirmed schema changes…'
+    setSaveStatusState({ state: 'saving' })
     setFormFeedback(form, state.customFieldSchema.ui.bulk.confirmMessage, 'success')
     await renderCustomFieldsAdmin()
     try {
@@ -5691,6 +5809,13 @@ async function renderCustomFieldsAdmin() {
       state.customFieldSchema.ui.bulk.status = 'error'
       state.customFieldSchema.ui.bulk.confirmStatus = 'error'
       state.customFieldSchema.ui.bulk.confirmMessage = `Error: ${normalizeApiError(error, 'apply bulk schema changes')}`
+      const bulkErrorMessage = normalizeApiError(error, 'apply bulk schema changes')
+      setSaveStatusState({
+        state: 'error',
+        message: `Bulk save failed: ${bulkErrorMessage}. Retry to keep preview edits.`,
+        retryTarget: 'bulk-confirm',
+        conflictHint: isConflictError(error) ? normalizeConflictMessage(error) : ''
+      })
       state.customFieldSchema.ui.optimisticBanner = {
         status: 'error',
         message: `Bulk save failed and preview changes were rolled back: ${normalizeApiError(error, 'apply bulk schema changes')}`
@@ -5708,6 +5833,9 @@ async function renderCustomFieldsAdmin() {
       draftRows: state.customFieldSchema.ui.bulk?.draftRows || []
     }
     state.customFieldSchema.ui.optimisticBanner = { status: 'success', message: 'Bulk schema changes saved.' }
+    state.customFieldSchema.ui.dirtyByKey = {}
+    markCreateDirty(false)
+    setSaveStatusState({ state: 'saved', message: 'Bulk schema changes saved.' })
     state.customFieldSchema.fetched = false
     await refreshSelects()
     setFlash('success', 'Bulk schema changes saved.')
@@ -5717,13 +5845,22 @@ async function renderCustomFieldsAdmin() {
   document.querySelectorAll('[data-custom-field-update]').forEach((form) => {
     updateTypeHelp(form)
     form.elements?.namedItem?.('type')?.addEventListener('change', () => updateTypeHelp(form))
+    const fieldKey = form.dataset.customFieldUpdate
+    form.querySelectorAll('input,select,textarea').forEach((input) => {
+      if (input.type === 'hidden') return
+      input.addEventListener('input', () => {
+        markFieldDirty(fieldKey, true)
+      })
+      input.addEventListener('change', () => {
+        markFieldDirty(fieldKey, true)
+      })
+    })
     form.addEventListener('submit', async (event) => {
       event.preventDefault()
       if (!canManage) return
       state.customFieldSchema.ui.updatesByKey = state.customFieldSchema.ui.updatesByKey || {}
       clearFormFeedback(form)
       applyFieldErrors(form, {})
-      const fieldKey = form.dataset.customFieldUpdate
       state.customFieldSchema.ui.updatesByKey[fieldKey] = { status: '', message: '', fieldErrors: {} }
       const formData = new FormData(form)
       const validation = validateCustomFieldInput(
@@ -5753,6 +5890,7 @@ async function renderCustomFieldsAdmin() {
       )
       state.customFieldSchema.updatedAt = new Date().toISOString()
       state.customFieldSchema.ui.updatesByKey[fieldKey] = { status: 'pending', message: `Pending: updating ${fieldKey}…`, fieldErrors: {} }
+      setSaveStatusState({ state: 'saving' })
       state.customFieldSchema.ui.optimisticBanner = { status: 'pending', message: `Saving changes for field ${fieldKey}…` }
       setFormFeedback(form, state.customFieldSchema.ui.updatesByKey[fieldKey].message, 'success')
       queueViewFocus('#custom-field-admin-optimistic-banner')
@@ -5767,6 +5905,8 @@ async function renderCustomFieldsAdmin() {
           message: `Success: custom field ${fieldKey} updated.`,
           fieldErrors: {}
         }
+        markFieldDirty(fieldKey, false)
+        setSaveStatusState({ state: 'saved', message: `Saved ${fieldKey}.` })
         state.customFieldSchema.ui.optimisticBanner = { status: 'success', message: `Field ${fieldKey} updated.` }
         state.customFieldSchema.fetched = false
         await refreshSelects()
@@ -5780,6 +5920,13 @@ async function renderCustomFieldsAdmin() {
           message: `Error: ${normalizeApiError(error, `update custom field ${fieldKey}`)}`,
           fieldErrors: serverFieldErrors
         }
+        const updateErrorMessage = normalizeApiError(error, `update custom field ${fieldKey}`)
+        setSaveStatusState({
+          state: 'error',
+          message: `Save failed for ${fieldKey}: ${updateErrorMessage}. Retry to keep your edits.`,
+          retryTarget: `update:${fieldKey}`,
+          conflictHint: isConflictError(error) ? normalizeConflictMessage(error) : ''
+        })
         state.customFieldSchema.ui.optimisticBanner = {
           status: 'error',
           message: `Update failed and changes were rolled back for ${fieldKey}: ${normalizeApiError(error, `update custom field ${fieldKey}`)}`
@@ -5796,6 +5943,7 @@ async function renderCustomFieldsAdmin() {
       const fieldKey = button.dataset.customFieldDelete
       state.customFieldSchema.ui.deleteByKey = state.customFieldSchema.ui.deleteByKey || {}
       state.customFieldSchema.ui.deleteByKey[fieldKey] = { status: 'pending', message: `Pending: deleting custom field ${fieldKey}…` }
+      setSaveStatusState({ state: 'saving' })
       const previousSchema = structuredClone(state.customFieldSchema)
       state.customFieldSchema.fields = (state.customFieldSchema.fields || []).filter((field) => field.key !== fieldKey)
       state.customFieldSchema.updatedAt = new Date().toISOString()
@@ -5806,6 +5954,8 @@ async function renderCustomFieldsAdmin() {
       try {
         await request(routes.profileCustomFieldSchemaField(fieldKey), { method: 'DELETE' })
         state.customFieldSchema.ui.deleteByKey[fieldKey] = { status: 'success', message: `Success: custom field ${fieldKey} deleted.` }
+        markFieldDirty(fieldKey, false)
+        setSaveStatusState({ state: 'saved', message: `Deleted ${fieldKey}.` })
         state.customFieldSchema.ui.optimisticBanner = { status: 'success', message: `Field ${fieldKey} deleted.` }
         setFlash('success', `Success: custom field ${fieldKey} deleted.`)
         state.customFieldSchema.fetched = false
@@ -5818,6 +5968,13 @@ async function renderCustomFieldsAdmin() {
           status: 'error',
           message: `Error: ${normalizeApiError(error, `delete custom field ${fieldKey}`)}`
         }
+        const deleteErrorMessage = normalizeApiError(error, `delete custom field ${fieldKey}`)
+        setSaveStatusState({
+          state: 'error',
+          message: `Delete failed for ${fieldKey}: ${deleteErrorMessage}. Retry is available.`,
+          retryTarget: `delete:${fieldKey}`,
+          conflictHint: isConflictError(error) ? normalizeConflictMessage(error) : ''
+        })
         state.customFieldSchema.ui.optimisticBanner = {
           status: 'error',
           message: `Delete failed and changes were rolled back for ${fieldKey}: ${normalizeApiError(error, `delete custom field ${fieldKey}`)}`
@@ -5826,6 +5983,32 @@ async function renderCustomFieldsAdmin() {
         await renderCustomFieldsAdmin()
       }
     })
+  })
+
+  document.querySelector('[data-scroll-create-field]')?.addEventListener('click', () => {
+    const createFieldHeading = document.querySelector('#custom-field-create-form')
+    if (createFieldHeading) focusLiveRegion(createFieldHeading.querySelector('[name="key"]') || createFieldHeading)
+  })
+  document.querySelector('[data-custom-field-retry-last-save]')?.addEventListener('click', async (event) => {
+    const retryTarget = event.currentTarget?.dataset?.customFieldRetryLastSave
+    if (!retryTarget) return
+    if (retryTarget === 'create') {
+      document.querySelector('#custom-field-create-form button[type="submit"]')?.click()
+      return
+    }
+    if (retryTarget === 'bulk-confirm') {
+      document.querySelector('#custom-field-bulk-confirm-form button[type="submit"]')?.click()
+      return
+    }
+    if (retryTarget.startsWith('update:')) {
+      const key = retryTarget.slice('update:'.length)
+      document.querySelector(`[data-custom-field-update="${key}"] button[type="submit"]`)?.click()
+      return
+    }
+    if (retryTarget.startsWith('delete:')) {
+      const key = retryTarget.slice('delete:'.length)
+      document.querySelector(`[data-custom-field-delete="${key}"]`)?.click()
+    }
   })
 
   focusWithinView('#custom-fields-heading')
