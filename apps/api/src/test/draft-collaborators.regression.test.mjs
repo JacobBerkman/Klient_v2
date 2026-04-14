@@ -112,6 +112,12 @@ test('draft collaboration regression enforces role + collaborator boundaries for
   const afterRemoval = modules.forms.removeDraftCollaborator(admin, draft.id, readonly.id)
   assert.equal(afterRemoval.feedback.code, 'DRAFT_COLLABORATOR_REMOVED')
   assert.ok(afterRemoval.collaborators.every((entry) => entry.userId !== readonly.id))
+  assert.equal(modules.forms.listFormDrafts(readonly).length, 0)
+  assert.equal(modules.forms.listFormDrafts(advisor).length, 1)
+  assert.throws(() => modules.forms.removeDraftCollaborator(admin, draft.id, readonly.id), (error) => {
+    assert.equal(error.code, 'FORMS_DRAFT_COLLABORATORS_ALREADY_REMOVED')
+    return true
+  })
 
   const auditActions = store.state.auditEvents
     .filter((entry) => entry.entityType === 'form_submission' && entry.entityId === draft.id)
