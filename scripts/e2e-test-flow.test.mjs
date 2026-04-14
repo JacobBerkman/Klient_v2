@@ -5,9 +5,14 @@ import { resolve } from 'node:path'
 
 const repoRoot = resolve(new URL('..', import.meta.url).pathname)
 const e2eScriptPath = resolve(repoRoot, 'scripts/e2e-test.mjs')
+const playwrightConfigPath = resolve(repoRoot, 'playwright.config.mjs')
 
 function readE2eScript() {
   return readFileSync(e2eScriptPath, 'utf8')
+}
+
+function readPlaywrightConfig() {
+  return readFileSync(playwrightConfigPath, 'utf8')
 }
 
 test('e2e harness enforces strict CI browser runs and allows opt-in local fallback', () => {
@@ -27,6 +32,9 @@ test('e2e harness enforces strict CI browser runs and allows opt-in local fallba
   assert.match(content, /resolvePlaywrightLinkageEnv\(/)
   assert.match(content, /RELEASE_E2E_PROVISIONING_ARTIFACT/)
   assert.match(content, /RELEASE_E2E_PROVISIONING_VERSION/)
+  assert.match(content, /function resolvePlaywrightGrep\(env = process\.env\)/)
+  assert.match(content, /const grepSignal = resolvePlaywrightGrep\(baseEnv\)/)
+  assert.match(content, /if \(grepSignal\) baseEnv\.PLAYWRIGHT_GREP = grepSignal/)
   assert.match(content, /provisionChromium\(/)
   assert.match(content, /RELEASE_E2E_STRICT_MODE: strictMode \? '1' : '0'/)
   assert.match(content, /browser: reportValidation\.suiteNames/)
@@ -40,6 +48,13 @@ test('e2e harness enforces strict CI browser runs and allows opt-in local fallba
   assert.equal(playwrightRunCalls.length, 1, 'expected exactly one Playwright execution path via injected run(...)')
   assert.doesNotMatch(content, /runCommand\(command, \['playwright', 'test', browserSuitePattern\], runtimeEnv\)/)
   assert.doesNotMatch(content, /process\.exit\(/)
+})
+
+test('playwright config preserves PLAYWRIGHT_GREP regex wiring for tag filters', () => {
+  const config = readPlaywrightConfig()
+  assert.match(config, /process\.env\.PLAYWRIGHT_GREP/)
+  assert.match(config, /grep: new RegExp\(process\.env\.PLAYWRIGHT_GREP, 'i'\)/)
+  assert.ok(new RegExp('@release-blocking', 'i').test('@release-blocking'))
 })
 
 

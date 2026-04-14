@@ -45,6 +45,13 @@ function parseBooleanSignal(value) {
   return null
 }
 
+function resolvePlaywrightGrep(env = process.env) {
+  const e2eGrep = String(env.E2E_GREP || '').trim()
+  if (e2eGrep) return e2eGrep
+  const playwrightGrep = String(env.PLAYWRIGHT_GREP || '').trim()
+  return playwrightGrep || null
+}
+
 function resolvePlaywrightReportPath(env = process.env) {
   const configured = env.RELEASE_E2E_PLAYWRIGHT_REPORT || env.PLAYWRIGHT_JSON_REPORT
   const fallbackPath = resolve(releaseEvidenceDir, 'playwright-report.json')
@@ -291,6 +298,8 @@ export async function main(deps = {}) {
       RELEASE_E2E_STRICT_MODE: strictMode ? '1' : '0',
       TEST_RESET_BEHAVIOR: process.env.TEST_RESET_BEHAVIOR || 'isolated'
     }
+    const grepSignal = resolvePlaywrightGrep(baseEnv)
+    if (grepSignal) baseEnv.PLAYWRIGHT_GREP = grepSignal
     const linkageEnv = resolvePlaywrightLinkageEnv(
       {
         ...baseEnv,
