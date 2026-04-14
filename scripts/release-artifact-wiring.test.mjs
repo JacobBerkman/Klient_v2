@@ -155,3 +155,17 @@ test('critical release gate scripts are present for artifact/evidence wiring', (
     assert.ok(existsSync(resolve(repoRoot, file)), `required release gate file missing: ${file}`)
   }
 })
+
+test('E2E evidence wiring includes Playwright report and provisioning linkage metadata', () => {
+  const e2eScript = read('scripts/e2e-test.mjs')
+  const releaseValidator = read('scripts/validate-release-evidence.mjs')
+
+  assert.match(e2eScript, /function resolvePlaywrightEvidenceLinkage\(env = process\.env, reportPath = ''\)/)
+  assert.match(e2eScript, /playwrightEvidenceLinkage: resolvePlaywrightEvidenceLinkage\(env, reportPath\)/)
+  assert.match(e2eScript, /RELEASE_E2E_PROVISIONING_ARTIFACT/)
+  assert.match(e2eScript, /RELEASE_E2E_PROVISIONING_VERSION/)
+
+  assert.match(releaseValidator, /details\.artifacts\.playwrightEvidenceLinkage/)
+  assert.match(releaseValidator, /provisioningArtifactPath/)
+  assert.match(releaseValidator, /Strict browser evidence requires details\.artifacts\.playwrightEvidenceLinkage\.provisioningArtifactPath/)
+})
