@@ -1,5 +1,5 @@
 import { mkdir, writeFile } from 'node:fs/promises'
-import { dirname, resolve } from 'node:path'
+import { dirname, relative, resolve } from 'node:path'
 import { spawn } from 'node:child_process'
 
 const strictModeEnvFlag = 'RELEASE_E2E_STRICT_MODE'
@@ -47,6 +47,21 @@ export function resolvePlaywrightLinkageEnv(env = process.env, options = {}) {
     RELEASE_E2E_PLAYWRIGHT_REPORT: reportPath,
     RELEASE_E2E_PROVISIONING_ARTIFACT: provisioningArtifactPath,
     RELEASE_E2E_PROVISIONING_VERSION: provisioningVersion
+  }
+}
+
+export function resolvePlaywrightEvidenceLinkage(env = process.env, options = {}) {
+  const cwd = options.cwd || process.cwd()
+  const evidenceDir = options.evidenceDir || resolveEvidenceDir(env, cwd)
+  const linkageEnv = resolvePlaywrightLinkageEnv(env, { cwd, evidenceDir })
+  const reportAbsolute = resolve(cwd, linkageEnv.RELEASE_E2E_PLAYWRIGHT_REPORT)
+  const provisioningAbsolute = resolve(cwd, linkageEnv.RELEASE_E2E_PROVISIONING_ARTIFACT)
+  return {
+    reportPath: relative(evidenceDir, reportAbsolute),
+    reportPathAbsolute: reportAbsolute,
+    provisioningArtifactPath: relative(evidenceDir, provisioningAbsolute),
+    provisioningArtifactPathAbsolute: provisioningAbsolute,
+    provisioningVersion: linkageEnv.RELEASE_E2E_PROVISIONING_VERSION || null
   }
 }
 

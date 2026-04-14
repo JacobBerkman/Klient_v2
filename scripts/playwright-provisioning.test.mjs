@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { resolve } from 'node:path'
-import { detectStrictModeIntent, provisionChromiumForStrictMode, resolvePlaywrightLinkageEnv } from './playwright-provisioning.mjs'
+import { detectStrictModeIntent, provisionChromiumForStrictMode, resolvePlaywrightEvidenceLinkage, resolvePlaywrightLinkageEnv } from './playwright-provisioning.mjs'
 
 test('detectStrictModeIntent respects explicit strict override', () => {
   const result = detectStrictModeIntent({ RELEASE_E2E_STRICT_MODE: '0', CI: '1' })
@@ -35,4 +35,21 @@ test('provisionChromiumForStrictMode no-ops outside strict mode', async () => {
   assert.equal(result.attempted, false)
   assert.equal(result.strictMode, false)
   assert.equal(result.env.RELEASE_E2E_PROVISIONING_VERSION, '')
+})
+
+test('resolvePlaywrightEvidenceLinkage emits evidence-dir-relative canonical paths', () => {
+  const cwd = '/repo'
+  const evidenceDir = resolve(cwd, 'artifacts/release-evidence/2026-04-14.1')
+  const linkage = resolvePlaywrightEvidenceLinkage(
+    {
+      RELEASE_E2E_PLAYWRIGHT_REPORT: resolve(evidenceDir, 'playwright-report.json'),
+      RELEASE_E2E_PROVISIONING_ARTIFACT: resolve(evidenceDir, 'playwright-provisioning.txt'),
+      RELEASE_E2E_PROVISIONING_VERSION: '1.55.0'
+    },
+    { cwd, evidenceDir }
+  )
+
+  assert.equal(linkage.reportPath, 'playwright-report.json')
+  assert.equal(linkage.provisioningArtifactPath, 'playwright-provisioning.txt')
+  assert.equal(linkage.provisioningVersion, '1.55.0')
 })
