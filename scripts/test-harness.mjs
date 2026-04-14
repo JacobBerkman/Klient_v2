@@ -349,6 +349,13 @@ export async function createTestContext(name) {
           requestExpectErrorAs(sessionName, path, options = {}, expectedStatus = 400) {
             return getSession(sessionName).requestExpectError(path, options, expectedStatus)
           },
+          async rawRequest(path, options = {}, retryOptions) {
+            try {
+              return await fetchWithLifecycleRetry(`${baseUrl}${path}`, options, retryOptions)
+            } catch (error) {
+              throw new Error(`${path}: ${error?.message || 'Request failed'}`)
+            }
+          },
           authHeaders(sessionName = 'default') {
             return getSession(sessionName).authHeaders()
           },

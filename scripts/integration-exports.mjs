@@ -215,10 +215,10 @@ async function main() {
     body: JSON.stringify({ dryRun: true, includeDeadLetter: false })
   })
 
-  const unauthorizedDownload = await fetch(`http://127.0.0.1:${context.port}/api/analytics/export`)
+  const unauthorizedDownload = await context.rawRequest('/api/analytics/export')
   assert(unauthorizedDownload.status === 401, 'Analytics export download should require authentication')
   await consumeResponse(unauthorizedDownload)
-  const authorizedDownload = await fetch(`http://127.0.0.1:${context.port}/api/analytics/export`, {
+  const authorizedDownload = await context.rawRequest('/api/analytics/export', {
     headers: { Cookie: context.sessionCookie }
   })
   const csvDownload = await authorizedDownload.text()
@@ -348,7 +348,7 @@ async function main() {
   assert(csvDownload.includes('funnel'), 'Analytics export should return CSV payload')
   const completedAfterRetry = afterRetryProcessing.find((entry) => entry.id === (completedForAssertions?.id || completedJob.id))
   if (completedAfterRetry?.status === 'completed') {
-    const completedDownload = await fetch(`http://127.0.0.1:${context.port}/api/exports/${completedAfterRetry.id}/download`, {
+    const completedDownload = await context.rawRequest(`/api/exports/${completedAfterRetry.id}/download`, {
       headers: { Cookie: context.sessionCookie }
     })
     assert(completedDownload.status === 200, 'Expected completed export to be downloadable')
@@ -364,7 +364,7 @@ async function main() {
     'Expected retried export to stay in known queue statuses after additional processing'
   )
   if (retriedProcessed?.status === 'completed') {
-    const retriedDownload = await fetch(`http://127.0.0.1:${context.port}/api/exports/${retriedProcessed.id}/download`, {
+    const retriedDownload = await context.rawRequest(`/api/exports/${retriedProcessed.id}/download`, {
       headers: { Cookie: context.sessionCookie }
     })
     assert(retriedDownload.status === 200, 'Expected retried completed export to download successfully')
