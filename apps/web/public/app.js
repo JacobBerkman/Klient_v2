@@ -29,6 +29,7 @@ const state = {
   templatePublishPreflightByTemplateId: {},
   templatePreviewSelectionByTemplateId: {},
   templateMappingFilterByTemplateId: {},
+  templateMappingSearchByTemplateId: {},
   templateMappingSuggestionsByTemplateId: {},
   templateInspectorFocusRequestByTemplateId: {},
   templateJumpHighlightByTemplateId: {},
@@ -2494,9 +2495,12 @@ function publishReadinessPanelMarkup({ readiness = null, fallbackIssues = [] }) 
       : ''
     return `<li>${cta}<code>${escapeHtml(issue?.issueId || issue?.meta?.issueId || issue?.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`
   }
+  const readinessStatus = blockers.length ? 'Blocked' : warnings.length ? 'Ready with warnings' : 'Ready'
+  const readinessTone = blockers.length ? 'error-badge' : warnings.length ? 'warning-badge' : 'badge subtle'
   return `<section class="publish-readiness-panel" aria-labelledby="publish-readiness-heading">
     <h4 id="publish-readiness-heading">Publish readiness</h4>
     <p class="muted compact">Local validation and preflight schema failures block publish; publish-ready means both are clear.</p>
+    <p class="row wrap gap-sm"><span class="${readinessTone}">Status: ${escapeHtml(readinessStatus)}</span><span class="badge subtle">Blockers ${blockers.length}</span><span class="badge subtle">Warnings ${warnings.length}</span></p>
     <div class="grid two">
       <div>
         <h5>Blockers (${blockers.length})</h5>
@@ -2745,6 +2749,7 @@ async function renderTemplates() {
   if (!state.templateSaveStateByTemplateId) state.templateSaveStateByTemplateId = {}
   if (!state.templateAutosaveTimers) state.templateAutosaveTimers = {}
   if (!state.templateMappingFilterByTemplateId) state.templateMappingFilterByTemplateId = {}
+  if (!state.templateMappingSearchByTemplateId) state.templateMappingSearchByTemplateId = {}
   if (!state.templateMappingSuggestionsByTemplateId) state.templateMappingSuggestionsByTemplateId = {}
   if (!state.templateInspectorFocusRequestByTemplateId) state.templateInspectorFocusRequestByTemplateId = {}
   if (!state.templateJumpHighlightByTemplateId) state.templateJumpHighlightByTemplateId = {}
@@ -2844,6 +2849,7 @@ async function renderTemplates() {
     Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
   const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings || preflightIssues.length > 0
   const templateFilter = state.templateMappingFilterByTemplateId[template?.id] || 'all'
+  const templateSearch = String(state.templateMappingSearchByTemplateId[template?.id] || '').trim()
   const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unresolved-only', 'unmapped', 'preview-warning', 'required-only'])
   const activeTemplateFilter = allowedTemplateFilters.has(templateFilter) ? templateFilter : 'all'
   if (template && activeTemplateFilter !== templateFilter) state.templateMappingFilterByTemplateId[template.id] = activeTemplateFilter
@@ -2879,6 +2885,32 @@ async function renderTemplates() {
     })
     if (computed) suggestionByIndex.set(index, computed)
   })
+  const mappingFilterMatches = (mapping, index) => {
+    const issues = mappingIssuesByIndex.get(index) || []
+    const hasPreviewWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
+    const previewRow = previewRowsByIndex.get(index)
+    const rowId = String(previewRow?.rowId || mapping?.rowId || '').trim()
+    const serverPreflightIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
+    const isUnmapped = !String(mapping.pdfField || '').trim()
+    const isUnresolved =
+      !String(mapping.sourcePath || '').trim() ||
+      issues.some((issue) => issue.code === 'unknown_source_path') ||
+      serverPreflightIssues.length > 0
+    const passesFilter =
+      activeTemplateFilter === 'all' ||
+      (activeTemplateFilter === 'needs-fix' && (issues.length > 0 || serverPreflightIssues.length > 0)) ||
+      (activeTemplateFilter === 'unresolved-only' && isUnresolved) ||
+      (activeTemplateFilter === 'unmapped' && isUnmapped) ||
+      (activeTemplateFilter === 'preview-warning' && hasPreviewWarnings) ||
+      (activeTemplateFilter === 'required-only' && mapping.required === true)
+    const searchCorpus = [index + 1, mapping.pdfField || '', mapping.fieldLabel || '', mapping.sourcePath || '', rowId].join(' ').toLowerCase()
+    const passesSearch = !templateSearch || searchCorpus.includes(templateSearch.toLowerCase())
+    return { passesFilter, passesSearch, rowId, issues, hasPreviewWarnings, serverPreflightIssues, isUnmapped, isUnresolved }
+  }
+  const filteredRowIndices = draftMappings
+    .map((mapping, index) => ({ index, outcome: mappingFilterMatches(mapping, index) }))
+    .filter((entry) => entry.outcome.passesFilter && entry.outcome.passesSearch)
+    .map((entry) => entry.index)
 
   const selectedRowIndex = Number.isInteger(state.templateInspector?.[template?.id]?.rowIndex)
     ? state.templateInspector[template.id].rowIndex
@@ -3046,27 +3078,15 @@ async function renderTemplates() {
             )
             .join('')}
         </div>
+        <label class="top-gap">Search mappings
+          <input id="mapping-search" value="${escapeHtml(templateSearch)}" placeholder="Filter by row, pdf field, label, source path, or row id" />
+        </label>
+        <p class="muted compact">Showing ${filteredRowIndices.length} of ${draftMappings.length} mapping row(s).</p>
         <table><thead><tr><th>#</th><th>State</th><th>PDF Field</th><th>Field context</th><th>Source Path</th><th>Suggested</th><th>Label</th><th>Confidence</th><th>Local validation</th><th>Server preflight</th><th>Preview</th><th>Sample</th></tr></thead><tbody>
           ${draftMappings
             .map((mapping, index) => {
-              const issues = mappingIssuesByIndex.get(index) || []
-              const hasPreviewWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
-              const previewRow = previewRowsByIndex.get(index)
-              const rowId = String(previewRow?.rowId || '').trim()
-              const serverPreflightIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
-              const isUnmapped = !String(mapping.pdfField || '').trim()
-              const isUnresolved =
-                !String(mapping.sourcePath || '').trim() ||
-                issues.some((issue) => issue.code === 'unknown_source_path') ||
-                serverPreflightIssues.length > 0
-              const showRow =
-                activeTemplateFilter === 'all' ||
-                (activeTemplateFilter === 'needs-fix' && (issues.length > 0 || serverPreflightIssues.length > 0)) ||
-                (activeTemplateFilter === 'unresolved-only' && isUnresolved) ||
-                (activeTemplateFilter === 'unmapped' && isUnmapped) ||
-                (activeTemplateFilter === 'preview-warning' && hasPreviewWarnings) ||
-                (activeTemplateFilter === 'required-only' && mapping.required === true)
-              if (!showRow) return ''
+              const { passesFilter, passesSearch, issues, hasPreviewWarnings, rowId, serverPreflightIssues } = mappingFilterMatches(mapping, index)
+              if (!passesFilter || !passesSearch) return ''
               const sampleValue = resolveSampleValue(mapping.sourcePath)
               const rowClasses = ['mapping-row-item']
               const extractedMeta = extractedFieldMetaByName.get(String(mapping.pdfField || '').trim()) || null
@@ -3084,7 +3104,7 @@ async function renderTemplates() {
                     : !String(mapping.sourcePath || '').trim()
                       ? '<span class="warning-badge">Missing source</span>'
                       : '<span class="badge subtle">Ready</span>'
-              return `<tr id="mapping-row-${index}" class="${rowClasses.join(' ')}" data-select-row="${index}" data-row-id="${escapeHtml(rowId)}" tabindex="0">
+              return `<tr id="mapping-row-${index}" class="${rowClasses.join(' ')}" data-select-row="${index}" data-row-id="${escapeHtml(rowId)}" tabindex="0" aria-label="Mapping row ${index + 1}">
                 <td>${index + 1}</td>
                 <td>${stateBadge}</td>
                 <td>${escapeHtml(mapping.pdfField || '')}</td>
@@ -3386,11 +3406,15 @@ async function renderTemplates() {
 
   const selectTemplateRow = async (
     rowIndex,
-    { focusInspector = false, focusField = 'sourcePath', highlightRow = false, wizardStep = '' } = {}
+    { focusInspector = false, focusField = 'sourcePath', highlightRow = false, wizardStep = '', ensureVisibleInFilter = false } = {}
   ) => {
     if (!template) return
-    const normalizedRowIndex = Number(rowIndex)
+    const normalizedRowIndex = Math.max(0, Math.min(draftMappings.length - 1, Number(rowIndex)))
     if (!Number.isFinite(normalizedRowIndex)) return
+    if (ensureVisibleInFilter) {
+      if (activeTemplateFilter !== 'all') state.templateMappingFilterByTemplateId[template.id] = 'all'
+      if (state.templateMappingSearchByTemplateId[template.id]) state.templateMappingSearchByTemplateId[template.id] = ''
+    }
     state.templateInspector[template.id] = { rowIndex: normalizedRowIndex }
     if (wizardStep && wizardSteps.includes(wizardStep)) state.templateWizardStepByTemplateId[template.id] = wizardStep
     state.templateInspectorFocusRequestByTemplateId[template.id] = focusInspector ? focusField : ''
@@ -3406,34 +3430,55 @@ async function renderTemplates() {
     await renderTemplates()
   }
 
+  const resolveTemplateRowIndexFromIssue = (rowIndex, rowId = '') => {
+    const numericRowIndex = Number(rowIndex)
+    if (Number.isFinite(numericRowIndex)) return numericRowIndex
+    const normalizedRowId = String(rowId || '').trim()
+    if (!normalizedRowId) return NaN
+    const previewMatchIndex = Number(
+      [...(state.templatePreviewByTemplateId?.[template.id]?.rows || [])].find((row) => String(row?.rowId || '').trim() === normalizedRowId)
+        ?.rowIndex
+    )
+    if (Number.isFinite(previewMatchIndex)) return previewMatchIndex
+    return draftMappings.findIndex((mapping) => String(mapping?.rowId || '').trim() === normalizedRowId)
+  }
+
   const selectTemplateRowFromIssue = async (
     rowIndex,
     rowId,
     { focusInspector = false, focusField = 'sourcePath', highlightRow = true } = {}
   ) => {
-    const numericRowIndex = Number(rowIndex)
-    if (Number.isFinite(numericRowIndex)) {
-      await selectTemplateRow(numericRowIndex, { focusInspector, focusField, highlightRow, wizardStep: 'mapping' })
-      return
-    }
-    const normalizedRowId = String(rowId || '').trim()
-    if (!normalizedRowId) return
-    const mappedRowIndex = Number(
-      [...(state.templatePreviewByTemplateId?.[template.id]?.rows || [])].find((row) => String(row?.rowId || '').trim() === normalizedRowId)
-        ?.rowIndex
-    )
-    if (Number.isFinite(mappedRowIndex)) {
-      await selectTemplateRow(mappedRowIndex, { focusInspector, focusField, highlightRow, wizardStep: 'mapping' })
-    }
+    const resolvedRowIndex = resolveTemplateRowIndexFromIssue(rowIndex, rowId)
+    if (!Number.isFinite(resolvedRowIndex) || resolvedRowIndex < 0) return
+    await selectTemplateRow(resolvedRowIndex, { focusInspector, focusField, highlightRow, wizardStep: 'mapping', ensureVisibleInFilter: true })
   }
 
   document.querySelectorAll('[data-select-row]').forEach((row) => {
     const rowIndex = Number(row.dataset.selectRow)
     row.addEventListener('click', async () => selectTemplateRow(rowIndex))
     row.addEventListener('keydown', async (event) => {
-      if (event.key !== 'Enter' && event.key !== ' ') return
-      event.preventDefault()
-      await selectTemplateRow(rowIndex)
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault()
+        await selectTemplateRow(rowIndex)
+        return
+      }
+      const currentVisibleIndex = filteredRowIndices.indexOf(rowIndex)
+      if (event.key === 'ArrowDown' && currentVisibleIndex >= 0 && currentVisibleIndex < filteredRowIndices.length - 1) {
+        event.preventDefault()
+        await selectTemplateRow(filteredRowIndices[currentVisibleIndex + 1], { highlightRow: true })
+      }
+      if (event.key === 'ArrowUp' && currentVisibleIndex > 0) {
+        event.preventDefault()
+        await selectTemplateRow(filteredRowIndices[currentVisibleIndex - 1], { highlightRow: true })
+      }
+      if (event.key === 'Home' && filteredRowIndices.length) {
+        event.preventDefault()
+        await selectTemplateRow(filteredRowIndices[0], { highlightRow: true })
+      }
+      if (event.key === 'End' && filteredRowIndices.length) {
+        event.preventDefault()
+        await selectTemplateRow(filteredRowIndices[filteredRowIndices.length - 1], { highlightRow: true })
+      }
     })
   })
 
@@ -3443,6 +3488,11 @@ async function renderTemplates() {
       state.templateMappingFilterByTemplateId[template.id] = String(button.dataset.mappingFilter || 'all')
       await rerenderTemplates()
     })
+  })
+  document.querySelector('#mapping-search')?.addEventListener('input', async (event) => {
+    if (!template) return
+    state.templateMappingSearchByTemplateId[template.id] = String(event.target?.value || '')
+    await rerenderTemplates()
   })
 
   document.querySelector('#jump-to-unmapped-extracted')?.addEventListener('click', async () => {
@@ -3776,6 +3826,17 @@ async function renderTemplates() {
   })
   document.querySelectorAll('[data-preflight-rowindex]').forEach((button) => {
     button.addEventListener('click', async () => {
+      const rowIndex = Number(button.dataset.preflightRowindex)
+      const rowId = String(button.dataset.preflightRowid || '').trim()
+      await selectTemplateRowFromIssue(rowIndex, rowId, {
+        focusInspector: true,
+        focusField: button.dataset.focusInspector || 'sourcePath',
+        highlightRow: true
+      })
+    })
+    button.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
       const rowIndex = Number(button.dataset.preflightRowindex)
       const rowId = String(button.dataset.preflightRowid || '').trim()
       await selectTemplateRowFromIssue(rowIndex, rowId, {
