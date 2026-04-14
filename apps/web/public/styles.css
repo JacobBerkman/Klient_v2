@@ -63,6 +63,16 @@ textarea:focus-visible {
   outline: 2px solid #60a5fa;
   outline-offset: 3px;
 }
+@media (prefers-contrast: more) {
+  button:focus-visible,
+  a:focus-visible,
+  input:focus-visible,
+  select:focus-visible,
+  textarea:focus-visible {
+    outline: 3px solid #fff;
+    box-shadow: 0 0 0 4px #000;
+  }
+}
 
 .sidebar nav button[aria-current='page'] {
   background: #1d4ed8;
@@ -151,6 +161,32 @@ pre {
   border-radius: 999px;
   background: #1d4ed8;
   font-size: 12px;
+}
+.badge.success {
+  background: #166534;
+  color: #dcfce7;
+}
+.badge.warning {
+  background: #92400e;
+  color: #ffedd5;
+}
+.validation-summary {
+  grid-column: 1 / -1;
+  border-radius: 10px;
+}
+.validation-summary ul {
+  margin: 6px 0 0;
+  padding-left: 18px;
+}
+.validation-summary a {
+  color: #bfdbfe;
+}
+.validation-summary a:focus-visible {
+  outline: 2px solid #fde68a;
+  outline-offset: 2px;
+}
+.empty-state button {
+  margin: 6px 0;
 }
 
 .detail-header {
