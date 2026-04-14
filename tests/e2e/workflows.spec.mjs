@@ -400,7 +400,7 @@ test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC
 
   await page.locator(`form[data-add-draft-collaborator="${draft.id}"] select[name="userId"]`).selectOption({ label: /maya advisor/i })
   await page.locator(`form[data-add-draft-collaborator="${draft.id}"] button[type="submit"]`).click()
-  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Membership is current')
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('added. Next: refresh membership if other sessions are active.')
   await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(advisor.email)
 
   const duplicateAddResponse = await page.request.post(`/api/forms/drafts/${draft.id}/collaborators`, {
@@ -410,26 +410,62 @@ test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC
   const duplicateAddPayload = await duplicateAddResponse.json()
   expect(duplicateAddPayload.error.code).toBe('FORMS_DRAFT_COLLABORATORS_ALREADY_ADDED')
 
+  await page.locator(`form[data-search-draft-collaborator-users="${draft.id}"] input[name="search"]`).fill('Rory')
+  await page.locator(`form[data-search-draft-collaborator-users="${draft.id}"] button[type="submit"]`).click()
+  await page.locator(`form[data-add-draft-collaborator="${draft.id}"] select[name="userId"]`).selectOption({ label: /rory readonly/i })
+  const externalReadonlyAddResponse = await page.request.post(`/api/forms/drafts/${draft.id}/collaborators`, {
+    data: { userId: readonly.email }
+  })
+  expect(externalReadonlyAddResponse.status()).toBe(201)
+  await page.locator(`form[data-add-draft-collaborator="${draft.id}"] button[type="submit"]`).click()
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText(
+    'That user is already a collaborator. Refresh membership to confirm the latest state.'
+  )
+  await expect(page.locator(`#draft-share-panel-${draft.id}`)).not.toContainText(
+    'Recovery: refresh membership first, then retry with the latest revision.'
+  )
+
   await page.locator(`[data-refresh-draft-collaborators="${draft.id}"]`).click()
-  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Membership refreshed from server')
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('membership refreshed')
 
-  await page
-    .locator(`[data-remove-draft-collaborator="${draft.id}"]`)
-    .filter({ hasText: advisor.email })
-    .getByRole('button', { name: 'Remove' })
-    .click()
-  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText('Remove complete')
+  const readonlyRow = page.locator(`#draft-share-panel-${draft.id} li`, { hasText: readonly.email })
+  await expect(readonlyRow).toBeVisible()
+  await page.request.delete(`/api/forms/drafts/${draft.id}/collaborators/${readonly.email}`)
+  await readonlyRow.getByRole('button', { name: 'Remove' }).click()
+  await expect(page.locator(`[data-draft-share-feedback="${draft.id}"]`)).toContainText(
+    'That collaborator was already removed. Refresh membership to sync with the latest server state.'
+  )
+  await expect(page.locator(`#draft-share-panel-${draft.id}`)).not.toContainText(
+    'Recovery: refresh membership first, then retry with the latest revision.'
+  )
 
+  const initialAdvisorRemoveResponse = await page.request.delete(`/api/forms/drafts/${draft.id}/collaborators/${advisor.email}`)
+  expect([200, 204]).toContain(initialAdvisorRemoveResponse.status())
   const duplicateRemoveResponse = await page.request.delete(`/api/forms/drafts/${draft.id}/collaborators/${advisor.email}`)
   expect(duplicateRemoveResponse.status()).toBe(409)
   const duplicateRemovePayload = await duplicateRemoveResponse.json()
   expect(duplicateRemovePayload.error.code).toBe('FORMS_DRAFT_COLLABORATORS_ALREADY_REMOVED')
 
   await page.request.post('/api/logout')
+  await signInFromUi(page, advisor.email, advisor.password)
+  await page.getByRole('button', { name: 'Forms' }).click()
+  await page.locator(`[data-open-draft-share-panel="${draft.id}"]`).click()
+  await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(
+    'Advisor access is view-only on drafts you do not own. Ask the draft owner (or an admin) to change collaborators.'
+  )
+  await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(
+    'Current access state before any action: owner=no, collaborator=no, can-manage=no.'
+  )
+  await expect(page.locator(`form[data-search-draft-collaborator-users="${draft.id}"] button[type="submit"]`)).toBeDisabled()
+  await expect(page.locator(`form[data-add-draft-collaborator="${draft.id}"] button[type="submit"]`)).toBeDisabled()
+
+  await page.request.post('/api/logout')
   await signInFromUi(page, readonly.email, readonly.password)
   await page.getByRole('button', { name: 'Forms' }).click()
   await page.locator(`[data-open-draft-share-panel="${draft.id}"]`).click()
-  await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText('mutating controls are intentionally disabled')
+  await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(
+    'Readonly role: collaborator membership is visible, but add/remove actions are disabled.'
+  )
   await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(
     'Current access state before any action: owner=no, collaborator=no, can-manage=no.'
   )

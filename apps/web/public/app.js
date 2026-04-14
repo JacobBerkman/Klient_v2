@@ -49,6 +49,7 @@ const state = {
     collaboratorsByDraftId: {},
     membershipRefreshedAtByDraftId: {},
     shareFeedbackByDraftId: {},
+    shareFeedbackRecoveryByDraftId: {},
     userLookupByDraftId: {},
     userLookupSearchByDraftId: {},
     selectedUserIdByDraftId: {},
@@ -1096,35 +1097,76 @@ function draftShareMembershipState(draftId) {
   return { status: 'loaded', collaborators }
 }
 
-function normalizeDraftShareError(error, action = 'complete this collaborator action') {
+function draftShareErrorOutcome(error, action = 'complete this collaborator action') {
   const message = String(error?.message || '').toLowerCase()
   const code = String(error?.code || '').toUpperCase()
   const reason = String(error?.details?.reason || '').toLowerCase()
   if (code === 'FORMS_DRAFT_COLLABORATORS_STALE_DRAFT' || reason === 'draft_not_found') {
-    return 'This draft is stale or no longer available. Refresh drafts, then reopen sharing.'
+    return {
+      category: 'stale',
+      recovery: 'refresh-first',
+      message: 'This draft is stale or no longer available. Refresh drafts, then reopen sharing.'
+    }
   }
   if (code === 'FORMS_DRAFT_COLLABORATORS_ALREADY_ADDED' || reason === 'already_added') {
-    return 'That user is already a collaborator. Refresh membership to confirm the latest state.'
+    return {
+      category: 'duplicate-add',
+      recovery: 'retry-latest',
+      message: 'That user is already a collaborator. Refresh membership to confirm the latest state.'
+    }
   }
   if (code === 'FORMS_DRAFT_COLLABORATORS_ALREADY_REMOVED' || reason === 'already_removed') {
-    return 'That collaborator was already removed. Refresh membership to sync with the latest server state.'
+    return {
+      category: 'duplicate-remove',
+      recovery: 'retry-latest',
+      message: 'That collaborator was already removed. Refresh membership to sync with the latest server state.'
+    }
   }
   if (code === 'FORMS_DRAFT_COLLABORATORS_OWNER_IMMUTABLE' || reason === 'owner_immutable') {
-    return 'Draft owner membership is immutable and cannot be removed.'
+    return {
+      category: 'owner-immutable',
+      recovery: 'retry-latest',
+      message: 'Draft owner membership is immutable and cannot be removed.'
+    }
   }
   if (isConflictError(error) || Number(error?.status) === 409) {
-    return 'Membership changed on another session. Refresh membership first, then retry with the latest revision.'
+    return {
+      category: 'conflict',
+      recovery: 'refresh-first',
+      message: 'Membership changed on another session. Refresh membership first, then retry with the latest revision.'
+    }
   }
   if (message.includes('already added') || message.includes('already a collaborator')) {
-    return 'That user already has draft access. Refresh membership to confirm current collaborator state.'
+    return {
+      category: 'duplicate-add',
+      recovery: 'retry-latest',
+      message: 'That user is already a collaborator. Refresh membership to confirm the latest state.'
+    }
   }
   if (message.includes('not assigned')) {
-    return 'That collaborator is already removed. Refresh membership to sync the latest server state.'
+    return {
+      category: 'duplicate-remove',
+      recovery: 'retry-latest',
+      message: 'That collaborator was already removed. Refresh membership to sync with the latest server state.'
+    }
   }
   if (message.includes('cannot be removed')) {
-    return 'Draft owner membership is immutable and cannot be removed.'
+    return {
+      category: 'owner-immutable',
+      recovery: 'retry-latest',
+      message: 'Draft owner membership is immutable and cannot be removed.'
+    }
   }
-  return normalizeApiError(error, action)
+  return {
+    category: 'unknown',
+    recovery: 'retry-latest',
+    message: normalizeApiError(error, action)
+  }
+}
+
+function draftShareRecoveryInstruction(recovery) {
+  if (recovery === 'refresh-first') return 'refresh membership first.'
+  return 'retry with latest revision.'
 }
 
 function collaboratorDisabledReason(draft, control) {
@@ -1793,7 +1835,8 @@ async function renderForms() {
         const shareFeedback = state.formsUi.shareFeedbackByDraftId[draft.id] || ''
         const isShareFeedbackError = /^Error:/.test(shareFeedback)
         const isShareFeedbackSuccess = /^Success:/.test(shareFeedback)
-        const showRefreshFirstCta = shareFeedback.toLowerCase().includes('refresh membership first')
+        const shareFeedbackRecovery = state.formsUi.shareFeedbackRecoveryByDraftId[draft.id] || ''
+        const showRefreshFirstCta = isShareFeedbackError && shareFeedbackRecovery === 'refresh-first'
         const selectedLookupUserId = state.formsUi.selectedUserIdByDraftId[draft.id] || ''
         const currentUserRole = state.user?.role || 'unknown'
         const ownerIdentity = renderCollaboratorIdentity(draft.createdByUserId, { fallbackLabel: 'unknown owner' })
@@ -2089,8 +2132,10 @@ async function renderForms() {
         state.formsUi.shareFeedbackByDraftId[draftId] = canManageDraftCollaborators(draft)
           ? 'Success: membership loaded. Next: search users, then add/remove collaborators.'
           : 'Success: membership loaded in view-only mode. Next: refresh membership to monitor changes.'
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = ''
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalizeApiError(error, 'load draft collaborators')} Next: refresh membership and retry.`
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = 'refresh-first'
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -2116,8 +2161,10 @@ async function renderForms() {
         state.formsUi.collaboratorsByDraftId[draftId] = draftShareCollaboratorsFromResponse(collaborators)
         markDraftMembershipRefreshedAt(draftId)
         state.formsUi.shareFeedbackByDraftId[draftId] = `Success: membership refreshed (${state.formsUi.collaboratorsByDraftId[draftId].length} collaborator(s)). Next: retry with latest revision.`
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = ''
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalizeApiError(error, 'refresh draft collaborators')} Next: retry refresh membership.`
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = 'retry-latest'
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -2151,8 +2198,10 @@ async function renderForms() {
         state.formsUi.shareFeedbackByDraftId[draftId] = visibleCandidateCount
           ? `Success: ${visibleCandidateCount} user option(s) found. Next: select one and add collaborator.`
           : 'Error: no matching firm users available to add. Next: retry with a broader search.'
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = visibleCandidateCount ? '' : 'retry-latest'
       } catch (error) {
         state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalizeApiError(error, 'search firm users')} Next: retry with latest revision.`
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = 'retry-latest'
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
@@ -2176,13 +2225,17 @@ async function renderForms() {
       const draft = drafts.find((entry) => entry.id === draftId)
       if (!canManageDraftCollaborators(draft)) {
         state.formsUi.shareFeedbackByDraftId[draftId] = draftCollaboratorDeniedMessage(draft)
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = 'retry-latest'
         await renderForms()
         return
       }
       const userId = String(new FormData(form).get('userId') || '').trim()
       state.formsUi.selectedUserIdByDraftId[draftId] = userId
+      const selectFocusSelector = `form[data-add-draft-collaborator="${draftId}"] select[name="userId"]`
+      state.formsUi.lastShareFocusByDraftId[draftId] = selectFocusSelector
       if (!userId) {
         state.formsUi.shareFeedbackByDraftId[draftId] = 'Error: select a collaborator from lookup results. Next: search users, then retry add.'
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = 'retry-latest'
         await renderForms()
         return
       }
@@ -2201,6 +2254,7 @@ async function renderForms() {
       }
       state.formsUi.userLookupByDraftId[draftId] = previousLookup.filter((candidate) => candidate.id !== userId)
       state.formsUi.shareFeedbackByDraftId[draftId] = `Working: granting draft access to ${collaboratorIdentityLabel(userId)}…`
+      state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = ''
       await renderForms()
       try {
         await request(routes.formDraftCollaborators(draftId), {
@@ -2215,20 +2269,24 @@ async function renderForms() {
         )
         state.formsUi.selectedUserIdByDraftId[draftId] = ''
         state.formsUi.shareFeedbackByDraftId[draftId] = `Success: ${collaboratorIdentityLabel(userId)} added. Next: refresh membership if other sessions are active.`
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = ''
+        state.formsUi.lastShareFocusByDraftId[draftId] = selectFocusSelector
         reportActionSuccess('Forms', `Collaborator ${userId} added to draft ${draftId}.`)
       } catch (error) {
         state.formsUi.collaboratorsByDraftId[draftId] = previousCollaborators
         state.formsUi.userLookupByDraftId[draftId] = previousLookup
-        const normalized = normalizeDraftShareError(error, 'add a draft collaborator')
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalized} Next: ${normalized.toLowerCase().includes('refresh membership first') ? 'refresh membership first.' : 'retry with latest revision.'}`
-        if (normalized.toLowerCase().includes('refresh membership first')) {
-          state.formsUi.lastShareFocusByDraftId[draftId] = `[data-refresh-draft-collaborators="${draftId}"]`
-        }
+        const normalized = draftShareErrorOutcome(error, 'add a draft collaborator')
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalized.message} Next: ${draftShareRecoveryInstruction(normalized.recovery)}`
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = normalized.recovery
+        state.formsUi.lastShareFocusByDraftId[draftId] =
+          normalized.recovery === 'refresh-first'
+            ? `[data-refresh-draft-collaborators="${draftId}"]`
+            : selectFocusSelector
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
       }
-      queueViewFocus(state.formsUi.lastShareFocusByDraftId[draftId] || `form[data-add-draft-collaborator="${draftId}"] select[name="userId"]`)
+      queueViewFocus(state.formsUi.lastShareFocusByDraftId[draftId] || selectFocusSelector)
       await renderForms()
     })
   })
@@ -2242,9 +2300,13 @@ async function renderForms() {
     button.addEventListener('click', async () => {
       const draftId = button.dataset.removeDraftCollaborator
       const userId = button.dataset.collaboratorUserId
+      const removeFocusSelector = `[data-remove-draft-collaborator="${draftId}"][data-collaborator-user-id="${userId}"]`
+      const refreshFocusSelector = `[data-refresh-draft-collaborators="${draftId}"]`
+      state.formsUi.lastShareFocusByDraftId[draftId] = removeFocusSelector
       const draft = drafts.find((entry) => entry.id === draftId)
       if (!canManageDraftCollaborators(draft)) {
         state.formsUi.shareFeedbackByDraftId[draftId] = draftCollaboratorDeniedMessage(draft)
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = 'retry-latest'
         await renderForms()
         return
       }
@@ -2264,6 +2326,7 @@ async function renderForms() {
         ]
       }
       state.formsUi.shareFeedbackByDraftId[draftId] = `Working: revoking draft access for ${collaboratorIdentityLabel(userId)}…`
+      state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = ''
       await renderForms()
       try {
         await request(routes.formDraftCollaborator(draftId, userId), { method: 'DELETE' })
@@ -2277,23 +2340,21 @@ async function renderForms() {
           ]
         }
         state.formsUi.shareFeedbackByDraftId[draftId] = `Success: ${collaboratorIdentityLabel(userId)} removed. Next: refresh membership if any race is suspected.`
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = ''
+        state.formsUi.lastShareFocusByDraftId[draftId] = refreshFocusSelector
         reportActionSuccess('Forms', `Collaborator ${userId} removed from draft ${draftId}.`)
       } catch (error) {
         state.formsUi.collaboratorsByDraftId[draftId] = previousCollaborators
         state.formsUi.userLookupByDraftId[draftId] = previousLookup
-        const normalized = normalizeDraftShareError(error, 'remove a draft collaborator')
-        state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalized} Next: ${normalized.toLowerCase().includes('refresh membership first') ? 'refresh membership first.' : 'retry with latest revision.'}`
-        if (normalized.toLowerCase().includes('refresh membership first')) {
-          state.formsUi.lastShareFocusByDraftId[draftId] = `[data-refresh-draft-collaborators="${draftId}"]`
-        }
+        const normalized = draftShareErrorOutcome(error, 'remove a draft collaborator')
+        state.formsUi.shareFeedbackByDraftId[draftId] = `Error: ${normalized.message} Next: ${draftShareRecoveryInstruction(normalized.recovery)}`
+        state.formsUi.shareFeedbackRecoveryByDraftId[draftId] = normalized.recovery
+        state.formsUi.lastShareFocusByDraftId[draftId] = normalized.recovery === 'refresh-first' ? refreshFocusSelector : removeFocusSelector
         reportActionError('Forms', error)
       } finally {
         clearActionPending(actionKey)
       }
-      queueViewFocus(
-        state.formsUi.lastShareFocusByDraftId[draftId] ||
-          `[data-remove-draft-collaborator="${draftId}"][data-collaborator-user-id="${userId}"]`
-      )
+      queueViewFocus(state.formsUi.lastShareFocusByDraftId[draftId] || removeFocusSelector)
       await renderForms()
     })
   })
