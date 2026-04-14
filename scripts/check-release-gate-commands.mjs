@@ -90,6 +90,15 @@ const requiredStrictGateCommands = [
 ]
 
 const requiredEvidenceValidationModes = ['validationMode=local', 'validationMode=ci', 'validationMode=unpacked-artifact']
+const requiredE2EEvidenceFields = [
+  'executionMode',
+  'details.artifacts.playwrightJsonReport.path',
+  'details.artifacts.playwrightJsonReport.valid',
+  'details.artifacts.playwrightJsonReport.suiteCount',
+  'details.artifacts.playwrightEvidenceLinkage.reportPath',
+  'details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath',
+  'details.artifacts.playwrightEvidenceLinkage.provisioningVersion'
+]
 
 const missing = []
 for (const scriptName of requiredScripts) {
@@ -119,6 +128,7 @@ for (const cmd of requiredStrictGateCommands) {
   assertContains(quickRef, cmd, 'docs/deployment-quick-reference.md')
   assertContains(checklist, cmd, 'docs/release-ready-checklist.md')
   assertContains(testMatrix, cmd, 'docs/release-flow-test-matrix.md')
+  assertContains(handoff, cmd, 'docs/release-handoff-template.md')
 }
 
 for (const modeMarker of requiredEvidenceValidationModes) {
@@ -126,6 +136,13 @@ for (const modeMarker of requiredEvidenceValidationModes) {
   assertContains(checklist, modeMarker, 'docs/release-ready-checklist.md')
   assertContains(testMatrix, modeMarker, 'docs/release-flow-test-matrix.md')
   assertContains(handoff, modeMarker, 'docs/release-handoff-template.md')
+}
+
+for (const e2eField of requiredE2EEvidenceFields) {
+  assertContains(quickRef, e2eField, 'docs/deployment-quick-reference.md')
+  assertContains(checklist, e2eField, 'docs/release-ready-checklist.md')
+  assertContains(testMatrix, e2eField, 'docs/release-flow-test-matrix.md')
+  assertContains(handoff, e2eField, 'docs/release-handoff-template.md')
 }
 
 for (const { command, evidence } of releaseGateJobs) {

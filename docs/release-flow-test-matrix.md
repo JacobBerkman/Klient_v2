@@ -83,6 +83,15 @@ Evidence validation mode schema markers (must remain stable in validation output
 - `validationMode=ci`
 - `validationMode=unpacked-artifact`
 
+Required E2E artifact schema markers (must remain synchronized with runbook/checklist/handoff docs):
+- `executionMode`
+- `details.artifacts.playwrightJsonReport.path`
+- `details.artifacts.playwrightJsonReport.valid`
+- `details.artifacts.playwrightJsonReport.suiteCount`
+- `details.artifacts.playwrightEvidenceLinkage.reportPath`
+- `details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath`
+- `details.artifacts.playwrightEvidenceLinkage.provisioningVersion`
+
 ## RC freeze rule
 
 Freeze the RC only when **all** of the following are true:
