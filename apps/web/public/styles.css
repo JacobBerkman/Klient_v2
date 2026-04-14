@@ -577,6 +577,33 @@ textarea {
   border-radius: 10px;
   background: rgba(15, 23, 42, 0.95);
 }
+.mapping-health-header {
+  position: sticky;
+  top: 42px;
+  z-index: 2;
+  padding: 8px;
+  border: 1px solid #334155;
+  border-radius: 10px;
+  background: rgba(15, 23, 42, 0.92);
+}
+
+.mapping-current-row-context {
+  position: sticky;
+  top: 42px;
+  z-index: 2;
+  border: 1px solid #334155;
+  background: rgba(15, 23, 42, 0.96);
+}
+
+.sample-preview-disclosure summary {
+  cursor: pointer;
+}
+
+.sample-preview-disclosure pre {
+  margin-top: 6px;
+  max-height: 160px;
+  overflow: auto;
+}
 
 table {
   width: 100%;

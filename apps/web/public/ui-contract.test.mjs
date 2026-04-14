@@ -208,6 +208,10 @@ test('template versioning and publish preflight controls remain wired in builder
   assert.match(appJs, /Status: \$\{escapeHtml\(readinessStatus\)\}/)
   assert.match(appJs, /Blockers \$\{blockers\.length\}/)
   assert.match(appJs, /Warnings \$\{warnings\.length\}/)
+  assert.match(appJs, /Grouped by row \+ repeater path/)
+  assert.match(appJs, /data-preflight-rowindex="\$\{group\.rowIndex\}"/)
+  assert.match(appJs, /event\.preventDefault\(\)/)
+  assert.match(appJs, /button\.dataset\.focusInspector \|\| 'sourcePath'/)
   assert.match(appJs, /routes\.documentTemplatePublish\(template\.id\)/)
   assert.match(appJs, /routes\.documentTemplateCompare\(template\.id, \{ baseVersion, targetVersion \}\)/)
   assert.match(appJs, /function templateCompareSummaryMarkup\(diff = \{\}\)/)
@@ -226,6 +230,18 @@ test('template mapping sample preview includes repeater and empty-state hints', 
   assert.match(appJs, /Repeater empty \(0 items\)/)
   assert.match(appJs, /Unresolved source/)
   assert.match(appJs, /Repeater \(\$\{value\.length\} items\)/)
+  assert.match(appJs, /sample-preview-disclosure/)
+  assert.match(appJs, /<details class="sample-preview-disclosure">/)
+  assert.match(appJs, /JSON\.stringify\(value, null, 2\)/)
+})
+
+test('mapping health summary and row-context indicators remain visible in mapping workflow', () => {
+  assert.match(appJs, /data-mapping-health-summary/)
+  assert.match(appJs, /Low confidence \$\{mappingHealthCounts\.lowConfidence\}/)
+  assert.match(appJs, /Preflight blockers \$\{mappingHealthCounts\.preflightBlockers\}/)
+  assert.match(appJs, /mapping-current-row-context/)
+  assert.match(appJs, /Current Row Context/)
+  assert.match(appJs, /Keyboard shortcuts: <code>j<\/code>\/<code>k<\/code>/)
 })
 
 

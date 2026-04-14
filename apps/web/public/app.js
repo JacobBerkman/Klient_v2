@@ -2383,21 +2383,60 @@ function formatTemplateSampleValue(value, sourcePath = '') {
   if (!normalizedPath) return '<span class="muted">No source path</span>'
   if (value === undefined) return '<span class="error-badge">Unresolved source</span>'
   if (value === null || value === '') return '<span class="warning-badge">Empty value</span>'
+  const compactJsonPreview = (input) => {
+    const serialized = JSON.stringify(input)
+    if (serialized.length <= 120) return serialized
+    return `${serialized.slice(0, 117)}…`
+  }
+  const expandLabel = (label, input) => `${label} · ${Array.isArray(input) ? `${input.length} item(s)` : `${Object.keys(input || {}).length} key(s)`}`
   if (Array.isArray(value)) {
     if (!value.length) return '<span class="warning-badge">Repeater empty (0 items)</span>'
-    const preview = value
-      .slice(0, 2)
-      .map((entry) => {
-        if (entry == null) return 'null'
-        if (typeof entry === 'object') return JSON.stringify(entry)
-        return String(entry)
-      })
-      .join(' · ')
-    const suffix = value.length > 2 ? ` (+${value.length - 2} more)` : ''
-    return `<span class="badge subtle">Repeater (${value.length} items)</span><div class="muted compact">${escapeHtml(preview + suffix)}</div>`
+    const preview = compactJsonPreview(value.slice(0, 2))
+    return `<details class="sample-preview-disclosure"><summary><span class="badge subtle">Repeater (${value.length} items)</span> <span class="muted compact">Preview ${escapeHtml(preview)}</span></summary><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></details>`
   }
-  if (typeof value === 'object') return `<code>${escapeHtml(JSON.stringify(value))}</code>`
+  if (typeof value === 'object') {
+    const preview = compactJsonPreview(value)
+    return `<details class="sample-preview-disclosure"><summary><span class="badge subtle">${escapeHtml(expandLabel('Object', value))}</span> <span class="muted compact">${escapeHtml(preview)}</span></summary><pre>${escapeHtml(JSON.stringify(value, null, 2))}</pre></details>`
+  }
   return `<span>${escapeHtml(String(value))}</span>`
+}
+
+function toRepeaterDiagnosticPath(issue = {}) {
+  const rawPath = String(
+    issue?.repeaterPath || issue?.meta?.repeaterPath || issue?.sourcePath || issue?.path || issue?.field || issue?.meta?.path || ''
+  ).trim()
+  if (!rawPath) return 'root'
+  const normalized = rawPath.replace(/\[(\d+)\]/g, '.$1')
+  const parts = normalized
+    .split('.')
+    .map((segment) => segment.trim())
+    .filter(Boolean)
+  const repeaterParts = []
+  for (const segment of parts) {
+    if (/^\d+$/.test(segment)) break
+    repeaterParts.push(segment)
+  }
+  return repeaterParts.join('.') || rawPath
+}
+
+function groupDiagnosticsByRepeaterContext(issues = []) {
+  const grouped = new Map()
+  issues.forEach((issue) => {
+    const rowIndex = Number(issue?.rowIndex)
+    const rowKey = Number.isFinite(rowIndex) ? `row-${rowIndex}` : 'row-unknown'
+    const repeaterPath = toRepeaterDiagnosticPath(issue)
+    const key = `${rowKey}::${repeaterPath}`
+    if (!grouped.has(key)) {
+      grouped.set(key, {
+        rowIndex,
+        rowId: String(issue?.rowId || issue?.meta?.rowId || '').trim(),
+        repeaterPath,
+        issues: []
+      })
+    }
+    grouped.get(key).issues.push(issue)
+  })
+  return [...grouped.values()].sort((a, b) => Number(a.rowIndex || 0) - Number(b.rowIndex || 0))
 }
 
 function mappingLocalIssues(mapping, knownPaths) {
@@ -2534,6 +2573,20 @@ function publishReadinessPanelMarkup({ readiness = null, fallbackIssues = [] }) 
       : ''
     return `<li>${cta}<code>${escapeHtml(issue?.issueId || issue?.meta?.issueId || issue?.code || 'issue')}</code> · ${escapeHtml(formatSchemaIssue(issue))}</li>`
   }
+  const groupedBlockers = groupDiagnosticsByRepeaterContext(blockers)
+  const groupedWarnings = groupDiagnosticsByRepeaterContext(warnings)
+  const renderGroup = (group, tone = 'error-badge') => {
+    const rowAnchor = deriveTemplateIssueRowAnchor(group.rowIndex)
+    const focusField =
+      group.issues.find((entry) => String(entry?.inspectorTarget || entry?.meta?.inspectorTarget || '').trim())?.inspectorTarget ||
+      group.issues[0]?.field ||
+      'sourcePath'
+    const issueCountLabel = `${group.issues.length} issue${group.issues.length === 1 ? '' : 's'}`
+    const rowLink = Number.isFinite(group.rowIndex)
+      ? `<a href="${escapeHtml(rowAnchor)}" class="tiny secondary" data-preflight-rowindex="${group.rowIndex}" data-preflight-rowid="${escapeHtml(group.rowId)}" data-focus-inspector="${escapeHtml(focusField)}">Row ${group.rowIndex + 1}</a>`
+      : '<span class="muted">Row n/a</span>'
+    return `<li>${rowLink} · <span class="${tone}">${escapeHtml(group.repeaterPath)}</span> · ${escapeHtml(issueCountLabel)}<ul>${group.issues.map(renderIssue).join('')}</ul></li>`
+  }
   const readinessStatus = blockers.length ? 'Blocked' : warnings.length ? 'Ready with warnings' : 'Ready'
   const readinessTone = blockers.length ? 'error-badge' : warnings.length ? 'warning-badge' : 'badge subtle'
   return `<section class="publish-readiness-panel" aria-labelledby="publish-readiness-heading">
@@ -2544,10 +2597,20 @@ function publishReadinessPanelMarkup({ readiness = null, fallbackIssues = [] }) 
       <div>
         <h5>Blockers (${blockers.length})</h5>
         ${blockers.length ? `<ul>${blockers.map(renderIssue).join('')}</ul>` : '<p class="muted">No blockers found.</p>'}
+        ${
+          groupedBlockers.length
+            ? `<h6>Grouped by row + repeater path</h6><ul>${groupedBlockers.map((group) => renderGroup(group, 'error-badge')).join('')}</ul>`
+            : ''
+        }
       </div>
       <div>
         <h5>Warnings (${warnings.length})</h5>
         ${warnings.length ? `<ul>${warnings.map(renderIssue).join('')}</ul>` : '<p class="muted">No warnings.</p>'}
+        ${
+          groupedWarnings.length
+            ? `<h6>Grouped by row + repeater path</h6><ul>${groupedWarnings.map((group) => renderGroup(group, 'warning-badge')).join('')}</ul>`
+            : ''
+        }
       </div>
     </div>
     <h5>Quick links</h5>
@@ -2924,6 +2987,16 @@ async function renderTemplates() {
     })
     if (computed) suggestionByIndex.set(index, computed)
   })
+  const mappingHealthCounts = {
+    unmapped: draftMappings.filter((mapping) => !String(mapping.sourcePath || '').trim()).length,
+    localErrors: [...mappingIssuesByIndex.values()].filter((issues) => issues.length > 0).length,
+    preflightBlockers: preflightIssueRows.size,
+    previewWarnings: draftMappings.filter((_, index) => previewWarningRows.has(index) || previewIssueRows.has(index)).length,
+    lowConfidence: draftMappings.filter((mapping) => {
+      const confidence = mappingConfidenceBadge(mapping, knownPathIndex)
+      return confidence.tone === 'low' && String(mapping.sourcePath || '').trim()
+    }).length
+  }
   const mappingFilterMatches = (mapping, index) => {
     const issues = mappingIssuesByIndex.get(index) || []
     const hasPreviewWarnings = previewWarningRows.has(index) || previewIssueRows.has(index)
@@ -3054,6 +3127,13 @@ async function renderTemplates() {
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mapping Health</h3>
+        <div class="row wrap gap-sm mapping-health-header" data-mapping-health-summary>
+          <span class="badge">Unmapped ${mappingHealthCounts.unmapped}</span>
+          <span class="badge ${mappingHealthCounts.localErrors ? 'error-badge' : 'subtle'}">Local errors ${mappingHealthCounts.localErrors}</span>
+          <span class="badge ${mappingHealthCounts.preflightBlockers ? 'error-badge' : 'subtle'}">Preflight blockers ${mappingHealthCounts.preflightBlockers}</span>
+          <span class="badge ${mappingHealthCounts.previewWarnings ? 'warning-badge' : 'subtle'}">Preview warnings ${mappingHealthCounts.previewWarnings}</span>
+          <span class="badge ${mappingHealthCounts.lowConfidence ? 'warning-badge' : 'subtle'}">Low confidence ${mappingHealthCounts.lowConfidence}</span>
+        </div>
         <div class="row wrap gap-sm">
           <span class="badge">Mapped ${draftMappings.filter((entry) => entry.enabled !== false && String(entry.pdfField || '').trim()).length}</span>
           <span class="badge subtle">Unmapped ${Math.max(0, extractedFields.length - mappedExtractedCount)}</span>
@@ -3091,6 +3171,7 @@ async function renderTemplates() {
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Mappings</h3>
+        <p class="muted compact">Keyboard shortcuts: <code>j</code>/<code>k</code> next/previous row, <code>g</code> first row, <code>Shift+G</code> last row, <code>i</code> focus inspector Source Path.</p>
         <p class="muted compact">Next actions: <strong>Save Now</strong> after edits, use <strong>Filter unresolved</strong> to isolate blockers, then switch to <strong>4. Preview</strong> when validation reads Ready.</p>
         <div class="row gap-sm wrap sticky-remediation-actions">
           <button id="add-mapping-row" class="tiny">Add Mapping</button>
@@ -3185,6 +3266,15 @@ async function renderTemplates() {
             })
             .join('') || '<tr><td colspan="12" class="muted">No mappings match this filter.</td></tr>'}
         </tbody></table>
+      </section>
+      <section class="item mapping-current-row-context" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
+        <h3>Current Row Context</h3>
+        <div class="row wrap gap-sm">
+          <span class="badge">Row ${safeSelectedRowIndex + 1}</span>
+          <span class="badge subtle">PDF field ${escapeHtml(selectedMapping.pdfField || 'n/a')}</span>
+          <span class="badge subtle">Source path ${escapeHtml(selectedMapping.sourcePath || 'unmapped')}</span>
+          <span class="badge subtle">Row id ${escapeHtml(selectedMapping.rowId || previewRowsByIndex.get(safeSelectedRowIndex)?.rowId || 'n/a')}</span>
+        </div>
       </section>
       <section class="item" data-template-wizard-section="mapping" ${activeWizardStep === 'mapping' ? '' : 'hidden'}>
         <h3>Field Inspector</h3>
@@ -3521,6 +3611,37 @@ async function renderTemplates() {
         await selectTemplateRow(filteredRowIndices[filteredRowIndices.length - 1], { highlightRow: true })
       }
     })
+  })
+  document.querySelector('[data-template-wizard-section="mapping"] table')?.addEventListener('keydown', async (event) => {
+    if (!filteredRowIndices.length) return
+    const targetTag = String(event.target?.tagName || '').toLowerCase()
+    if (['input', 'textarea', 'select', 'button'].includes(targetTag)) return
+    if (event.key === 'j') {
+      event.preventDefault()
+      const nextIndex = Math.min(filteredRowIndices.length - 1, filteredRowIndices.indexOf(safeSelectedRowIndex) + 1)
+      await selectTemplateRow(filteredRowIndices[Math.max(0, nextIndex)], { highlightRow: true })
+      return
+    }
+    if (event.key === 'k') {
+      event.preventDefault()
+      const previousIndex = Math.max(0, filteredRowIndices.indexOf(safeSelectedRowIndex) - 1)
+      await selectTemplateRow(filteredRowIndices[previousIndex], { highlightRow: true })
+      return
+    }
+    if (event.key === 'g' && !event.shiftKey) {
+      event.preventDefault()
+      await selectTemplateRow(filteredRowIndices[0], { highlightRow: true })
+      return
+    }
+    if (event.key === 'G' || (event.key === 'g' && event.shiftKey)) {
+      event.preventDefault()
+      await selectTemplateRow(filteredRowIndices[filteredRowIndices.length - 1], { highlightRow: true })
+      return
+    }
+    if (event.key === 'i') {
+      event.preventDefault()
+      await selectTemplateRow(safeSelectedRowIndex, { focusInspector: true, focusField: 'sourcePath', highlightRow: true })
+    }
   })
 
   document.querySelectorAll('[data-mapping-filter]').forEach((button) => {
@@ -3866,7 +3987,8 @@ async function renderTemplates() {
     })
   })
   document.querySelectorAll('[data-preflight-rowindex]').forEach((button) => {
-    button.addEventListener('click', async () => {
+    button.addEventListener('click', async (event) => {
+      event.preventDefault()
       const rowIndex = Number(button.dataset.preflightRowindex)
       const rowId = String(button.dataset.preflightRowid || '').trim()
       await selectTemplateRowFromIssue(rowIndex, rowId, {
@@ -3889,6 +4011,17 @@ async function renderTemplates() {
   })
   document.querySelectorAll('[data-remediate-rowindex]').forEach((button) => {
     button.addEventListener('click', async () => {
+      const rowIndex = Number(button.dataset.remediateRowindex)
+      const rowId = String(button.dataset.remediateRowid || '').trim()
+      await selectTemplateRowFromIssue(rowIndex, rowId, {
+        focusInspector: true,
+        focusField: button.dataset.focusInspector || 'sourcePath',
+        highlightRow: true
+      })
+    })
+    button.addEventListener('keydown', async (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return
+      event.preventDefault()
       const rowIndex = Number(button.dataset.remediateRowindex)
       const rowId = String(button.dataset.remediateRowid || '').trim()
       await selectTemplateRowFromIssue(rowIndex, rowId, {
