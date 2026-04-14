@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { createEvidenceRecorder } from './release-evidence.mjs'
 import { createTestContext } from './test-harness.mjs'
+import { provisionChromiumForStrictMode, resolvePlaywrightLinkageEnv } from './playwright-provisioning.mjs'
 
 const uiContractSuites = ['apps/web/public/ui-contract.test.mjs']
 const browserSuitePattern = 'tests/e2e'
@@ -258,7 +259,8 @@ export async function main(deps = {}) {
     evidenceRecorder = evidence,
     removeFile = rm,
     validateReport = validatePlaywrightJsonReport,
-    writeFallbackReport = writeFallbackPlaywrightReport
+    writeFallbackReport = writeFallbackPlaywrightReport,
+    provisionChromium = provisionChromiumForStrictMode
   } = deps
 
   let context
@@ -286,13 +288,24 @@ export async function main(deps = {}) {
       PORT: String(context.port),
       KLIENT_BASE_URL: baseUrl,
       E2E_BASE_URL: baseUrl,
-      PLAYWRIGHT_JSON_REPORT: playwrightReportPath,
-      RELEASE_E2E_PLAYWRIGHT_REPORT: playwrightReportPath,
       RELEASE_E2E_STRICT_MODE: strictMode ? '1' : '0',
       TEST_RESET_BEHAVIOR: process.env.TEST_RESET_BEHAVIOR || 'isolated'
     }
+    const linkageEnv = resolvePlaywrightLinkageEnv(
+      {
+        ...baseEnv,
+        PLAYWRIGHT_JSON_REPORT: playwrightReportPath,
+        RELEASE_E2E_PLAYWRIGHT_REPORT: playwrightReportPath
+      },
+      { evidenceDir: releaseEvidenceDir }
+    )
+    const runtimeEnv = { ...baseEnv, ...linkageEnv }
+    process.env.RELEASE_E2E_PROVISIONING_ARTIFACT = runtimeEnv.RELEASE_E2E_PROVISIONING_ARTIFACT
+    process.env.RELEASE_E2E_PROVISIONING_VERSION = runtimeEnv.RELEASE_E2E_PROVISIONING_VERSION
+    process.env.RELEASE_E2E_PLAYWRIGHT_REPORT = runtimeEnv.RELEASE_E2E_PLAYWRIGHT_REPORT
+    process.env.PLAYWRIGHT_JSON_REPORT = runtimeEnv.PLAYWRIGHT_JSON_REPORT
 
-    const uiContractResult = await run(process.execPath, ['--test', ...uiContractSuites], baseEnv, 4 * 60_000)
+    const uiContractResult = await run(process.execPath, ['--test', ...uiContractSuites], runtimeEnv, 4 * 60_000)
     if (uiContractResult.signal || uiContractResult.code !== 0) {
       const error = new Error(
         uiContractResult.signal
@@ -308,6 +321,17 @@ export async function main(deps = {}) {
         downgradeWarnings: [],
         uiContract: { status: 'failed', exitCode: uiContractResult.code }
       })
+    }
+
+    if (strictMode) {
+      const provisioning = await provisionChromium({
+        env: runtimeEnv,
+        strictMode: true,
+        evidenceDir: releaseEvidenceDir
+      })
+      Object.assign(runtimeEnv, provisioning.env)
+      process.env.RELEASE_E2E_PROVISIONING_ARTIFACT = provisioning.env.RELEASE_E2E_PROVISIONING_ARTIFACT
+      process.env.RELEASE_E2E_PROVISIONING_VERSION = provisioning.env.RELEASE_E2E_PROVISIONING_VERSION
     }
 
     const browserInstalled = await hasBrowser()
@@ -377,7 +401,7 @@ export async function main(deps = {}) {
     }
 
     const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
-    const playwrightResult = await run(command, ['playwright', 'test', browserSuitePattern], baseEnv)
+    const playwrightResult = await run(command, ['playwright', 'test', browserSuitePattern], runtimeEnv)
     const browserExitCode = playwrightResult.code ?? 1
 
     if (playwrightResult.signal || playwrightResult.code !== 0) {

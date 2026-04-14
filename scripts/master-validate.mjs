@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { runCommandProcess } from './runner-lifecycle.mjs'
+import { resolvePlaywrightLinkageEnv } from './playwright-provisioning.mjs'
 
 const defaultEvidenceDir = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_DIR || 'artifacts/release-evidence')
 
@@ -151,8 +152,16 @@ function envForStep(step) {
     env.RELEASE_EVIDENCE_E2E_FILE = step.evidenceFile
     env.RELEASE_E2E_STRICT_MODE = strictMode.strictMode ? '1' : '0'
     env.RELEASE_E2E_ALLOW_FALLBACK = strictMode.allowFallback ? '1' : '0'
-    env.PLAYWRIGHT_JSON_REPORT = resolve(defaultEvidenceDir, 'playwright-report.json')
-    env.RELEASE_E2E_PLAYWRIGHT_REPORT = env.PLAYWRIGHT_JSON_REPORT
+    Object.assign(
+      env,
+      resolvePlaywrightLinkageEnv(
+        {
+          ...env,
+          PLAYWRIGHT_JSON_REPORT: resolve(defaultEvidenceDir, 'playwright-report.json')
+        },
+        { evidenceDir: defaultEvidenceDir }
+      )
+    )
   }
   if (step.evidenceFile && step.name === 'Security checks') env.RELEASE_EVIDENCE_SECURITY_FILE = step.evidenceFile
   return env
