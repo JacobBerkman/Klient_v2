@@ -5586,6 +5586,20 @@ async function renderCustomFieldsAdmin() {
       savedAt: status === 'saved' ? new Date().toISOString() : state.customFieldSchema.ui.saveStatus?.savedAt || ''
     }
   }
+  const formatBulkConfirmFailureContext = (context = {}) => {
+    const operationType = String(context?.type || '').trim().toLowerCase()
+    const fieldKey = String(context?.key || '').trim()
+    const operationLabel =
+      operationType === 'add'
+        ? 'add'
+        : operationType === 'update'
+          ? 'update'
+          : operationType === 'delete'
+            ? 'delete'
+            : 'unknown operation'
+    const keyLabel = fieldKey || 'unknown key'
+    return `${operationLabel} (${keyLabel})`
+  }
 
   const applyPersistedAdminUiState = () => {
     const currentCreateForm = document.querySelector('#custom-field-create-form')
@@ -5936,6 +5950,7 @@ async function renderCustomFieldsAdmin() {
     clearFormFeedback(form)
     const preview = state.customFieldSchema.bulkPreview
     const previousSchema = structuredClone(state.customFieldSchema)
+    let failingOperationContext = { type: '', key: '' }
     state.customFieldSchema.ui.bulk = state.customFieldSchema.ui.bulk || {}
     state.customFieldSchema.ui.bulk.status = 'pending-confirm'
     state.customFieldSchema.ui.bulk.confirmStatus = 'pending'
@@ -5945,15 +5960,18 @@ async function renderCustomFieldsAdmin() {
     await renderCustomFieldsAdmin()
     try {
       for (const field of preview.diff.added || []) {
+        failingOperationContext = { type: 'add', key: field?.key || '' }
         await request(routes.profileCustomFieldSchema(), { method: 'POST', body: JSON.stringify(field) })
       }
       for (const change of preview.diff.updated || []) {
+        failingOperationContext = { type: 'update', key: change?.after?.key || change?.before?.key || '' }
         await request(routes.profileCustomFieldSchemaField(change.after.key), {
           method: 'PATCH',
           body: JSON.stringify(change.after)
         })
       }
       for (const field of preview.diff.removed || []) {
+        failingOperationContext = { type: 'delete', key: field?.key || '' }
         await request(routes.profileCustomFieldSchemaField(field.key), { method: 'DELETE' })
       }
     } catch (error) {
@@ -5962,17 +5980,18 @@ async function renderCustomFieldsAdmin() {
       state.customFieldSchema.ui.bulk = state.customFieldSchema.ui.bulk || {}
       state.customFieldSchema.ui.bulk.status = 'error'
       state.customFieldSchema.ui.bulk.confirmStatus = 'error'
-      state.customFieldSchema.ui.bulk.confirmMessage = `Error: ${normalizeApiError(error, 'apply bulk schema changes')}`
+      const failureContextLabel = formatBulkConfirmFailureContext(failingOperationContext)
+      state.customFieldSchema.ui.bulk.confirmMessage = `Error: ${normalizeApiError(error, `apply bulk schema changes (${failureContextLabel})`)}`
       const bulkErrorMessage = normalizeApiError(error, 'apply bulk schema changes')
       setSaveStatusState({
         state: 'error',
-        message: `Bulk save failed: ${bulkErrorMessage}. Retry to keep preview edits.`,
+        message: `Bulk save failed during ${failureContextLabel}: ${bulkErrorMessage}. Local UI state was restored for retry, but server-side partial writes may still exist.`,
         retryTarget: 'bulk-confirm',
         conflictHint: isConflictError(error) ? normalizeConflictMessage(error) : ''
       })
       state.customFieldSchema.ui.optimisticBanner = {
         status: 'error',
-        message: `Bulk save failed and preview changes were rolled back: ${normalizeApiError(error, 'apply bulk schema changes')}`
+        message: `Bulk save failed during ${failureContextLabel}. Local UI preview and edit state were restored; reload to reconcile any partial server-side writes.`
       }
       setFormFeedback(form, state.customFieldSchema.ui.bulk.confirmMessage)
       return
