@@ -927,6 +927,19 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
 
 export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs = 30_000, processor, onLeased } = {}) {
   const startedAt = Date.now()
+  const stalledJobs = listExportQueueJobs().filter((job) => {
+    if (job.status !== 'running' || !job.leaseExpiresAt) return false
+    return Number(new Date(job.leaseExpiresAt)) <= startedAt
+  })
+  let timedOutRecovered = 0
+  for (const stalledJob of stalledJobs) {
+    markExportJobFailed(stalledJob.id, `Export lease timed out for job ${stalledJob.id}`, {
+      maxAttempts: stalledJob.maxAttempts || 3,
+      workerId,
+      failureClass: 'transient'
+    })
+    timedOutRecovered += 1
+  }
   const leased = leaseExportJobs({ workerId, limit, leaseMs })
   onLeased?.(leased)
   let processed = 0
@@ -966,6 +979,7 @@ export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs
     processed,
     failed,
     skipped,
+    timedOutRecovered,
     durationMs: Date.now() - startedAt,
     timestamp: nowIso()
   }

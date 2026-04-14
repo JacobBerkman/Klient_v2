@@ -189,6 +189,7 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
   function withArtifactMetadata(job) {
     const artifact = job?.output?.artifact || null
     const statusSemantics = deriveStatusSemantics(job?.status)
+    const artifactReady = Boolean(job?.status === 'completed' && artifact && job?.output?.object?.key)
     return {
       ...job,
       ...statusSemantics,
@@ -200,7 +201,8 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
             key: job?.output?.object?.key || null
           }
         : null,
-      artifactAvailable: Boolean(job?.status === 'completed' && artifact)
+      artifactAvailable: artifactReady,
+      artifactReady
     }
   }
 

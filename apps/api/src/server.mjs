@@ -686,9 +686,12 @@ export function createHttpServer({ modules }) {
         const queue = readExportWorkerStatus()
         const checks = {
           databaseReady: Boolean(database?.ok),
+          dbReadiness: Boolean(database?.ok),
           storageReady: storageHealth?.ok === true,
+          storageReadiness: storageHealth?.ok === true,
           exportQueueReachable: Boolean(queue && typeof queue === 'object'),
           exportQueueNotStalled: Number(queue?.stalled || 0) === 0,
+          exportWorkerReady: Boolean(queue && typeof queue === 'object') && Number(queue?.stalled || 0) === 0,
           startupConfigValid: runtime.isProduction ? Boolean(startupDiagnostics?.ok) : true
         }
         const ready = Object.values(checks).every(Boolean)
@@ -732,7 +735,8 @@ export function createHttpServer({ modules }) {
               health: '/health',
               ready: '/ready',
               exportsQueue: '/api/ops/exports/queue',
-              telemetry: '/api/ops/diagnostics'
+              telemetry: '/api/ops/diagnostics',
+              exportRuntime: '/api/ops/export-runtime'
             }
           },
           { 'X-Request-Id': requestId }
@@ -796,6 +800,38 @@ export function createHttpServer({ modules }) {
         finalizeLog(200, { opsAuth: user?.authAudit || opsAuditMetadata })
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      if (pathname === '/api/ops/export-runtime' && req.method === 'GET') {
+        const user = authorizeOpsRequest() || requireUser()
+        if (user?.authMode !== 'ops-token') modules.policy.requireGuard(user, 'canProcessExports')
+        const queueHealth = modules.exports.getQueueHealth(user)
+        const exports = modules.exports.list(user, { sort: 'updatedAt_desc' })
+        const recentFailures = exports
+          .filter((entry) => ['failed', 'dead-letter', 'retrying'].includes(String(entry.status || '').toLowerCase()))
+          .slice(0, 10)
+          .map((entry) => ({
+            id: entry.id,
+            status: entry.status,
+            attempts: entry.attempts || 0,
+            failureReason: entry.failureReason || entry.errorMessage || null,
+            updatedAt: entry.updatedAt || null
+          }))
+        finalizeLog(200, { opsAuth: user?.authAudit || opsAuditMetadata })
+        return replyJson(
+          200,
+          {
+            generatedAt: new Date().toISOString(),
+            queueStatus: queueHealth?.queue || readExportWorkerStatus(),
+            workerStatus: {
+              activeLeases: Number(queueHealth?.queue?.activeLeasesCount || 0),
+              stalled: Number(queueHealth?.queue?.stalled || 0),
+              retrying: Number(queueHealth?.queue?.retrying || 0),
+              readyNow: Number(queueHealth?.queue?.readyNow || 0)
+            },
+            recentFailures
+          },
+          { 'X-Request-Id': requestId }
+        )
+      }
       if (pathname === '/api/ops/exports/retry-failed' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canProcessExports')
@@ -841,6 +877,7 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/register' && req.method === 'POST') {
         authorize('canRegister', { allowAnonymous: true })
         const result = modules.auth.register(await parseBody(req))
+        log('info', 'auth.register.succeeded', { requestId, userId: result?.user?.id, firmId: result?.user?.firmId })
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(201)
         return replyJson(
@@ -857,6 +894,7 @@ export function createHttpServer({ modules }) {
         authorize('canLogin', { allowAnonymous: true })
         const result = modules.auth.login(await parseBody(req))
         if (result?.mfaRequired) {
+          log('info', 'auth.login.challenge_required', { requestId, userId: result?.user?.id || null })
           finalizeLog(200, { mfaRequired: true })
           return replyJson(200, { ...result, csrfToken: null, csrfExpiresAt: null }, { 'X-Request-Id': requestId })
         }
@@ -866,6 +904,7 @@ export function createHttpServer({ modules }) {
           deleteCsrfTokensBySession(priorToken)
           securityDiagnostics.session.rotatedTotal += 1
         }
+        log('info', 'auth.login.succeeded', { requestId, userId: result?.user?.id, firmId: result?.user?.firmId })
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(200)
         return replyJson(
@@ -972,8 +1011,14 @@ export function createHttpServer({ modules }) {
       }
       if (pathname === '/api/logout' && req.method === 'POST') {
         const token = resolveSessionToken(req)
+        const sessionUser = token ? modules.auth.requireUser(token) : null
         const result = modules.auth.logout(token)
         deleteCsrfTokensBySession(token)
+        log('info', 'auth.logout.succeeded', {
+          requestId,
+          userId: sessionUser?.id || null,
+          firmId: sessionUser?.firmId || null
+        })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId, 'Set-Cookie': clearCsrfCookie(req) })
       }
@@ -1001,6 +1046,7 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteProfiles')
         const result = modules.profiles.createProfile(user, await parseBody(req))
+        log('info', 'mutation.profile.created', { requestId, userId: user.id, firmId: user.firmId, profileId: result?.id })
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -1076,6 +1122,13 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canMovePipeline')
         const result = modules.pipeline.moveProfileStage(user, id, body.stage, body.beforeProfileId || null)
+        log('info', 'mutation.pipeline.stage_moved', {
+          requestId,
+          userId: user.id,
+          firmId: user.firmId,
+          profileId: id,
+          stage: body.stage
+        })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -1124,6 +1177,7 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteProfiles')
         const result = await modules.profiles.updateProfile(user, id, await parseBody(req))
+        log('info', 'mutation.profile.updated', { requestId, userId: user.id, firmId: user.firmId, profileId: id })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -1145,6 +1199,12 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteHouseholds')
         const result = modules.households.createHousehold(user, await parseBody(req))
+        log('info', 'mutation.household.created', {
+          requestId,
+          userId: user.id,
+          firmId: user.firmId,
+          householdId: result?.id
+        })
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -1153,6 +1213,7 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteHouseholds')
         const result = modules.households.addHouseholdMember(user, id, await parseBody(req))
+        log('info', 'mutation.household.member_added', { requestId, userId: user.id, firmId: user.firmId, householdId: id })
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -1462,6 +1523,14 @@ export function createHttpServer({ modules }) {
           ...body,
           idempotencyKey: body.idempotencyKey || (typeof idempotencyKey === 'string' ? idempotencyKey : null)
         })
+        log('info', 'export.lifecycle.created', {
+          requestId,
+          userId: user.id,
+          firmId: user.firmId,
+          exportId: result?.id,
+          templateId: body?.templateId,
+          clientId: body?.clientId
+        })
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -1485,6 +1554,7 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteExports')
         const result = modules.exports.retry(user, id)
+        log('info', 'export.lifecycle.retry_requested', { requestId, userId: user.id, firmId: user.firmId, exportId: id })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -1493,6 +1563,13 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadExports')
         const artifact = modules.exports.getDownload(user, id)
+        log('info', 'export.lifecycle.downloaded', {
+          requestId,
+          userId: user.id,
+          firmId: user.firmId,
+          exportId: id,
+          contentType: artifact?.contentType || null
+        })
         const fileName = sanitizeDownloadFilename(artifact.fileName || `${id}.bin`)
         res.writeHead(200, {
           ...baseHeaders(),

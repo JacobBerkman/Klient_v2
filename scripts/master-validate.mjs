@@ -36,6 +36,7 @@ const baseGateStepDefinitions = {
     args: ['run', 'test:integration'],
     evidenceFile: resolve(defaultEvidenceDir, 'integration-summary.json')
   },
+  'Canonical release flow': { command: 'npm', args: ['run', 'test:release-flow'], evidenceFile: null },
   'Aggregate handoff regression': { command: 'npm', args: ['run', 'test:integration:handoff'], evidenceFile: null },
   'Migration order checks': {
     command: 'npm',
@@ -55,6 +56,7 @@ const BASE_GATE_ORDER = Object.freeze([
   'Negative-path RBAC checks',
   'Negative-path tenancy checks',
   'Integration suites',
+  'Canonical release flow',
   'Aggregate handoff regression',
   'Migration order checks',
   'Smoke test',
