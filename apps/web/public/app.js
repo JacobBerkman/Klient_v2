@@ -589,44 +589,71 @@ function customFieldControlMarkup(
 
 function customFieldCreateFormActionsMarkup() {
   return `<div class="row gap-sm wrap top-gap">
-    <button type="button" class="secondary tiny" data-retry-custom-field-schema>Retry schema load</button>
-    <button type="button" class="secondary tiny" data-open-custom-fields-view>Manage field definitions</button>
+    <button type="button" class="secondary tiny" data-retry-custom-field-schema aria-label="Retry loading firm custom field schema">Retry schema load</button>
+    <button type="button" class="secondary tiny" data-open-custom-fields-view aria-label="Open custom field schema management view">Manage field definitions</button>
   </div>`
+}
+
+function customFieldSchemaPanelMarkup({ tone = 'status', summary = '', detail = '', includeManageHint = true } = {}) {
+  const role = tone === 'error' ? 'alert' : 'status'
+  const bannerClass = tone === 'error' ? 'error-banner' : 'muted compact'
+  return `<h4>Firm Custom Fields</h4>
+    <p id="custom-field-schema-status" class="${bannerClass}" role="${role}" aria-live="${tone === 'error' ? 'assertive' : 'polite'}" aria-atomic="true" tabindex="-1">${escapeHtml(summary)}</p>
+    ${detail ? `<p class="muted compact">${escapeHtml(detail)}</p>` : ''}
+    ${includeManageHint ? customFieldCreateFormActionsMarkup() : ''}`
 }
 
 function customFieldCreateFormMarkup() {
   if (!profileCustomFieldsEl) return
   const fields = state.customFieldSchema.fields || []
   if (state.customFieldSchema.loading) {
-    profileCustomFieldsEl.innerHTML =
-      '<h4>Firm Custom Fields</h4><p class="muted compact" role="status" aria-live="polite">Loading custom field schema…</p>'
+    profileCustomFieldsEl.innerHTML = customFieldSchemaPanelMarkup({
+      summary: 'Loading firm custom fields. You can continue with base profile details while this loads.',
+      detail: 'If loading stalls, retry the schema request or open Manage field definitions.',
+      includeManageHint: true
+    })
+    queueViewFocus('#custom-field-schema-status')
+    focusWithinView('#custom-field-schema-status')
     return
   }
   if (state.customFieldSchema.lastError) {
-    profileCustomFieldsEl.innerHTML = `<h4>Firm Custom Fields</h4><p class="error-banner" role="alert">Could not load schema: ${escapeHtml(
-      state.customFieldSchema.lastError
-    )}</p>
-    <p class="muted compact">Profile creation can continue without custom fields, or retry now.</p>
-    ${customFieldCreateFormActionsMarkup()}`
+    profileCustomFieldsEl.innerHTML = customFieldSchemaPanelMarkup({
+      tone: 'error',
+      summary: `Custom field schema is unavailable: ${state.customFieldSchema.lastError}`,
+      detail: 'You can continue profile creation without custom fields, retry loading, or open Manage field definitions.'
+    })
     profileCustomFieldsEl.querySelector('[data-retry-custom-field-schema]')?.addEventListener('click', async () => {
       state.customFieldSchema.fetched = false
+      profileCustomFieldsEl.innerHTML = customFieldSchemaPanelMarkup({
+        summary: 'Retrying custom field schema load…',
+        detail: 'Please wait while we reconnect to schema services.'
+      })
+      queueViewFocus('#custom-field-schema-status')
+      focusWithinView('#custom-field-schema-status')
       await ensureCustomFieldSchema(true)
       customFieldCreateFormMarkup()
     })
     profileCustomFieldsEl.querySelector('[data-open-custom-fields-view]')?.addEventListener('click', () => {
       state.view = 'custom-fields'
+      queueViewFocus('#custom-fields-heading')
       renderCurrentView()
     })
+    queueViewFocus('#custom-field-schema-status')
+    focusWithinView('#custom-field-schema-status')
     return
   }
   if (!fields.length) {
-    profileCustomFieldsEl.innerHTML =
-      '<h4>Firm Custom Fields</h4><p class="muted compact" role="status" aria-live="polite">No custom fields are configured for this firm.</p><p class="muted compact">Create fields to capture operator-specific values in profile and draft workflows.</p>' +
-      customFieldCreateFormActionsMarkup()
+    profileCustomFieldsEl.innerHTML = customFieldSchemaPanelMarkup({
+      summary: 'No firm custom fields are configured yet.',
+      detail: 'Create fields to capture operator-specific values in profile and draft workflows.'
+    })
     profileCustomFieldsEl.querySelector('[data-open-custom-fields-view]')?.addEventListener('click', () => {
       state.view = 'custom-fields'
+      queueViewFocus('#custom-fields-heading')
       renderCurrentView()
     })
+    queueViewFocus('#custom-field-schema-status')
+    focusWithinView('#custom-field-schema-status')
     return
   }
   const grouped = groupedCustomFields(fields)
@@ -4841,7 +4868,8 @@ function defaultCustomFieldAdminUiState() {
     create: { status: '', message: '', fieldErrors: {} },
     updatesByKey: {},
     deleteByKey: {},
-    bulk: { status: '', message: '', rowErrorsByKey: {}, draftRows: [] }
+    bulk: { status: '', message: '', rowErrorsByKey: {}, draftRows: [] },
+    optimisticBanner: { status: '', message: '' }
   }
 }
 
@@ -4854,6 +4882,7 @@ async function renderCustomFieldsAdmin() {
   const uiState = state.customFieldSchema.ui
   const createUi = uiState.create || { status: '', message: '', fieldErrors: {} }
   const bulkUi = uiState.bulk || { status: '', message: '', rowErrorsByKey: {}, draftRows: [] }
+  const optimisticBanner = uiState.optimisticBanner || { status: '', message: '' }
   const bulkDraftRows = Array.isArray(bulkUi.draftRows) && bulkUi.draftRows.length
     ? bulkUi.draftRows
     : [{ key: '', type: 'text', label: '', required: '', group: '', order: '', metadata: '' }]
@@ -4884,6 +4913,15 @@ async function renderCustomFieldsAdmin() {
     ${
       state.customFieldSchema.lastError
         ? `<p class="error-banner">${escapeHtml(state.customFieldSchema.lastError)}</p>`
+        : ''
+    }
+    ${
+      optimisticBanner.message
+        ? `<p class="${optimisticBanner.status === 'error' ? 'error-banner' : 'success-banner'}" role="${
+            optimisticBanner.status === 'error' ? 'alert' : 'status'
+          }" aria-live="${optimisticBanner.status === 'error' ? 'assertive' : 'polite'}" aria-atomic="true" id="custom-field-admin-optimistic-banner" tabindex="-1">${escapeHtml(
+            optimisticBanner.message
+          )}</p>`
         : ''
     }
     <section class="item">
@@ -5124,6 +5162,16 @@ async function renderCustomFieldsAdmin() {
     }
     return { payload, fieldErrors }
   }
+  const hasExistingFieldKey = (key = '', { ignoreKey = '' } = {}) => {
+    const normalized = String(key || '').trim().toLowerCase()
+    const ignored = String(ignoreKey || '').trim().toLowerCase()
+    return (state.customFieldSchema.fields || []).some((field) => {
+      const existingKey = String(field?.key || '').trim().toLowerCase()
+      if (!existingKey) return false
+      if (ignored && existingKey === ignored) return false
+      return existingKey === normalized
+    })
+  }
   const parseBulkRows = (rawText = '') => {
     const trimmed = String(rawText || '').trim()
     if (!trimmed) return { rows: [], parseError: 'Paste at least one row to bulk update.' }
@@ -5209,6 +5257,7 @@ async function renderCustomFieldsAdmin() {
     }
   }
   applyPersistedAdminUiState()
+  if (optimisticBanner.message) focusWithinView('#custom-field-admin-optimistic-banner')
 
   document.querySelector('#custom-field-create-form')?.addEventListener('submit', async (event) => {
     event.preventDefault()
@@ -5240,13 +5289,29 @@ async function renderCustomFieldsAdmin() {
       setFormFeedback(form, state.customFieldSchema.ui.create.message)
       return
     }
+    if (hasExistingFieldKey(validation.payload.key)) {
+      const duplicateError = { key: 'Key already exists. Use a unique key.' }
+      state.customFieldSchema.ui.create = {
+        status: 'error',
+        message: duplicateError.key,
+        fieldErrors: duplicateError
+      }
+      applyFieldErrors(form, duplicateError)
+      setFormFeedback(form, duplicateError.key)
+      return
+    }
     const previousSchema = structuredClone(state.customFieldSchema)
     const optimisticField = { ...validation.payload }
     state.customFieldSchema.fields = [...(state.customFieldSchema.fields || []), optimisticField]
     state.customFieldSchema.updatedAt = new Date().toISOString()
     state.customFieldSchema.lastError = ''
     state.customFieldSchema.ui.create = { status: 'pending', message: 'Pending: creating custom field…', fieldErrors: {} }
+    state.customFieldSchema.ui.optimisticBanner = {
+      status: 'pending',
+      message: `Saving new field ${validation.payload.key}…`
+    }
     setFormFeedback(form, state.customFieldSchema.ui.create.message, 'success')
+    queueViewFocus('#custom-field-admin-optimistic-banner')
     await renderCustomFieldsAdmin()
     try {
       await request(routes.profileCustomFieldSchema(), {
@@ -5254,6 +5319,10 @@ async function renderCustomFieldsAdmin() {
         body: JSON.stringify(validation.payload)
       })
       state.customFieldSchema.ui.create = { status: 'success', message: 'Success: custom field created.', fieldErrors: {} }
+      state.customFieldSchema.ui.optimisticBanner = {
+        status: 'success',
+        message: `Field ${validation.payload.key} created.`
+      }
       state.customFieldSchema.fetched = false
       await refreshSelects()
       await renderCustomFieldsAdmin()
@@ -5265,6 +5334,10 @@ async function renderCustomFieldsAdmin() {
         status: 'error',
         message: `Error: ${normalizeApiError(error, 'create custom field schema')}`,
         fieldErrors: serverFieldErrors
+      }
+      state.customFieldSchema.ui.optimisticBanner = {
+        status: 'error',
+        message: `Create failed and changes were rolled back: ${normalizeApiError(error, 'create custom field schema')}`
       }
       applyFieldErrors(form, serverFieldErrors)
       setFormFeedback(form, state.customFieldSchema.ui.create.message)
@@ -5316,6 +5389,9 @@ async function renderCustomFieldsAdmin() {
     })
     preparedRows.forEach((row) => {
       if (duplicateKeys.has(row.payload.key)) row.fieldErrors.key = 'Duplicate key in bulk payload.'
+      if (!row.fieldErrors.key && hasExistingFieldKey(row.payload.key)) {
+        row.fieldErrors.key = 'Key already exists in current schema.'
+      }
     })
     const hasClientErrors = preparedRows.some((row) => Object.keys(row.fieldErrors).length)
     const rowErrorsByKey = {}
@@ -5486,6 +5562,10 @@ async function renderCustomFieldsAdmin() {
       state.customFieldSchema.ui.bulk.status = 'error'
       state.customFieldSchema.ui.bulk.confirmStatus = 'error'
       state.customFieldSchema.ui.bulk.confirmMessage = `Error: ${normalizeApiError(error, 'apply bulk schema changes')}`
+      state.customFieldSchema.ui.optimisticBanner = {
+        status: 'error',
+        message: `Bulk save failed and preview changes were rolled back: ${normalizeApiError(error, 'apply bulk schema changes')}`
+      }
       setFormFeedback(form, state.customFieldSchema.ui.bulk.confirmMessage)
       return
     }
@@ -5498,6 +5578,7 @@ async function renderCustomFieldsAdmin() {
       confirmMessage: 'Success: bulk schema changes saved.',
       draftRows: state.customFieldSchema.ui.bulk?.draftRows || []
     }
+    state.customFieldSchema.ui.optimisticBanner = { status: 'success', message: 'Bulk schema changes saved.' }
     state.customFieldSchema.fetched = false
     await refreshSelects()
     setFlash('success', 'Bulk schema changes saved.')
@@ -5543,7 +5624,9 @@ async function renderCustomFieldsAdmin() {
       )
       state.customFieldSchema.updatedAt = new Date().toISOString()
       state.customFieldSchema.ui.updatesByKey[fieldKey] = { status: 'pending', message: `Pending: updating ${fieldKey}…`, fieldErrors: {} }
+      state.customFieldSchema.ui.optimisticBanner = { status: 'pending', message: `Saving changes for field ${fieldKey}…` }
       setFormFeedback(form, state.customFieldSchema.ui.updatesByKey[fieldKey].message, 'success')
+      queueViewFocus('#custom-field-admin-optimistic-banner')
       await renderCustomFieldsAdmin()
       try {
         await request(routes.profileCustomFieldSchemaField(fieldKey), {
@@ -5555,6 +5638,7 @@ async function renderCustomFieldsAdmin() {
           message: `Success: custom field ${fieldKey} updated.`,
           fieldErrors: {}
         }
+        state.customFieldSchema.ui.optimisticBanner = { status: 'success', message: `Field ${fieldKey} updated.` }
         state.customFieldSchema.fetched = false
         await refreshSelects()
         await renderCustomFieldsAdmin()
@@ -5566,6 +5650,10 @@ async function renderCustomFieldsAdmin() {
           status: 'error',
           message: `Error: ${normalizeApiError(error, `update custom field ${fieldKey}`)}`,
           fieldErrors: serverFieldErrors
+        }
+        state.customFieldSchema.ui.optimisticBanner = {
+          status: 'error',
+          message: `Update failed and changes were rolled back for ${fieldKey}: ${normalizeApiError(error, `update custom field ${fieldKey}`)}`
         }
         applyFieldErrors(form, serverFieldErrors)
         setFormFeedback(form, state.customFieldSchema.ui.updatesByKey[fieldKey].message)
@@ -5582,11 +5670,14 @@ async function renderCustomFieldsAdmin() {
       const previousSchema = structuredClone(state.customFieldSchema)
       state.customFieldSchema.fields = (state.customFieldSchema.fields || []).filter((field) => field.key !== fieldKey)
       state.customFieldSchema.updatedAt = new Date().toISOString()
+      state.customFieldSchema.ui.optimisticBanner = { status: 'pending', message: `Deleting field ${fieldKey}…` }
       setFlash('success', `Pending: deleting custom field ${fieldKey}…`)
+      queueViewFocus('#custom-field-admin-optimistic-banner')
       await renderCustomFieldsAdmin()
       try {
         await request(routes.profileCustomFieldSchemaField(fieldKey), { method: 'DELETE' })
         state.customFieldSchema.ui.deleteByKey[fieldKey] = { status: 'success', message: `Success: custom field ${fieldKey} deleted.` }
+        state.customFieldSchema.ui.optimisticBanner = { status: 'success', message: `Field ${fieldKey} deleted.` }
         setFlash('success', `Success: custom field ${fieldKey} deleted.`)
         state.customFieldSchema.fetched = false
         await refreshSelects()
@@ -5597,6 +5688,10 @@ async function renderCustomFieldsAdmin() {
         state.customFieldSchema.ui.deleteByKey[fieldKey] = {
           status: 'error',
           message: `Error: ${normalizeApiError(error, `delete custom field ${fieldKey}`)}`
+        }
+        state.customFieldSchema.ui.optimisticBanner = {
+          status: 'error',
+          message: `Delete failed and changes were rolled back for ${fieldKey}: ${normalizeApiError(error, `delete custom field ${fieldKey}`)}`
         }
         setFlash('error', state.customFieldSchema.ui.deleteByKey[fieldKey].message)
         await renderCustomFieldsAdmin()
