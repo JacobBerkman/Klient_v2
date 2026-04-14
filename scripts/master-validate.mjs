@@ -242,6 +242,15 @@ export function resolveValidateMasterE2EStrictMode({
     }
   }
 
+  if (!gitCheckout) {
+    return {
+      mode: 'diagnostic_local',
+      strictMode: true,
+      allowFallback: false,
+      warningLine: null
+    }
+  }
+
   return {
     mode: 'diagnostic_local',
     strictMode: true,
