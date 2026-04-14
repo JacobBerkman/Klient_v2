@@ -190,9 +190,10 @@ test('integration aggregate leaves no orphaned API server handles after exports 
   assert.deepEqual(after, before, `expected no orphaned API server process; before=${before.join(',')} after=${after.join(',')}`)
 })
 
-test('validate master skips merge parity and completes from unpacked zip-style artifact', { concurrency: false }, async () => {
+test('validate master runs integration and aggregate handoff regression from unpacked zip-style artifact', { concurrency: false }, async () => {
   const artifactRoot = await mkdtemp(resolve(tmpdir(), 'klient-artifact-'))
   const unpackedRoot = resolve(artifactRoot, 'unpacked')
+  const evidenceFile = resolve(artifactRoot, 'validate-master-summary.json')
 
   await cp(repoRoot, unpackedRoot, {
     recursive: true,
@@ -211,14 +212,21 @@ test('validate master skips merge parity and completes from unpacked zip-style a
       cwd: unpackedRoot,
       env: {
         ...process.env,
-        VALIDATE_MASTER_STEPS: 'integration-suites',
-        INTEGRATION_SUITES: 'integration-exports.mjs,integration-portal-lifecycle.mjs'
+        VALIDATE_MASTER_STEPS: 'integration-suites,aggregate-handoff-regression',
+        INTEGRATION_SUITES: 'integration-templates.mjs,integration-exports.mjs',
+        RELEASE_EVIDENCE_FILE: evidenceFile
       }
     })
 
     const elapsed = Date.now() - start
     assert.equal(result.code, 0)
     assert(elapsed < 300000, `expected artifact validate completion before timeout, got ${elapsed}ms`)
+
+    const summary = JSON.parse(await readFile(evidenceFile, 'utf8'))
+    const integrationStep = summary.steps.find((step) => step.key === 'integration-suites')
+    const handoffStep = summary.steps.find((step) => step.key === 'aggregate-handoff-regression')
+    assert.equal(integrationStep?.status, 'passed')
+    assert.equal(handoffStep?.status, 'passed')
   } finally {
     await rm(artifactRoot, { recursive: true, force: true })
   }
