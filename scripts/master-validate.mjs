@@ -2,6 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { runCommandProcess } from './runner-lifecycle.mjs'
+import { resolvePlaywrightLinkageEnv } from './playwright-provisioning.mjs'
 
 const defaultEvidenceDir = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_DIR || 'artifacts/release-evidence')
 
@@ -143,7 +144,8 @@ function envForStep(step) {
     const strictMode = resolveValidateMasterE2EStrictMode({
       strictOverride: process.env.RELEASE_E2E_STRICT_MODE,
       allowFallbackOverride: process.env.RELEASE_E2E_ALLOW_FALLBACK,
-      gitCheckout: isGitCheckout()
+      gitCheckout: isGitCheckout(),
+      unpackedArtifactIntent: parseBooleanSignal(process.env.RELEASE_EVIDENCE_UNPACKED_ARTIFACT) === true
     })
     if (strictMode.warningLine) {
       process.stdout.write(`\n${strictMode.warningLine}\n`)
@@ -151,8 +153,16 @@ function envForStep(step) {
     env.RELEASE_EVIDENCE_E2E_FILE = step.evidenceFile
     env.RELEASE_E2E_STRICT_MODE = strictMode.strictMode ? '1' : '0'
     env.RELEASE_E2E_ALLOW_FALLBACK = strictMode.allowFallback ? '1' : '0'
-    env.PLAYWRIGHT_JSON_REPORT = resolve(defaultEvidenceDir, 'playwright-report.json')
-    env.RELEASE_E2E_PLAYWRIGHT_REPORT = env.PLAYWRIGHT_JSON_REPORT
+    Object.assign(
+      env,
+      resolvePlaywrightLinkageEnv(
+        {
+          ...env,
+          PLAYWRIGHT_JSON_REPORT: resolve(defaultEvidenceDir, 'playwright-report.json')
+        },
+        { evidenceDir: defaultEvidenceDir }
+      )
+    )
   }
   if (step.evidenceFile && step.name === 'Security checks') env.RELEASE_EVIDENCE_SECURITY_FILE = step.evidenceFile
   return env
@@ -183,7 +193,8 @@ function isReleaseRefEnvironment(env) {
 export function resolveValidateMasterE2EStrictMode({
   strictOverride,
   allowFallbackOverride,
-  gitCheckout
+  gitCheckout,
+  unpackedArtifactIntent = false
 }) {
   const approvalSignal = parseBooleanSignal(process.env.RELEASE_APPROVAL_MODE)
   const ciSignal = parseBooleanSignal(process.env.CI)
@@ -199,6 +210,25 @@ export function resolveValidateMasterE2EStrictMode({
 
   const strictSignal = parseBooleanSignal(strictOverride)
   const fallbackSignal = parseBooleanSignal(allowFallbackOverride)
+  const hasDiagnosticOverride = strictSignal !== null || fallbackSignal !== null
+  if (unpackedArtifactIntent) {
+    return {
+      mode: 'unpacked_artifact',
+      strictMode: true,
+      allowFallback: false,
+      warningLine: null
+    }
+  }
+
+  if (!gitCheckout && !hasDiagnosticOverride) {
+    return {
+      mode: 'diagnostic_local',
+      strictMode: true,
+      allowFallback: false,
+      warningLine: null
+    }
+  }
+
   if (strictSignal !== null || fallbackSignal !== null) {
     const strictMode = strictSignal ?? !fallbackSignal
     return {

@@ -117,6 +117,89 @@ test('validate:master allows diagnostic fallback only when explicitly enabled an
   }
 })
 
+test('validate:master defaults to strict E2E in unpacked non-git execution without diagnostic overrides', async () => {
+  const artifactRoot = await mkdtemp(resolve(tmpdir(), 'klient-validate-e2e-unpacked-default-'))
+  const unpackedRoot = resolve(artifactRoot, 'unpacked')
+  const evidenceDir = resolve(artifactRoot, 'evidence')
+  const evidenceFile = resolve(evidenceDir, 'validate-master-summary.json')
+
+  await cp(repoRoot, unpackedRoot, {
+    recursive: true,
+    filter(sourcePath) {
+      return !sourcePath.includes('/.git')
+    }
+  })
+
+  try {
+    const result = spawnSync(process.execPath, ['scripts/master-validate.mjs'], {
+      cwd: unpackedRoot,
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        VALIDATE_MASTER_STEPS: 'e2e-browser-checks',
+        RELEASE_EVIDENCE_DIR: evidenceDir,
+        RELEASE_APPROVAL_MODE: '0',
+        CI: '0'
+      },
+      encoding: 'utf8'
+    })
+
+    assert.notEqual(result.status, 0, 'validate:master unexpectedly passed strict E2E in unpacked non-git mode')
+    assert.doesNotMatch(result.stdout, /NON-APPROVING DIAGNOSTIC MODE/)
+
+    const summary = JSON.parse(await readFile(evidenceFile, 'utf8'))
+    assert.equal(summary.status, 'failed')
+    assert.equal(summary.steps.length, 1)
+    assert.equal(summary.steps[0]?.name, 'E2E browser checks')
+    assert.equal(summary.steps[0]?.status, 'failed')
+  } finally {
+    await rm(artifactRoot, { recursive: true, force: true })
+  }
+})
+
+test('validate:master unpacked-artifact intent enforces strict E2E even when fallback overrides are set', async () => {
+  const artifactRoot = await mkdtemp(resolve(tmpdir(), 'klient-validate-e2e-unpacked-intent-'))
+  const unpackedRoot = resolve(artifactRoot, 'unpacked')
+  const evidenceDir = resolve(artifactRoot, 'evidence')
+  const evidenceFile = resolve(evidenceDir, 'validate-master-summary.json')
+
+  await cp(repoRoot, unpackedRoot, {
+    recursive: true,
+    filter(sourcePath) {
+      return !sourcePath.includes('/.git')
+    }
+  })
+
+  try {
+    const result = spawnSync(process.execPath, ['scripts/master-validate.mjs'], {
+      cwd: unpackedRoot,
+      stdio: 'pipe',
+      env: {
+        ...process.env,
+        VALIDATE_MASTER_STEPS: 'e2e-browser-checks',
+        RELEASE_EVIDENCE_DIR: evidenceDir,
+        RELEASE_E2E_STRICT_MODE: '0',
+        RELEASE_E2E_ALLOW_FALLBACK: '1',
+        RELEASE_EVIDENCE_UNPACKED_ARTIFACT: '1',
+        RELEASE_APPROVAL_MODE: '0',
+        CI: '0'
+      },
+      encoding: 'utf8'
+    })
+
+    assert.notEqual(result.status, 0, 'validate:master unexpectedly allowed fallback in unpacked-artifact intent mode')
+    assert.doesNotMatch(result.stdout, /NON-APPROVING DIAGNOSTIC MODE/)
+
+    const summary = JSON.parse(await readFile(evidenceFile, 'utf8'))
+    assert.equal(summary.status, 'failed')
+    assert.equal(summary.steps.length, 1)
+    assert.equal(summary.steps[0]?.name, 'E2E browser checks')
+    assert.equal(summary.steps[0]?.status, 'failed')
+  } finally {
+    await rm(artifactRoot, { recursive: true, force: true })
+  }
+})
+
 test('validate:master release_approval mode rejects fallback and cannot pass via fallback settings', async () => {
   const workspace = await prepareUnpackedWorkspace('klient-validate-e2e-approval-')
 

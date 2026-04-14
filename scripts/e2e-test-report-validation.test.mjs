@@ -142,6 +142,7 @@ test('browser fallback parses deterministic boolean env overrides', () => {
 
 test('main fails in strict mode when browser binaries are missing', async () => {
   const finalizeCalls = []
+  const provisionCalls = []
   const originalStrictMode = process.env.RELEASE_E2E_STRICT_MODE
   process.env.RELEASE_E2E_STRICT_MODE = '1'
   try {
@@ -149,6 +150,17 @@ test('main fails in strict mode when browser binaries are missing', async () => 
       createContext: async () => ({ port: 4100, shutdown: async () => {} }),
       run: async () => ({ code: 0, signal: null }),
       hasBrowser: async () => false,
+      provisionChromium: async ({ env }) => {
+        provisionCalls.push(env.RELEASE_E2E_PROVISIONING_ARTIFACT)
+        return {
+          strictMode: true,
+          attempted: true,
+          env: {
+            ...env,
+            RELEASE_E2E_PROVISIONING_VERSION: '1.55.0'
+          }
+        }
+      },
       evidenceRecorder: { finalize: (payload) => finalizeCalls.push(payload) },
       removeFile: async () => {},
       validateReport: async () => ({ ok: true, suiteNames: ['playwright-browser-fallback'], artifact: { path: 'x', valid: true } }),
@@ -156,10 +168,12 @@ test('main fails in strict mode when browser binaries are missing', async () => 
     })
 
     assert.equal(exitCode, 1)
+    assert.equal(provisionCalls.length, 1)
     assert.equal(finalizeCalls.at(-1).status, 'failed')
     assert.equal(finalizeCalls.at(-1).details.failureCategory, 'browser-launch-failure')
     assert.equal(finalizeCalls.at(-1).details.browser.status, 'failed')
     assert.equal(finalizeCalls.at(-1).details.artifacts.playwrightJsonReport.valid, false)
+    assert.equal(finalizeCalls.at(-1).details.artifacts.playwrightEvidenceLinkage.provisioningVersion, '1.55.0')
   } finally {
     if (originalStrictMode === undefined) delete process.env.RELEASE_E2E_STRICT_MODE
     else process.env.RELEASE_E2E_STRICT_MODE = originalStrictMode
@@ -207,6 +221,14 @@ test('main fails in strict mode when Playwright process fails', async () => {
         if (command === process.execPath) return { code: 0, signal: null }
         return { code: 2, signal: null }
       },
+      provisionChromium: async ({ env }) => ({
+        strictMode: true,
+        attempted: true,
+        env: {
+          ...env,
+          RELEASE_E2E_PROVISIONING_VERSION: '1.55.0'
+        }
+      }),
       hasBrowser: async () => true,
       evidenceRecorder: { finalize: (payload) => finalizeCalls.push(payload) },
       removeFile: async () => {}
