@@ -28,6 +28,7 @@ const state = {
   templatePreviewByTemplateId: {},
   templatePublishPreflightByTemplateId: {},
   templatePreviewSelectionByTemplateId: {},
+  templatePublishIntentByTemplateId: {},
   templateMappingFilterByTemplateId: {},
   templateMappingSearchByTemplateId: {},
   templateMappingSuggestionsByTemplateId: {},
@@ -2493,6 +2494,15 @@ function formatTemplateVersionLabel(version = null) {
   return Number.isFinite(value) ? `v${value}` : 'vN/A'
 }
 
+function formatTemplateVersionOptionLabel(entry = {}) {
+  const versionLabel = formatTemplateVersionLabel(entry?.version)
+  const changeType = String(entry?.changeType || 'update').trim()
+  const publishState = String(entry?.publishState || 'draft').trim()
+  const bumpIntent = String(entry?.changelog?.versionBump || '').trim()
+  const bumpSuffix = bumpIntent ? ` · bump ${bumpIntent}` : ''
+  return `${versionLabel} · ${changeType} · ${publishState}${bumpSuffix}`
+}
+
 function transitionStateChipMarkup(transition = {}) {
   const fromState = String(transition?.from || transition?.fromVersion || '').trim()
   const toState = String(transition?.to || transition?.toVersion || '').trim()
@@ -2911,9 +2921,24 @@ async function renderTemplates() {
   if (template) state.templateMappingDrafts[template.id] = draftMappings
 
   const versionOptions = (versions || [])
-    .map((entry) => `<option value="${entry.version}">${entry.version} · ${escapeHtml(entry.changeType || 'update')}</option>`)
+    .map((entry) => `<option value="${entry.version}">${escapeHtml(formatTemplateVersionOptionLabel(entry))}</option>`)
     .join('')
-  const latestVersion = versions?.[0]?.version || ''
+  const latestVersionEntry = versions?.[0] || null
+  const previousVersionEntry = versions?.[1] || null
+  const latestVersion = latestVersionEntry?.version || ''
+  const compareDefaultBaseVersion = previousVersionEntry?.version ?? latestVersionEntry?.version ?? ''
+  const compareDefaultTargetVersion = latestVersionEntry?.version ?? ''
+  const publishIntentOptions = [
+    { id: 'patch', label: 'Patch', versionBump: '0.0.1', guidance: 'small mapping or wording updates' },
+    { id: 'minor', label: 'Minor', versionBump: '0.1.0', guidance: 'additive mapping coverage changes' },
+    { id: 'major', label: 'Major', versionBump: '1.0.0', guidance: 'breaking mapping/schema behavior' }
+  ]
+  const persistedPublishIntentId = template ? state.templatePublishIntentByTemplateId[template.id] : ''
+  const selectedPublishIntent =
+    publishIntentOptions.find((entry) => entry.id === persistedPublishIntentId) || publishIntentOptions[0]
+  if (template && selectedPublishIntent?.id !== persistedPublishIntentId) {
+    state.templatePublishIntentByTemplateId[template.id] = selectedPublishIntent.id
+  }
   const templateOpsPermissions = templateOperationPermissions()
 
   const knownPaths = knownProfileSourcePaths()
@@ -2970,7 +2995,8 @@ async function renderTemplates() {
   const hasLocalMappingErrors = [...mappingIssuesByIndex.values()].some((issues) => issues.length > 0)
   const hasBlockingPreviewWarnings =
     Number(preview?.blockingWarningsCount || 0) > 0 || (preview?.issues || []).some((issue) => issue.blocking)
-  const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings || preflightIssues.length > 0
+  const hasPreflightCheck = Boolean(preflight?.checkedAt)
+  const publishDisabled = hasLocalMappingErrors || hasBlockingPreviewWarnings || preflightIssues.length > 0 || !hasPreflightCheck
   const templateFilter = state.templateMappingFilterByTemplateId[template?.id] || 'all'
   const templateSearch = String(state.templateMappingSearchByTemplateId[template?.id] || '').trim()
   const allowedTemplateFilters = new Set(['all', 'needs-fix', 'unresolved-only', 'unmapped', 'preview-warning', 'required-only'])
@@ -3406,7 +3432,31 @@ async function renderTemplates() {
             ? escapeHtml(templateOpsPermissions.readOnlyMessage)
             : 'Write-capable operators can run preflight, publish, and revert from this panel.'
         }</p>
+        <div class="row wrap gap-sm">
+          <span class="badge subtle">Current ${escapeHtml(formatTemplateVersionLabel(latestVersionEntry?.version))}</span>
+          <span class="badge subtle">Change type ${escapeHtml(latestVersionEntry?.changeType || 'n/a')}</span>
+          <span class="badge subtle">Publish state ${escapeHtml(latestVersionEntry?.publishState || template?.publishState || 'draft')}</span>
+          <span class="badge subtle">Last bump ${escapeHtml(latestVersionEntry?.changelog?.versionBump || 'n/a')}</span>
+        </div>
         <p class="muted compact">Recommended order: <strong>Run Publish Preflight</strong> → remediate listed rows using row actions → rerun preflight until clear → <strong>Publish</strong>.</p>
+        <div class="row wrap gap-sm">
+          <label>Publish bump intent
+            <select id="publish-version-bump-intent" ${templateOpsPermissions.canWrite ? '' : 'disabled'}>
+              ${publishIntentOptions
+                .map(
+                  (entry) =>
+                    `<option value="${entry.id}" ${selectedPublishIntent.id === entry.id ? 'selected' : ''}>${escapeHtml(entry.label)} · ${escapeHtml(entry.versionBump)} (${escapeHtml(entry.guidance)})</option>`
+                )
+                .join('')}
+            </select>
+          </label>
+          <span class="badge subtle">Selected bump value ${escapeHtml(selectedPublishIntent.versionBump)}</span>
+        </div>
+        <p class="muted compact">${
+          hasPreflightCheck
+            ? `Preflight summary (${escapeHtml(new Date(preflight?.checkedAt || Date.now()).toLocaleString())}): ${preflightIssues.length} schema issue(s), ${Number(preflight?.blockingWarningsCount || 0)} blocking warning(s), ${Number(preflight?.warningsCount || 0)} total warning(s).`
+            : 'Preflight summary: not run yet in this session. Publish stays disabled until preflight executes.'
+        }</p>
         <div class="row gap-sm wrap">
           <button type="button" class="tiny secondary" data-template-wizard-step="mapping">Back to Step 3 · Mapping</button>
           <button type="button" class="tiny secondary" data-template-wizard-step="preview">Back to Step 4 · Preview</button>
@@ -3444,6 +3494,7 @@ async function renderTemplates() {
       <section class="item">
         <h3>Compare Versions</h3>
         <p class="muted compact">Read path: compare is available to readonly, advisor, and admin operators.</p>
+        <p class="muted compact">Default hint: base auto-selects the previous revision (when available), target auto-selects current revision.</p>
         <div class="row gap-sm wrap">
           <select id="compare-base">${versionOptions}</select>
           <select id="compare-target">${versionOptions}</select>
@@ -3454,6 +3505,7 @@ async function renderTemplates() {
       <section class="item">
         <h3>Revert Version</h3>
         <p class="muted compact">Write path: revert requires advisor/admin permissions.</p>
+        <p class="muted compact">Default hint: selected revert version starts on the previous revision to avoid accidental no-op requests.</p>
         <div class="row gap-sm wrap">
           <select id="revert-version">${versionOptions}</select>
           <button id="revert-template-version" class="tiny secondary" ${templateOpsPermissions.canWrite ? '' : 'disabled'}>Revert to selected version</button>
@@ -3988,12 +4040,19 @@ async function renderTemplates() {
       }
     } catch (error) {
       state.templatePublishPreflightByTemplateId[template.id] = {
+        checkedAt: new Date().toISOString(),
         issues: error?.details?.issues || [],
         publishReadiness: error?.details?.publishReadiness || null
       }
       reportActionError('Template publish preflight', error)
     }
     await rerenderTemplates()
+  })
+
+  document.querySelector('#publish-version-bump-intent')?.addEventListener('change', async (event) => {
+    if (!template) return
+    state.templatePublishIntentByTemplateId[template.id] = String(event.target.value || 'patch')
+    await rerenderTemplates('#publish-version-bump-intent')
   })
 
   document.querySelectorAll('[data-jump-rowindex]').forEach((button) => {
@@ -4086,6 +4145,8 @@ async function renderTemplates() {
     try {
       const clientId = document.querySelector('#preview-client')?.value
       const submissionId = document.querySelector('#preview-submission')?.value
+      const selectedIntentId = String(document.querySelector('#publish-version-bump-intent')?.value || selectedPublishIntent.id)
+      const resolvedPublishIntent = publishIntentOptions.find((entry) => entry.id === selectedIntentId) || selectedPublishIntent
       const preflightPreview = await request(routes.documentTemplateMappingsPreview(template.id), {
         method: 'POST',
         body: JSON.stringify({ clientId, submissionId })
@@ -4104,7 +4165,7 @@ async function renderTemplates() {
       await request(routes.documentTemplatePublish(template.id), {
         method: 'POST',
         body: JSON.stringify({
-          versionBump: '1.0.0',
+          versionBump: resolvedPublishIntent.versionBump,
           changelog: 'Publish template mapping updates.',
           enforceKnownSourcePaths: true,
           clientId,
@@ -4128,19 +4189,24 @@ async function renderTemplates() {
   })
 
   document.querySelector('#compare-base')?.addEventListener('change', (event) => {
-    if (!document.querySelector('#compare-target')?.value) {
-      document.querySelector('#compare-target').value = event.target.value
-    }
+    const compareTargetSelect = document.querySelector('#compare-target')
+    if (!compareTargetSelect?.value) compareTargetSelect.value = event.target.value
   })
+  const compareBaseEl = document.querySelector('#compare-base')
   const compareTargetEl = document.querySelector('#compare-target')
-  if (compareTargetEl && latestVersion) compareTargetEl.value = latestVersion
+  const revertVersionEl = document.querySelector('#revert-version')
+  if (compareBaseEl && compareDefaultBaseVersion !== '') compareBaseEl.value = String(compareDefaultBaseVersion)
+  if (compareTargetEl && compareDefaultTargetVersion !== '') compareTargetEl.value = String(compareDefaultTargetVersion)
+  if (revertVersionEl) revertVersionEl.value = String(compareDefaultBaseVersion || latestVersion || '')
 
   document.querySelector('#compare-template-versions')?.addEventListener('click', async () => {
     try {
       const baseVersion = Number(document.querySelector('#compare-base')?.value)
       const targetVersion = Number(document.querySelector('#compare-target')?.value)
       if (!Number.isFinite(baseVersion) || !Number.isFinite(targetVersion)) throw new Error('Select two valid versions to compare.')
-      if (baseVersion === targetVersion) throw new Error('Choose different versions to compare changes.')
+      if (baseVersion === targetVersion) {
+        throw new Error('No-op compare: base and target are the same version. Choose a prior base version to inspect deltas.')
+      }
       const diff = await request(routes.documentTemplateCompare(template.id, { baseVersion, targetVersion }))
       document.querySelector('#compare-results').innerHTML = templateCompareSummaryMarkup(diff)
       reportActionSuccess('Templates', `Compared versions ${baseVersion} and ${targetVersion}.`)
@@ -4161,7 +4227,7 @@ async function renderTemplates() {
           routes.documentTemplateCompare(template.id, { baseVersion: targetVersion, targetVersion: latestVersionNumber })
         )
         if (!previewDiff.changed) {
-          reportActionSuccess('Templates', `Version ${targetVersion} already matches current state; no revert needed.`)
+          reportActionSuccess('Templates', `No-op revert: version ${targetVersion} already matches current template state, so nothing changed.`)
           await rerenderTemplates()
           return
         }
