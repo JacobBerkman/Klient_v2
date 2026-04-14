@@ -2480,6 +2480,24 @@ function mappingLocalIssues(mapping, knownPaths) {
   return issues
 }
 
+function isUnknownOrInvalidSourceIssueCode(code = '') {
+  const normalized = String(code || '').toLowerCase()
+  return (
+    normalized.includes('unknown_source_path') ||
+    normalized.includes('invalid_source_path') ||
+    normalized.includes('unresolved_source_path')
+  )
+}
+
+function hasUnresolvedSourcePathIssue(localIssues = [], serverIssues = []) {
+  return (
+    localIssues.some((issue) => isUnknownOrInvalidSourceIssueCode(issue?.code)) ||
+    serverIssues.some((issue) =>
+      [issue?.code, issue?.errorCode, issue?.issueId, issue?.meta?.issueId].some((value) => isUnknownOrInvalidSourceIssueCode(value))
+    )
+  )
+}
+
 function formatSchemaIssue(issue = {}) {
   const path = String(issue.field || issue.path || 'mapping')
   const message = String(issue.message || issue.code || 'Validation issue')
@@ -2977,11 +2995,21 @@ async function renderTemplates() {
   const activeTemplateFilter = allowedTemplateFilters.has(templateFilter) ? templateFilter : 'all'
   if (template && activeTemplateFilter !== templateFilter) state.templateMappingFilterByTemplateId[template.id] = activeTemplateFilter
   const navigationRequest = template ? state.templateNavigationRequestByTemplateId[template.id] || null : null
-  const rowJumpHighlight = Number.isFinite(Number(navigationRequest?.rowIndex))
-    ? Number(navigationRequest.rowIndex)
-    : template
-      ? Number(state.templateJumpHighlightByTemplateId[template.id])
-      : NaN
+  const rowJumpHighlight = (() => {
+    const requestIndex = Number(navigationRequest?.rowIndex)
+    if (Number.isFinite(requestIndex)) return requestIndex
+    const requestRowId = String(navigationRequest?.rowId || '').trim()
+    if (requestRowId) {
+      const byDraftRowId = draftMappings.findIndex((mapping) => String(mapping?.rowId || '').trim() === requestRowId)
+      if (byDraftRowId >= 0) return byDraftRowId
+      const byPreviewRowId = Number(
+        [...(state.templatePreviewByTemplateId?.[template.id]?.rows || [])].find((row) => String(row?.rowId || '').trim() === requestRowId)
+          ?.rowIndex
+      )
+      if (Number.isFinite(byPreviewRowId)) return byPreviewRowId
+    }
+    return template ? Number(state.templateJumpHighlightByTemplateId[template.id]) : NaN
+  })()
   const suggestionDraftByIndex = template ? state.templateMappingSuggestionsByTemplateId[template.id] || {} : {}
   const suggestionByIndex = new Map()
   let unresolvedRowsCount = 0
@@ -2990,10 +3018,7 @@ async function renderTemplates() {
     const previewRow = previewRowsByIndex.get(index)
     const rowId = String(previewRow?.rowId || '').trim()
     const serverPreflightIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
-    const unresolved =
-      !String(mapping.sourcePath || '').trim() ||
-      rowIssues.some((issue) => issue.code === 'unknown_source_path') ||
-      serverPreflightIssues.length > 0
+    const unresolved = hasUnresolvedSourcePathIssue(rowIssues, serverPreflightIssues)
     if (unresolved) unresolvedRowsCount += 1
     const persistedSuggestion = suggestionDraftByIndex[index]
     if (persistedSuggestion?.path) {
@@ -3024,11 +3049,8 @@ async function renderTemplates() {
     const previewRow = previewRowsByIndex.get(index)
     const rowId = String(previewRow?.rowId || mapping?.rowId || '').trim()
     const serverPreflightIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
-    const isUnmapped = !String(mapping.pdfField || '').trim()
-    const isUnresolved =
-      !String(mapping.sourcePath || '').trim() ||
-      issues.some((issue) => issue.code === 'unknown_source_path') ||
-      serverPreflightIssues.length > 0
+    const isUnmapped = !String(mapping.sourcePath || '').trim()
+    const isUnresolved = hasUnresolvedSourcePathIssue(issues, serverPreflightIssues)
     const passesFilter =
       activeTemplateFilter === 'all' ||
       (activeTemplateFilter === 'needs-fix' && (issues.length > 0 || serverPreflightIssues.length > 0)) ||
@@ -3209,7 +3231,7 @@ async function renderTemplates() {
             { value: 'all', label: `All (${draftMappings.length})` },
             { value: 'needs-fix', label: `Needs fix (${draftMappings.filter((_, index) => (mappingIssuesByIndex.get(index) || []).length > 0 || preflightIssues.some((issue) => Number(issue.rowIndex) === index)).length})` },
             { value: 'unresolved-only', label: `Unresolved only (${unresolvedRowsCount})` },
-            { value: 'unmapped', label: `Unmapped (${draftMappings.filter((mapping) => !String(mapping.pdfField || '').trim()).length})` },
+            { value: 'unmapped', label: `Unmapped (${draftMappings.filter((mapping) => !String(mapping.sourcePath || '').trim()).length})` },
             { value: 'preview-warning', label: `Preview warning (${draftMappings.filter((_, index) => previewWarningRows.has(index) || previewIssueRows.has(index)).length})` },
             { value: 'required-only', label: `Required only (${draftMappings.filter((mapping) => mapping.required === true).length})` }
           ]
@@ -3571,10 +3593,14 @@ async function renderTemplates() {
     if (wizardStep && wizardSteps.includes(wizardStep)) state.templateWizardStepByTemplateId[template.id] = wizardStep
     state.templateInspectorFocusRequestByTemplateId[template.id] = focusInspector ? focusField : ''
     state.templateJumpHighlightByTemplateId[template.id] = highlightRow ? normalizedRowIndex : NaN
+    const resolvedRowId = String(
+      draftMappings[normalizedRowIndex]?.rowId || state.templatePreviewByTemplateId?.[template.id]?.rows?.[normalizedRowIndex]?.rowId || ''
+    ).trim()
     state.templateNavigationRequestByTemplateId[template.id] =
       focusInspector || highlightRow
         ? {
             rowIndex: normalizedRowIndex,
+            rowId: resolvedRowId,
             focusField: focusInspector ? focusField : '',
             remainingRenders: 3
           }
@@ -3687,6 +3713,7 @@ async function renderTemplates() {
       state.templateInspector[template.id] = { rowIndex: firstUnmappedIndex }
       state.templateNavigationRequestByTemplateId[template.id] = {
         rowIndex: firstUnmappedIndex,
+        rowId: String(draftMappings[firstUnmappedIndex]?.rowId || '').trim(),
         focusField: 'sourcePath',
         remainingRenders: 3
       }
@@ -3805,6 +3832,7 @@ async function renderTemplates() {
       const currentRowIndex = Number(state.templateInspector?.[template.id]?.rowIndex || 0)
       state.templateNavigationRequestByTemplateId[template.id] = {
         rowIndex: currentRowIndex,
+        rowId: String(draftMappings[currentRowIndex]?.rowId || '').trim(),
         focusField: 'sourcePath',
         remainingRenders: 2
       }
@@ -3846,10 +3874,7 @@ async function renderTemplates() {
       const previewRow = previewRowsByIndex.get(index)
       const rowId = String(previewRow?.rowId || '').trim()
       const serverIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
-      const unresolved =
-        !String(mapping.sourcePath || '').trim() ||
-        rowIssues.some((issue) => issue.code === 'unknown_source_path') ||
-        serverIssues.length > 0
+      const unresolved = hasUnresolvedSourcePathIssue(rowIssues, serverIssues)
       if (!unresolved) return
       if (String(mapping.sourcePath || '').trim() === suggestion.path) return
       nextDraft[index] = { ...mapping, sourcePath: suggestion.path }
@@ -3897,10 +3922,7 @@ async function renderTemplates() {
       const previewRow = previewRowsByIndex.get(index)
       const rowId = String(previewRow?.rowId || '').trim()
       const serverIssues = [...(preflightIssuesByRowIndex.get(index) || []), ...(rowId ? preflightIssuesByRowId.get(rowId) || [] : [])]
-      const unresolved =
-        !String(mapping.sourcePath || '').trim() ||
-        rowIssues.some((issue) => issue.code === 'unknown_source_path') ||
-        serverIssues.length > 0
+      const unresolved = hasUnresolvedSourcePathIssue(rowIssues, serverIssues)
       if (!unresolved) return
       if (String(mapping.sourcePath || '').trim() === suggestion.path) return
       nextDraft[index] = { ...mapping, sourcePath: suggestion.path }
@@ -4060,20 +4082,43 @@ async function renderTemplates() {
     inspectorEl?.focus({ preventScroll: true })
     if (template && !pendingNavigation) state.templateInspectorFocusRequestByTemplateId[template.id] = ''
   }
-  const pendingJumpRow = Number.isFinite(Number(pendingNavigation?.rowIndex))
-    ? Number(pendingNavigation.rowIndex)
-    : template
-      ? Number(state.templateJumpHighlightByTemplateId[template.id])
-      : NaN
+  const resolvePendingJumpRowIndex = () => {
+    if (!template) return NaN
+    const rowIndexFromRequest = Number(pendingNavigation?.rowIndex)
+    if (Number.isFinite(rowIndexFromRequest) && rowIndexFromRequest >= 0 && rowIndexFromRequest < draftMappings.length) return rowIndexFromRequest
+    const pendingRowId = String(pendingNavigation?.rowId || '').trim()
+    if (pendingRowId) {
+      const draftMatchIndex = draftMappings.findIndex((mapping) => String(mapping?.rowId || '').trim() === pendingRowId)
+      if (draftMatchIndex >= 0) return draftMatchIndex
+      const previewMatchIndex = Number(
+        [...(state.templatePreviewByTemplateId?.[template.id]?.rows || [])].find((row) => String(row?.rowId || '').trim() === pendingRowId)
+          ?.rowIndex
+      )
+      if (Number.isFinite(previewMatchIndex) && previewMatchIndex >= 0 && previewMatchIndex < draftMappings.length) return previewMatchIndex
+    }
+    const highlightedIndex = Number(state.templateJumpHighlightByTemplateId[template.id])
+    return Number.isFinite(highlightedIndex) ? highlightedIndex : NaN
+  }
+  const pendingJumpRow = resolvePendingJumpRowIndex()
+  let navigationTargetSettled = false
   if (Number.isFinite(pendingJumpRow)) {
     const target = document.querySelector(`#mapping-row-${pendingJumpRow}`)
-    target?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-    target?.focus({ preventScroll: true })
+    if (target) {
+      target.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      target.focus({ preventScroll: true })
+      navigationTargetSettled = true
+    }
   }
   if (template && pendingNavigation) {
-    const remainingRenders = Math.max(0, Number(pendingNavigation.remainingRenders || 0) - 1)
+    const decrement = navigationTargetSettled || !Number.isFinite(pendingJumpRow) ? 1 : 0
+    const remainingRenders = Math.max(0, Number(pendingNavigation.remainingRenders || 0) - decrement)
     if (remainingRenders > 0) {
-      state.templateNavigationRequestByTemplateId[template.id] = { ...pendingNavigation, remainingRenders }
+      state.templateNavigationRequestByTemplateId[template.id] = {
+        ...pendingNavigation,
+        rowIndex: Number.isFinite(pendingJumpRow) ? pendingJumpRow : pendingNavigation.rowIndex,
+        remainingRenders
+      }
+      if (Number.isFinite(pendingJumpRow)) state.templateJumpHighlightByTemplateId[template.id] = pendingJumpRow
     } else {
       state.templateNavigationRequestByTemplateId[template.id] = null
       state.templateJumpHighlightByTemplateId[template.id] = NaN
