@@ -41,7 +41,8 @@ test('draft collaborator messaging uses compact role hints and disabled-control 
   assert.match(appJs, /Success: membership refreshed/)
   assert.match(appJs, /Error: .*Next: retry with latest revision\./)
   assert.match(appJs, /Recovery: refresh membership first, then retry with the latest revision\./)
-  assert.match(appJs, /state\.formsUi\.lastShareFocusByDraftId\[draftId\] = `\[data-refresh-draft-collaborators="\$\{draftId\}"\]`/)
+  assert.match(appJs, /shareFeedbackRecoveryByDraftId/)
+  assert.match(appJs, /normalized\.recovery === 'refresh-first'/)
 })
 
 test('app wiring includes conflict normalization and form-level validation helpers', () => {
@@ -391,10 +392,11 @@ test('forms draft sharing contract exposes panel controls, live-region feedback,
   assert.match(appJs, /Success: \${visibleCandidateCount} user option\(s\) found\. Next: select one and add collaborator\./)
   assert.match(appJs, /Error: no matching firm users available to add\. Next: retry with a broader search\./)
   assert.match(appJs, /Success: \${collaboratorIdentityLabel\(userId\)} added\. Next: refresh membership if other sessions are active\./)
-  assert.match(appJs, /Error: \${normalized} Next:/)
+  assert.match(appJs, /Error: \${normalized\.message} Next: \${draftShareRecoveryInstruction\(normalized\.recovery\)}/)
   assert.match(appJs, /Success: \${collaboratorIdentityLabel\(userId\)} removed\. Next: refresh membership if any race is suspected\./)
   assert.match(appJs, /Recovery: refresh membership first, then retry with the latest revision\./)
-  assert.match(appJs, /function normalizeDraftShareError\(error, action = 'complete this collaborator action'\)/)
+  assert.match(appJs, /function draftShareErrorOutcome\(error, action = 'complete this collaborator action'\)/)
+  assert.match(appJs, /function draftShareRecoveryInstruction\(recovery\)/)
   assert.match(appJs, /function draftShareCollaboratorsFromResponse\(payload\)/)
   assert.match(appJs, /Loading collaborator membership…/)
   assert.match(appJs, /Collaborators: <strong>\$\{collaboratorCount\}<\/strong>/)
