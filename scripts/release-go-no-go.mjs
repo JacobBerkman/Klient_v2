@@ -201,6 +201,11 @@ function emitPlaywrightProvisioningDiagnostics() {
   )
 }
 
+function extractPlaywrightVersion(output = '') {
+  const versionMatch = String(output).match(/Version\s+([0-9]+\.[0-9]+\.[0-9]+)/i)
+  return versionMatch ? versionMatch[1] : ''
+}
+
 async function validateReleaseEvidence() {
   const args = ['scripts/validate-release-evidence.mjs', '--release-id', options.releaseId, '--phase', executionPhase]
   const strictHandoffValidationEnabled =
@@ -751,12 +756,16 @@ const preflight = async () => {
 
   emitPlaywrightProvisioningDiagnostics()
 
-  await runStep({
+  const playwrightProvisioningArtifact = resolve(evidenceDir, 'playwright-provisioning.txt')
+  const provisioningResult = await runStep({
     name: 'Flow A.4a Provision Playwright browser binaries',
     command: 'npx',
     args: ['playwright', 'install', '--with-deps', 'chromium'],
-    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || '0' }
+    env: { ...process.env, PLAYWRIGHT_BROWSERS_PATH: process.env.PLAYWRIGHT_BROWSERS_PATH || '0' },
+    outputFile: playwrightProvisioningArtifact,
+    outputMode: 'combined'
   })
+  const playwrightProvisioningVersion = extractPlaywrightVersion(`${provisioningResult.stdout}\n${provisioningResult.stderr}`)
 
   await runStep({
     name: 'Flow A.4 Hard release gate',
@@ -767,6 +776,8 @@ const preflight = async () => {
       RELEASE_EVIDENCE_DIR: evidenceDir,
       PLAYWRIGHT_JSON_REPORT: resolve(evidenceDir, 'playwright-report.json'),
       RELEASE_E2E_PLAYWRIGHT_REPORT: resolve(evidenceDir, 'playwright-report.json'),
+      RELEASE_E2E_PROVISIONING_ARTIFACT: playwrightProvisioningArtifact,
+      RELEASE_E2E_PROVISIONING_VERSION: playwrightProvisioningVersion,
       RELEASE_E2E_STRICT_MODE: process.env.RELEASE_E2E_STRICT_MODE || '1',
       RELEASE_E2E_ALLOW_FALLBACK: '0'
     }

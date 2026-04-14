@@ -47,7 +47,7 @@ Core outputs by phase:
 
 | Phase | Expected outputs |
 |---|---|
-| Preflight | `preflight-env-summary.json`, `backup.json`, `branch-parity.txt`, `validate-master-summary.json`, plus gate summaries (`api-contract-summary.json`, `integration-summary.json`, `migration-summary.json`, `smoke-summary.json`, `security-summary.json`, `e2e-summary.json`). |
+| Preflight | `preflight-env-summary.json`, `backup.json`, `branch-parity.txt`, `validate-master-summary.json`, `playwright-provisioning.txt`, plus gate summaries (`api-contract-summary.json`, `integration-summary.json`, `migration-summary.json`, `smoke-summary.json`, `security-summary.json`, `e2e-summary.json`). |
 | Postdeploy | `postdeploy-health.json`, `postdeploy-ready.json`, `postdeploy-exports-queue.json`, `postdeploy-telemetry-bundle.json`, `postdeploy-evaluation-summary.json`. |
 | Restore (live rollback) | `restore.json` with `executionMode=live-restore`. |
 | Restore drill (verify-only) | `restore-drill.json` with `executionMode=verify-only-drill`. |
@@ -68,7 +68,9 @@ Required gate summaries:
 
 E2E hard requirement:
 - `e2e-summary.json` must include `executionMode` plus `details.artifacts.playwrightJsonReport.path`, `details.artifacts.playwrightJsonReport.valid=true`, and `details.artifacts.playwrightJsonReport.suiteCount>=1`.
+- `e2e-summary.json` must also include `details.artifacts.playwrightEvidenceLinkage.{reportPath,provisioningArtifactPath,provisioningVersion}`.
 - The Playwright JSON report referenced by `details.artifacts.playwrightJsonReport.path` must exist, parse as valid JSON, and contain at least one collected suite/spec title; otherwise the E2E gate is failed and GO/NO-GO preflight must stop.
+- In strict browser validation modes (`validationMode=ci|unpacked-artifact` or strict release refs), the provisioning artifact referenced by `details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath` must exist.
 
 Required manifest + approval artifacts:
 - `manifest.json`
@@ -82,6 +84,7 @@ Use one policy everywhere for the `test:e2e` browser gate.
 ### Provisioning
 - Always provision Chromium with `npx playwright install --with-deps chromium` before release-blocking E2E runs (CI and operator preflight).
 - `release:go-no-go --phase preflight` performs this provisioning step before `validate:master`.
+- Expected provisioning artifact: `artifacts/release-evidence/<release-id>/playwright-provisioning.txt`.
 - Expected browser cache location is controlled by `PLAYWRIGHT_BROWSERS_PATH` (default `0`, which means Playwright-managed cache under the executing user profile). Keep this path stable across CI jobs so `chromium.executablePath()` resolves deterministically.
 
 ### Strictness + fallback behavior
@@ -96,13 +99,16 @@ Use one policy everywhere for the `test:e2e` browser gate.
 
 ### Evidence requirements (always required)
 - `e2e-summary.json` must have `status=passed`, an `executionMode`, and `details.artifacts.playwrightJsonReport.{path,valid,suiteCount}`.
+- `e2e-summary.json` must include `details.artifacts.playwrightEvidenceLinkage.reportPath` and provisioning linkage fields (`provisioningArtifactPath`, `provisioningVersion`).
 - The Playwright JSON report file must exist at `path`, parse as JSON, and contain at least one suite/spec title.
+- Strict `browser` mode evidence must include an existing `playwright-provisioning.txt` file linked from `details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath`.
 - Missing/invalid report evidence is a hard NO-GO; regenerate evidence before approval.
 
 ### Deterministic remediation path when E2E fails
 1. Re-provision browser binaries:
    - `npx playwright install --with-deps chromium`
    - If CI caches browsers, verify `PLAYWRIGHT_BROWSERS_PATH` points to a writable cache path and retry provisioning in that same path.
+   - Verify `artifacts/release-evidence/<release-id>/playwright-provisioning.txt` is created and non-empty.
 2. Re-run the canonical browser gate command:
    - run the `test:e2e` npm script.
 3. If still failing, run only the failing deterministic flow:
@@ -111,7 +117,8 @@ Use one policy everywhere for the `test:e2e` browser gate.
    - `RELEASE_E2E_ALLOW_FALLBACK=1 RELEASE_E2E_STRICT_MODE=0 npm run test:e2e`
    - Do **not** use this mode in CI or release preflight hard gates.
 5. Re-run the `test:e2e` npm script in strict mode to regenerate canonical evidence artifacts.
-6. Continue GO/NO-GO only after regenerated `e2e-summary.json` + Playwright JSON report both satisfy evidence rules.
+6. Confirm `e2e-summary.json` contains `details.artifacts.playwrightEvidenceLinkage` with a valid provisioning artifact path/version context and report path.
+7. Continue GO/NO-GO only after regenerated `e2e-summary.json` + Playwright JSON report + provisioning artifact all satisfy evidence rules.
 
 ## Admin shell operations panel quick links
 The admin shell includes an **Operations / Launch readiness** panel that mirrors this runbook and is intended as a fast triage surface.

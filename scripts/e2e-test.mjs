@@ -50,6 +50,25 @@ function resolvePlaywrightReportPath(env = process.env) {
   return resolve(process.cwd(), configured || fallbackPath)
 }
 
+function resolvePlaywrightEvidenceLinkage(env = process.env, reportPath = '') {
+  const configuredReportPath = reportPath || resolvePlaywrightReportPath(env)
+  const provisioningArtifactPath = String(env.RELEASE_E2E_PROVISIONING_ARTIFACT || '').trim()
+  const provisioningVersion = String(env.RELEASE_E2E_PROVISIONING_VERSION || '').trim()
+
+  return {
+    reportPath: configuredReportPath,
+    provisioningArtifactPath: provisioningArtifactPath || null,
+    provisioningVersion: provisioningVersion || null
+  }
+}
+
+function buildArtifactDetails(playwrightJsonReport, env = process.env, reportPath = '') {
+  return {
+    playwrightJsonReport,
+    playwrightEvidenceLinkage: resolvePlaywrightEvidenceLinkage(env, reportPath)
+  }
+}
+
 function runCommand(command, args, env, timeoutMs = 0) {
   return new Promise((resolveRun) => {
     const child = spawn(command, args, {
@@ -210,7 +229,7 @@ export async function gatePlaywrightReportOrFail({ reportPath, evidenceRecorder 
         browser: [browserSuitePattern]
       },
       artifacts: {
-        playwrightJsonReport: validation.artifact
+        ...buildArtifactDetails(validation.artifact, process.env, reportPath)
       },
       downgradeWarnings: [],
       uiContract: uiContractStatus,
@@ -304,9 +323,13 @@ export async function main(deps = {}) {
             browser: [browserSuitePattern]
           },
           artifacts: {
-            playwrightJsonReport: buildPlaywrightReportFailure(
-              playwrightReportPath,
-              'Playwright browser binaries are missing; report not generated'
+            ...buildArtifactDetails(
+              buildPlaywrightReportFailure(
+                playwrightReportPath,
+                'Playwright browser binaries are missing; report not generated'
+              ),
+              process.env,
+              playwrightReportPath
             )
           },
           downgradeWarnings: [],
@@ -326,7 +349,7 @@ export async function main(deps = {}) {
             browser: [browserSuitePattern]
           },
           artifacts: {
-            playwrightJsonReport: fallbackValidation.artifact
+            ...buildArtifactDetails(fallbackValidation.artifact, process.env, playwrightReportPath)
           },
           downgradeWarnings: [fallback.reason],
           uiContract: { status: 'passed', exitCode: 0 },
@@ -343,7 +366,7 @@ export async function main(deps = {}) {
             browser: fallbackValidation.suiteNames
           },
           artifacts: {
-            playwrightJsonReport: fallbackValidation.artifact
+            ...buildArtifactDetails(fallbackValidation.artifact, process.env, playwrightReportPath)
           },
           downgradeWarnings: [fallback.reason],
           uiContract: { status: 'passed', exitCode: 0 },
@@ -375,7 +398,7 @@ export async function main(deps = {}) {
             browser: [browserSuitePattern]
           },
           artifacts: {
-            playwrightJsonReport: playwrightArtifact
+            ...buildArtifactDetails(playwrightArtifact, process.env, playwrightReportPath)
           },
           downgradeWarnings: [],
           uiContract: { status: 'passed', exitCode: 0 },
@@ -392,10 +415,14 @@ export async function main(deps = {}) {
             browser: [browserSuitePattern]
           },
           artifacts: {
-            playwrightJsonReport: {
-              ...playwrightArtifact,
-              reason: `Local fallback accepted Playwright browser failure (${browserFallbackEnvFlag}=1)`
-            }
+            ...buildArtifactDetails(
+              {
+                ...playwrightArtifact,
+                reason: `Local fallback accepted Playwright browser failure (${browserFallbackEnvFlag}=1)`
+              },
+              process.env,
+              playwrightReportPath
+            )
           },
           downgradeWarnings: [fallback.reason],
           uiContract: { status: 'passed', exitCode: 0 },
@@ -421,7 +448,7 @@ export async function main(deps = {}) {
           browser: reportValidation.suiteNames
         },
         artifacts: {
-          playwrightJsonReport: reportValidation.artifact
+          ...buildArtifactDetails(reportValidation.artifact, process.env, playwrightReportPath)
         },
         downgradeWarnings: [],
         uiContract: { status: 'passed', exitCode: 0 },

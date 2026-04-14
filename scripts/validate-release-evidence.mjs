@@ -298,6 +298,46 @@ function validateE2ESummary(evidenceDir, { strictMode, validationMode }) {
     )
   }
 
+  const evidenceLinkage = e2eSummary?.details?.artifacts?.playwrightEvidenceLinkage
+  if (!evidenceLinkage || typeof evidenceLinkage !== 'object') {
+    fail(
+      `e2e-summary.json is missing details.artifacts.playwrightEvidenceLinkage metadata.${remediationHint([
+        'Re-run npm run test:e2e so the summary writer emits report/provisioning linkage metadata.',
+        'Do not hand-edit e2e-summary.json; regenerate via canonical gate commands.'
+      ])}`
+    )
+  }
+
+  if (typeof evidenceLinkage.reportPath !== 'string' || evidenceLinkage.reportPath.trim().length === 0) {
+    fail(
+      `e2e-summary.json must include details.artifacts.playwrightEvidenceLinkage.reportPath.${remediationHint([
+        'Re-run npm run test:e2e and verify report linkage metadata is populated.',
+        'Confirm PLAYWRIGHT_JSON_REPORT/RELEASE_E2E_PLAYWRIGHT_REPORT is set in release gate environment.'
+      ])}`
+    )
+  }
+
+  if (strictMode && mode === 'browser') {
+    if (typeof evidenceLinkage.provisioningArtifactPath !== 'string' || evidenceLinkage.provisioningArtifactPath.trim().length === 0) {
+      fail(
+        `Strict browser evidence requires details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath.${remediationHint([
+          'Run release preflight so Flow A.4a writes playwright-provisioning.txt.',
+          'Ensure RELEASE_E2E_PROVISIONING_ARTIFACT is passed to npm run validate:master.'
+        ])}`
+      )
+    }
+
+    const provisioningArtifactPath = resolve(evidenceDir, evidenceLinkage.provisioningArtifactPath)
+    if (!existsSync(provisioningArtifactPath)) {
+      fail(
+        `Playwright provisioning artifact referenced by e2e-summary.json is missing: ${evidenceLinkage.provisioningArtifactPath}.${remediationHint([
+          'Confirm details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath points to playwright-provisioning.txt under release evidence.',
+          'Re-run release preflight to regenerate provisioning + E2E evidence artifacts.'
+        ])}`
+      )
+    }
+  }
+
 }
 
 

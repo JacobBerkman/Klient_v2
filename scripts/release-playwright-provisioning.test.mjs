@@ -35,8 +35,13 @@ test('master gate keeps canonical E2E browser step label', () => {
 
 test('release go/no-go enforces strict browser mode for preflight hard gate', () => {
   const content = readScript('scripts/release-go-no-go.mjs')
+  assert.match(content, /const playwrightProvisioningArtifact = resolve\(evidenceDir, 'playwright-provisioning\.txt'\)/)
+  assert.match(content, /outputFile: playwrightProvisioningArtifact/)
+  assert.match(content, /outputMode: 'combined'/)
   assert.match(content, /PLAYWRIGHT_JSON_REPORT: resolve\(evidenceDir, 'playwright-report\.json'\)/)
   assert.match(content, /RELEASE_E2E_PLAYWRIGHT_REPORT: resolve\(evidenceDir, 'playwright-report\.json'\)/)
+  assert.match(content, /RELEASE_E2E_PROVISIONING_ARTIFACT: playwrightProvisioningArtifact/)
+  assert.match(content, /RELEASE_E2E_PROVISIONING_VERSION: playwrightProvisioningVersion/)
   assert.match(content, /RELEASE_E2E_STRICT_MODE: process\.env\.RELEASE_E2E_STRICT_MODE \|\| '1'/)
   assert.match(content, /RELEASE_E2E_ALLOW_FALLBACK: '0'/)
 })
