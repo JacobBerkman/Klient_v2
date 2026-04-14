@@ -8,6 +8,13 @@
         "path": "playwright-report.json",
         "valid": true,
         "suiteCount": 1
+      },
+      "playwrightEvidenceLinkage": {
+        "reportPath": "playwright-report.json",
+        "reportPathAbsolute": "/tmp/release-evidence/test-release/playwright-report.json",
+        "provisioningArtifactPath": null,
+        "provisioningArtifactPathAbsolute": null,
+        "provisioningVersion": null
       }
     },
     "downgradeWarnings": []

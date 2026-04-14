@@ -68,9 +68,11 @@ Required gate summaries:
 
 E2E hard requirement:
 - `e2e-summary.json` must include `executionMode` plus `details.artifacts.playwrightJsonReport.path`, `details.artifacts.playwrightJsonReport.valid=true`, and `details.artifacts.playwrightJsonReport.suiteCount>=1`.
-- `e2e-summary.json` must also include `details.artifacts.playwrightEvidenceLinkage.{reportPath,provisioningArtifactPath,provisioningVersion}`.
+- `e2e-summary.json` must also include `details.artifacts.playwrightEvidenceLinkage` with canonical evidence-dir-relative paths: `reportPath` and (strict browser mode) `provisioningArtifactPath`.
+- Optional absolute mirrors may be included as `reportPathAbsolute` and `provisioningArtifactPathAbsolute`, but they must resolve to the same files as the canonical relative fields.
+- `provisioningVersion` must be present when strict browser mode provisioning runs.
 - The Playwright JSON report referenced by `details.artifacts.playwrightJsonReport.path` must exist, parse as valid JSON, and contain at least one collected suite/spec title; otherwise the E2E gate is failed and GO/NO-GO preflight must stop.
-- In strict browser validation modes (`validationMode=ci|unpacked-artifact` or strict release refs), the provisioning artifact referenced by `details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath` must exist.
+- In strict browser validation modes (`validationMode=ci|unpacked-artifact` or strict release refs), the provisioning artifact referenced by canonical `details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath` must exist.
 
 Required manifest + approval artifacts:
 - `manifest.json`
@@ -99,7 +101,9 @@ Use one policy everywhere for the `test:e2e` browser gate.
 
 ### Evidence requirements (always required)
 - `e2e-summary.json` must have `status=passed`, an `executionMode`, and `details.artifacts.playwrightJsonReport.{path,valid,suiteCount}`.
-- `e2e-summary.json` must include `details.artifacts.playwrightEvidenceLinkage.reportPath` and provisioning linkage fields (`provisioningArtifactPath`, `provisioningVersion`).
+- `e2e-summary.json` must include `details.artifacts.playwrightEvidenceLinkage.reportPath` as an evidence-dir-relative path.
+- In strict `browser` mode, `details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath` must also be present (evidence-dir-relative) and point to an existing file.
+- Optional `reportPathAbsolute` / `provisioningArtifactPathAbsolute` mirrors are allowed but must resolve to the same canonical files.
 - The Playwright JSON report file must exist at `path`, parse as JSON, and contain at least one suite/spec title.
 - Strict `browser` mode evidence must include an existing `playwright-provisioning.txt` file linked from `details.artifacts.playwrightEvidenceLinkage.provisioningArtifactPath`.
 - Missing/invalid report evidence is a hard NO-GO; regenerate evidence before approval.

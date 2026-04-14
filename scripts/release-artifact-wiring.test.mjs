@@ -160,8 +160,8 @@ test('E2E evidence wiring includes Playwright report and provisioning linkage me
   const e2eScript = read('scripts/e2e-test.mjs')
   const releaseValidator = read('scripts/validate-release-evidence.mjs')
 
-  assert.match(e2eScript, /function resolvePlaywrightEvidenceLinkage\(env = process\.env, reportPath = ''\)/)
-  assert.match(e2eScript, /playwrightEvidenceLinkage: resolvePlaywrightEvidenceLinkage\(env, reportPath\)/)
+  assert.match(e2eScript, /function resolveEvidenceLinkageFromRuntime\(env = process\.env, reportPath = ''\)/)
+  assert.match(e2eScript, /playwrightEvidenceLinkage: resolveEvidenceLinkageFromRuntime\(env, reportPath\)/)
   assert.match(e2eScript, /RELEASE_E2E_PROVISIONING_ARTIFACT/)
   assert.match(e2eScript, /RELEASE_E2E_PROVISIONING_VERSION/)
 

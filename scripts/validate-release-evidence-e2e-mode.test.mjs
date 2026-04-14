@@ -27,9 +27,19 @@ async function createEvidenceDir({ e2eFixtureName }) {
     await writeFile(resolve(evidenceDir, file), JSON.stringify({ status: 'passed', error: null, gate }) + '\n', 'utf8')
   }
 
-  const e2eFixture = await readFile(resolve(fixturesDir, e2eFixtureName), 'utf8')
-  await writeFile(resolve(evidenceDir, 'e2e-summary.json'), `${e2eFixture.trim()}\n`, 'utf8')
+  const e2eFixture = JSON.parse(await readFile(resolve(fixturesDir, e2eFixtureName), 'utf8'))
+  const linkage = e2eFixture?.details?.artifacts?.playwrightEvidenceLinkage
+  if (linkage && typeof linkage === 'object') {
+    linkage.reportPathAbsolute = resolve(evidenceDir, linkage.reportPath || 'playwright-report.json')
+    if (typeof linkage.provisioningArtifactPath === 'string' && linkage.provisioningArtifactPath.trim().length > 0) {
+      linkage.provisioningArtifactPathAbsolute = resolve(evidenceDir, linkage.provisioningArtifactPath)
+    } else {
+      linkage.provisioningArtifactPathAbsolute = null
+    }
+  }
+  await writeFile(resolve(evidenceDir, 'e2e-summary.json'), `${JSON.stringify(e2eFixture)}\n`, 'utf8')
   await writeFile(resolve(evidenceDir, 'playwright-report.json'), '{"suites":[{"title":"release blocking smoke"}]}\n', 'utf8')
+  await writeFile(resolve(evidenceDir, 'playwright-provisioning.txt'), 'Version 1.55.0\n', 'utf8')
 
   await writeFile(resolve(evidenceDir, 'backup.json'), '{"ok":true}\n', 'utf8')
   await writeFile(resolve(evidenceDir, 'branch-parity.txt'), 'ok\n', 'utf8')
