@@ -1,17 +1,57 @@
 import { assert, createTestContext } from './test-harness.mjs'
+import { spawnSync } from 'node:child_process'
+import { resolve } from 'node:path'
 
 const TERMINAL_EXPORT_STATUSES = new Set(['completed', 'failed', 'dead-letter'])
+const workerScript = resolve(new URL('./export-worker.mjs', import.meta.url).pathname)
 
-async function processQueueTick(context) {
-  await context.request('/api/exports/process', {
-    method: 'POST',
-    headers: context.authHeaders()
+function wait(ms) {
+  return new Promise((resolveWait) => setTimeout(resolveWait, ms))
+}
+
+function processQueueTick(context) {
+  const result = spawnSync(process.execPath, [workerScript], {
+    cwd: context.testCwd,
+    env: {
+      ...process.env,
+      EXPORT_WORKER_ONCE: '1',
+      EXPORT_WORKER_POLL_MS: '25',
+      EXPORT_WORKER_LEASE_MS: '5000',
+      EXPORT_WORKER_BATCH_SIZE: '10',
+      NODE_ENV: 'test',
+      ALLOW_DEV_FALLBACK_APP_SECRET: 'true'
+    },
+    encoding: 'utf8'
   })
+  if (result.status !== 0) {
+    throw new Error(`Worker tick failed (${result.status}): ${result.stderr || result.stdout}`)
+  }
+  return result.stdout
+}
+
+function crashAfterLeaseTick(context) {
+  const result = spawnSync(process.execPath, [workerScript], {
+    cwd: context.testCwd,
+    env: {
+      ...process.env,
+      EXPORT_WORKER_ONCE: '1',
+      EXPORT_WORKER_CRASH_AFTER_LEASE: '1',
+      EXPORT_WORKER_LEASE_MS: '450',
+      EXPORT_WORKER_BATCH_SIZE: '1',
+      NODE_ENV: 'test',
+      ALLOW_DEV_FALLBACK_APP_SECRET: 'true'
+    },
+    encoding: 'utf8'
+  })
+  if (result.status !== 92) {
+    throw new Error(`Expected crash-after-lease worker exit=92, received ${result.status}. ${result.stderr || result.stdout}`)
+  }
 }
 
 async function processQueued(context, times = 1) {
   for (let i = 0; i < times; i += 1) {
-    await processQueueTick(context)
+    processQueueTick(context)
+    await wait(100)
   }
 }
 
@@ -27,7 +67,8 @@ async function waitForExport(context, matcher, { maxTicks = 40 } = {}) {
     })
     const match = exportsList.find(matcher)
     if (match) return match
-    await processQueueTick(context)
+    processQueueTick(context)
+    await wait(125)
   }
 
   return null
@@ -187,10 +228,21 @@ async function main() {
       maxAttempts: 1
     })
   })
+  const stalledRecoveryJob = await context.request('/api/exports', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: 'pdf' })
+  })
+
+  crashAfterLeaseTick(context)
+  await wait(550)
+  const queueAfterCrash = await context.request('/api/ops/exports/queue', { headers: context.opsHeaders() })
+  assert(queueAfterCrash?.queue?.stalled >= 1, 'Expected stalled job detection when worker crashes after lease acquisition.')
 
   await processQueued(context, 24)
   const completedSettled = await waitForCompletedExport(context, [completedJob.id, duplicateA.id, xlsxJob.id])
   const flakySettled = await waitForTerminalExport(context, flakyJob.id)
+  const poisonSettled = await waitForTerminalExport(context, poisonJob.id)
   const exportsList = await context.request('/api/exports', {
     headers
   })
@@ -287,18 +339,10 @@ async function main() {
       'Expected checksum stability across metadata'
     )
   }
-  assert(
-    ['queued', 'processing', 'completed', 'failed'].includes(flaky?.status),
-    'Expected retrying export to remain in known lifecycle states'
-  )
-  assert(
-    ['queued', 'retrying', 'running', 'completed', 'dead-letter', 'failed'].includes(flakySettled?.status || flaky?.status),
-    'Expected flaky export to remain in known queue lifecycle states'
-  )
-  assert(
-    ['queued', 'processing', 'failed', 'dead-letter'].includes(poison?.status),
-    'Expected poison job to remain in known lifecycle states'
-  )
+  assert(flakySettled?.status === 'completed', 'Expected flaky export to recover after transient failure and complete.')
+  assert(['completed', 'retrying'].includes(flaky?.status), 'Expected flaky export to complete after worker retry scheduling.')
+  assert(poisonSettled?.status === 'dead-letter', 'Expected poison export to enter dead-letter state after repeated failures.')
+  assert(['dead-letter', 'retrying'].includes(poison?.status), 'Expected poison export to converge to dead-letter queue state.')
   assert(
     ['failed', 'dead-letter', 'queued', 'processing'].includes(bulkRetryCandidate?.status),
     'Expected explicit bulk retry candidate to enter retry lifecycle'
@@ -336,6 +380,8 @@ async function main() {
   assert(Array.isArray(queueHealth?.queue?.activeLeases), 'Expected queue health active lease details')
   assert(typeof queueHealth?.queue?.machineState?.deadLetter?.count === 'number', 'Expected queue dead-letter machine count')
   assert(typeof queueHealth?.queue?.machineState?.completed?.count === 'number', 'Expected queue completed machine count')
+  assert(queueHealth?.queue?.machineState?.deadLetter?.count >= 1, 'Expected dead-letter machine state count to include poison job.')
+  assert(queueHealth?.queue?.stalled === 0, 'Expected stalled queue state recovery after subsequent worker ticks.')
   assert(typeof diagnostics?.data?.queue?.machineState?.retries?.active === 'number', 'Expected diagnostics retries machine state')
   assert(Array.isArray(safeRetryDryRun?.ids), 'Expected safe retry dry-run candidate ids')
   assert(safeRetryDryRun?.dryRun === true, 'Expected dry-run response from safe retry endpoint')
@@ -359,9 +405,14 @@ async function main() {
     await consumeResponse(completedDownload)
   }
   const retriedProcessed = afterRetryProcessing.find((entry) => entry.id === bulkRetryJob.id)
+  const stalledRecovered = afterRetryProcessing.find((entry) => entry.id === stalledRecoveryJob.id)
   assert(
     ['queued', 'retrying', 'running', 'completed', 'failed', 'dead-letter'].includes(retriedProcessed?.status),
     'Expected retried export to stay in known queue statuses after additional processing'
+  )
+  assert(
+    ['retrying', 'running', 'completed', 'dead-letter'].includes(stalledRecovered?.status),
+    'Expected stalled leased job to be recoverable by subsequent worker ticks'
   )
   if (retriedProcessed?.status === 'completed') {
     const retriedDownload = await context.rawRequest(`/api/exports/${retriedProcessed.id}/download`, {
@@ -397,6 +448,7 @@ async function main() {
         flakyId: flakyJob.id,
         flakyAttempts: flaky.attempts,
         poisonStatus: poison?.status,
+        stalledRecoveryStatus: afterRetryProcessing.find((entry) => entry.id === stalledRecoveryJob.id)?.status || null,
         bulkRetryCandidate: bulkRetryJob.id,
         bulkRetriedIds: bulkRetryResults.map((entry) => entry.id),
         filtered: {

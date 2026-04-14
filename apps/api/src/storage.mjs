@@ -1068,7 +1068,8 @@ export function readStorageHealth() {
     sizeBytes: 0,
     quickCheck: 'unknown',
     connected: false,
-    latencyMs: 0
+    latencyMs: 0,
+    ok: false
   }
   if (info.exists) {
     info.sizeBytes = statSync(DB_PATH).size
@@ -1078,6 +1079,7 @@ export function readStorageHealth() {
   const quickCheck = db.prepare('PRAGMA quick_check').get()
   info.quickCheck = quickCheck?.quick_check || 'unknown'
   info.latencyMs = Date.now() - now
+  info.ok = Boolean(info.connected && info.quickCheck === 'ok')
   return info
 }
 

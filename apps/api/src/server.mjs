@@ -686,8 +686,9 @@ export function createHttpServer({ modules }) {
         const queue = readExportWorkerStatus()
         const checks = {
           databaseReady: Boolean(database?.ok),
-          storageReady: Boolean(storageHealth?.ok),
+          storageReady: storageHealth?.ok === true,
           exportQueueReachable: Boolean(queue && typeof queue === 'object'),
+          exportQueueNotStalled: Number(queue?.stalled || 0) === 0,
           startupConfigValid: runtime.isProduction ? Boolean(startupDiagnostics?.ok) : true
         }
         const ready = Object.values(checks).every(Boolean)

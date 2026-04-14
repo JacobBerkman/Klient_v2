@@ -60,6 +60,7 @@ Each module exposes `service.mjs` and is composed in `apps/api/src/modules/index
 - Current stateful runtime remains in `apps/api/src/store.mjs`.
 - Repository adapters bridge module services to legacy state logic during migration.
 - Export queue orchestration (queue list/create/retry/process + bulk retry + health snapshot) is now extracted from `store.mjs` into `modules/exports/store-repository.mjs`, with `store.mjs` retaining thin permission-checked delegation methods for backward compatibility.
+- Intentional compatibility layer retained: `POST /api/exports/process` remains available as a controlled fallback for operator-driven queue drain/recovery, while release-blocking validation now executes the canonical `scripts/export-worker.mjs` worker path.
 
 ## Incremental migration delta (Task 9)
 - **Chosen high-churn domain:** exports queue lifecycle (`/api/exports`, `/api/exports/process`, retry endpoints).
