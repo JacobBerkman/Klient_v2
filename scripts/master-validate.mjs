@@ -140,14 +140,55 @@ function envForStep(step) {
   if (step.evidenceFile && step.name === 'Migration order checks') env.RELEASE_EVIDENCE_MIGRATION_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Smoke test') env.RELEASE_EVIDENCE_SMOKE_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'E2E browser checks') {
+    const strictMode = resolveValidateMasterE2EStrictMode({
+      strictOverride: process.env.RELEASE_E2E_STRICT_MODE,
+      allowFallbackOverride: process.env.RELEASE_E2E_ALLOW_FALLBACK,
+      gitCheckout: isGitCheckout()
+    })
     env.RELEASE_EVIDENCE_E2E_FILE = step.evidenceFile
-    env.RELEASE_E2E_STRICT_MODE = '1'
-    env.RELEASE_E2E_ALLOW_FALLBACK = '0'
+    env.RELEASE_E2E_STRICT_MODE = strictMode.strictMode ? '1' : '0'
+    env.RELEASE_E2E_ALLOW_FALLBACK = strictMode.allowFallback ? '1' : '0'
     env.PLAYWRIGHT_JSON_REPORT = resolve(defaultEvidenceDir, 'playwright-report.json')
     env.RELEASE_E2E_PLAYWRIGHT_REPORT = env.PLAYWRIGHT_JSON_REPORT
   }
   if (step.evidenceFile && step.name === 'Security checks') env.RELEASE_EVIDENCE_SECURITY_FILE = step.evidenceFile
   return env
+}
+
+function parseBooleanSignal(value) {
+  if (typeof value !== 'string') return null
+  const normalized = value.trim().toLowerCase()
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false
+  return null
+}
+
+export function resolveValidateMasterE2EStrictMode({
+  strictOverride,
+  allowFallbackOverride,
+  gitCheckout
+}) {
+  const strictSignal = parseBooleanSignal(strictOverride)
+  const fallbackSignal = parseBooleanSignal(allowFallbackOverride)
+  if (strictSignal !== null || fallbackSignal !== null) {
+    const strictMode = strictSignal ?? !fallbackSignal
+    return {
+      strictMode,
+      allowFallback: fallbackSignal ?? !strictMode
+    }
+  }
+
+  if (!gitCheckout) {
+    return {
+      strictMode: false,
+      allowFallback: true
+    }
+  }
+
+  return {
+    strictMode: true,
+    allowFallback: false
+  }
 }
 
 function timeoutForStep(step) {

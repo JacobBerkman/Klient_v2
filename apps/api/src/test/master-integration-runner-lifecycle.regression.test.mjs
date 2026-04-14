@@ -193,7 +193,8 @@ test('integration aggregate leaves no orphaned API server handles after exports 
 test('validate master runs integration and aggregate handoff regression from unpacked zip-style artifact', { concurrency: false }, async () => {
   const artifactRoot = await mkdtemp(resolve(tmpdir(), 'klient-artifact-'))
   const unpackedRoot = resolve(artifactRoot, 'unpacked')
-  const evidenceFile = resolve(artifactRoot, 'validate-master-summary.json')
+  const evidenceDir = resolve(artifactRoot, 'release-evidence')
+  const evidenceFile = resolve(evidenceDir, 'validate-master-summary.json')
 
   await cp(repoRoot, unpackedRoot, {
     recursive: true,
@@ -214,7 +215,7 @@ test('validate master runs integration and aggregate handoff regression from unp
         ...process.env,
         VALIDATE_MASTER_STEPS: 'integration-suites,aggregate-handoff-regression',
         INTEGRATION_SUITES: 'integration-templates.mjs,integration-exports.mjs',
-        RELEASE_EVIDENCE_FILE: evidenceFile
+        RELEASE_EVIDENCE_DIR: evidenceDir
       }
     })
 
@@ -227,6 +228,43 @@ test('validate master runs integration and aggregate handoff regression from unp
     const handoffStep = summary.steps.find((step) => step.key === 'aggregate-handoff-regression')
     assert.equal(integrationStep?.status, 'passed')
     assert.equal(handoffStep?.status, 'passed')
+  } finally {
+    await rm(artifactRoot, { recursive: true, force: true })
+  }
+})
+
+test('validate master allows E2E fallback in unpacked zip-style artifact flow when strict mode is not explicitly requested', { concurrency: false }, async () => {
+  const artifactRoot = await mkdtemp(resolve(tmpdir(), 'klient-artifact-e2e-'))
+  const unpackedRoot = resolve(artifactRoot, 'unpacked')
+  const evidenceDir = resolve(artifactRoot, 'release-evidence')
+  const evidenceFile = resolve(evidenceDir, 'validate-master-summary.json')
+
+  await cp(repoRoot, unpackedRoot, {
+    recursive: true,
+    filter(sourcePath) {
+      return !sourcePath.includes('/.git')
+    }
+  })
+
+  try {
+    const result = await runChildProcess({
+      scriptPath: resolve(unpackedRoot, 'scripts/master-validate.mjs'),
+      label: 'master-validate-unpacked-artifact-e2e-fallback',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeoutMs: 180000,
+      cwd: unpackedRoot,
+      env: {
+        ...process.env,
+        VALIDATE_MASTER_STEPS: 'e2e-browser-checks',
+        RELEASE_EVIDENCE_DIR: evidenceDir
+      }
+    })
+
+    assert.equal(result.code, 0)
+
+    const summary = JSON.parse(await readFile(evidenceFile, 'utf8'))
+    const e2eStep = summary.steps.find((step) => step.key === 'e2e-browser-checks')
+    assert.equal(e2eStep?.status, 'passed')
   } finally {
     await rm(artifactRoot, { recursive: true, force: true })
   }
