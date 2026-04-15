@@ -1,8 +1,15 @@
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { assert, createTestContext } from './test-harness.mjs'
+import { createEvidenceRecorder } from './release-evidence.mjs'
 
 const workerScript = resolve(new URL('./export-worker.mjs', import.meta.url).pathname)
+const evidence = createEvidenceRecorder({
+  gate: 'release-flow',
+  defaultFile: 'release-flow-summary.json',
+  envVarName: 'RELEASE_EVIDENCE_RELEASE_FLOW_FILE',
+  command: 'npm run test:release-flow'
+})
 
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
@@ -59,9 +66,16 @@ function summarizeAndExit(error = null) {
 
   if (error) {
     summary.failure = {
-      message: error?.message || String(error)
+      message: error?.message || String(error),
+      failedStep: steps.find((step) => step.status === 'failed')?.name || null
     }
   }
+
+  evidence.finalize({
+    status: error ? 'failed' : 'passed',
+    details: summary,
+    error
+  })
 
   console.log(JSON.stringify(summary, null, 2))
 
@@ -201,15 +215,23 @@ async function main() {
 
     await runStep('verify export artifact is ready and retrievable', async () => {
       let settled = null
-      for (let attempt = 0; attempt < 40; attempt += 1) {
+      const startedPollingAt = Date.now()
+      const timeoutMs = Number.parseInt(process.env.RELEASE_FLOW_EXPORT_TIMEOUT_MS || '15000', 10)
+      for (let attempt = 0; Date.now() - startedPollingAt < timeoutMs; attempt += 1) {
         runWorkerTick(context)
         const list = await context.request('/api/exports?sort=updatedAt_desc', { headers: advisorHeaders })
         settled = list.find((entry) => entry.id === exportJob.exportJobId) || null
         if (settled?.status === 'completed') break
+        if (['failed', 'dead-letter'].includes(String(settled?.status || ''))) {
+          throw new Error(`Export entered terminal failure state (${settled.status}): ${settled?.failureReason || 'unknown'}`)
+        }
         await wait(100)
       }
 
-      assert(settled?.status === 'completed', 'Expected export job to reach completed status.')
+      assert(
+        settled?.status === 'completed',
+        `Expected export job to reach completed status before timeout (${timeoutMs}ms). Last status=${String(settled?.status || 'unknown')}`
+      )
       assert(settled?.artifactAvailable === true, 'Expected completed export to report artifactAvailable=true.')
       assert(settled?.artifactReady === true, 'Expected completed export to report artifactReady=true.')
 

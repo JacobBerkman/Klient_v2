@@ -65,6 +65,7 @@ const canonicalEvidenceSummaries = [
   'api-contract-summary.json',
   'integration-summary.json',
   'migration-summary.json',
+  'release-flow-summary.json',
   'smoke-summary.json',
   'e2e-summary.json',
   'security-summary.json'

@@ -21,6 +21,7 @@ const REQUIRED_SUMMARY_FILES = [
   'api-contract-summary.json',
   'integration-summary.json',
   'migration-summary.json',
+  'release-flow-summary.json',
   'smoke-summary.json',
   'security-summary.json',
   'e2e-summary.json',
@@ -438,6 +439,7 @@ function validateKeyGateSummarySemantics(evidenceDir, phases) {
     { fileName: 'api-contract-summary.json', gateName: 'contract' },
     { fileName: 'integration-summary.json', gateName: 'integration' },
     { fileName: 'migration-summary.json', gateName: 'migration' },
+    { fileName: 'release-flow-summary.json', gateName: 'release-flow' },
     { fileName: 'smoke-summary.json', gateName: 'smoke' },
     { fileName: 'security-summary.json', gateName: 'security' },
     { fileName: 'validate-master-summary.json', gateName: 'validate-master' }

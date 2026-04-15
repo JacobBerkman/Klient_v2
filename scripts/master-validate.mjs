@@ -36,7 +36,11 @@ const baseGateStepDefinitions = {
     args: ['run', 'test:integration'],
     evidenceFile: resolve(defaultEvidenceDir, 'integration-summary.json')
   },
-  'Canonical release flow': { command: 'npm', args: ['run', 'test:release-flow'], evidenceFile: null },
+  'Canonical release flow': {
+    command: 'npm',
+    args: ['run', 'test:release-flow'],
+    evidenceFile: resolve(defaultEvidenceDir, 'release-flow-summary.json')
+  },
   'Aggregate handoff regression': { command: 'npm', args: ['run', 'test:integration:handoff'], evidenceFile: null },
   'Migration order checks': {
     command: 'npm',
@@ -142,6 +146,9 @@ function envForStep(step) {
   if (step.evidenceFile && step.name === 'Integration suites') env.RELEASE_EVIDENCE_INTEGRATION_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Migration order checks') env.RELEASE_EVIDENCE_MIGRATION_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Smoke test') env.RELEASE_EVIDENCE_SMOKE_FILE = step.evidenceFile
+  if (step.evidenceFile && step.name === 'Canonical release flow') {
+    env.RELEASE_EVIDENCE_RELEASE_FLOW_FILE = step.evidenceFile
+  }
   if (step.evidenceFile && step.name === 'E2E browser checks') {
     const strictMode = resolveValidateMasterE2EStrictMode({
       strictOverride: process.env.RELEASE_E2E_STRICT_MODE,
@@ -323,28 +330,117 @@ function buildFailureMessage({ failureError, failedStep }) {
 const results = []
 let failure = null
 const startedAt = Date.now()
+const defaultEvidenceFile = resolve(defaultEvidenceDir, 'validate-master-summary.json')
+const evidenceFile = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_FILE || defaultEvidenceFile)
+let finalSummary = null
+
+function buildSummary({ failureError = null }) {
+  return {
+    schemaVersion: '1.1.0',
+    generatedAt: toIsoTimestamp(Date.now()),
+    nodeEnv: process.env.NODE_ENV || null,
+    evidenceDir: defaultEvidenceDir,
+    status: failureError ? 'failed' : 'passed',
+    startedAt: toIsoTimestamp(startedAt),
+    finishedAt: toIsoTimestamp(Date.now()),
+    durationMs: Date.now() - startedAt,
+    failedStep: failureError ? results[results.length - 1]?.name || null : null,
+    error: failureError ? { message: String(failureError?.message || failureError) } : null,
+    steps: stepsToRun.map((step) => {
+      const executed = results.find((result) => result.name === step.name)
+      if (!executed) {
+        return {
+          name: step.name,
+          command: formatCommand(step),
+          evidenceFile: step.evidenceFile,
+          status: 'skipped',
+          durationMs: null,
+          startedAt: null,
+          finishedAt: null
+        }
+      }
+      return {
+        name: executed.name,
+        command: formatCommand(executed),
+        evidenceFile: step.evidenceFile,
+        status: executed.status,
+        durationMs: Number.isFinite(executed.durationMs) ? executed.durationMs : null,
+        startedAt: executed.startedAt,
+        finishedAt: executed.finishedAt
+      }
+    })
+  }
+}
+
+function persistSummary(summary) {
+  mkdirSync(dirname(evidenceFile), { recursive: true })
+  writeFileSync(evidenceFile, JSON.stringify(summary, null, 2))
+}
 
 const stepsToRun = resolveGateStepsFromEnv()
+persistSummary({
+  schemaVersion: '1.1.0',
+  generatedAt: toIsoTimestamp(Date.now()),
+  nodeEnv: process.env.NODE_ENV || null,
+  evidenceDir: defaultEvidenceDir,
+  status: 'running',
+  startedAt: toIsoTimestamp(startedAt),
+  finishedAt: null,
+  durationMs: null,
+  failedStep: null,
+  error: null,
+  steps: stepsToRun.map((step) => ({
+    name: step.name,
+    command: formatCommand(step),
+    evidenceFile: step.evidenceFile,
+    status: 'pending',
+    durationMs: null,
+    startedAt: null,
+    finishedAt: null
+  }))
+})
+
+function finalizeGateSummary(failureError = null) {
+  if (finalSummary) return finalSummary
+  finalSummary = buildSummary({ failureError })
+  persistSummary(finalSummary)
+  return finalSummary
+}
+
+const failOnSignal = (signal) => {
+  const interruption = new Error(`validate:master interrupted by ${signal}`)
+  if (!failure) {
+    failure = interruption
+  }
+  finalizeGateSummary(failure)
+  process.exit(1)
+}
+
+process.on('SIGINT', () => failOnSignal('SIGINT'))
+process.on('SIGTERM', () => failOnSignal('SIGTERM'))
 
 for (let index = 0; index < stepsToRun.length; index += 1) {
   const step = stepsToRun[index]
+  const stepStartedAt = Date.now()
   try {
     // eslint-disable-next-line no-await-in-loop
     const result = await runStep(step, index, stepsToRun.length)
+    const finishedAt = Date.now()
     results.push({
       ...step,
       status: 'passed',
       durationMs: result.durationMs,
-      startedAt: toIsoTimestamp(Date.now() - result.durationMs),
-      finishedAt: toIsoTimestamp(Date.now())
+      startedAt: toIsoTimestamp(stepStartedAt),
+      finishedAt: toIsoTimestamp(finishedAt)
     })
   } catch (error) {
+    const failedAt = Date.now()
     results.push({
       ...step,
       status: 'failed',
-      durationMs: null,
-      startedAt: null,
-      finishedAt: toIsoTimestamp(Date.now())
+      durationMs: failedAt - stepStartedAt,
+      startedAt: toIsoTimestamp(stepStartedAt),
+      finishedAt: toIsoTimestamp(failedAt)
     })
     failure = error
     break
@@ -381,44 +477,7 @@ if (failure) {
   process.stdout.write('\n✅ Hard release gate passed.\n')
 }
 
-const summary = {
-  schemaVersion: '1.1.0',
-  generatedAt: toIsoTimestamp(Date.now()),
-  nodeEnv: process.env.NODE_ENV || null,
-  evidenceDir: defaultEvidenceDir,
-  status: failure ? 'failed' : 'passed',
-  startedAt: toIsoTimestamp(startedAt),
-  finishedAt: toIsoTimestamp(Date.now()),
-  failedStep: failure ? results[results.length - 1]?.name || null : null,
-  steps: stepsToRun.map((step) => {
-    const executed = results.find((result) => result.name === step.name)
-    if (!executed) {
-      return {
-        name: step.name,
-        command: formatCommand(step),
-        evidenceFile: step.evidenceFile,
-        status: 'skipped',
-        durationMs: null,
-        startedAt: null,
-        finishedAt: null
-      }
-    }
-    return {
-      name: executed.name,
-      command: formatCommand(executed),
-      evidenceFile: step.evidenceFile,
-      status: executed.status,
-      durationMs: Number.isFinite(executed.durationMs) ? executed.durationMs : null,
-      startedAt: executed.startedAt,
-      finishedAt: executed.finishedAt
-    }
-  })
-}
-
-const defaultEvidenceFile = resolve(defaultEvidenceDir, 'validate-master-summary.json')
-const evidenceFile = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_FILE || defaultEvidenceFile)
-mkdirSync(dirname(evidenceFile), { recursive: true })
-writeFileSync(evidenceFile, JSON.stringify(summary, null, 2))
+const summary = finalizeGateSummary(failure)
 process.stdout.write(`\nRelease evidence summary written to ${evidenceFile}\n`)
 process.stdout.write(`RELEASE_EVIDENCE_JSON=${evidenceFile}\n`)
 

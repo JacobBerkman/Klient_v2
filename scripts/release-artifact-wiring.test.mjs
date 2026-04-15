@@ -34,6 +34,7 @@ test('preflight evidence summary filenames stay aligned across gate orchestratio
     'e2e-summary.json',
     'integration-summary.json',
     'migration-summary.json',
+    'release-flow-summary.json',
     'security-summary.json',
     'smoke-summary.json'
   ]
@@ -54,6 +55,7 @@ test('validate master evidence env var wiring remains explicit for every evidenc
     ['API contract tests', 'RELEASE_EVIDENCE_CONTRACT_FILE'],
     ['Integration suites', 'RELEASE_EVIDENCE_INTEGRATION_FILE'],
     ['Migration order checks', 'RELEASE_EVIDENCE_MIGRATION_FILE'],
+    ['Canonical release flow', 'RELEASE_EVIDENCE_RELEASE_FLOW_FILE'],
     ['Smoke test', 'RELEASE_EVIDENCE_SMOKE_FILE'],
     ['E2E browser checks', 'RELEASE_EVIDENCE_E2E_FILE'],
     ['Security checks', 'RELEASE_EVIDENCE_SECURITY_FILE']
@@ -101,6 +103,7 @@ test('validate:master base gate order is locked as a deterministic invariant', (
     'Negative-path RBAC checks',
     'Negative-path tenancy checks',
     'Integration suites',
+    'Canonical release flow',
     'Aggregate handoff regression',
     'Migration order checks',
     'Smoke test',
@@ -124,6 +127,7 @@ test('master-integration suite order is locked as a deterministic invariant', ()
     'integration-rbac-matrix.mjs',
     'integration-templates.mjs',
     'integration-exports.mjs',
+    'integration-export-stress.mjs',
     'integration-portal-lifecycle.mjs',
     'integration-submission-repeatable-items.mjs',
     'integration-analytics.mjs',

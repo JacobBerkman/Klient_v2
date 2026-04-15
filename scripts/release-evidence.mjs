@@ -41,7 +41,8 @@ export function createEvidenceRecorder({
   defaultFile,
   envVarName,
   command,
-  metadata = {}
+  metadata = {},
+  autoFinalizeOnSignals = true
 }) {
   const startedAtMs = Date.now()
   const evidenceFile = resolveEvidenceFile(defaultFile, envVarName)
@@ -62,22 +63,62 @@ export function createEvidenceRecorder({
   }
 
   persist(basePayload)
+  let finalized = false
+
+  const listeners = []
+  const attach = (eventName, handler) => {
+    process.on(eventName, handler)
+    listeners.push([eventName, handler])
+  }
+  const detachListeners = () => {
+    for (const [eventName, handler] of listeners) {
+      process.removeListener(eventName, handler)
+    }
+    listeners.length = 0
+  }
+
+  const finalize = ({ status, details = {}, error = null, fields = {} }) => {
+    if (finalized) return null
+    finalized = true
+    detachListeners()
+    const finishedAtMs = Date.now()
+    const payload = {
+      ...basePayload,
+      ...fields,
+      status,
+      finishedAt: toIsoTimestamp(finishedAtMs),
+      durationMs: finishedAtMs - startedAtMs,
+      details,
+      error: error ? { message: String(error.message || error) } : null
+    }
+    persist(payload)
+    return payload
+  }
+
+  if (autoFinalizeOnSignals) {
+    attach('SIGINT', () => {
+      finalize({ status: 'failed', error: new Error(`${gate} interrupted by SIGINT`) })
+      process.exit(130)
+    })
+    attach('SIGTERM', () => {
+      finalize({ status: 'failed', error: new Error(`${gate} interrupted by SIGTERM`) })
+      process.exit(143)
+    })
+    attach('uncaughtException', (error) => {
+      finalize({ status: 'failed', error })
+    })
+    attach('unhandledRejection', (reason) => {
+      finalize({ status: 'failed', error: reason instanceof Error ? reason : new Error(String(reason)) })
+    })
+    attach('beforeExit', () => {
+      if (!finalized) {
+        finalize({ status: 'failed', error: new Error(`${gate} exited without explicit evidence finalization`) })
+      }
+    })
+  }
 
   return {
     evidenceFile,
-    finalize({ status, details = {}, error = null, fields = {} }) {
-      const finishedAtMs = Date.now()
-      const payload = {
-        ...basePayload,
-        ...fields,
-        status,
-        finishedAt: toIsoTimestamp(finishedAtMs),
-        durationMs: finishedAtMs - startedAtMs,
-        details,
-        error: error ? { message: String(error.message || error) } : null
-      }
-      persist(payload)
-      return payload
-    }
+    finalize
   }
 }
