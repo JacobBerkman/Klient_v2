@@ -1,5 +1,6 @@
 import { runAuditedMutation } from '../audit/service.mjs'
 import { createFirmContext } from '../shared/tenancy.mjs'
+import { log } from '../../runtime.mjs'
 
 function normalizeFailureClass(job = {}) {
   const explicit = String(job?.failureClass || job?.failure?.classification || '').toLowerCase()
@@ -125,17 +126,50 @@ export function createExportsService({ exportsRepository, policy, store }) {
     },
     create(user, input) {
       policy.requireGuard(user, 'canWriteExports')
-      return runAuditedMutation(store, () => exportsRepository.create(createFirmContext(user), input))
+      const created = runAuditedMutation(store, () => exportsRepository.create(createFirmContext(user), input))
+      log('info', 'export.lifecycle', {
+        type: 'export.lifecycle',
+        entity: 'export',
+        id: created?.id || null,
+        status: 'queued',
+        firmId: user?.firmId || null,
+        userId: user?.id || null
+      })
+      return created
     },
     processQueuedExports(user) {
       policy.requireGuard(user, 'canProcessExports')
-      return exportsRepository.processQueued()
+      const result = exportsRepository.processQueued()
+      log('info', 'export.lifecycle', {
+        type: 'export.lifecycle',
+        entity: 'export_batch',
+        id: null,
+        status: result?.failed > 0 ? 'completed_with_failures' : 'completed',
+        firmId: user?.firmId || null,
+        userId: user?.id || null,
+        details: {
+          leased: Number(result?.leased || 0),
+          processed: Number(result?.processed || 0),
+          failed: Number(result?.failed || 0),
+          deadLettered: Number(result?.deadLettered || 0)
+        }
+      })
+      return result
     },
     retry(user, exportId) {
       policy.requireGuard(user, 'canProcessExports')
-      return runAuditedMutation(store, () =>
+      const result = runAuditedMutation(store, () =>
         normalizeExportJobPayload(exportsRepository.retry(createFirmContext(user), exportId))
       )
+      log('info', 'export.lifecycle', {
+        type: 'export.lifecycle',
+        entity: 'export',
+        id: exportId,
+        status: 'retrying',
+        firmId: user?.firmId || null,
+        userId: user?.id || null
+      })
+      return result
     },
     getQueueHealth(user) {
       policy.requireGuard(user, 'canReadExports')

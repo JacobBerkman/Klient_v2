@@ -152,6 +152,96 @@ test('request.completed logs redact sensitive query values when LOG_REQUEST_QUER
   }
 })
 
+test('GET /system/status returns lightweight operator diagnostics payload', async () => {
+  const fakeUser = { id: 'u-ops', firmId: 'f1', role: 'admin' }
+  const modules = {
+    auth: { requireUser: () => fakeUser },
+    policy: { requireGuard: () => true },
+    exports: {
+      getQueueHealth: () => ({ queue: { queued: 2, running: 1, failed: 1, deadLetter: 1, stalled: 0, activeLeasesCount: 1 } }),
+      list: () => [
+        { id: 'exp-1', status: 'failed', attempts: 3, failureReason: 'render failed', updatedAt: '2026-04-15T10:00:00.000Z' },
+        { id: 'exp-2', status: 'completed', updatedAt: '2026-04-15T09:00:00.000Z' }
+      ]
+    }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+
+  const response = await fetch(`http://${address.address}:${address.port}/system/status`, {
+    headers: { cookie: '__Host-klient-session=token' }
+  })
+  const body = await response.json()
+  assert.equal(response.status, 200)
+  assert.deepEqual(body.queue, { queued: 2, active: 1, failed: 2 })
+  assert.equal(body.worker.health, 'running')
+  assert.equal(Array.isArray(body.recentExportFailures), true)
+  assert.equal(body.recentExportFailures[0].id, 'exp-1')
+  assert.equal(typeof body.dependencies.database.connected, 'boolean')
+
+  await close(server)
+})
+
+test('GET /health exposes dependency checks', async () => {
+  const server = createHttpServer({ modules: new Proxy({}, { get: () => ({}) }) })
+  const address = await listen(server)
+  const response = await fetch(`http://${address.address}:${address.port}/health`)
+  const body = await response.json()
+  assert.equal([200, 503].includes(response.status), true)
+  assert.equal(typeof body.healthy, 'boolean')
+  assert.equal(typeof body.checks.databaseReady, 'boolean')
+  assert.equal(typeof body.checks.exportWorkerReady, 'boolean')
+  assert.equal(typeof body.checks.storageReady, 'boolean')
+  assert.ok(body.dependencies?.database)
+  assert.ok(body.dependencies?.storage)
+  await close(server)
+})
+
+test('mutation logs include consistent operational structure', async () => {
+  const fakeUser = { id: 'u1', firmId: 'f1', role: 'admin' }
+  const modules = {
+    auth: { requireUser: () => fakeUser },
+    policy: { requireGuard: () => true },
+    profiles: { updateProfile: async () => ({ id: 'p1', firstName: 'Casey' }) }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const base = `http://${address.address}:${address.port}`
+  const cookie = '__Host-klient-session=token'
+  const bootstrap = await fetch(`${base}/api/csrf`, { headers: { cookie } })
+  const csrf = await bootstrap.json()
+
+  const lines = await withCapturedLogs(async () => {
+    await fetch(`${base}/api/profiles/p1`, {
+      method: 'PATCH',
+      headers: {
+        cookie,
+        'content-type': 'application/json',
+        'x-csrf-token': csrf.csrfToken,
+        origin: base,
+        referer: `${base}/`
+      },
+      body: JSON.stringify({ firstName: 'Casey' })
+    })
+  })
+
+  const entries = lines
+    .map((line) => {
+      try {
+        return JSON.parse(line)
+      } catch {
+        return null
+      }
+    })
+    .filter(Boolean)
+  const opEntry = entries.find((entry) => entry.message === 'operational.event' && entry.type === 'mutation.profile.updated')
+  assert.ok(opEntry)
+  assert.equal(opEntry.entity, 'profile')
+  assert.equal(opEntry.id, 'p1')
+  assert.equal(opEntry.status, 'updated')
+  await close(server)
+})
+
 test('pipeline stage config routes are transport-only and call pipelineStages module', async () => {
   const calls = []
   const fakeUser = { id: 'u1', firmId: 'f1', role: 'admin' }

@@ -24,6 +24,13 @@ import { createStore } from './store.mjs'
 import { createModules } from './modules/index.mjs'
 import { createKeyProvider } from './pii-crypto.mjs'
 import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
+import {
+  classifyWorkerHealth,
+  logOperationalEvent,
+  pickRecentExportFailures,
+  readLastSuccessfulReleaseValidationTimestamp,
+  summarizeExportQueue
+} from './operability.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const publicDir = resolve(__dirname, '../../web/public')
@@ -396,10 +403,6 @@ function analyticsFiltersFrom(url) {
   }
 }
 
-function csrfHeadersForRequest(req, pathname, method, requestId) {
-  return { error: null, headers: {} }
-}
-
 function parseBody(req) {
   return new Promise((resolveBody, reject) => {
     let data = ''
@@ -649,6 +652,13 @@ export function createHttpServer({ modules }) {
         if (token) {
           deleteCsrfTokensBySession(token)
         }
+        logOperationalEvent(log, 'warn', 'auth.session.rejected', {
+          entity: 'session',
+          id: token ? '[present]' : null,
+          status: 'rejected',
+          requestId,
+          details: { reason: 'authentication_required' }
+        })
         rejectSession('authentication_required')
         throw error
       }
@@ -673,10 +683,35 @@ export function createHttpServer({ modules }) {
 
     try {
       if (pathname === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
-        finalizeLog(200)
+        const database = ensureDatabaseReady()
+        const storageHealth = readStorageHealth()
+        const queue = readExportWorkerStatus()
+        const checks = {
+          databaseReady: Boolean(database?.ok),
+          exportWorkerReady: Boolean(queue && typeof queue === 'object') && Number(queue?.stalled || 0) === 0,
+          storageReady: storageHealth?.ok === true
+        }
+        const healthy = Object.values(checks).every(Boolean)
+        const statusCode = healthy ? 200 : 503
+        finalizeLog(statusCode)
         return replyJson(
-          200,
-          { status: 'ok', service: runtime.serviceName, uptimeSeconds: Math.round(process.uptime()) },
+          statusCode,
+          {
+            status: healthy ? 'ok' : 'degraded',
+            healthy,
+            service: runtime.serviceName,
+            uptimeSeconds: Math.round(process.uptime()),
+            checks,
+            dependencies: {
+              database,
+              exportWorker: {
+                stalled: Number(queue?.stalled || 0),
+                running: Number(queue?.running || 0),
+                queued: Number(queue?.queued || 0)
+              },
+              storage: storageHealth
+            }
+          },
           { 'X-Request-Id': requestId }
         )
       }
@@ -710,9 +745,13 @@ export function createHttpServer({ modules }) {
             startupDiagnostics
           }
         }
-        finalizeLog(200)
+        const unhealthyDependencies = Object.entries(checks)
+          .filter(([, passed]) => !passed)
+          .map(([key]) => key)
+        const statusCode = ready ? 200 : 503
+        finalizeLog(statusCode)
         return replyJson(
-          200,
+          statusCode,
           {
             status: 'ready',
             ready,
@@ -720,6 +759,7 @@ export function createHttpServer({ modules }) {
             bootedAt,
             uptimeSeconds: Math.round(process.uptime()),
             checks,
+            unhealthyDependencies,
             diagnostics: includeDiagnostics
               ? {
                   mode: 'privileged',
@@ -737,6 +777,41 @@ export function createHttpServer({ modules }) {
               exportsQueue: '/api/ops/exports/queue',
               telemetry: '/api/ops/diagnostics',
               exportRuntime: '/api/ops/export-runtime'
+            }
+          },
+          { 'X-Request-Id': requestId }
+        )
+      }
+      if ((pathname === '/system/status' || pathname === '/admin/diagnostics') && req.method === 'GET') {
+        const user = authorizeOpsRequest() || authorize('canReadDiagnostics')
+        const queueHealth = modules.exports.getQueueHealth(user)
+        const queue = queueHealth?.queue || readExportWorkerStatus()
+        const exportJobs = modules.exports.list(user, { sort: 'updatedAt_desc' })
+        const database = ensureDatabaseReady()
+        const lastReleaseValidationAt = await readLastSuccessfulReleaseValidationTimestamp()
+        const queueSummary = summarizeExportQueue(queue)
+        finalizeLog(200, { opsAuth: user?.authAudit || opsAuditMetadata })
+        return replyJson(
+          200,
+          {
+            generatedAt: new Date().toISOString(),
+            queue: queueSummary,
+            worker: {
+              health: classifyWorkerHealth(queue),
+              stalledCount: Number(queue?.stalled || 0),
+              activeLeases: Number(queue?.activeLeasesCount ?? queue?.activeLeases ?? 0)
+            },
+            recentExportFailures: pickRecentExportFailures(exportJobs, 5),
+            dependencies: {
+              database: {
+                connected: Boolean(database?.ok),
+                status: database?.ok ? 'ok' : 'unhealthy',
+                details: database
+              },
+              storage: readStorageHealth()
+            },
+            releaseValidation: {
+              lastSuccessfulAt: lastReleaseValidationAt
             }
           },
           { 'X-Request-Id': requestId }
@@ -892,9 +967,26 @@ export function createHttpServer({ modules }) {
       }
       if (pathname === '/api/login' && req.method === 'POST') {
         authorize('canLogin', { allowAnonymous: true })
-        const result = modules.auth.login(await parseBody(req))
+        let result
+        try {
+          result = modules.auth.login(await parseBody(req))
+        } catch (error) {
+          logOperationalEvent(log, 'warn', 'auth.login.failed', {
+            entity: 'auth',
+            id: null,
+            status: 'failed',
+            requestId,
+            details: { reason: error?.message || 'login_failed' }
+          })
+          throw error
+        }
         if (result?.mfaRequired) {
-          log('info', 'auth.login.challenge_required', { requestId, userId: result?.user?.id || null })
+          logOperationalEvent(log, 'info', 'auth.login.challenge_required', {
+            entity: 'user',
+            id: result?.user?.id || null,
+            status: 'challenge_required',
+            requestId
+          })
           finalizeLog(200, { mfaRequired: true })
           return replyJson(200, { ...result, csrfToken: null, csrfExpiresAt: null }, { 'X-Request-Id': requestId })
         }
@@ -904,7 +996,13 @@ export function createHttpServer({ modules }) {
           deleteCsrfTokensBySession(priorToken)
           securityDiagnostics.session.rotatedTotal += 1
         }
-        log('info', 'auth.login.succeeded', { requestId, userId: result?.user?.id, firmId: result?.user?.firmId })
+        logOperationalEvent(log, 'info', 'auth.login.succeeded', {
+          entity: 'user',
+          id: result?.user?.id || null,
+          status: 'succeeded',
+          requestId,
+          firmId: result?.user?.firmId
+        })
         const csrf = issueCsrfForSession(req, result.token, result.user.id)
         finalizeLog(200)
         return replyJson(
@@ -1122,12 +1220,14 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canMovePipeline')
         const result = modules.pipeline.moveProfileStage(user, id, body.stage, body.beforeProfileId || null)
-        log('info', 'mutation.pipeline.stage_moved', {
+        logOperationalEvent(log, 'info', 'mutation.pipeline.stage_moved', {
+          entity: 'profile',
+          id,
+          status: 'updated',
           requestId,
           userId: user.id,
           firmId: user.firmId,
-          profileId: id,
-          stage: body.stage
+          details: { stage: body.stage }
         })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -1177,7 +1277,14 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteProfiles')
         const result = await modules.profiles.updateProfile(user, id, await parseBody(req))
-        log('info', 'mutation.profile.updated', { requestId, userId: user.id, firmId: user.firmId, profileId: id })
+        logOperationalEvent(log, 'info', 'mutation.profile.updated', {
+          entity: 'profile',
+          id,
+          status: 'updated',
+          requestId,
+          userId: user.id,
+          firmId: user.firmId
+        })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -1523,13 +1630,14 @@ export function createHttpServer({ modules }) {
           ...body,
           idempotencyKey: body.idempotencyKey || (typeof idempotencyKey === 'string' ? idempotencyKey : null)
         })
-        log('info', 'export.lifecycle.created', {
+        logOperationalEvent(log, 'info', 'export.lifecycle.queued', {
+          entity: 'export',
+          id: result?.id || null,
+          status: 'queued',
           requestId,
           userId: user.id,
           firmId: user.firmId,
-          exportId: result?.id,
-          templateId: body?.templateId,
-          clientId: body?.clientId
+          details: { templateId: body?.templateId || null, clientId: body?.clientId || null }
         })
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
@@ -1538,6 +1646,21 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canProcessExports')
         const result = modules.exports.processQueuedExports(user)
+        logOperationalEvent(log, 'info', 'export.lifecycle.processing_batch', {
+          entity: 'export_batch',
+          id: requestId,
+          status: result?.failed > 0 ? 'completed_with_failures' : 'completed',
+          requestId,
+          userId: user.id,
+          firmId: user.firmId,
+          details: {
+            processed: Number(result?.processed || 0),
+            failed: Number(result?.failed || 0),
+            leased: Number(result?.leased || 0),
+            deadLettered: Number(result?.deadLettered || 0),
+            retried: Number(result?.retried || 0)
+          }
+        })
         finalizeLog(200)
         return replyJson(
           200,
@@ -1554,7 +1677,14 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteExports')
         const result = modules.exports.retry(user, id)
-        log('info', 'export.lifecycle.retry_requested', { requestId, userId: user.id, firmId: user.firmId, exportId: id })
+        logOperationalEvent(log, 'info', 'export.lifecycle.retry_requested', {
+          entity: 'export',
+          id,
+          status: 'retry_requested',
+          requestId,
+          userId: user.id,
+          firmId: user.firmId
+        })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
