@@ -19,6 +19,17 @@ function extractPlaywrightVersion(output = '') {
   return packageVersion ? packageVersion[1] : 'unknown'
 }
 
+function extractChromiumVersion(output = '') {
+  const chromeForTesting = String(output).match(/Chrome(?:\s+for\s+Testing)?\s+([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/i)
+  if (chromeForTesting) return chromeForTesting[1]
+  return null
+}
+
+function extractChromiumRevision(output = '') {
+  const revisionMatch = String(output).match(/playwright chromium v([0-9]+)/i)
+  return revisionMatch ? revisionMatch[1] : null
+}
+
 function resolveEvidenceDir(env = process.env, cwd = process.cwd()) {
   return resolve(cwd, env.RELEASE_EVIDENCE_DIR || 'artifacts/release-evidence')
 }
@@ -46,7 +57,8 @@ export function resolvePlaywrightLinkageEnv(env = process.env, options = {}) {
     PLAYWRIGHT_JSON_REPORT: reportPath,
     RELEASE_E2E_PLAYWRIGHT_REPORT: reportPath,
     RELEASE_E2E_PROVISIONING_ARTIFACT: provisioningArtifactPath,
-    RELEASE_E2E_PROVISIONING_VERSION: provisioningVersion
+    RELEASE_E2E_PROVISIONING_VERSION: provisioningVersion,
+    RELEASE_E2E_BROWSER_NAME: String(env.RELEASE_E2E_BROWSER_NAME || '').trim() || 'chromium'
   }
 }
 
@@ -109,9 +121,54 @@ export async function provisionChromiumForStrictMode(options = {}) {
   }
 
   const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
-  const args = ['playwright', 'install', '--with-deps', 'chromium']
-  const result = await runCommandCapture(command, args, { ...env, ...linkage }, cwd)
-  const combinedOutput = `${result.stdout || ''}${result.stderr || ''}`
+  const chromiumArgs = ['playwright', 'install', '--with-deps', 'chromium']
+  const chromiumResult = await runCommandCapture(command, chromiumArgs, { ...env, ...linkage }, cwd)
+  let combinedOutput = `${chromiumResult.stdout || ''}${chromiumResult.stderr || ''}`
+  let selectedCommand = `${command} ${chromiumArgs.join(' ')}`
+  let finalResult = chromiumResult
+
+  const chromiumUnavailable =
+    chromiumResult.signal ||
+    chromiumResult.code !== 0 ||
+    /Domain forbidden/i.test(combinedOutput) ||
+    /Failed to download Chrome for Testing/i.test(combinedOutput)
+
+  if (chromiumUnavailable) {
+    const chromeVersion = extractChromiumVersion(combinedOutput)
+    const chromiumRevision = extractChromiumRevision(combinedOutput)
+    if (chromeVersion && chromiumRevision) {
+      const cacheRoot = resolve(env.PLAYWRIGHT_BROWSERS_PATH || resolve(env.HOME || '~', '.cache/ms-playwright'))
+      const chromiumDir = resolve(cacheRoot, `chromium-${chromiumRevision}`)
+      const headlessShellDir = resolve(cacheRoot, `chromium_headless_shell-${chromiumRevision}`)
+      const chromeZip = resolve(cacheRoot, `chrome-linux64-${chromeVersion}.zip`)
+      const shellZip = resolve(cacheRoot, `chrome-headless-shell-linux64-${chromeVersion}.zip`)
+      await mkdir(cacheRoot, { recursive: true })
+
+      const chromeUrl = `https://storage.googleapis.com/chrome-for-testing-public/${chromeVersion}/linux64/chrome-linux64.zip`
+      const shellUrl = `https://storage.googleapis.com/chrome-for-testing-public/${chromeVersion}/linux64/chrome-headless-shell-linux64.zip`
+      const installFallbackResult = await runCommandCapture(
+        'bash',
+        [
+          '-lc',
+          [
+            `curl -fsSL ${JSON.stringify(chromeUrl)} -o ${JSON.stringify(chromeZip)}`,
+            `curl -fsSL ${JSON.stringify(shellUrl)} -o ${JSON.stringify(shellZip)}`,
+            `rm -rf ${JSON.stringify(chromiumDir)} ${JSON.stringify(headlessShellDir)}`,
+            `mkdir -p ${JSON.stringify(chromiumDir)} ${JSON.stringify(headlessShellDir)}`,
+            `unzip -qo ${JSON.stringify(chromeZip)} -d ${JSON.stringify(chromiumDir)}`,
+            `unzip -qo ${JSON.stringify(shellZip)} -d ${JSON.stringify(headlessShellDir)}`
+          ].join(' && ')
+        ],
+        env,
+        cwd
+      )
+      combinedOutput += `\n\n--- chromium provisioning fallback: chrome-for-testing direct install ---\n${installFallbackResult.stdout || ''}${installFallbackResult.stderr || ''}`
+      if (!installFallbackResult.signal && installFallbackResult.code === 0) {
+        selectedCommand = `curl ${chromeUrl} && curl ${shellUrl} && unzip`
+        finalResult = { code: 0, signal: null, stdout: '', stderr: '' }
+      }
+    }
+  }
 
   await mkdir(dirname(linkage.RELEASE_E2E_PROVISIONING_ARTIFACT), { recursive: true })
   await writeFile(linkage.RELEASE_E2E_PROVISIONING_ARTIFACT, combinedOutput, 'utf8')
@@ -122,17 +179,17 @@ export async function provisionChromiumForStrictMode(options = {}) {
     RELEASE_E2E_PROVISIONING_VERSION: version
   }
 
-  if (result.signal || result.code !== 0) {
-    const failureMessage = result.signal
-      ? `Playwright provisioning terminated by signal ${result.signal}`
-      : `Playwright provisioning failed with exit code ${result.code}`
+  if (finalResult.signal || finalResult.code !== 0) {
+    const failureMessage = finalResult.signal
+      ? `Playwright provisioning terminated by signal ${finalResult.signal}`
+      : `Playwright provisioning failed with exit code ${finalResult.code}`
     throw new Error(`${failureMessage}; artifact: ${resolvedLinkage.RELEASE_E2E_PROVISIONING_ARTIFACT}`)
   }
 
   return {
     strictMode: true,
     attempted: true,
-    command: `${command} ${args.join(' ')}`,
+    command: selectedCommand,
     env: resolvedLinkage
   }
 }

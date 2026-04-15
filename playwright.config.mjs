@@ -28,6 +28,14 @@ export default defineConfig({
         locale: 'en-US',
         timezoneId: 'UTC'
       }
+    },
+    {
+      name: 'firefox',
+      use: {
+        browserName: 'firefox',
+        locale: 'en-US',
+        timezoneId: 'UTC'
+      }
     }
   ],
   use: {

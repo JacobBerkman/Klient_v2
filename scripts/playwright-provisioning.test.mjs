@@ -21,6 +21,7 @@ test('resolvePlaywrightLinkageEnv wires report and provisioning defaults from ev
   assert.equal(env.PLAYWRIGHT_JSON_REPORT, resolve(cwd, 'artifacts/release-evidence/playwright-report.json'))
   assert.equal(env.RELEASE_E2E_PLAYWRIGHT_REPORT, resolve(cwd, 'artifacts/release-evidence/playwright-report.json'))
   assert.equal(env.RELEASE_E2E_PROVISIONING_ARTIFACT, resolve(cwd, 'artifacts/release-evidence/playwright-provisioning.txt'))
+  assert.equal(env.RELEASE_E2E_BROWSER_NAME, 'chromium')
 })
 
 test('provisionChromiumForStrictMode no-ops outside strict mode', async () => {

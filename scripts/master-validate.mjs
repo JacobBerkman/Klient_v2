@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { runCommandProcess } from './runner-lifecycle.mjs'
@@ -378,6 +378,28 @@ function persistSummary(summary) {
 }
 
 const stepsToRun = resolveGateStepsFromEnv()
+function clearStaleEvidenceFiles() {
+  const staleCandidates = new Set([evidenceFile])
+  for (const step of stepsToRun) {
+    if (step.evidenceFile) staleCandidates.add(step.evidenceFile)
+  }
+
+  const linkage = resolvePlaywrightLinkageEnv(
+    {
+      ...process.env,
+      RELEASE_EVIDENCE_DIR: defaultEvidenceDir
+    },
+    { evidenceDir: defaultEvidenceDir }
+  )
+  staleCandidates.add(linkage.RELEASE_E2E_PROVISIONING_ARTIFACT)
+  staleCandidates.add(linkage.RELEASE_E2E_PLAYWRIGHT_REPORT)
+
+  for (const candidate of staleCandidates) {
+    rmSync(candidate, { force: true })
+  }
+}
+
+clearStaleEvidenceFiles()
 persistSummary({
   schemaVersion: '1.1.0',
   generatedAt: toIsoTimestamp(Date.now()),
