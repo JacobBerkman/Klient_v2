@@ -143,6 +143,12 @@ npm run validate:master
 
 `npm run test:all` remains available and now delegates to `validate:master`.
 
+For direct Node test runs (without npm scripts), use a test runtime env explicitly to avoid production-only startup guards:
+
+```bash
+NODE_ENV=test node --test apps/api/src/test/server-route-wiring.test.mjs
+```
+
 CI uses this same canonical gate (`npm run validate:master`) across supported Node versions (20 and 22), uploads gate logs plus parity/backup evidence artifacts, and exposes `required-status-checks` as the branch-protection-friendly merge check.
 ## Main parity check
 Run the parity sync/report command:

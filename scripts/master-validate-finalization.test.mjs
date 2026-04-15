@@ -81,10 +81,109 @@ test('validate:master finalizes summary when interrupted by SIGTERM', async () =
     const summary = JSON.parse(await readFile(evidenceFile, 'utf8'))
     assert.equal(summary.status, 'failed')
     assert.equal(summary.failedStep, 'Integration suites')
+    assert.equal(summary.steps[0]?.status, 'failed')
     assert.equal(typeof summary.finishedAt, 'string')
     assert.equal(typeof summary.durationMs, 'number')
     assert.match(String(summary.error?.message || ''), /SIGTERM/)
-    assert.notEqual(summary.steps[0]?.status, 'pending')
+  })
+})
+
+test('validate:master finalizes summary when interrupted by SIGINT', async () => {
+  await withTempEvidenceDir('validate-master-sigint-', async ({ evidenceDir, evidenceFile }) => {
+    const child = spawn(process.execPath, ['scripts/master-validate.mjs'], {
+      cwd: repoRoot,
+      stdio: 'ignore',
+      env: {
+        ...process.env,
+        RELEASE_EVIDENCE_DIR: evidenceDir,
+        VALIDATE_MASTER_STEPS: 'integration-suites',
+        INTEGRATION_SUITES: 'integration-exports.mjs'
+      }
+    })
+
+    const waitForRunningSummary = async () => {
+      const timeoutAt = Date.now() + 5000
+      while (Date.now() < timeoutAt) {
+        try {
+          await stat(evidenceFile)
+          return
+        } catch {
+          await new Promise((resolveWait) => setTimeout(resolveWait, 25))
+        }
+      }
+      throw new Error('validate:master did not create evidence summary before SIGINT')
+    }
+
+    await waitForRunningSummary()
+    const killed = child.kill('SIGINT')
+    assert.equal(killed, true, 'expected master-validate child process to still be running for SIGINT test')
+
+    await new Promise((resolveWait, reject) => {
+      child.once('exit', resolveWait)
+      child.once('error', reject)
+    })
+
+    const summary = JSON.parse(await readFile(evidenceFile, 'utf8'))
+    assert.equal(summary.status, 'failed')
+    assert.equal(summary.failedStep, 'Integration suites')
+    assert.equal(summary.steps[0]?.status, 'failed')
+    assert.equal(typeof summary.finishedAt, 'string')
+    assert.equal(typeof summary.durationMs, 'number')
+    assert.match(String(summary.error?.message || ''), /SIGINT/)
+  })
+})
+
+test('validate:master finalizes summary when externally terminated by parent timeout', async () => {
+  await withTempEvidenceDir('validate-master-timeout-parent-', async ({ evidenceDir, evidenceFile }) => {
+    const result = spawnSync(
+      'timeout',
+      ['1s', process.execPath, 'scripts/master-validate.mjs'],
+      {
+        cwd: repoRoot,
+        stdio: 'pipe',
+        encoding: 'utf8',
+        env: {
+          ...process.env,
+          RELEASE_EVIDENCE_DIR: evidenceDir,
+          VALIDATE_MASTER_STEPS: 'integration-suites',
+          INTEGRATION_SUITES: 'integration-exports.mjs'
+        }
+      }
+    )
+
+    assert.notEqual(result.status, 0, 'timeout wrapper unexpectedly reported success')
+    const summary = JSON.parse(await readFile(evidenceFile, 'utf8'))
+    assert.equal(summary.status, 'failed')
+    assert.equal(summary.failedStep, 'Integration suites')
+    assert.equal(summary.steps[0]?.status, 'failed')
+    assert.equal(typeof summary.finishedAt, 'string')
+    assert.equal(typeof summary.durationMs, 'number')
+    assert.ok(summary.error?.message)
+  })
+})
+
+test('validate:master finalizes summary when gate child process exits non-zero', async () => {
+  await withTempEvidenceDir('validate-master-child-failure-', async ({ evidenceDir, evidenceFile }) => {
+    const result = spawnSync(process.execPath, ['scripts/master-validate.mjs'], {
+      cwd: repoRoot,
+      stdio: 'pipe',
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        RELEASE_EVIDENCE_DIR: evidenceDir,
+        VALIDATE_MASTER_STEPS: 'integration-suites',
+        INTEGRATION_SUITES: 'integration-does-not-exist.mjs'
+      }
+    })
+
+    assert.notEqual(result.status, 0, 'validate:master unexpectedly passed child failure scenario')
+    const summary = JSON.parse(await readFile(evidenceFile, 'utf8'))
+    assert.equal(summary.status, 'failed')
+    assert.equal(summary.failedStep, 'Integration suites')
+    assert.equal(summary.steps[0]?.status, 'failed')
+    assert.equal(typeof summary.finishedAt, 'string')
+    assert.equal(typeof summary.durationMs, 'number')
+    assert.match(String(summary.error?.message || ''), /exited with code/)
   })
 })
 

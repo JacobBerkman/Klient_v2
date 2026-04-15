@@ -334,6 +334,8 @@ const defaultEvidenceFile = resolve(defaultEvidenceDir, 'validate-master-summary
 const evidenceFile = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_FILE || defaultEvidenceFile)
 let finalSummary = null
 let activeStep = null
+let activeStepStartedAt = null
+let interruptedActiveStepSnapshot = null
 
 function buildSummary({ failureError = null, failedStepName = null }) {
   const derivedFailedStep = failedStepName || results[results.length - 1]?.name || null
@@ -351,6 +353,17 @@ function buildSummary({ failureError = null, failedStepName = null }) {
     steps: stepsToRun.map((step) => {
       const executed = results.find((result) => result.name === step.name)
       if (!executed) {
+        if (failureError && interruptedActiveStepSnapshot?.name === step.name) {
+          return {
+            name: step.name,
+            command: formatCommand(step),
+            evidenceFile: step.evidenceFile,
+            status: 'failed',
+            durationMs: interruptedActiveStepSnapshot.durationMs,
+            startedAt: interruptedActiveStepSnapshot.startedAt,
+            finishedAt: interruptedActiveStepSnapshot.finishedAt
+          }
+        }
         return {
           name: step.name,
           command: formatCommand(step),
@@ -426,6 +439,15 @@ persistSummary({
 
 function finalizeGateSummary(failureError = null) {
   if (finalSummary) return finalSummary
+  if (failureError && activeStep && !interruptedActiveStepSnapshot) {
+    const interruptedAt = Date.now()
+    interruptedActiveStepSnapshot = {
+      name: activeStep.name,
+      startedAt: toIsoTimestamp(activeStepStartedAt || startedAt),
+      finishedAt: toIsoTimestamp(interruptedAt),
+      durationMs: interruptedAt - (activeStepStartedAt || startedAt)
+    }
+  }
   finalSummary = buildSummary({
     failureError,
     failedStepName: activeStep?.name || null
@@ -472,6 +494,7 @@ process.on('exit', (code) => {
 for (let index = 0; index < stepsToRun.length; index += 1) {
   const step = stepsToRun[index]
   activeStep = step
+  activeStepStartedAt = Date.now()
   const stepStartedAt = Date.now()
   try {
     // eslint-disable-next-line no-await-in-loop
@@ -497,6 +520,7 @@ for (let index = 0; index < stepsToRun.length; index += 1) {
     break
   } finally {
     activeStep = null
+    activeStepStartedAt = null
   }
 }
 

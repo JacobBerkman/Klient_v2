@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { createHttpServer } from '../server.mjs'
+
+if (!process.env.NODE_ENV) process.env.NODE_ENV = 'test'
+const { createHttpServer } = await import('../server.mjs')
 
 function listen(server) {
   return new Promise((resolve) => {
@@ -195,6 +197,32 @@ test('GET /health exposes dependency checks', async () => {
   assert.ok(body.dependencies?.database)
   assert.ok(body.dependencies?.storage)
   await close(server)
+})
+
+test('GET /ready exposes readiness contract shape', async () => {
+  const previousOpsToken = process.env.KLIENT_OPS_TOKEN
+  process.env.KLIENT_OPS_TOKEN = 'ops-token-abcdefghijklmnopqrstuvwxyz'
+  const modules = {
+    exports: {
+      getQueueHealth: () => ({ queue: { queued: 4, running: 2, stalled: 0, failed: 1 } })
+    }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const response = await fetch(`http://${address.address}:${address.port}/ready`)
+  const body = await response.json()
+  assert.equal([200, 503].includes(response.status), true)
+  assert.equal(typeof body.ready, 'boolean')
+  assert.equal(typeof body.checks.databaseReady, 'boolean')
+  assert.equal(typeof body.checks.storageReady, 'boolean')
+  assert.equal(typeof body.checks.exportWorkerReady, 'boolean')
+  assert.equal(typeof body.checks.exportQueueReachable, 'boolean')
+  assert.equal(typeof body.checks.exportQueueNotStalled, 'boolean')
+  assert.equal(body.diagnostics.mode, 'minimal')
+  assert.equal(body.diagnostics.endpoint, '/api/ops/diagnostics')
+  await close(server)
+  if (previousOpsToken === undefined) delete process.env.KLIENT_OPS_TOKEN
+  else process.env.KLIENT_OPS_TOKEN = previousOpsToken
 })
 
 test('mutation logs include consistent operational structure', async () => {
@@ -755,6 +783,12 @@ test('ops token auth grants access for diagnostics and exports queue endpoints',
     headers: { authorization: 'Bearer ops-token-abcdefghijklmnopqrstuvwxyz' }
   })
   assert.equal(diagnostics.status, 200)
+  const diagnosticsBody = await diagnostics.json()
+  assert.equal(typeof diagnosticsBody.data?.queue, 'object')
+  const queueValues = Object.values(diagnosticsBody.data?.queue || {})
+  assert.equal(queueValues.some((value) => typeof value === 'number'), true)
+  assert.equal(typeof diagnosticsBody.data?.exportWorker?.total, 'number')
+  assert.equal(typeof diagnosticsBody.data?.exportWorker?.byStatus, 'object')
 
   const queue = await fetch(`${base}/api/ops/exports/queue`, {
     headers: { authorization: 'Bearer ops-token-abcdefghijklmnopqrstuvwxyz' }
@@ -826,6 +860,39 @@ test('ops endpoints preserve session + role authorization flow when ops token mo
     'policy:u1:canProcessExports'
   ])
 
+  await close(server)
+  if (previousOpsToken === undefined) delete process.env.KLIENT_OPS_TOKEN
+  else process.env.KLIENT_OPS_TOKEN = previousOpsToken
+})
+
+test('GET /system/status includes operational diagnostics contract fields', async () => {
+  const previousOpsToken = process.env.KLIENT_OPS_TOKEN
+  process.env.KLIENT_OPS_TOKEN = 'ops-token-abcdefghijklmnopqrstuvwxyz'
+  const modules = {
+    exports: {
+      getQueueHealth: () => ({ queue: { queued: 3, running: 1, failed: 2, deadLetter: 1, stalled: 0, activeLeasesCount: 1 } }),
+      list: () => [
+        { id: 'exp-1', status: 'failed', attempts: 2, failureReason: 'render', updatedAt: '2026-04-15T12:00:00.000Z' },
+        { id: 'exp-2', status: 'completed', attempts: 1, updatedAt: '2026-04-15T11:00:00.000Z' }
+      ]
+    }
+  }
+  const server = createHttpServer({ modules: new Proxy(modules, { get: (target, prop) => target[prop] || {} }) })
+  const address = await listen(server)
+  const response = await fetch(`http://${address.address}:${address.port}/system/status`, {
+    headers: { authorization: 'Bearer ops-token-abcdefghijklmnopqrstuvwxyz' }
+  })
+  const body = await response.json()
+  assert.equal(response.status, 200)
+  assert.equal(typeof body.dependencies?.database?.connected, 'boolean')
+  assert.equal(typeof body.dependencies?.storage?.ok, 'boolean')
+  assert.equal(typeof body.worker?.health, 'string')
+  assert.equal(typeof body.queue?.queued, 'number')
+  assert.equal(typeof body.queue?.active, 'number')
+  assert.equal(typeof body.queue?.failed, 'number')
+  assert.equal(Array.isArray(body.recentExportFailures), true)
+  assert.equal(typeof body.recentExportFailures[0]?.id, 'string')
+  assert.equal(typeof body.releaseValidation?.lastSuccessfulAt === 'string' || body.releaseValidation?.lastSuccessfulAt === null, true)
   await close(server)
   if (previousOpsToken === undefined) delete process.env.KLIENT_OPS_TOKEN
   else process.env.KLIENT_OPS_TOKEN = previousOpsToken
