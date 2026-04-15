@@ -110,6 +110,7 @@ export async function provisionChromiumForStrictMode(options = {}) {
     cwd,
     evidenceDir: options.evidenceDir
   })
+  const runProvisionCommand = options.runCommandCapture || runCommandCapture
 
   if (!strictMode) {
     return {
@@ -122,7 +123,7 @@ export async function provisionChromiumForStrictMode(options = {}) {
 
   const command = process.platform === 'win32' ? 'npx.cmd' : 'npx'
   const chromiumArgs = ['playwright', 'install', '--with-deps', 'chromium']
-  const chromiumResult = await runCommandCapture(command, chromiumArgs, { ...env, ...linkage }, cwd)
+  const chromiumResult = await runProvisionCommand(command, chromiumArgs, { ...env, ...linkage }, cwd)
   let combinedOutput = `${chromiumResult.stdout || ''}${chromiumResult.stderr || ''}`
   let selectedCommand = `${command} ${chromiumArgs.join(' ')}`
   let finalResult = chromiumResult
@@ -146,7 +147,7 @@ export async function provisionChromiumForStrictMode(options = {}) {
 
       const chromeUrl = `https://storage.googleapis.com/chrome-for-testing-public/${chromeVersion}/linux64/chrome-linux64.zip`
       const shellUrl = `https://storage.googleapis.com/chrome-for-testing-public/${chromeVersion}/linux64/chrome-headless-shell-linux64.zip`
-      const installFallbackResult = await runCommandCapture(
+      const installFallbackResult = await runProvisionCommand(
         'bash',
         [
           '-lc',
