@@ -44,7 +44,9 @@ test('e2e harness enforces strict CI browser runs and allows opt-in local fallba
   assert.doesNotMatch(content, /existsSync\(/)
   assert.doesNotMatch(content, /readFileSync\(/)
 
-  const playwrightRunCalls = [...content.matchAll(/await run\(command, \['playwright', 'test', browserSuitePattern\], runtimeEnv\)/g)]
+  const playwrightRunCalls = [
+    ...content.matchAll(/await run\(command, \['playwright', 'test', browserSuitePattern\], runtimeEnv\)/g)
+  ]
   assert.equal(playwrightRunCalls.length, 1, 'expected exactly one Playwright execution path via injected run(...)')
   assert.doesNotMatch(content, /runCommand\(command, \['playwright', 'test', browserSuitePattern\], runtimeEnv\)/)
   assert.doesNotMatch(content, /process\.exit\(/)
