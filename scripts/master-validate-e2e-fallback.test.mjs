@@ -79,6 +79,10 @@ test('validate:master unpacked workspace defaults to strict E2E (no auto-fallbac
 
     assert.equal(summary.status, 'failed')
     assert.equal(summary.steps[0]?.status, 'failed')
+    assert.equal(typeof summary.finishedAt, 'string')
+    assert.equal(typeof summary.durationMs, 'number')
+    assert.equal(summary.steps[0]?.startedAt !== null, true)
+    assert.equal(typeof summary.steps[0]?.durationMs, 'number')
     assert.notEqual(result.status, 0)
   } finally {
     await rm(workspace.artifactRoot, { recursive: true, force: true })
@@ -152,6 +156,8 @@ test('validate:master defaults to strict E2E in unpacked non-git execution witho
     assert.equal(summary.steps.length, 1)
     assert.equal(summary.steps[0]?.name, 'E2E browser checks')
     assert.equal(summary.steps[0]?.status, 'failed')
+    assert.equal(typeof summary.finishedAt, 'string')
+    assert.equal(typeof summary.durationMs, 'number')
   } finally {
     await rm(artifactRoot, { recursive: true, force: true })
   }
@@ -195,6 +201,8 @@ test('validate:master unpacked-artifact intent enforces strict E2E even when fal
     assert.equal(summary.steps.length, 1)
     assert.equal(summary.steps[0]?.name, 'E2E browser checks')
     assert.equal(summary.steps[0]?.status, 'failed')
+    assert.equal(typeof summary.finishedAt, 'string')
+    assert.equal(typeof summary.durationMs, 'number')
   } finally {
     await rm(artifactRoot, { recursive: true, force: true })
   }
@@ -219,6 +227,8 @@ test('validate:master release_approval mode rejects fallback and cannot pass via
     assert.equal(summary.steps.length, 1)
     assert.equal(summary.steps[0]?.name, 'E2E browser checks')
     assert.equal(summary.steps[0]?.status, 'failed')
+    assert.equal(typeof summary.finishedAt, 'string')
+    assert.equal(typeof summary.durationMs, 'number')
   } finally {
     await rm(workspace.artifactRoot, { recursive: true, force: true })
   }

@@ -13,6 +13,7 @@ const PHASE_REQUIRED_FILES = {
     'api-contract-summary.json',
     'integration-summary.json',
     'migration-summary.json',
+    'release-flow-summary.json',
     'smoke-summary.json',
     'security-summary.json',
     'e2e-summary.json'
@@ -37,6 +38,7 @@ const GATE_POINTERS = [
   { gate: 'API contract', owner: 'API Lead', file: 'api-contract-summary.json' },
   { gate: 'Integration suites', owner: 'QA Lead', file: 'integration-summary.json' },
   { gate: 'Migration checks', owner: 'Data/DB Owner', file: 'migration-summary.json' },
+  { gate: 'Canonical release flow', owner: 'Release Manager + QA Lead', file: 'release-flow-summary.json' },
   { gate: 'Smoke', owner: 'Release Manager', file: 'smoke-summary.json' },
   { gate: 'E2E browser checks', owner: 'QA Lead', file: 'e2e-summary.json' },
   { gate: 'Security checks', owner: 'Security Owner', file: 'security-summary.json' },
