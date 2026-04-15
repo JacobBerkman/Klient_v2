@@ -333,8 +333,10 @@ const startedAt = Date.now()
 const defaultEvidenceFile = resolve(defaultEvidenceDir, 'validate-master-summary.json')
 const evidenceFile = resolve(process.cwd(), process.env.RELEASE_EVIDENCE_FILE || defaultEvidenceFile)
 let finalSummary = null
+let activeStep = null
 
-function buildSummary({ failureError = null }) {
+function buildSummary({ failureError = null, failedStepName = null }) {
+  const derivedFailedStep = failedStepName || results[results.length - 1]?.name || null
   return {
     schemaVersion: '1.1.0',
     generatedAt: toIsoTimestamp(Date.now()),
@@ -344,7 +346,7 @@ function buildSummary({ failureError = null }) {
     startedAt: toIsoTimestamp(startedAt),
     finishedAt: toIsoTimestamp(Date.now()),
     durationMs: Date.now() - startedAt,
-    failedStep: failureError ? results[results.length - 1]?.name || null : null,
+    failedStep: failureError ? derivedFailedStep : null,
     error: failureError ? { message: String(failureError?.message || failureError) } : null,
     steps: stepsToRun.map((step) => {
       const executed = results.find((result) => result.name === step.name)
@@ -380,7 +382,7 @@ function persistSummary(summary) {
 const stepsToRun = resolveGateStepsFromEnv()
 function clearStaleEvidenceFiles() {
   const staleCandidates = new Set([evidenceFile])
-  for (const step of stepsToRun) {
+  for (const step of gateSteps) {
     if (step.evidenceFile) staleCandidates.add(step.evidenceFile)
   }
 
@@ -424,7 +426,10 @@ persistSummary({
 
 function finalizeGateSummary(failureError = null) {
   if (finalSummary) return finalSummary
-  finalSummary = buildSummary({ failureError })
+  finalSummary = buildSummary({
+    failureError,
+    failedStepName: activeStep?.name || null
+  })
   persistSummary(finalSummary)
   return finalSummary
 }
@@ -440,9 +445,33 @@ const failOnSignal = (signal) => {
 
 process.on('SIGINT', () => failOnSignal('SIGINT'))
 process.on('SIGTERM', () => failOnSignal('SIGTERM'))
+process.on('uncaughtException', (error) => {
+  if (!failure) failure = error
+  finalizeGateSummary(failure)
+})
+process.on('unhandledRejection', (reason) => {
+  if (!failure) {
+    failure = reason instanceof Error ? reason : new Error(String(reason))
+  }
+  finalizeGateSummary(failure)
+})
+process.on('beforeExit', () => {
+  if (!finalSummary) {
+    finalizeGateSummary(failure || new Error('validate:master exited before finalizing evidence'))
+  }
+})
+process.on('exit', (code) => {
+  if (!finalSummary) {
+    const exitFailure =
+      failure ||
+      (code === 0 ? new Error('validate:master exited before finalizing evidence') : new Error(`validate:master exited with code ${code}`))
+    finalizeGateSummary(exitFailure)
+  }
+})
 
 for (let index = 0; index < stepsToRun.length; index += 1) {
   const step = stepsToRun[index]
+  activeStep = step
   const stepStartedAt = Date.now()
   try {
     // eslint-disable-next-line no-await-in-loop
@@ -466,6 +495,8 @@ for (let index = 0; index < stepsToRun.length; index += 1) {
     })
     failure = error
     break
+  } finally {
+    activeStep = null
   }
 }
 
