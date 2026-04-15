@@ -37,7 +37,7 @@ test('admin bootstrap registration and login remain stable', async ({ page, seed
   const email = `${seed}@e2e.test`
   const password = 'StrongPass123!'
 
-  await page.goto('/')
+  await page.goto('/legacy')
   await page.locator('#register-form input[name="firmName"]').fill(`Bootstrap Firm ${seededRunId}`)
   await page.locator('#register-form input[name="firstName"]').fill('Bootstrap')
   await page.locator('#register-form input[name="lastName"]').fill('Admin')
@@ -49,7 +49,7 @@ test('admin bootstrap registration and login remain stable', async ({ page, seed
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
 
   await page.request.post('/api/logout')
-  await signInFromUi(page, email, password)
+  await signInFromUi(page, email, password, '/legacy')
 })
 
 test('@release-blocking template upload/map/preflight/publish loop executes with issue remediation controls', async ({
@@ -57,9 +57,9 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   seededRunId,
   cleanupActions
 }) => {
-  await waitForAppReady(page)
+  await waitForAppReady(page, '/legacy')
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'template')
-  await signInFromUi(page, email, password)
+  await signInFromUi(page, email, password, '/legacy')
   const stableToken = seededRunId.replace(/[^a-z0-9-]/gi, '').slice(0, 24)
 
   const profileEmail = deterministicEmail(seededRunId, 'template-preview-client')
@@ -146,7 +146,7 @@ test('@release-blocking template upload/map/preflight/publish loop executes with
   expect(remediationTemplateResponse.status()).toBe(201)
   const remediationTemplate = await remediationTemplateResponse.json()
 
-  await page.goto('/')
+  await page.goto('/legacy')
   await page.getByRole('button', { name: 'Templates' }).click()
   await page.locator('#template-select').selectOption(remediationTemplate.id)
   await page.getByRole('button', { name: '2. Extraction' }).click()
@@ -215,9 +215,9 @@ test('@release-blocking custom-field schema CRUD states surface in admin and pro
   seededRunId,
   cleanupActions
 }) => {
-  await waitForAppReady(page)
+  await waitForAppReady(page, '/legacy')
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'schema')
-  await signInFromUi(page, email, password)
+  await signInFromUi(page, email, password, '/legacy')
 
   const fieldKey = `custom_field_${seededRunId.replace(/[^a-z0-9_]/gi, '_')}`
   await page.getByRole('button', { name: 'Custom Fields' }).click()
@@ -303,7 +303,7 @@ test('@release-blocking custom-field schema CRUD states surface in admin and pro
 
 test('admin-to-operator custom-field workflow preserves readonly UI and server RBAC enforcement', async ({ page, seededRunId }) => {
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'admin-operator')
-  await signInFromUi(page, email, password)
+  await signInFromUi(page, email, password, '/legacy')
 
   const fieldKey = `workflow-field-${seededRunId}`
   const createResponse = await page.request.post('/api/profiles/custom-fields/schema', {
@@ -318,7 +318,7 @@ test('admin-to-operator custom-field workflow preserves readonly UI and server R
 
   const advisorCredentials = await inviteAndAcceptAdvisor(page, seededRunId, 'operator')
   await page.request.post('/api/logout')
-  await signInFromUi(page, advisorCredentials.email, advisorCredentials.password)
+  await signInFromUi(page, advisorCredentials.email, advisorCredentials.password, '/legacy')
 
   await page.getByRole('button', { name: 'Custom Fields' }).click()
   await expect(page.getByRole('heading', { name: 'Custom Field Schema' })).toBeVisible()
@@ -338,7 +338,7 @@ test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC
   cleanupActions
 }) => {
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'draft-collab-admin')
-  await signInFromUi(page, email, password)
+  await signInFromUi(page, email, password, '/legacy')
 
   const advisor = await inviteAndAcceptUser(page, seededRunId, {
     label: 'draft-collab-advisor',
@@ -384,7 +384,7 @@ test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC
     await page.request.delete(`/api/profiles/${profile.id}`).catch(() => {})
   })
 
-  await page.goto('/')
+  await page.goto('/legacy')
   await page.getByRole('button', { name: 'Forms' }).click()
   await page.locator(`[data-open-draft-share-panel="${draft.id}"]`).click()
   await expect(page.locator(`#draft-share-panel-${draft.id}`)).toBeVisible()
@@ -447,7 +447,7 @@ test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC
   expect(duplicateRemovePayload.error.code).toBe('FORMS_DRAFT_COLLABORATORS_ALREADY_REMOVED')
 
   await page.request.post('/api/logout')
-  await signInFromUi(page, advisor.email, advisor.password)
+  await signInFromUi(page, advisor.email, advisor.password, '/legacy')
   await page.getByRole('button', { name: 'Forms' }).click()
   await page.locator(`[data-open-draft-share-panel="${draft.id}"]`).click()
   await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(
@@ -460,7 +460,7 @@ test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC
   await expect(page.locator(`form[data-add-draft-collaborator="${draft.id}"] button[type="submit"]`)).toBeDisabled()
 
   await page.request.post('/api/logout')
-  await signInFromUi(page, readonly.email, readonly.password)
+  await signInFromUi(page, readonly.email, readonly.password, '/legacy')
   await page.getByRole('button', { name: 'Forms' }).click()
   await page.locator(`[data-open-draft-share-panel="${draft.id}"]`).click()
   await expect(page.locator(`#draft-share-panel-${draft.id}`)).toContainText(
@@ -480,7 +480,7 @@ test('@release-blocking draft collaboration search/add/remove/refresh keeps RBAC
 
 test('portal draft then submit lifecycle is stable', async ({ page, seededRunId }) => {
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'portal')
-  await signInFromUi(page, email, password)
+  await signInFromUi(page, email, password, '/legacy')
   const portalToken = seededRunId.replace(/[^a-z0-9-]/gi, '').slice(0, 24)
 
   const profileResponse = await page.request.post('/api/profiles', {

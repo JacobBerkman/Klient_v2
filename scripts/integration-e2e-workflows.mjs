@@ -2,6 +2,7 @@ import { createEvidenceRecorder } from './release-evidence.mjs'
 import { assert, createTestContext } from './test-harness.mjs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const evidence = createEvidenceRecorder({
   gate: 'e2e',
@@ -11,7 +12,7 @@ const evidence = createEvidenceRecorder({
 })
 
 const context = await createTestContext('e2e-workflows')
-const workerScript = resolve(new URL('./export-worker.mjs', import.meta.url).pathname)
+const workerScript = fileURLToPath(new URL('./export-worker.mjs', import.meta.url))
 
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))

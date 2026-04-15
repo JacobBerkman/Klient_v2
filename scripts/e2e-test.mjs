@@ -86,8 +86,7 @@ function runCommand(command, args, env, timeoutMs = 0) {
   return new Promise((resolveRun) => {
     const child = spawn(command, args, {
       stdio: 'inherit',
-      env,
-      shell: process.platform === 'win32'
+      env
     })
     let timeoutId = null
     if (timeoutMs > 0) {

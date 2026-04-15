@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { assert, createTestContext } from './test-harness.mjs'
 import { createEvidenceRecorder } from './release-evidence.mjs'
 
-const workerScript = resolve(new URL('./export-worker.mjs', import.meta.url).pathname)
+const workerScript = fileURLToPath(new URL('./export-worker.mjs', import.meta.url))
 const evidence = createEvidenceRecorder({
   gate: 'release-flow',
   defaultFile: 'release-flow-summary.json',

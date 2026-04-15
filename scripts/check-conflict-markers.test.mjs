@@ -4,8 +4,9 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, resolve } from 'node:path'
 import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
-const repoRoot = resolve(new URL('..', import.meta.url).pathname)
+const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const guardScript = resolve(repoRoot, 'scripts/check-conflict-markers.mjs')
 
 function makeWorkspace(name) {

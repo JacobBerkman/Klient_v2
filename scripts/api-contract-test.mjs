@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { spawn } from 'node:child_process'
 import { createEvidenceRecorder } from './release-evidence.mjs'
@@ -24,7 +25,7 @@ process.on('exit', () => {
   evidence.finalize({ status: 'passed' })
 })
 
-const repoRoot = resolve(new URL('..', import.meta.url).pathname)
+const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const serverEntrypoint = resolve(repoRoot, 'apps/api/src/server.mjs')
 
 function wait(ms) {

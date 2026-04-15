@@ -33,7 +33,9 @@ import {
 } from './operability.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
+const distDir = resolve(__dirname, '../../web/dist')
 const publicDir = resolve(__dirname, '../../web/public')
+const legacyPortalPath = '/legacy/portal'
 const bootedAt = new Date().toISOString()
 const startupDiagnostics = validateRuntimeConfig()
 const COOKIE_POLICY = Object.freeze({
@@ -448,29 +450,76 @@ function getClientIp(req) {
   return forwarded || req.socket?.remoteAddress || 'unknown'
 }
 
-function serveStatic(pathname, res, requestId) {
-  const filePath = pathname === '/' ? resolve(publicDir, 'index.html') : resolve(publicDir, pathname.slice(1))
-  const publicDirRoot = `${publicDir}${sep}`
-  if (filePath !== publicDir && !filePath.startsWith(publicDirRoot)) {
+function resolveStaticFile(rootDir, pathname, fallbackFile = null) {
+  const relativePath = pathname === '/' ? '' : pathname.replace(/^\/+/, '')
+  const filePath = relativePath ? resolve(rootDir, relativePath) : fallbackFile ? resolve(rootDir, fallbackFile) : rootDir
+  const rootPrefix = `${rootDir}${sep}`
+  if (filePath !== rootDir && !filePath.startsWith(rootPrefix)) return null
+  return filePath
+}
+
+function contentTypeFor(filePath) {
+  return (
+    {
+      '.html': 'text/html; charset=utf-8',
+      '.js': 'application/javascript; charset=utf-8',
+      '.css': 'text/css; charset=utf-8',
+      '.json': 'application/json; charset=utf-8',
+      '.svg': 'image/svg+xml',
+      '.ico': 'image/x-icon',
+      '.map': 'application/json; charset=utf-8'
+    }[extname(filePath)] || 'text/plain; charset=utf-8'
+  )
+}
+
+async function serveFile(filePath, res, requestId) {
+  const contents = await readFile(filePath)
+  res.writeHead(200, {
+    ...baseHeaders(),
+    'Content-Type': contentTypeFor(filePath),
+    'X-Request-Id': requestId,
+    'Cache-Control': 'no-store'
+  })
+  res.end(contents)
+  return true
+}
+
+async function tryServeFrom(rootDir, pathname, res, requestId, fallbackFile = null) {
+  const filePath = resolveStaticFile(rootDir, pathname, fallbackFile)
+  if (!filePath) return false
+  try {
+    await serveFile(filePath, res, requestId)
+    return true
+  } catch {
+    return false
+  }
+}
+
+async function serveStatic(pathname, res, requestId) {
+  if (pathname === '/legacy' || pathname === '/legacy/') {
+    const servedLegacy = await tryServeFrom(publicDir, '/', res, requestId, 'index.html')
+    if (servedLegacy) return true
     return notFound(res, requestId)
   }
-  readFile(filePath)
-    .then((contents) => {
-      const contentType =
-        {
-          '.html': 'text/html; charset=utf-8',
-          '.js': 'application/javascript; charset=utf-8',
-          '.css': 'text/css; charset=utf-8'
-        }[extname(filePath)] || 'text/plain; charset=utf-8'
-      res.writeHead(200, {
-        ...baseHeaders(),
-        'Content-Type': contentType,
-        'X-Request-Id': requestId,
-        'Cache-Control': 'no-store'
-      })
-      res.end(contents)
-    })
-    .catch(() => notFound(res, requestId))
+
+  if (pathname === legacyPortalPath || pathname === `${legacyPortalPath}/`) {
+    const servedLegacyPortal = await tryServeFrom(publicDir, '/portal.html', res, requestId)
+    if (servedLegacyPortal) return true
+    return notFound(res, requestId)
+  }
+
+  if (pathname === '/') {
+    if (await tryServeFrom(distDir, '/', res, requestId, 'index.html')) return true
+    if (await tryServeFrom(publicDir, '/', res, requestId, 'index.html')) return true
+    return notFound(res, requestId)
+  }
+
+  if (await tryServeFrom(distDir, pathname, res, requestId)) return true
+  if (await tryServeFrom(publicDir, pathname, res, requestId)) return true
+  if (extname(pathname)) return notFound(res, requestId)
+  if (await tryServeFrom(distDir, '/', res, requestId, 'index.html')) return true
+  if (await tryServeFrom(publicDir, '/', res, requestId, 'index.html')) return true
+  return notFound(res, requestId)
 }
 
 function baseHeaders() {
@@ -1794,13 +1843,8 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
-      if (pathname === '/portal' && req.method === 'GET') {
-        finalizeLog(200)
-        return serveStatic('portal.html', res, requestId)
-      }
-
       finalizeLog(200, { static: true })
-      return serveStatic(pathname, res, requestId)
+      return await serveStatic(pathname, res, requestId)
     } catch (error) {
       if (opsAuditMetadata) {
         error.details = {

@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "gate": "contract",
+  "command": "npm run test:contract",
+  "startedAt": "2026-04-15T22:32:36.216Z",
+  "finishedAt": "2026-04-15T22:32:42.958Z",
+  "durationMs": 6742,
+  "status": "failed",
+  "metadata": {},
+  "details": {},
+  "error": {
+    "message": "contract exited without explicit evidence finalization"
+  }
+}

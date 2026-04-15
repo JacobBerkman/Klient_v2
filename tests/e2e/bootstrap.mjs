@@ -29,17 +29,22 @@ export const test = base.extend({
 
 export { expect }
 
-export async function waitForAppReady(page) {
+export async function waitForAppReady(page, path = '/') {
   await expect.poll(async () => {
     const response = await page.request.get('/ready')
     return response.status()
   }).toBe(200)
 
-  await page.goto('/')
+  await page.goto(path)
   await page.waitForLoadState('domcontentloaded')
-  await expect(page).toHaveURL(/\/$/)
-  await expect(page.getByTestId('login-form')).toBeVisible()
-  await expect(page.getByTestId('register-form')).toBeVisible()
+  if (path === '/') {
+    await expect(page).toHaveURL(/\/login$/)
+    await expect(page.getByTestId('login-form')).toBeVisible()
+    return
+  }
+
+  await expect(page.locator('#login-form')).toBeVisible()
+  await expect(page.locator('#register-form')).toBeVisible()
 }
 
 export async function registerAdminViaApi(page, seededRunId, label = 'admin') {
@@ -87,13 +92,21 @@ export async function inviteAndAcceptAdvisor(page, seededRunId, label = 'advisor
   return { email, password, advisorId }
 }
 
-export async function signInFromUi(page, email, password) {
-  await page.goto('/')
+export async function signInFromUi(page, email, password, path = '/') {
+  await page.goto(path)
   await page.waitForLoadState('domcontentloaded')
+  if (path === '/legacy') {
+    await page.locator('#login-form input[name="email"]').fill(email)
+    await page.locator('#login-form input[name="password"]').fill(password)
+    await page.locator('#login-form button[type="submit"]').click()
+    await expect(page.locator('#auth-status')).toContainText('Signed in successfully.')
+    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+    return
+  }
+
   await page.getByRole('textbox', { name: 'Email' }).fill(email)
-  await page.getByRole('textbox', { name: 'Password' }).fill(password)
+  await page.getByLabel('Password').fill(password)
   await page.getByTestId('login-submit').click()
-  await expect(page.getByTestId('auth-status')).toContainText('Signed in successfully.')
   await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
 }
 

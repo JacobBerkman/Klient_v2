@@ -2,9 +2,10 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createEvidenceRecorder } from './release-evidence.mjs'
 
-const repoRoot = resolve(new URL('..', import.meta.url).pathname)
+const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 
 function runNode(scriptPath, cwd, args = []) {
   return new Promise((resolveRun, rejectRun) => {

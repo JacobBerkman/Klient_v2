@@ -4,8 +4,9 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
-const repoRoot = resolve(new URL('..', import.meta.url).pathname)
+const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const validateScript = resolve(repoRoot, 'scripts/validate-release-evidence.mjs')
 const fixturesDir = resolve(repoRoot, 'scripts/fixtures/e2e-modes')
 

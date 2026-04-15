@@ -4,8 +4,9 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { tmpdir } from 'node:os'
 import { spawn, spawnSync } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 
-const repoRoot = resolve(new URL('..', import.meta.url).pathname)
+const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 
 async function withTempDir(prefix, fn) {
   const root = await mkdtemp(resolve(tmpdir(), prefix))

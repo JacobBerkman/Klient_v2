@@ -1,0 +1,14 @@
+{
+  "schemaVersion": "1.0.0",
+  "gate": "smoke",
+  "command": "npm run test:smoke",
+  "startedAt": "2026-04-15T22:32:15.669Z",
+  "finishedAt": "2026-04-15T22:32:15.674Z",
+  "durationMs": 5,
+  "status": "failed",
+  "metadata": {},
+  "details": {},
+  "error": {
+    "message": "spawn EPERM"
+  }
+}

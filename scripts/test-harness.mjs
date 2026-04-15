@@ -2,8 +2,9 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-const repoRoot = resolve(new URL('..', import.meta.url).pathname)
+const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const serverEntrypoint = resolve(repoRoot, 'apps/api/src/server.mjs')
 
 function wait(ms) {
