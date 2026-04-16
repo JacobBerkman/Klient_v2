@@ -1,9 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { runtime } from './runtime.mjs'
-import {
-  loadState,
-  saveState
-} from './storage.mjs'
+import { loadState, processExportQueueTick, saveState } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
 import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
@@ -17,7 +14,10 @@ import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } fro
 import { buildExportArtifact } from './export-artifact.mjs'
 import { resolveExportData } from './export-data-resolution.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
-import { requireFirmContext, validateEntityOwnership as validateTenantEntityOwnership } from './modules/shared/tenancy.mjs'
+import {
+  requireFirmContext,
+  validateEntityOwnership as validateTenantEntityOwnership
+} from './modules/shared/tenancy.mjs'
 import {
   convertLegacyFormDefinition,
   validateFormDefinitionSchema
@@ -119,8 +119,7 @@ function normalizeConfiguredStageDefinitions(stages = []) {
         return { id, order: index, role: 'active' }
       }
       if (!entry || typeof entry !== 'object') return null
-      const id = String(entry.id || entry.key || entry.stage || entry.slug || entry.value || '')
-        .trim()
+      const id = String(entry.id || entry.key || entry.stage || entry.slug || entry.value || '').trim()
       if (!id) return null
       const rawOrder = Number(entry.order ?? entry.position ?? entry.index ?? index)
       const order = Number.isFinite(rawOrder) ? rawOrder : index
@@ -357,7 +356,8 @@ function validateCustomFieldRowInput(row = {}, { requireKnownKey = false, knownK
       type,
       label,
       required: requiredResult.value,
-      metadata: row?.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? { ...row.metadata } : {}
+      metadata:
+        row?.metadata && typeof row.metadata === 'object' && !Array.isArray(row.metadata) ? { ...row.metadata } : {}
     },
     fieldErrors
   }
@@ -487,7 +487,9 @@ function createTemplateVersion(template, event, overrides = {}) {
   const mappings = deepClone(overrides.mappings || template.mappings || [])
   const formSchema = deepClone(overrides.formSchema || template.formSchema || { sections: [] })
   const extractedFields = deepClone(overrides.extractedFields || template.extractedFields || [])
-  const extraction = deepClone(overrides.extraction || template.extraction || { status: 'completed', reasonCode: null, error: null })
+  const extraction = deepClone(
+    overrides.extraction || template.extraction || { status: 'completed', reasonCode: null, error: null }
+  )
   return {
     version: (template.versions?.length || 0) + 1,
     event,
@@ -534,7 +536,9 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
       mappings: deepClone(entry.mappings || mappings),
       formSchema: deepClone(entry.formSchema || formSchema),
       extractedFields: deepClone(entry.extractedFields || template.extractedFields || []),
-      extraction: deepClone(entry.extraction || template.extraction || { status: 'completed', reasonCode: null, error: null }),
+      extraction: deepClone(
+        entry.extraction || template.extraction || { status: 'completed', reasonCode: null, error: null }
+      ),
       publishState: entry.publishState || publishState,
       immutable: entry.immutable === true,
       changelog: entry.changelog || null,
@@ -643,13 +647,14 @@ function extractedFieldName(entry) {
 }
 
 function normalizeRequiredPdfFields(input = []) {
-  return Array.from(new Set((Array.isArray(input) ? input : []).map((entry) => extractedFieldName(entry)).filter(Boolean)))
+  return Array.from(
+    new Set((Array.isArray(input) ? input : []).map((entry) => extractedFieldName(entry)).filter(Boolean))
+  )
 }
 
 function normalizeExtractedFields(input = []) {
   return Array.isArray(input) ? deepClone(input) : []
 }
-
 
 function migrateTemplateSystems(state) {
   state.templateAggregates ||= []
@@ -783,7 +788,11 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
           sourceVenue: 'Referral',
           sourceDate: '2026-03-01',
           campaignId: null,
-          displayValue: formatProfileSourceDisplay({ sourceCity: 'Dallas', sourceVenue: 'Referral', sourceDate: '2026-03-01' })
+          displayValue: formatProfileSourceDisplay({
+            sourceCity: 'Dallas',
+            sourceVenue: 'Referral',
+            sourceDate: '2026-03-01'
+          })
         },
         status: 'active',
         address: { city: 'Dallas', state: 'TX' },
@@ -835,7 +844,11 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
           sourceVenue: 'Seminar',
           sourceDate: '2026-03-10',
           campaignId: null,
-          displayValue: formatProfileSourceDisplay({ sourceCity: 'Austin', sourceVenue: 'Seminar', sourceDate: '2026-03-10' })
+          displayValue: formatProfileSourceDisplay({
+            sourceCity: 'Austin',
+            sourceVenue: 'Seminar',
+            sourceDate: '2026-03-10'
+          })
         },
         status: 'new',
         address: { city: 'Austin', state: 'TX' },
@@ -862,7 +875,11 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
           sourceVenue: 'CPA Referral',
           sourceDate: '2026-03-15',
           campaignId: null,
-          displayValue: formatProfileSourceDisplay({ sourceCity: 'Houston', sourceVenue: 'CPA Referral', sourceDate: '2026-03-15' })
+          displayValue: formatProfileSourceDisplay({
+            sourceCity: 'Houston',
+            sourceVenue: 'CPA Referral',
+            sourceDate: '2026-03-15'
+          })
         },
         status: 'qualified',
         address: { city: 'Houston', state: 'TX' },
@@ -1097,7 +1114,9 @@ export function createStore({
   function normalizePortalScope(scope = {}) {
     return {
       templateIds: Array.isArray(scope.templateIds) ? [...new Set(scope.templateIds.filter(Boolean))] : null,
-      uploadCategories: Array.isArray(scope.uploadCategories) ? [...new Set(scope.uploadCategories.filter(Boolean))] : null
+      uploadCategories: Array.isArray(scope.uploadCategories)
+        ? [...new Set(scope.uploadCategories.filter(Boolean))]
+        : null
     }
   }
 
@@ -1351,8 +1370,7 @@ export function createStore({
       .sort((a, b) => {
         const indexDiff = profileOrderIndex(a) - profileOrderIndex(b)
         if (indexDiff !== 0) return indexDiff
-        const updatedDiff =
-          parseIso(a.updatedAt || a.createdAt || 0) - parseIso(b.updatedAt || b.createdAt || 0)
+        const updatedDiff = parseIso(a.updatedAt || a.createdAt || 0) - parseIso(b.updatedAt || b.createdAt || 0)
         if (updatedDiff !== 0) return updatedDiff
         return a.id.localeCompare(b.id)
       })
@@ -1553,7 +1571,7 @@ export function createStore({
       entityId,
       action,
       before: metadataOnly ? null : (changeSet.before ?? null),
-      after: metadataOnly ? (changeSet || null) : (changeSet.after ?? null),
+      after: metadataOnly ? changeSet || null : (changeSet.after ?? null),
       requestId: options.requestId || null,
       ip: options.ip || null,
       timestamp: now()
@@ -1634,19 +1652,24 @@ export function createStore({
         .filter(
           (profile) => !q || `${profile.firstName} ${profile.lastName} ${profile.email || ''}`.toLowerCase().includes(q)
         )
-        .sort((a, b) =>
-          (a.stage || '').localeCompare(b.stage || '') ||
-          (profileOrderIndex(a) - profileOrderIndex(b)) ||
-          (parseIso(a.updatedAt || a.createdAt) - parseIso(b.updatedAt || b.createdAt)) ||
-          a.id.localeCompare(b.id)
+        .sort(
+          (a, b) =>
+            (a.stage || '').localeCompare(b.stage || '') ||
+            profileOrderIndex(a) - profileOrderIndex(b) ||
+            parseIso(a.updatedAt || a.createdAt) - parseIso(b.updatedAt || b.createdAt) ||
+            a.id.localeCompare(b.id)
         )
     },
     getProfileDetail(user, profileId) {
       const firmContext = requireFirmContext(user, { method: 'store.getProfileDetail' })
       requirePermission(user, 'profiles:read')
-      const profile = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === profileId), {
-        entityName: 'Profile'
-      })
+      const profile = validateTenantEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === profileId),
+        {
+          entityName: 'Profile'
+        }
+      )
       const household = profile.householdId
         ? state.households.find((entry) => entry.id === profile.householdId && entry.firmId === user.firmId)
         : null
@@ -1675,9 +1698,7 @@ export function createStore({
           : null
       const inStage = state.profiles.filter(
         (profile) =>
-          profile.firmId === user.firmId &&
-          profile.kind === 'prospect' &&
-          profile.stage === nextProspectStage
+          profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === nextProspectStage
       ).length
       const profile = {
         pii: {
@@ -1743,7 +1764,7 @@ export function createStore({
         { entityName: 'Profile' }
       )
       const nextKind = patch.kind || profile.kind
-      if (nextKind === 'prospect' && !patch.stage && ('kind' in patch)) {
+      if (nextKind === 'prospect' && !patch.stage && 'kind' in patch) {
         patch.stage = getDefaultProspectStage(user.firmId)
       }
       if (nextKind === 'prospect' && 'stage' in patch) {
@@ -1860,7 +1881,9 @@ export function createStore({
           })
         }
         field.metadata =
-          patch.metadata && typeof patch.metadata === 'object' && !Array.isArray(patch.metadata) ? { ...patch.metadata } : {}
+          patch.metadata && typeof patch.metadata === 'object' && !Array.isArray(patch.metadata)
+            ? { ...patch.metadata }
+            : {}
       }
       firm.customFieldSchema.updatedAt = now()
       persist()
@@ -1879,7 +1902,8 @@ export function createStore({
       rows.forEach((row, index) => {
         const checked = validateCustomFieldRowInput(row, { requireKnownKey: false, knownKeys })
         const fieldErrors = { ...checked.fieldErrors }
-        if (checked.normalized.key && seenKeys.has(checked.normalized.key)) fieldErrors.key = 'Duplicate key in bulk payload.'
+        if (checked.normalized.key && seenKeys.has(checked.normalized.key))
+          fieldErrors.key = 'Duplicate key in bulk payload.'
         if (checked.normalized.key) seenKeys.add(checked.normalized.key)
         if (Object.keys(fieldErrors).length) {
           validation.push({ index, key: checked.normalized.key || String(row?.key || ''), fieldErrors })
@@ -2208,9 +2232,13 @@ export function createStore({
     createHousehold(user, input) {
       const firmContext = requireFirmContext(user, { method: 'store.createHousehold' })
       requirePermission(user, 'households:write')
-      validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === input.primaryClientId), {
-        entityName: 'Profile'
-      })
+      validateTenantEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === input.primaryClientId),
+        {
+          entityName: 'Profile'
+        }
+      )
       const household = {
         id: randomUUID(),
         firmId: user.firmId,
@@ -2240,9 +2268,13 @@ export function createStore({
         state.households.find((entry) => entry.id === householdId),
         { entityName: 'Household' }
       )
-      validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === input.clientId), {
-        entityName: 'Profile'
-      })
+      validateTenantEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === input.clientId),
+        {
+          entityName: 'Profile'
+        }
+      )
       const member = { householdId, clientId: input.clientId, role: input.role, firmId: user.firmId, createdAt: now() }
       state.householdMembers.push(member)
       const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId)
@@ -2273,9 +2305,13 @@ export function createStore({
     addNote(user, profileId, body) {
       const firmContext = requireFirmContext(user, { method: 'store.addNote' })
       requirePermission(user, 'profiles:write')
-      validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === profileId), {
-        entityName: 'Profile'
-      })
+      validateTenantEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === profileId),
+        {
+          entityName: 'Profile'
+        }
+      )
       const note = {
         id: randomUUID(),
         firmId: user.firmId,
@@ -2303,7 +2339,9 @@ export function createStore({
     createTemplateAggregate(user, input) {
       const kind = input.kind === 'document' ? 'document' : 'form'
       const createdAt = now()
-      const formSchema = validateFormDefinitionSchema({ sections: input.sections || [] }, { contextPath: '/sections' }).schema
+      const formSchema = validateFormDefinitionSchema(input.formSchema || { sections: input.sections || [] }, {
+        contextPath: input.formSchema ? '/formSchema' : '/sections'
+      }).schema
       const template = normalizeTemplateAggregate(
         {
           id: randomUUID(),
@@ -2403,7 +2441,7 @@ export function createStore({
         kind: 'form',
         name: input.name,
         description: input.description || '',
-        formSchema: { sections: input.sections || [] },
+        sections: input.sections || input.formSchema?.sections || [],
         blueprint: { sections: [] },
         mappings: []
       })
@@ -2515,7 +2553,10 @@ export function createStore({
       const intent = input.uploadId
         ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === user.firmId)
         : null
-      const object = normalizeObjectMetadata(input.object || intent?.object || {}, input.retentionClass || 'uploaded_document')
+      const object = normalizeObjectMetadata(
+        input.object || intent?.object || {},
+        input.retentionClass || 'uploaded_document'
+      )
       const malwareScan = normalizeMalwareScan(input.malwareScan)
       const upload = {
         id: randomUUID(),
@@ -2734,7 +2775,8 @@ export function createStore({
       submission.collaborators = normalizeDraftCollaborators(submission)
       const existingUser = state.users.find((entry) => entry.id === userId && entry.firmId === user.firmId)
       if (!existingUser) throw new Error('Collaborator user not found.')
-      if (submission.collaborators.some((entry) => entry.userId === userId)) throw new Error('Collaborator already added.')
+      if (submission.collaborators.some((entry) => entry.userId === userId))
+        throw new Error('Collaborator already added.')
       submission.collaborators = normalizeDraftCollaborators(
         { ...submission, collaborators: [...submission.collaborators, { userId, permission }] },
         submission.createdByUserId
@@ -2763,9 +2805,16 @@ export function createStore({
       submission.collaborators = submission.collaborators.filter((entry) => entry.userId !== targetUserId)
       submission.collaborators = normalizeDraftCollaborators(submission, submission.createdByUserId)
       submission.updatedAt = now()
-      addAudit(user.firmId, resolveUserId(user), 'form_submission', submission.id, 'form_submission.collaborator_removed', {
-        collaboratorUserId: targetUserId
-      })
+      addAudit(
+        user.firmId,
+        resolveUserId(user),
+        'form_submission',
+        submission.id,
+        'form_submission.collaborator_removed',
+        {
+          collaboratorUserId: targetUserId
+        }
+      )
       persist()
       return submission.collaborators
     },
@@ -2775,9 +2824,15 @@ export function createStore({
     createDocumentTemplate(user, input) {
       requirePermission(user, 'templates:write')
       const createdAt = now()
-      const formSchemaResult = validateFormDefinitionSchema(input.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const formSchemaResult = validateFormDefinitionSchema(input.formSchema || { sections: [] }, {
+        contextPath: '/formSchema'
+      })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
-      collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      collectSchemaPaths(
+        formSchemaResult.schema.sections.flatMap((section) => section.fields || []),
+        '',
+        allowedSourcePaths
+      )
       const normalizedExtractedFields = normalizeExtractedFields(input.extractedFields || input.requiredPdfFields || [])
       const requiredPdfFields = normalizeRequiredPdfFields(normalizedExtractedFields)
       const mappings = validateMappingRules(input.mappings || [], {
@@ -2836,9 +2891,15 @@ export function createStore({
         { entityName: 'Template' }
       )
       if (!template) throw new Error('Template not found.')
-      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, {
+        contextPath: '/formSchema'
+      })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
-      collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      collectSchemaPaths(
+        formSchemaResult.schema.sections.flatMap((section) => section.fields || []),
+        '',
+        allowedSourcePaths
+      )
       const requiredPdfFields = normalizeRequiredPdfFields(input.requiredPdfFields || template.extractedFields || [])
       const normalizedMappings = validateMappingRules(mappings || [], {
         contextPath: '/mappings',
@@ -2871,7 +2932,11 @@ export function createStore({
       )
       template.updatedAt = now()
       addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.mappings_updated', {
-        before: { mappings: previousMappings, extractedFields: previousExtractedFields, count: previousMappings.length },
+        before: {
+          mappings: previousMappings,
+          extractedFields: previousExtractedFields,
+          count: previousMappings.length
+        },
         after: {
           mappings: deepClone(template.mappings),
           extractedFields: deepClone(template.extractedFields || []),
@@ -2891,9 +2956,13 @@ export function createStore({
       )
       const clientId = String(input.clientId || '').trim()
       const submissionId = String(input.submissionId || '').trim()
-      const profile = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === clientId), {
-        entityName: 'Profile'
-      })
+      const profile = validateTenantEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === clientId),
+        {
+          entityName: 'Profile'
+        }
+      )
       const submission = validateTenantEntityOwnership(
         firmContext,
         state.formSubmissions.find((entry) => entry.id === submissionId),
@@ -2909,9 +2978,15 @@ export function createStore({
           .map((row) => [Number(row.rowIndex), String(row.rowId || '').trim()])
           .filter(([rowIndex, rowId]) => Number.isFinite(rowIndex) && rowId)
       )
-      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, {
+        contextPath: '/formSchema'
+      })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
-      collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      collectSchemaPaths(
+        formSchemaResult.schema.sections.flatMap((section) => section.fields || []),
+        '',
+        allowedSourcePaths
+      )
       let issues = []
       try {
         validateMappingRules(template.mappings || [], {
@@ -2978,9 +3053,15 @@ export function createStore({
         { entityName: 'Template' }
       )
       const previousState = normalizeTemplateState(template.publishState || 'draft')
-      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, { contextPath: '/formSchema' })
+      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, {
+        contextPath: '/formSchema'
+      })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
-      collectSchemaPaths(formSchemaResult.schema.sections.flatMap((section) => section.fields || []), '', allowedSourcePaths)
+      collectSchemaPaths(
+        formSchemaResult.schema.sections.flatMap((section) => section.fields || []),
+        '',
+        allowedSourcePaths
+      )
       validateMappingRules(template.mappings || [], {
         contextPath: '/mappings',
         repeaterPaths: formSchemaResult.repeaterPaths,
@@ -3085,7 +3166,8 @@ export function createStore({
         templateId,
         baseVersion: Number(base.version),
         targetVersion: Number(target.version),
-        changed: stableSerialize(base.blueprint) !== stableSerialize(target.blueprint) ||
+        changed:
+          stableSerialize(base.blueprint) !== stableSerialize(target.blueprint) ||
           stableSerialize(base.mappings) !== stableSerialize(target.mappings) ||
           base.publishState !== target.publishState,
         diff: {
@@ -3229,8 +3311,12 @@ export function createStore({
     },
     listUsers(user, query = {}) {
       requirePermission(user, 'users:read')
-      const mode = String(query.mode || '').trim().toLowerCase()
-      const search = String(query.search || '').trim().toLowerCase()
+      const mode = String(query.mode || '')
+        .trim()
+        .toLowerCase()
+      const search = String(query.search || '')
+        .trim()
+        .toLowerCase()
       const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 20, 1), 50)
       const includeSelf = query.includeSelf === true || query.includeSelf === 'true'
       const firmUsers = state.users.filter((entry) => entry.firmId === user.firmId)
@@ -3239,7 +3325,13 @@ export function createStore({
           .filter((entry) => (includeSelf ? true : entry.id !== user.id))
           .filter((entry) => {
             if (!search) return true
-            const haystack = [entry.id, entry.email, entry.firstName, entry.lastName, `${entry.firstName} ${entry.lastName}`]
+            const haystack = [
+              entry.id,
+              entry.email,
+              entry.firstName,
+              entry.lastName,
+              `${entry.firstName} ${entry.lastName}`
+            ]
               .map((value) => String(value || '').toLowerCase())
               .join(' ')
             return haystack.includes(search)
@@ -3365,12 +3457,20 @@ export function createStore({
     removeHouseholdMember(user, householdId, clientId) {
       const firmContext = requireFirmContext(user, { method: 'store.removeHouseholdMember' })
       requirePermission(user, 'households:write')
-      validateTenantEntityOwnership(firmContext, state.households.find((entry) => entry.id === householdId), {
-        entityName: 'Household'
-      })
-      validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === clientId), {
-        entityName: 'Profile'
-      })
+      validateTenantEntityOwnership(
+        firmContext,
+        state.households.find((entry) => entry.id === householdId),
+        {
+          entityName: 'Household'
+        }
+      )
+      validateTenantEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === clientId),
+        {
+          entityName: 'Profile'
+        }
+      )
       const beforeCount = state.householdMembers.filter(
         (entry) => entry.householdId === householdId && entry.firmId === user.firmId
       ).length
@@ -3393,12 +3493,20 @@ export function createStore({
     linkSpouse(user, primaryClientId, spouseClientId) {
       const firmContext = requireFirmContext(user, { method: 'store.linkSpouse' })
       requirePermission(user, 'households:write')
-      const primary = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === primaryClientId), {
-        entityName: 'Profile'
-      })
-      const spouse = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === spouseClientId), {
-        entityName: 'Profile'
-      })
+      const primary = validateTenantEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === primaryClientId),
+        {
+          entityName: 'Profile'
+        }
+      )
+      const spouse = validateTenantEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === spouseClientId),
+        {
+          entityName: 'Profile'
+        }
+      )
       primary.spouseClientId = spouse.id
       spouse.spouseClientId = primary.id
       let householdId = primary.householdId
@@ -3504,11 +3612,16 @@ export function createStore({
     createPortalLink(user, profileId, options = {}) {
       const firmContext = requireFirmContext(user, { method: 'store.createPortalLink' })
       requirePermission(user, 'portal:manage')
-      validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === profileId), {
-        entityName: 'Profile'
-      })
+      validateTenantEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === profileId),
+        {
+          entityName: 'Profile'
+        }
+      )
       const createdAt = now()
-      const expiresAt = options.expiresAt || new Date(Date.now() + Number(options.expiresInHours || 24) * 3600 * 1000).toISOString()
+      const expiresAt =
+        options.expiresAt || new Date(Date.now() + Number(options.expiresInHours || 24) * 3600 * 1000).toISOString()
       const maxUses = Math.max(1, Number(options.maxUses || 1))
       const link = {
         id: randomUUID(),
@@ -3530,9 +3643,13 @@ export function createStore({
     revokePortalLink(user, linkId) {
       const firmContext = requireFirmContext(user, { method: 'store.revokePortalLink' })
       requirePermission(user, 'portal:manage')
-      const link = validateTenantEntityOwnership(firmContext, state.portalLinks.find((entry) => entry.id === linkId), {
-        entityName: 'Portal link'
-      })
+      const link = validateTenantEntityOwnership(
+        firmContext,
+        state.portalLinks.find((entry) => entry.id === linkId),
+        {
+          entityName: 'Portal link'
+        }
+      )
       if (!link.revokedAt) {
         link.revokedAt = now()
       }
@@ -3570,7 +3687,12 @@ export function createStore({
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
       const availableTemplates = state.templateAggregates
         .filter((entry) => entry.firmId === link.firmId && entry.kind === 'form')
-        .filter((entry) => !Array.isArray(link.scope?.templateIds) || link.scope.templateIds.length === 0 || link.scope.templateIds.includes(entry.id))
+        .filter(
+          (entry) =>
+            !Array.isArray(link.scope?.templateIds) ||
+            link.scope.templateIds.length === 0 ||
+            link.scope.templateIds.includes(entry.id)
+        )
         .map((entry) => ({
           id: entry.id,
           name: entry.name,
@@ -3849,15 +3971,15 @@ export function createStore({
           return true
         })
       relevantSubmissions.forEach((submission) => {
-          formsByTemplate[submission.templateId] ||= {
-            templateId: submission.templateId,
-            drafts: 0,
-            submitted: 0,
-            completionRate: 0
-          }
-          if (submission.status === 'submitted') formsByTemplate[submission.templateId].submitted += 1
-          else formsByTemplate[submission.templateId].drafts += 1
-        })
+        formsByTemplate[submission.templateId] ||= {
+          templateId: submission.templateId,
+          drafts: 0,
+          submitted: 0,
+          completionRate: 0
+        }
+        if (submission.status === 'submitted') formsByTemplate[submission.templateId].submitted += 1
+        else formsByTemplate[submission.templateId].drafts += 1
+      })
       Object.values(formsByTemplate).forEach((entry) => {
         const total = entry.drafts + entry.submitted
         entry.completionRate = total ? Number((entry.submitted / total).toFixed(4)) : 0
@@ -3969,9 +4091,7 @@ export function createStore({
           .length,
         avgProspectStageAgeDays: Number(
           average(
-            stageAgingOrdered
-              .filter((entry) => !entry.isTerminal && !entry.isDrop)
-              .map((entry) => entry.avgDays || 0)
+            stageAgingOrdered.filter((entry) => !entry.isTerminal && !entry.isDrop).map((entry) => entry.avgDays || 0)
           ).toFixed(2)
         )
       }
@@ -4012,9 +4132,13 @@ export function createStore({
     async createExportDownloadUrl(user, exportId) {
       const firmContext = requireFirmContext(user, { method: 'store.createExportDownloadUrl' })
       requirePermission(user, 'exports:write')
-      const job = validateTenantEntityOwnership(firmContext, state.exportJobs.find((entry) => entry.id === exportId), {
-        entityName: 'Export'
-      })
+      const job = validateTenantEntityOwnership(
+        firmContext,
+        state.exportJobs.find((entry) => entry.id === exportId),
+        {
+          entityName: 'Export'
+        }
+      )
       const object = job.output?.object
       if (!object) throw new Error('Export output object not available.')
       return objectStorage.createPresignedDownloadUrl({ ...object, expiresInSeconds: 900 })
@@ -4031,9 +4155,13 @@ export function createStore({
     getMaskedSensitiveData(user, profileId, request = {}) {
       const firmContext = requireFirmContext(user, { method: 'store.getMaskedSensitiveData' })
       requirePermission(user, 'profiles:read')
-      const profile = validateTenantEntityOwnership(firmContext, state.profiles.find((entry) => entry.id === profileId), {
-        entityName: 'Profile'
-      })
+      const profile = validateTenantEntityOwnership(
+        firmContext,
+        state.profiles.find((entry) => entry.id === profileId),
+        {
+          entityName: 'Profile'
+        }
+      )
       const ssn = decryptSensitiveValue(profile.pii?.ssnEncrypted || profile.pii?.ssnCiphertext)
       const taxId = decryptSensitiveValue(profile.pii?.taxIdEncrypted || profile.pii?.taxIdCiphertext)
       const requestedUnmask = request.unmask === true
@@ -4128,7 +4256,8 @@ export function createStore({
         const fields = ['ssnEncrypted', 'taxIdEncrypted', 'dobEncrypted']
         let changed = false
         for (const field of fields) {
-          const legacy = field === 'ssnEncrypted' ? 'ssnCiphertext' : field === 'taxIdEncrypted' ? 'taxIdCiphertext' : null
+          const legacy =
+            field === 'ssnEncrypted' ? 'ssnCiphertext' : field === 'taxIdEncrypted' ? 'taxIdCiphertext' : null
           const current = pii[field] || (legacy ? pii[legacy] : null)
           if (!current) continue
           if (piiService.needsReencryption(current)) {
@@ -4143,18 +4272,29 @@ export function createStore({
         }
       }
       if (rotatedProfiles > 0) {
-        addAudit(firmId, actorUserId || null, 'profile', firmId || 'all', 'sensitive.write_reencrypted', { rotatedProfiles })
+        addAudit(firmId, actorUserId || null, 'profile', firmId || 'all', 'sensitive.write_reencrypted', {
+          rotatedProfiles
+        })
       }
       return { rotatedProfiles }
     },
     addAuditEvent(user, payload = {}) {
-      addAudit(user.firmId, user.id, payload.entityType || 'generic', payload.entityId || 'n/a', payload.action || 'event', payload.metadata || {})
+      addAudit(
+        user.firmId,
+        user.id,
+        payload.entityType || 'generic',
+        payload.entityId || 'n/a',
+        payload.action || 'event',
+        payload.metadata || {}
+      )
       return true
     },
     _internal: { piiCrypto: piiService, keyProvider },
     __setPipelineStagesForTest(firmId, stages = []) {
       state.pipelineStagesByFirm ||= {}
-      state.pipelineStagesByFirm[firmId] = normalizeStageConfiguration(stages).map(({ order, ...stage }) => ({ ...stage }))
+      state.pipelineStagesByFirm[firmId] = normalizeStageConfiguration(stages).map(({ order, ...stage }) => ({
+        ...stage
+      }))
     },
     __setTestHooks(hooks = {}) {
       testHooks = { ...hooks }

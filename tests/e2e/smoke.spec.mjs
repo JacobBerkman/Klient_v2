@@ -1,4 +1,5 @@
 import {
+  apiFromPage,
   deterministicEmail,
   registerAdminViaApi,
   signInFromUi,
@@ -20,9 +21,11 @@ test('@release-blocking register and login routes work in the routed shell', asy
   await page.getByLabel('Password').fill(password)
   await page.getByRole('button', { name: 'Register' }).click()
 
-  await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible()
 
   await page.getByRole('button', { name: 'Sign out' }).click()
+  await expect(page.getByTestId('login-form')).toBeVisible()
+  await page.context().clearCookies()
   await signInFromUi(page, email, password)
 })
 
@@ -30,50 +33,59 @@ test('@release-blocking routed navigation reaches every advertised backoffice ro
   const { email, password } = await registerAdminViaApi(page, seededRunId, 'nav')
   await signInFromUi(page, email, password)
 
-  await page.getByRole('link', { name: 'Pipeline' }).click()
+  await page.getByRole('link', { name: 'Pipeline', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Pipeline' })).toBeVisible()
 
-  await page.getByRole('link', { name: 'Profiles' }).click()
+  await page.getByRole('link', { name: 'Profiles', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Profiles' })).toBeVisible()
 
-  await page.getByRole('link', { name: 'Households' }).click()
+  await page.getByRole('link', { name: 'Households', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Households' })).toBeVisible()
 
-  await page.getByRole('link', { name: 'Forms' }).click()
+  await page.getByRole('link', { name: 'Forms', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Forms' })).toBeVisible()
 
-  await page.getByRole('link', { name: 'Templates' }).click()
-  await expect(page.getByRole('heading', { name: 'Templates' })).toBeVisible()
+  await page.getByRole('link', { name: 'Templates', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Templates', level: 2 })).toBeVisible()
 
-  await page.getByRole('link', { name: 'Exports' }).click()
+  await page.getByRole('link', { name: 'Exports', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Exports' })).toBeVisible()
 
-  await page.getByRole('link', { name: 'Analytics' }).click()
+  await page.getByRole('link', { name: 'Analytics', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible()
 
-  await page.getByRole('link', { name: 'Audit' }).click()
-  await expect(page.getByRole('heading', { name: 'Audit' })).toBeVisible()
+  await page.getByRole('link', { name: 'Audit', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'Audit', exact: true })).toBeVisible()
 
   await page.getByRole('link', { name: 'Ops' }).click()
   await expect(page.getByRole('heading', { name: 'Ops' })).toBeVisible()
 })
 
 test('@release-blocking profile and submission detail routes open as shareable URLs', async ({ page, seededRunId }) => {
-  const { email, password } = await registerAdminViaApi(page, seededRunId, 'details')
+  const { email, password, csrfToken, sessionCookie } = await registerAdminViaApi(page, seededRunId, 'details')
+  const auth = { csrfToken, sessionCookie }
+  await signInFromUi(page, email, password)
 
-  const profileResponse = await page.request.post('/api/profiles', {
-    data: {
+  const profileResponse = await apiFromPage(
+    page,
+    'POST',
+    '/api/profiles',
+    {
       kind: 'client',
       firstName: 'Detail',
       lastName: 'Client',
       email: deterministicEmail(seededRunId, 'detail-client')
-    }
-  })
-  expect(profileResponse.status()).toBe(201)
-  const profile = await profileResponse.json()
+    },
+    auth
+  )
+  expect(profileResponse.status, JSON.stringify(profileResponse.body)).toBe(201)
+  const profile = profileResponse.body
 
-  const formTemplateResponse = await page.request.post('/api/forms/templates', {
-    data: {
+  const formTemplateResponse = await apiFromPage(
+    page,
+    'POST',
+    '/api/forms/templates',
+    {
       name: `Detail Form ${seededRunId}`,
       sections: [
         {
@@ -81,23 +93,26 @@ test('@release-blocking profile and submission detail routes open as shareable U
           fields: [{ key: 'goal', label: 'Goal', type: 'text', required: true }]
         }
       ]
-    }
-  })
-  expect(formTemplateResponse.status()).toBe(201)
-  const template = await formTemplateResponse.json()
+    },
+    auth
+  )
+  expect(formTemplateResponse.status).toBe(201)
+  const template = formTemplateResponse.body
 
-  const submissionResponse = await page.request.post('/api/forms/submissions', {
-    data: {
+  const submissionResponse = await apiFromPage(
+    page,
+    'POST',
+    '/api/forms/submissions',
+    {
       clientId: profile.id,
       templateId: template.id,
       status: 'draft',
       data: { goal: 'Retire early' }
-    }
-  })
-  expect(submissionResponse.status()).toBe(201)
-  const submission = await submissionResponse.json()
-
-  await signInFromUi(page, email, password)
+    },
+    auth
+  )
+  expect(submissionResponse.status).toBe(201)
+  const submission = submissionResponse.body
 
   await page.goto('/profiles')
   await page.getByTestId(`profile-link-${profile.id}`).click()
@@ -106,53 +121,68 @@ test('@release-blocking profile and submission detail routes open as shareable U
 
   await page.goto(`/forms/submissions/${submission.id}`)
   await expect(page.getByRole('heading', { name: new RegExp(template.name) })).toBeVisible()
-  await expect(page.getByText('Collaborators')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Collaborators' })).toBeVisible()
 })
 
-test('@release-blocking stage movement and export download work in the routed product shell', async ({ page, seededRunId }) => {
-  const { email, password } = await registerAdminViaApi(page, seededRunId, 'pipeline-export')
+test('@release-blocking stage movement and export download work in the routed product shell', async ({
+  page,
+  seededRunId
+}) => {
+  const { email, password, csrfToken, sessionCookie } = await registerAdminViaApi(page, seededRunId, 'pipeline-export')
+  const auth = { csrfToken, sessionCookie }
+  await signInFromUi(page, email, password)
 
-  const stagesResponse = await page.request.get('/api/pipeline/stages')
-  expect(stagesResponse.ok()).toBeTruthy()
-  const stages = await stagesResponse.json()
+  const boardResponse = await apiFromPage(page, 'GET', '/api/board', undefined, auth)
+  expect(boardResponse.ok, JSON.stringify(boardResponse.body)).toBeTruthy()
+  const stages = boardResponse.body.stages || []
   const firstStage = stages[0]?.id
   const targetStage = stages[1]?.id || stages[0]?.id
 
-  const prospectResponse = await page.request.post('/api/profiles', {
-    data: {
+  const prospectResponse = await apiFromPage(
+    page,
+    'POST',
+    '/api/profiles',
+    {
       kind: 'prospect',
       stage: firstStage,
       firstName: 'Pipeline',
       lastName: 'Prospect',
       email: deterministicEmail(seededRunId, 'pipeline-prospect')
-    }
-  })
-  expect(prospectResponse.status()).toBe(201)
-  const prospect = await prospectResponse.json()
+    },
+    auth
+  )
+  expect(prospectResponse.status).toBe(201)
+  const prospect = prospectResponse.body
 
-  const clientResponse = await page.request.post('/api/profiles', {
-    data: {
+  const clientResponse = await apiFromPage(
+    page,
+    'POST',
+    '/api/profiles',
+    {
       kind: 'client',
       firstName: 'Export',
       lastName: 'Client',
       email: deterministicEmail(seededRunId, 'export-client')
-    }
-  })
-  expect(clientResponse.status()).toBe(201)
-  const client = await clientResponse.json()
+    },
+    auth
+  )
+  expect(clientResponse.status).toBe(201)
+  const client = clientResponse.body
 
-  const documentTemplateResponse = await page.request.post('/api/templates', {
-    data: {
+  const documentTemplateResponse = await apiFromPage(
+    page,
+    'POST',
+    '/api/templates',
+    {
       name: `Export Template ${seededRunId}`,
       fileName: 'export-template.pdf',
       extractedFields: ['firstName'],
       mappings: [{ pdfField: 'firstName', fieldLabel: 'First Name', sourcePath: 'profile.firstName', required: true }]
-    }
-  })
-  expect(documentTemplateResponse.status()).toBe(201)
-  const documentTemplate = await documentTemplateResponse.json()
-
-  await signInFromUi(page, email, password)
+    },
+    auth
+  )
+  expect(documentTemplateResponse.status).toBe(201)
+  const documentTemplate = documentTemplateResponse.body
 
   await page.goto('/pipeline')
   await expect(page.getByTestId(`pipeline-card-${prospect.id}`)).toBeVisible()
@@ -162,7 +192,7 @@ test('@release-blocking stage movement and export download work in the routed pr
 
   await page.goto('/exports')
   await page.getByLabel('Template').selectOption(documentTemplate.id)
-  await page.getByLabel('Client').selectOption(client.id)
+  await page.getByLabel('Client').first().selectOption(client.id)
   await page.getByTestId('create-export-submit').click()
   await expect(page.getByText('Export queued.')).toBeVisible()
 
@@ -171,8 +201,9 @@ test('@release-blocking stage movement and export download work in the routed pr
 
   const downloadLink = page.getByRole('link', { name: 'Download' }).first()
   await expect(downloadLink).toBeVisible()
-  const download = await page.waitForEvent('download', async () => {
-    await downloadLink.click()
-  })
-  await expect(download.suggestedFilename()).toBeTruthy()
+  const downloadHref = await downloadLink.getAttribute('href')
+  expect(downloadHref).toBeTruthy()
+  const downloadResponse = await page.request.get(downloadHref)
+  expect(downloadResponse.ok()).toBeTruthy()
+  expect(downloadResponse.headers()['content-disposition'] || '').toContain('attachment')
 })

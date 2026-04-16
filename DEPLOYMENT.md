@@ -7,8 +7,9 @@ Node runtime policy: production containers track the active Node.js **LTS major*
 This deployment remains a single-process **Node + SQLite + static web** architecture:
 - the Node process serves the JSON API,
 - SQLite persists runtime data in `data/app.db`,
-- static advisor assets are served from `apps/web/public`,
-- and the portal UI is served from `/portal`.
+- canonical React/Vite assets are built from `apps/web/src` into `apps/web/dist` during CI/Docker image creation,
+- the backend serves `apps/web/dist` first for product routes including `/portal`,
+- and `apps/web/public` is legacy-only, retained explicitly at `/legacy` and `/legacy/portal` until retirement.
 
 ## Environment contract
 Copy `.env.example` to `.env` and set the runtime-required production variables.
@@ -122,11 +123,12 @@ RELEASE_EVIDENCE_FILE=artifacts/release-evidence/<release-id>/validate-master-su
 ```
 
 The gate is objective and fails if any required suite fails:
-1. API contract tests (`npm run test:contract`)
-2. Integration suites (`npm run test:integration`)
-3. Migration order checks (`npm run check:migrations`)
-4. Smoke test (`npm run test:smoke`)
-5. Security checks (`npm run test:security`)
+1. React frontend build (`npm run web:build`)
+2. API contract tests (`npm run test:contract`)
+3. Integration suites (`npm run test:integration`)
+4. Migration order checks (`npm run check:migrations`)
+5. Smoke test (`npm run test:smoke`)
+6. Security checks (`npm run test:security`)
 
 Before approving GO/NO-GO, complete and archive the standardized handoff package in
 `docs/release-handoff-template.md`.
@@ -159,7 +161,7 @@ npm run reset:test-data
 docker compose --env-file .env up --build -d
 ```
 
-The app will be available at `http://localhost:3000`.
+The Dockerfile builds the React app during image creation and copies the generated `apps/web/dist` assets into the runtime image, so deployments do not rely on checked-in build output. The app will be available at `http://localhost:3000`; legacy fallback remains explicit at `/legacy` and `/legacy/portal`.
 
 ### Container filesystem policy
 - The runtime container is designed to run with a **read-only root filesystem**.
@@ -260,7 +262,7 @@ RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
 1. **Pre-flight**
    - Execute `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase preflight` exactly once.
 2. **Deploy**
-   - Build and launch (`docker compose --env-file .env up --build -d`).
+   - Build and launch (`docker compose --env-file .env up --build -d`); the image build runs `npm --prefix apps/web run build`.
 3. **Deterministic post-deploy validation** (run in exact order)
    - Execute `npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy`.
    - Machine-verifiable readiness keys: `status`, `checks.databaseReady`, `checks.storageReady`, `checks.exportQueueReachable`, `checks.startupConfigValid`.
@@ -306,4 +308,4 @@ Release validation is incomplete unless all three telemetry domains pass:
 - **Alerts**: no unresolved critical/high alerts for the new revision; warning alerts have owner and ETA.
 
 ## Build context hygiene
-A `.dockerignore` file excludes git metadata, local SQLite data, logs, and `node_modules` from image builds so Docker packages only the shipped runtime assets.
+A `.dockerignore` file excludes git metadata, local SQLite data, logs, root/web `node_modules`, and stale `apps/web/dist` output from image builds so Docker packages only assets generated inside the image build.

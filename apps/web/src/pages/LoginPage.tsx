@@ -78,7 +78,9 @@ export function Component() {
       <p className="eyebrow">Secure session</p>
       <h2>{pendingMfa ? 'Verify sign-in' : 'Sign in'}</h2>
       <p className="muted">
-        {pendingMfa ? 'Finish the multi-factor challenge to open the routed workspace.' : 'Use your existing account and session policy.'}
+        {pendingMfa
+          ? 'Finish the multi-factor challenge to open the routed workspace.'
+          : 'Use your existing account and session policy.'}
       </p>
       <form className="form-grid" onSubmit={handleSubmit} data-testid="login-form">
         {!pendingMfa ? (
@@ -112,11 +114,19 @@ export function Component() {
           <>
             <label>
               <span>Authenticator code</span>
-              <input aria-label="Authenticator code" value={totpCode} onChange={(event) => setTotpCode(event.target.value)} />
+              <input
+                aria-label="Authenticator code"
+                value={totpCode}
+                onChange={(event) => setTotpCode(event.target.value)}
+              />
             </label>
             <label>
               <span>Backup code</span>
-              <input aria-label="Backup code" value={backupCode} onChange={(event) => setBackupCode(event.target.value)} />
+              <input
+                aria-label="Backup code"
+                value={backupCode}
+                onChange={(event) => setBackupCode(event.target.value)}
+              />
             </label>
           </>
         )}
@@ -149,7 +159,10 @@ export function Component() {
         <InlineNotice tone="info">Demo credentials: `admin@demo.test` / `ChangeMe123!`</InlineNotice>
       ) : null}
       <p className="muted">
-        No account yet? <Link className="text-link" to="/register">Create a firm admin account</Link>
+        No account yet?{' '}
+        <Link className="text-link" to="/register">
+          Create a firm admin account
+        </Link>
       </p>
     </Card>
   )

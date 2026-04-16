@@ -92,17 +92,14 @@ export function Component() {
   const [lookupQuery, setLookupQuery] = useState('')
   const [selectedCollaboratorId, setSelectedCollaboratorId] = useState('')
 
-  const { data, error, loading } = useAsync<SubmissionDetailData>(
-    async () => {
-      const [submissions, templates, profiles] = await Promise.all([
-        api.get<FormSubmission[]>(routes.formSubmissions()),
-        api.get<FormTemplate[]>(routes.formTemplates()),
-        api.get<Profile[]>(routes.profiles({ kind: 'client' }))
-      ])
-      return { submissions, templates, profiles }
-    },
-    [submissionId, refreshKey]
-  )
+  const { data, error, loading } = useAsync<SubmissionDetailData>(async () => {
+    const [submissions, templates, profiles] = await Promise.all([
+      api.get<FormSubmission[]>(routes.formSubmissions()),
+      api.get<FormTemplate[]>(routes.formTemplates()),
+      api.get<Profile[]>(routes.profiles({ kind: 'client' }))
+    ])
+    return { submissions, templates, profiles }
+  }, [submissionId, refreshKey])
 
   const submission = data?.submissions.find((entry) => entry.id === submissionId) || null
   const template = data?.templates.find((entry) => entry.id === submission?.templateId) || null
@@ -193,7 +190,9 @@ export function Component() {
       return
     }
     try {
-      const payload = await api.get<{ users: UserLookup[] }>(routes.users({ mode: 'lookup', search: lookupQuery, includeSelf: false }))
+      const payload = await api.get<{ users: UserLookup[] }>(
+        routes.users({ mode: 'lookup', search: lookupQuery, includeSelf: false })
+      )
       setLookupResults(payload.users || [])
     } catch (lookupError) {
       setLookupResults([])
@@ -240,11 +239,7 @@ export function Component() {
     const row = rows[rowIndex]
     try {
       await api.patch(
-        routes.formSubmissionSectionItem(
-          submission.id,
-          sectionStorageKey(section, sectionIndex),
-          String(rowIndex)
-        ),
+        routes.formSubmissionSectionItem(submission.id, sectionStorageKey(section, sectionIndex), String(rowIndex)),
         {
           ...(row && typeof row === 'object' ? row : {}),
           expectedUpdatedAt: submission.updatedAt
@@ -276,7 +271,13 @@ export function Component() {
 
   if (loading) return <LoadingState label="Loading submission" />
   if (error || !data) return <ErrorState title="Submission detail failed to load." detail={error?.message} />
-  if (!submission) return <ErrorState title="Submission not found." detail="The requested submission is not present in the canonical forms response." />
+  if (!submission)
+    return (
+      <ErrorState
+        title="Submission not found."
+        detail="The requested submission is not present in the canonical forms response."
+      />
+    )
 
   return (
     <div className="stack">
@@ -317,7 +318,9 @@ export function Component() {
             <h3>Editing state</h3>
             {submission.status === 'draft' ? (
               <div className="compact-stack">
-                <p className="muted">Collaborators: {collaboratorSummary(collaborators?.collaborators || submission.collaborators)}</p>
+                <p className="muted">
+                  Collaborators: {collaboratorSummary(collaborators?.collaborators || submission.collaborators)}
+                </p>
                 {submission.lock ? (
                   <InlineNotice tone={lockIsMine ? 'success' : 'warning'}>
                     {lockIsMine
@@ -331,16 +334,28 @@ export function Component() {
                   <button type="button" onClick={() => void handleAcquireLock(false)} disabled={!canWriteForms}>
                     Acquire lock
                   </button>
-                  <button type="button" className="secondary-button" onClick={() => void handleAcquireLock(true)} disabled={!canWriteForms}>
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => void handleAcquireLock(true)}
+                    disabled={!canWriteForms}
+                  >
                     Force takeover
                   </button>
-                  <button type="button" className="ghost-button" onClick={() => void handleReleaseLock()} disabled={!lockIsMine}>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => void handleReleaseLock()}
+                    disabled={!lockIsMine}
+                  >
                     Release lock
                   </button>
                 </div>
               </div>
             ) : (
-              <InlineNotice tone="info">Submitted records can be edited directly without draft lease management.</InlineNotice>
+              <InlineNotice tone="info">
+                Submitted records can be edited directly without draft lease management.
+              </InlineNotice>
             )}
           </Card>
         </div>
@@ -349,7 +364,10 @@ export function Component() {
       {statusMessage ? <InlineNotice tone="info">{statusMessage}</InlineNotice> : null}
 
       <div className="split-grid">
-        <PageSection title="Form editor" subtitle="Scalar fields edit inline here, while repeaters keep explicit row controls.">
+        <PageSection
+          title="Form editor"
+          subtitle="Scalar fields edit inline here, while repeaters keep explicit row controls."
+        >
           {template && template.sections.length ? (
             <div className="compact-stack">
               {template.sections.map((section, sectionIndex) => {
@@ -376,7 +394,10 @@ export function Component() {
                           {rows.map((row, rowIndex) => {
                             const rowObject = row && typeof row === 'object' ? (row as Record<string, unknown>) : {}
                             return (
-                              <Card key={`${sectionStorageKey(section, sectionIndex)}-${rowIndex}`} className="section-card inset-card">
+                              <Card
+                                key={`${sectionStorageKey(section, sectionIndex)}-${rowIndex}`}
+                                className="section-card inset-card"
+                              >
                                 <div className="row-between">
                                   <strong>Row {rowIndex + 1}</strong>
                                   <div className="actions-row">
@@ -473,7 +494,12 @@ export function Component() {
                 <button type="button" onClick={() => void handleSaveDraft('draft')} disabled={!canEditDraft}>
                   Save draft
                 </button>
-                <button type="button" className="secondary-button" onClick={() => void handleSaveDraft('submitted')} disabled={!canEditDraft}>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void handleSaveDraft('submitted')}
+                  disabled={!canEditDraft}
+                >
                   Submit draft
                 </button>
               </>
@@ -485,9 +511,15 @@ export function Component() {
           </div>
         </PageSection>
 
-        <PageSection title="Collaborators" subtitle="Lock and membership management now live with the draft, not in the shell.">
+        <PageSection
+          title="Collaborators"
+          subtitle="Lock and membership management now live with the draft, not in the shell."
+        >
           {submission.status !== 'draft' ? (
-            <EmptyState title="No collaborator state." detail="Submitted records no longer participate in draft collaboration." />
+            <EmptyState
+              title="No collaborator state."
+              detail="Submitted records no longer participate in draft collaboration."
+            />
           ) : (
             <div className="compact-stack">
               <div className="pill-list">
@@ -503,7 +535,11 @@ export function Component() {
                   <form className="form-grid" onSubmit={handleSearchUsers}>
                     <label>
                       <span>Search users</span>
-                      <input value={lookupQuery} onChange={(event) => setLookupQuery(event.target.value)} placeholder="Admin lookup by name or email" />
+                      <input
+                        value={lookupQuery}
+                        onChange={(event) => setLookupQuery(event.target.value)}
+                        placeholder="Admin lookup by name or email"
+                      />
                     </label>
                     <button type="submit">Search directory</button>
                   </form>
@@ -512,7 +548,11 @@ export function Component() {
                     <form className="form-grid" onSubmit={handleAddCollaborator}>
                       <label>
                         <span>Add collaborator</span>
-                        <select value={selectedCollaboratorId} onChange={(event) => setSelectedCollaboratorId(event.target.value)} required>
+                        <select
+                          value={selectedCollaboratorId}
+                          onChange={(event) => setSelectedCollaboratorId(event.target.value)}
+                          required
+                        >
                           <option value="">Select a user</option>
                           {lookupResults.map((entry) => (
                             <option key={entry.id} value={entry.id}>
@@ -546,7 +586,9 @@ export function Component() {
                   ) : null}
                 </>
               ) : (
-                <InlineNotice tone="warning">Your role can view draft context, but collaborator management is restricted.</InlineNotice>
+                <InlineNotice tone="warning">
+                  Your role can view draft context, but collaborator management is restricted.
+                </InlineNotice>
               )}
             </div>
           )}

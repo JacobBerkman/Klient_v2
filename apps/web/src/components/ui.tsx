@@ -68,15 +68,7 @@ export function ErrorState({
   )
 }
 
-export function EmptyState({
-  title,
-  detail,
-  action
-}: {
-  title: string
-  detail?: string
-  action?: ReactNode
-}) {
+export function EmptyState({ title, detail, action }: { title: string; detail?: string; action?: ReactNode }) {
   return (
     <div className="state-shell state-empty">
       <h3>{title}</h3>

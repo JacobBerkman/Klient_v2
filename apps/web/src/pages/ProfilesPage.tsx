@@ -38,16 +38,13 @@ export function Component() {
 
   const panel = searchParams.get('panel') || 'directory'
 
-  const { data, error, loading } = useAsync<ProfilesPageData>(
-    async () => {
-      const [profiles, schema] = await Promise.all([
-        api.get<Profile[]>(routes.profiles()),
-        api.get<CustomFieldSchemaPayload>(routes.profileCustomFieldSchema()).catch(() => ({ fields: [] }))
-      ])
-      return { profiles, schema }
-    },
-    [refreshKey]
-  )
+  const { data, error, loading } = useAsync<ProfilesPageData>(async () => {
+    const [profiles, schema] = await Promise.all([
+      api.get<Profile[]>(routes.profiles()),
+      api.get<CustomFieldSchemaPayload>(routes.profileCustomFieldSchema()).catch(() => ({ fields: [] }))
+    ])
+    return { profiles, schema }
+  }, [refreshKey])
 
   const visibleProfiles = useMemo(() => {
     if (!data) return []
@@ -119,7 +116,9 @@ export function Component() {
       >
         {panel === 'schema' ? (
           <>
-            <InlineNotice tone="info">The schema panel now lives on a real routed screen instead of falling through the global shell.</InlineNotice>
+            <InlineNotice tone="info">
+              The schema panel now lives on a real routed screen instead of falling through the global shell.
+            </InlineNotice>
             <div className="table-shell">
               <table>
                 <thead>
@@ -136,7 +135,11 @@ export function Component() {
                       <td>{field.key}</td>
                       <td>{field.label || humanizeKey(field.key)}</td>
                       <td>{field.type}</td>
-                      <td>{Object.entries(field.metadata || {}).map(([key, value]) => `${key}: ${String(value)}`).join(' / ') || '-'}</td>
+                      <td>
+                        {Object.entries(field.metadata || {})
+                          .map(([key, value]) => `${key}: ${String(value)}`)
+                          .join(' / ') || '-'}
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -146,8 +149,17 @@ export function Component() {
         ) : (
           <>
             <div className="toolbar">
-              <input aria-label="Search profiles" placeholder="Search by name, email, or phone" value={search} onChange={(event) => setSearch(event.target.value)} />
-              <select aria-label="Filter profile type" value={kindFilter} onChange={(event) => setKindFilter(event.target.value as typeof kindFilter)}>
+              <input
+                aria-label="Search profiles"
+                placeholder="Search by name, email, or phone"
+                value={search}
+                onChange={(event) => setSearch(event.target.value)}
+              />
+              <select
+                aria-label="Filter profile type"
+                value={kindFilter}
+                onChange={(event) => setKindFilter(event.target.value as typeof kindFilter)}
+              >
                 <option value="all">All kinds</option>
                 <option value="prospect">Prospects</option>
                 <option value="client">Clients</option>
@@ -160,30 +172,51 @@ export function Component() {
                 <form className="form-grid two-up" onSubmit={handleCreateProfile}>
                   <label>
                     <span>Kind</span>
-                    <select value={form.kind} onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value }))}>
+                    <select
+                      value={form.kind}
+                      onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value }))}
+                    >
                       <option value="prospect">Prospect</option>
                       <option value="client">Client</option>
                     </select>
                   </label>
                   <label>
                     <span>First name</span>
-                    <input value={form.firstName} onChange={(event) => setForm((current) => ({ ...current, firstName: event.target.value }))} required />
+                    <input
+                      value={form.firstName}
+                      onChange={(event) => setForm((current) => ({ ...current, firstName: event.target.value }))}
+                      required
+                    />
                   </label>
                   <label>
                     <span>Last name</span>
-                    <input value={form.lastName} onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))} required />
+                    <input
+                      value={form.lastName}
+                      onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))}
+                      required
+                    />
                   </label>
                   <label>
                     <span>Email</span>
-                    <input type="email" value={form.email} onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))} />
+                    <input
+                      type="email"
+                      value={form.email}
+                      onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
+                    />
                   </label>
                   <label>
                     <span>Phone</span>
-                    <input value={form.phone} onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))} />
+                    <input
+                      value={form.phone}
+                      onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))}
+                    />
                   </label>
                   <label>
                     <span>Initial stage</span>
-                    <input value={form.stage} onChange={(event) => setForm((current) => ({ ...current, stage: event.target.value }))} />
+                    <input
+                      value={form.stage}
+                      onChange={(event) => setForm((current) => ({ ...current, stage: event.target.value }))}
+                    />
                   </label>
                   <button type="submit" disabled={creating || !hasGuard(user, 'canWriteProfiles')}>
                     {creating ? 'Creating...' : 'Create profile'}
@@ -222,7 +255,11 @@ export function Component() {
                           <td>{profile.householdId || 'Unlinked'}</td>
                           <td>{formatDateTime(profile.updatedAt || profile.createdAt)}</td>
                           <td>
-                            <Link className="text-link" data-testid={`profile-link-${profile.id}`} to={`/profiles/${profile.id}`}>
+                            <Link
+                              className="text-link"
+                              data-testid={`profile-link-${profile.id}`}
+                              to={`/profiles/${profile.id}`}
+                            >
                               Open detail
                             </Link>
                           </td>

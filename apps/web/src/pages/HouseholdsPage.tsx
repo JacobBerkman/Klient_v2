@@ -25,16 +25,13 @@ export function Component() {
   const [form, setForm] = useState({ name: '', primaryClientId: '' })
   const [statusMessage, setStatusMessage] = useState('')
 
-  const { data, error, loading } = useAsync<HouseholdsPageData>(
-    async () => {
-      const [households, clients] = await Promise.all([
-        api.get<Household[]>(routes.households()),
-        api.get<Profile[]>(routes.profiles({ kind: 'client' }))
-      ])
-      return { households, clients }
-    },
-    [refreshKey]
-  )
+  const { data, error, loading } = useAsync<HouseholdsPageData>(async () => {
+    const [households, clients] = await Promise.all([
+      api.get<Household[]>(routes.households()),
+      api.get<Profile[]>(routes.profiles({ kind: 'client' }))
+    ])
+    return { households, clients }
+  }, [refreshKey])
 
   async function handleCreate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -58,11 +55,19 @@ export function Component() {
         <form className="form-grid" onSubmit={handleCreate}>
           <label>
             <span>Household name</span>
-            <input value={form.name} onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))} required />
+            <input
+              value={form.name}
+              onChange={(event) => setForm((current) => ({ ...current, name: event.target.value }))}
+              required
+            />
           </label>
           <label>
             <span>Primary client</span>
-            <select value={form.primaryClientId} onChange={(event) => setForm((current) => ({ ...current, primaryClientId: event.target.value }))} required>
+            <select
+              value={form.primaryClientId}
+              onChange={(event) => setForm((current) => ({ ...current, primaryClientId: event.target.value }))}
+              required
+            >
               <option value="">Select a client</option>
               {data.clients.map((client) => (
                 <option key={client.id} value={client.id}>

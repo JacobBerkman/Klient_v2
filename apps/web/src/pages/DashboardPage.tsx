@@ -7,7 +7,8 @@ import { Card, ErrorState, LoadingState, MetricCard, PageSection } from '../comp
 
 export const handle = {
   title: 'Dashboard',
-  subtitle: 'Firm-level summary, recent activity, and shortcuts without mixing operational forms into the landing page.',
+  subtitle:
+    'Firm-level summary, recent activity, and shortcuts without mixing operational forms into the landing page.',
   breadcrumb: 'Dashboard'
 }
 
@@ -20,7 +21,11 @@ export function Component() {
   return (
     <div className="stack" data-testid="dashboard-page">
       <div className="metrics-grid">
-        <MetricCard label="Total profiles" value={data.stats.totalProfiles} hint={`${data.stats.prospects} prospects / ${data.stats.clients} clients`} />
+        <MetricCard
+          label="Total profiles"
+          value={data.stats.totalProfiles}
+          hint={`${data.stats.prospects} prospects / ${data.stats.clients} clients`}
+        />
         <MetricCard label="Households" value={data.stats.households} hint="Linked relationship groups" />
         <MetricCard label="Forms" value={data.stats.forms} hint="Drafts and submissions" />
         <MetricCard label="Exports" value={data.stats.exports} hint="Queued and completed packages" />
@@ -31,17 +36,27 @@ export function Component() {
           <p className="eyebrow">Shortcuts</p>
           <h3>Jump into active work</h3>
           <div className="compact-stack">
-            <Link className="text-link" to="/pipeline">Open pipeline board</Link>
-            <Link className="text-link" to="/profiles">Review profiles</Link>
-            <Link className="text-link" to="/forms">Manage forms</Link>
-            <Link className="text-link" to="/exports">Queue exports</Link>
+            <Link className="text-link" to="/pipeline">
+              Open pipeline board
+            </Link>
+            <Link className="text-link" to="/profiles">
+              Review profiles
+            </Link>
+            <Link className="text-link" to="/forms">
+              Manage forms
+            </Link>
+            <Link className="text-link" to="/exports">
+              Queue exports
+            </Link>
           </div>
         </Card>
 
         <Card className="section-card">
           <p className="eyebrow">Firm</p>
           <h3>{data.firm?.name || 'Firm workspace'}</h3>
-          <p className="muted">The dashboard now stays focused on signal and navigation instead of carrying every create workflow.</p>
+          <p className="muted">
+            The dashboard now stays focused on signal and navigation instead of carrying every create workflow.
+          </p>
         </Card>
       </div>
 

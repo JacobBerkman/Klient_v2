@@ -29,16 +29,13 @@ export function Component() {
   const [dropStage, setDropStage] = useState('')
   const deferredSearch = useDeferredValue(search)
 
-  const { data, error, loading } = useAsync<PipelineData>(
-    async () => {
-      const [board, clients] = await Promise.all([
-        api.get<BoardPayload>(routes.board()),
-        api.get<Profile[]>(routes.profiles({ kind: 'client' }))
-      ])
-      return { board, clients }
-    },
-    [refreshKey]
-  )
+  const { data, error, loading } = useAsync<PipelineData>(async () => {
+    const [board, clients] = await Promise.all([
+      api.get<BoardPayload>(routes.board()),
+      api.get<Profile[]>(routes.profiles({ kind: 'client' }))
+    ])
+    return { board, clients }
+  }, [refreshKey])
 
   async function moveProfile(profileId: string, stage: string) {
     if (!hasGuard(user, 'canMovePipeline')) return
@@ -77,10 +74,18 @@ export function Component() {
         subtitle="Switch between the stage-based prospect board and the active client roster."
         action={
           <div className="actions-row">
-            <button type="button" className={viewMode === 'prospects' ? 'secondary-button' : 'ghost-button'} onClick={() => startTransition(() => setViewMode('prospects'))}>
+            <button
+              type="button"
+              className={viewMode === 'prospects' ? 'secondary-button' : 'ghost-button'}
+              onClick={() => startTransition(() => setViewMode('prospects'))}
+            >
               Prospects
             </button>
-            <button type="button" className={viewMode === 'clients' ? 'secondary-button' : 'ghost-button'} onClick={() => startTransition(() => setViewMode('clients'))}>
+            <button
+              type="button"
+              className={viewMode === 'clients' ? 'secondary-button' : 'ghost-button'}
+              onClick={() => startTransition(() => setViewMode('clients'))}
+            >
               Clients
             </button>
           </div>

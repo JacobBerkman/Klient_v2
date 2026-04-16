@@ -33,7 +33,7 @@ export type GuardName = keyof typeof guardMatrix
 
 export function hasGuard(user: User | null | undefined, guard: GuardName) {
   if (!user) return false
-  return guardMatrix[guard].includes(user.role)
+  return (guardMatrix[guard] as readonly Role[]).includes(user.role)
 }
 
 export function hasRole(user: User | null | undefined, roles: Role[]) {

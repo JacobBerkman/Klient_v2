@@ -59,10 +59,12 @@ export const routes = {
   documentTemplates: () => '/api/templates',
   documentTemplateAutoBuild: () => '/api/templates/auto-build',
   documentTemplateMappings: (templateId: string) => joinPath('/api/templates', templateId, 'mappings'),
-  documentTemplateMappingsPreview: (templateId: string) => joinPath('/api/templates', templateId, 'mappings', 'preview'),
+  documentTemplateMappingsPreview: (templateId: string) =>
+    joinPath('/api/templates', templateId, 'mappings', 'preview'),
   documentTemplatePublish: (templateId: string) => joinPath('/api/templates', templateId, 'publish'),
   documentTemplateVersions: (templateId: string) => joinPath('/api/templates', templateId, 'versions'),
-  documentTemplatePublishTransitions: (templateId: string) => joinPath('/api/templates', templateId, 'publish-transitions'),
+  documentTemplatePublishTransitions: (templateId: string) =>
+    joinPath('/api/templates', templateId, 'publish-transitions'),
   documentTemplateCompare: (templateId: string, query: Record<string, QueryValue>) =>
     withQuery(joinPath('/api/templates', templateId, 'compare'), query),
   documentTemplateRevert: (templateId: string) => joinPath('/api/templates', templateId, 'revert'),
@@ -101,7 +103,13 @@ export class ApiError extends Error {
 
   constructor(
     message: string,
-    { status, code = null, details = null, requestId = null, body = null }: {
+    {
+      status,
+      code = null,
+      details = null,
+      requestId = null,
+      body = null
+    }: {
       status: number
       code?: string | null
       details?: unknown
@@ -175,7 +183,9 @@ class ApiClient {
       this.setCsrfToken(nextToken)
     }
 
-    const body = isJsonContentType(response) ? ((await response.json()) as unknown) : ((await response.text()) as unknown)
+    const body = isJsonContentType(response)
+      ? ((await response.json()) as unknown)
+      : ((await response.text()) as unknown)
 
     if (response.ok) {
       if (!nextToken && body && typeof body === 'object' && 'csrfToken' in (body as Record<string, unknown>)) {

@@ -26,7 +26,8 @@ const requiredScripts = [
   'test:smoke',
   'test:e2e',
   'test:security',
-  'test:ui-contract'
+  'test:ui-contract',
+  'web:build'
 ]
 
 const releaseGateJobs = [
@@ -90,7 +91,11 @@ const requiredStrictGateCommands = [
   "RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e"
 ]
 
-const requiredEvidenceValidationModes = ['validationMode=local', 'validationMode=ci', 'validationMode=unpacked-artifact']
+const requiredEvidenceValidationModes = [
+  'validationMode=local',
+  'validationMode=ci',
+  'validationMode=unpacked-artifact'
+]
 const requiredE2EEvidenceFields = [
   'executionMode',
   'details.artifacts.playwrightJsonReport.path',
@@ -111,7 +116,7 @@ function assertContains(content, needle, label) {
 }
 
 function getJobBlock(content, jobId) {
-  const matcher = new RegExp(`\\n  ${jobId}:\\n([\\s\\S]*?)(?=\\n  [a-z0-9_]+:\\n|$)`)
+  const matcher = new RegExp(`\\r?\\n  ${jobId}:\\r?\\n([\\s\\S]*?)(?=\\r?\\n  [a-z0-9_]+:\\r?\\n|$)`)
   const match = content.match(matcher)
   if (!match) {
     missing.push(`.github/workflows/smoke.yml missing job: ${jobId}`)
@@ -165,6 +170,12 @@ for (const { jobId } of releaseGateJobs) {
   assertContains(workflow, `- ${jobId}`, '.github/workflows/smoke.yml merge gate needs')
 }
 
+assertContains(workflow, 'web_build:', '.github/workflows/smoke.yml')
+assertContains(workflow, 'npm run web:build', '.github/workflows/smoke.yml')
+assertContains(workflow, '- web_build', '.github/workflows/smoke.yml merge gate needs')
+assertContains(quickRef, 'npm run web:build', 'docs/deployment-quick-reference.md')
+assertContains(checklist, 'npm run web:build', 'docs/release-ready-checklist.md')
+
 assertContains(workflow, 'npm run validate:master', '.github/workflows/smoke.yml')
 assertContains(workflow, 'npm run check:release-docs', '.github/workflows/smoke.yml')
 assertContains(workflow, 'npm run check:release-gate-commands', '.github/workflows/smoke.yml')
@@ -183,7 +194,7 @@ if (e2eReleaseJob) {
     if (!new RegExp(`tee\\s+${escapedBase}/suite\\.log`).test(e2eReleaseJob)) {
       missing.push('.github/workflows/smoke.yml e2e_release_blocking suite log path differs from mkdir path')
     }
-    if (!new RegExp(`\\n\\s*${escapedBase}/\\*\\*\\n`).test(e2eReleaseJob)) {
+    if (!new RegExp(`\\r?\\n\\s*${escapedBase}/\\*\\*\\r?\\n`).test(e2eReleaseJob)) {
       missing.push('.github/workflows/smoke.yml e2e_release_blocking artifact upload path differs from mkdir path')
     }
   }
@@ -200,7 +211,9 @@ if (hardReleaseJob) {
     missing.push('.github/workflows/smoke.yml hard_release_gate missing npm run validate:master')
   }
   if (playwrightInstallIndex >= 0 && validateMasterIndex >= 0 && playwrightInstallIndex > validateMasterIndex) {
-    missing.push('.github/workflows/smoke.yml hard_release_gate installs Playwright after validate:master (must be before)')
+    missing.push(
+      '.github/workflows/smoke.yml hard_release_gate installs Playwright after validate:master (must be before)'
+    )
   }
   if (!/RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master/.test(hardReleaseJob)) {
     missing.push('.github/workflows/smoke.yml hard_release_gate must execute validate:master with strict E2E env flags')
@@ -209,27 +222,37 @@ if (hardReleaseJob) {
     missing.push('.github/workflows/smoke.yml hard_release_gate readiness summary missing strict mode evidence line')
   }
   if (!hardReleaseJob.includes('- fallback: RELEASE_E2E_ALLOW_FALLBACK=0')) {
-    missing.push('.github/workflows/smoke.yml hard_release_gate readiness summary missing fallback-disabled evidence line')
+    missing.push(
+      '.github/workflows/smoke.yml hard_release_gate readiness summary missing fallback-disabled evidence line'
+    )
   }
 }
 
 const e2eReleaseBlockingJob = getJobBlock(workflow, 'e2e_release_blocking')
 if (e2eReleaseBlockingJob) {
-  if (!/RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e/.test(e2eReleaseBlockingJob)) {
-    missing.push('.github/workflows/smoke.yml e2e_release_blocking must run test:e2e with strict mode and fallback disabled')
+  if (
+    !/RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e/.test(
+      e2eReleaseBlockingJob
+    )
+  ) {
+    missing.push(
+      '.github/workflows/smoke.yml e2e_release_blocking must run test:e2e with strict mode and fallback disabled'
+    )
   }
   if (!e2eReleaseBlockingJob.includes('- strict mode: RELEASE_E2E_STRICT_MODE=1')) {
     missing.push('.github/workflows/smoke.yml e2e_release_blocking readiness summary missing strict mode evidence line')
   }
   if (!e2eReleaseBlockingJob.includes('- fallback: RELEASE_E2E_ALLOW_FALLBACK=0')) {
-    missing.push('.github/workflows/smoke.yml e2e_release_blocking readiness summary missing fallback-disabled evidence line')
+    missing.push(
+      '.github/workflows/smoke.yml e2e_release_blocking readiness summary missing fallback-disabled evidence line'
+    )
   }
 }
 
 const jobIds = new Set([...workflow.matchAll(/^  ([a-z0-9_]+):$/gm)].map((entry) => entry[1]))
 const mergeGateJob = getJobBlock(workflow, 'merge_gate')
 if (mergeGateJob) {
-  const needsBlockMatch = mergeGateJob.match(/\n    needs:\n([\s\S]*?)\n    if:/)
+  const needsBlockMatch = mergeGateJob.match(/\r?\n    needs:\r?\n([\s\S]*?)\r?\n    if:/)
   if (!needsBlockMatch) {
     missing.push('.github/workflows/smoke.yml merge_gate missing needs block')
   } else {
@@ -248,7 +271,11 @@ if (mergeGateJob) {
 const e2eDocsFolder = 'artifacts/e2e-release-blocking'
 assertContains(quickRef, `${e2eDocsFolder}/`, 'docs/deployment-quick-reference.md')
 for (const summaryName of canonicalEvidenceSummaries) {
-  assertContains(quickRef, `artifacts/release-evidence/<release-id>/${summaryName}`, 'docs/deployment-quick-reference.md')
+  assertContains(
+    quickRef,
+    `artifacts/release-evidence/<release-id>/${summaryName}`,
+    'docs/deployment-quick-reference.md'
+  )
   assertContains(checklist, `artifacts/release-evidence/<release-id>/${summaryName}`, 'docs/release-ready-checklist.md')
 }
 

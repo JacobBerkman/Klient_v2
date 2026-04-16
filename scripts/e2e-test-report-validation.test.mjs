@@ -3,7 +3,13 @@ import assert from 'node:assert/strict'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { tmpdir } from 'node:os'
-import { browserFallbackMode, gatePlaywrightReportOrFail, main, validatePlaywrightJsonReport, writeTempReport } from './e2e-test.mjs'
+import {
+  browserFallbackMode,
+  gatePlaywrightReportOrFail,
+  main,
+  validatePlaywrightJsonReport,
+  writeTempReport
+} from './e2e-test.mjs'
 
 test('validatePlaywrightJsonReport fails when report is missing', async () => {
   const tempDir = await mkdtemp(resolve(tmpdir(), 'e2e-missing-'))
@@ -29,7 +35,6 @@ test('validatePlaywrightJsonReport fails when report JSON is invalid', async () 
 
   await rm(resolve(reportPath, '..'), { recursive: true, force: true })
 })
-
 
 test('validatePlaywrightJsonReport fails when report JSON is empty object', async () => {
   const reportPath = await writeTempReport('{}')
@@ -163,7 +168,11 @@ test('main fails in strict mode when browser binaries are missing', async () => 
       },
       evidenceRecorder: { finalize: (payload) => finalizeCalls.push(payload) },
       removeFile: async () => {},
-      validateReport: async () => ({ ok: true, suiteNames: ['playwright-browser-fallback'], artifact: { path: 'x', valid: true } }),
+      validateReport: async () => ({
+        ok: true,
+        suiteNames: ['playwright-browser-fallback'],
+        artifact: { path: 'x', valid: true }
+      }),
       writeFallbackReport: async () => {}
     })
 
@@ -292,7 +301,7 @@ test('main runs UI contract before browser suite and propagates strict env vars'
   assert.equal(exitCode, 0)
   assert.equal(commands.length, 2)
   assert.equal(commands[0].command, process.execPath)
-  assert.deepEqual(commands[0].args.slice(0, 2), ['--test', 'apps/web/public/ui-contract.test.mjs'])
+  assert.deepEqual(commands[0].args.slice(0, 2), ['--test', 'apps/api/src/test/web-static-serving.test.mjs'])
   assert.ok(commands[1].args.includes('playwright'))
   assert.equal(commands[1].env.RELEASE_E2E_PLAYWRIGHT_REPORT, commands[1].env.PLAYWRIGHT_JSON_REPORT)
   assert.equal(commands[1].env.TEST_RESET_BEHAVIOR, 'isolated')

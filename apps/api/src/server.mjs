@@ -220,9 +220,15 @@ function getExpectedOrigins(req) {
     .trim()
     .toLowerCase()
   const protocol = forwardedProto || (runtime.isProduction ? 'https' : 'http')
+  const protocols = new Set([protocol])
+  if (!runtime.isProduction && forwardedProto === 'https') {
+    protocols.add('http')
+  }
   const origins = new Set()
-  if (host) origins.add(`${protocol}://${host}`)
-  if (forwardedHost) origins.add(`${protocol}://${forwardedHost}`)
+  for (const candidateProtocol of protocols) {
+    if (host) origins.add(`${candidateProtocol}://${host}`)
+    if (forwardedHost) origins.add(`${candidateProtocol}://${forwardedHost}`)
+  }
   return origins
 }
 
@@ -452,7 +458,11 @@ function getClientIp(req) {
 
 function resolveStaticFile(rootDir, pathname, fallbackFile = null) {
   const relativePath = pathname === '/' ? '' : pathname.replace(/^\/+/, '')
-  const filePath = relativePath ? resolve(rootDir, relativePath) : fallbackFile ? resolve(rootDir, fallbackFile) : rootDir
+  const filePath = relativePath
+    ? resolve(rootDir, relativePath)
+    : fallbackFile
+      ? resolve(rootDir, fallbackFile)
+      : rootDir
   const rootPrefix = `${rootDir}${sep}`
   if (filePath !== rootDir && !filePath.startsWith(rootPrefix)) return null
   return filePath
@@ -537,14 +547,15 @@ function sendError(res, error, requestId) {
   const normalizedMessage = String(message).toLowerCase()
   const statusCode = Number.isInteger(error?.statusCode)
     ? error.statusCode
-      : /not found/i.test(normalizedMessage)
-        ? 404
-        : /authentication required|invalid credentials|csrf/i.test(normalizedMessage)
-          ? 401
-          : /permission|policy denied|access denied|missing permission/i.test(normalizedMessage)
-            ? 403
+    : /not found/i.test(normalizedMessage)
+      ? 404
+      : /authentication required|invalid credentials|csrf/i.test(normalizedMessage)
+        ? 401
+        : /permission|policy denied|access denied|missing permission/i.test(normalizedMessage)
+          ? 403
           : 400
-  const fieldErrors = error?.details?.fieldErrors && typeof error.details.fieldErrors === 'object' ? error.details.fieldErrors : null
+  const fieldErrors =
+    error?.details?.fieldErrors && typeof error.details.fieldErrors === 'object' ? error.details.fieldErrors : null
   const tightenedMessage =
     statusCode === 422 && fieldErrors && Object.keys(fieldErrors).length
       ? `${message} (${Object.entries(fieldErrors)
@@ -617,7 +628,6 @@ function sanitizeRequestLogQuery(searchParams) {
   return sanitized.toString()
 }
 
-
 export function bootstrapPiiKeyProvider() {
   const kmsAdapter = runtime.piiKeyProvider === 'kms' ? createRuntimeKmsAdapter(runtime) : null
   return createKeyProvider(runtime, { kmsAdapter })
@@ -635,7 +645,8 @@ export function createHttpServer({ modules }) {
     let opsAuditMetadata = null
     const rejectSession = (reason) => {
       securityDiagnostics.session.rejectedTotal += 1
-      securityDiagnostics.session.rejectedByReason[reason] = (securityDiagnostics.session.rejectedByReason[reason] || 0) + 1
+      securityDiagnostics.session.rejectedByReason[reason] =
+        (securityDiagnostics.session.rejectedByReason[reason] || 0) + 1
     }
     const requireUser = () => {
       const token = resolveSessionToken(req)
@@ -985,8 +996,8 @@ export function createHttpServer({ modules }) {
       }
       if (pathname === '/api/runtime' && req.method === 'GET') {
         authorize('canAccessRuntime', { allowAnonymous: true })
-        finalizeLog(200);
-        return replyJson(200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId });
+        finalizeLog(200)
+        return replyJson(200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method) && !isCsrfExempt(pathname)) {
         sessionToken = resolveSessionToken(req)
@@ -1193,7 +1204,12 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteProfiles')
         const result = modules.profiles.createProfile(user, await parseBody(req))
-        log('info', 'mutation.profile.created', { requestId, userId: user.id, firmId: user.firmId, profileId: result?.id })
+        log('info', 'mutation.profile.created', {
+          requestId,
+          userId: user.id,
+          firmId: user.firmId,
+          profileId: result?.id
+        })
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -1369,7 +1385,12 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canWriteHouseholds')
         const result = modules.households.addHouseholdMember(user, id, await parseBody(req))
-        log('info', 'mutation.household.member_added', { requestId, userId: user.id, firmId: user.firmId, householdId: id })
+        log('info', 'mutation.household.member_added', {
+          requestId,
+          userId: user.id,
+          firmId: user.firmId,
+          householdId: id
+        })
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -1694,7 +1715,7 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/exports/process' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canProcessExports')
-        const result = modules.exports.processQueuedExports(user)
+        const result = await modules.exports.processQueuedExports(user)
         logOperationalEvent(log, 'info', 'export.lifecycle.processing_batch', {
           entity: 'export_batch',
           id: requestId,

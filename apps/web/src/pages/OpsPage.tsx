@@ -22,21 +22,23 @@ export function Component() {
   const { user } = useAuth()
   const canReadDiagnostics = hasGuard(user, 'canReadDiagnostics')
 
-  const { data, error, loading } = useAsync<OpsPageData>(
-    async () => {
-      const [diagnostics, exportRuntime, ready, health] = await Promise.all([
-        api.get<DiagnosticsPayload>(routes.diagnostics()),
-        api.get<ExportRuntimePayload>(routes.exportRuntime()),
-        api.get<HealthPayload>(routes.ready()),
-        api.get<HealthPayload>(routes.health())
-      ])
-      return { diagnostics, exportRuntime, ready, health }
-    },
-    []
-  )
+  const { data, error, loading } = useAsync<OpsPageData>(async () => {
+    const [diagnostics, exportRuntime, ready, health] = await Promise.all([
+      api.get<DiagnosticsPayload>(routes.diagnostics()),
+      api.get<ExportRuntimePayload>(routes.exportRuntime()),
+      api.get<HealthPayload>(routes.ready()),
+      api.get<HealthPayload>(routes.health())
+    ])
+    return { diagnostics, exportRuntime, ready, health }
+  }, [])
 
   if (!canReadDiagnostics) {
-    return <ErrorState title="Admin access required." detail="This route keeps ops visibility role-scoped and does not expose diagnostics to non-admin roles." />
+    return (
+      <ErrorState
+        title="Admin access required."
+        detail="This route keeps ops visibility role-scoped and does not expose diagnostics to non-admin roles."
+      />
+    )
   }
   if (loading) return <LoadingState label="Loading operations" />
   if (error || !data) return <ErrorState title="Operations data failed to load." detail={error?.message} />
@@ -48,8 +50,16 @@ export function Component() {
       <div className="metrics-grid">
         <MetricCard label="Ready" value={data.ready.ready ? 'Yes' : 'No'} hint="Release readiness endpoint" />
         <MetricCard label="Health" value={String(data.health.status || 'unknown')} hint="Service liveness" />
-        <MetricCard label="Queue stalled" value={String(data.exportRuntime.workerStatus?.stalled || 0)} hint="Export worker stall count" />
-        <MetricCard label="Recent failures" value={data.exportRuntime.recentFailures?.length || 0} hint="Latest export runtime failures" />
+        <MetricCard
+          label="Queue stalled"
+          value={String(data.exportRuntime.workerStatus?.stalled || 0)}
+          hint="Export worker stall count"
+        />
+        <MetricCard
+          label="Recent failures"
+          value={data.exportRuntime.recentFailures?.length || 0}
+          hint="Latest export runtime failures"
+        />
       </div>
 
       <div className="split-grid">
@@ -78,7 +88,10 @@ export function Component() {
           )}
         </PageSection>
 
-        <PageSection title="Export runtime" subtitle="Queue status, leases, and failures surface directly on the admin route.">
+        <PageSection
+          title="Export runtime"
+          subtitle="Queue status, leases, and failures surface directly on the admin route."
+        >
           <div className="compact-stack">
             <pre className="json-block">{JSON.stringify(data.exportRuntime.workerStatus || {}, null, 2)}</pre>
             <pre className="json-block">{JSON.stringify(data.exportRuntime.queueStatus || {}, null, 2)}</pre>
@@ -87,7 +100,10 @@ export function Component() {
       </div>
 
       <div className="split-grid">
-        <PageSection title="Diagnostics" subtitle="Security and storage diagnostics stay on the current backend contract.">
+        <PageSection
+          title="Diagnostics"
+          subtitle="Security and storage diagnostics stay on the current backend contract."
+        >
           <pre className="json-block">{JSON.stringify(data.diagnostics.data || {}, null, 2)}</pre>
         </PageSection>
 

@@ -5,7 +5,7 @@ For exact operator commands and diagnostics triage, use the canonical operator f
 For canonical ordering references, use `docs/deployment-quick-reference.md#canonical-hard-gate-sequence-validatemaster-exact-execution-order` and `docs/deployment-quick-reference.md#deterministic-post-deploy-validation-sequence`.
 For a filled historical example, see `docs/release-handoffs/release-handoff-2026-03-30.md`.
 
-Architecture note: this release process assumes the existing single-process **Node + SQLite + static web** deployment model (no split app-tier/database migration in this template).
+Architecture note: this release process assumes the existing single-process **Node + SQLite + static web** deployment model (no split app-tier/database migration in this template). The canonical UI is the React/Vite app in `apps/web/src`, built by `npm run web:build` into `apps/web/dist`; `apps/web/public` remains legacy-only at `/legacy` and `/legacy/portal`.
 
 ## 1) Release identity
 - **Release ID**: `<release-id>`
@@ -100,6 +100,7 @@ Checkpoint citation guidance (required when multiple postdeploy runs exist):
 - Include at least one explicit checkpoint timestamp in Section 7 rationale when mitigations or transient failures occurred.
 
 Optional per-file links (if a reviewer requests drill-down):
+- Include the canonical frontend build transcript line when applicable: `npm run web:build`.
 - Include the strict hard-gate command transcript line exactly as executed when applicable: `RELEASE_E2E_ALLOW_FALLBACK=0 RELEASE_E2E_STRICT_MODE=1 npm run validate:master`.
 - Include the strict release-blocking E2E command transcript line exactly as executed in CI: `RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e`.
 - Record the browser provisioning context used by that run (`PLAYWRIGHT_BROWSERS_PATH=<value>` and `npx playwright install --with-deps chromium` transcript line).

@@ -51,22 +51,20 @@ export function Component() {
   const [preview, setPreview] = useState<TemplatePreviewPayload | null>(null)
   const [comparePayload, setComparePayload] = useState<TemplateVersionComparePayload | null>(null)
   const [selection, setSelection] = useState({ clientId: '', submissionId: '' })
+  const [publishForm, setPublishForm] = useState({ versionBump: '', changelog: '' })
   const [compareSelection, setCompareSelection] = useState({ baseVersion: '', targetVersion: '' })
   const [revertSelection, setRevertSelection] = useState({ targetVersion: '', changelog: '' })
 
-  const { data, error, loading } = useAsync<TemplateDetailData>(
-    async () => {
-      const [templates, versions, transitions, profiles, submissions] = await Promise.all([
-        api.get<DocumentTemplate[]>(routes.documentTemplates()),
-        api.get<TemplateVersion[]>(routes.documentTemplateVersions(templateId)),
-        api.get<Array<Record<string, unknown>>>(routes.documentTemplatePublishTransitions(templateId)),
-        api.get<Profile[]>(routes.profiles({ kind: 'client' })),
-        api.get<FormSubmission[]>(routes.formSubmissions())
-      ])
-      return { templates, versions, transitions, profiles, submissions }
-    },
-    [templateId, refreshKey]
-  )
+  const { data, error, loading } = useAsync<TemplateDetailData>(async () => {
+    const [templates, versions, transitions, profiles, submissions] = await Promise.all([
+      api.get<DocumentTemplate[]>(routes.documentTemplates()),
+      api.get<TemplateVersion[]>(routes.documentTemplateVersions(templateId)),
+      api.get<Array<Record<string, unknown>>>(routes.documentTemplatePublishTransitions(templateId)),
+      api.get<Profile[]>(routes.profiles({ kind: 'client' })),
+      api.get<FormSubmission[]>(routes.formSubmissions())
+    ])
+    return { templates, versions, transitions, profiles, submissions }
+  }, [templateId, refreshKey])
 
   const template = data?.templates.find((entry) => entry.id === templateId) || null
 
@@ -114,7 +112,12 @@ export function Component() {
   async function handlePublish() {
     if (!template) return
     try {
-      await api.post(routes.documentTemplatePublish(template.id), {})
+      await api.post(routes.documentTemplatePublish(template.id), {
+        versionBump: publishForm.versionBump,
+        changelog: publishForm.changelog,
+        clientId: selection.clientId || undefined,
+        submissionId: selection.submissionId || undefined
+      })
       setStatusMessage('Template published.')
       setRefreshKey((value) => value + 1)
     } catch (publishError) {
@@ -166,7 +169,13 @@ export function Component() {
 
   if (loading) return <LoadingState label="Loading template" />
   if (error || !data) return <ErrorState title="Template detail failed to load." detail={error?.message} />
-  if (!template) return <ErrorState title="Template not found." detail="The requested template is missing from the canonical template list." />
+  if (!template)
+    return (
+      <ErrorState
+        title="Template not found."
+        detail="The requested template is missing from the canonical template list."
+      />
+    )
 
   return (
     <div className="stack">
@@ -193,7 +202,29 @@ export function Component() {
               <button type="button" onClick={() => void handlePreviewMappings()}>
                 Run preview
               </button>
-              <button type="button" className="secondary-button" onClick={() => void handlePublish()} disabled={!hasGuard(user, 'canPublishTemplate')}>
+              <label>
+                <span>Version bump</span>
+                <input
+                  value={publishForm.versionBump}
+                  onChange={(event) => setPublishForm((current) => ({ ...current, versionBump: event.target.value }))}
+                  placeholder="1.0.0"
+                />
+              </label>
+              <label>
+                <span>Publish changelog</span>
+                <textarea
+                  rows={3}
+                  value={publishForm.changelog}
+                  onChange={(event) => setPublishForm((current) => ({ ...current, changelog: event.target.value }))}
+                  placeholder="Describe this publish."
+                />
+              </label>
+              <button
+                type="button"
+                className="secondary-button"
+                onClick={() => void handlePublish()}
+                disabled={!hasGuard(user, 'canPublishTemplate')}
+              >
                 Publish template
               </button>
               <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
@@ -205,7 +236,10 @@ export function Component() {
       </PageSection>
 
       <div className="split-grid">
-        <PageSection title="Mappings" subtitle="Edit source paths, transforms, and repeater selectors without returning to the shell.">
+        <PageSection
+          title="Mappings"
+          subtitle="Edit source paths, transforms, and repeater selectors without returning to the shell."
+        >
           <div className="table-shell">
             <table>
               <thead>
@@ -313,22 +347,41 @@ export function Component() {
             </table>
           </div>
           <div className="actions-row">
-            <button type="button" className="secondary-button" onClick={() => setMappings((current) => [...current, emptyMapping()])}>
+            <button
+              type="button"
+              className="secondary-button"
+              onClick={() => setMappings((current) => [...current, emptyMapping()])}
+            >
               Add row
             </button>
-            <button type="button" onClick={() => void handleSaveMappings()} disabled={!hasGuard(user, 'canEditTemplate')}>
+            <button
+              type="button"
+              onClick={() => void handleSaveMappings()}
+              disabled={!hasGuard(user, 'canEditTemplate')}
+            >
               Save mappings
             </button>
           </div>
         </PageSection>
 
-        <PageSection title="Preview" subtitle="Run current mappings against a client or submission to surface blockers before publish.">
-          <form className="form-grid" onSubmit={(event) => { event.preventDefault(); void handlePreviewMappings() }}>
+        <PageSection
+          title="Preview"
+          subtitle="Run current mappings against a client or submission to surface blockers before publish."
+        >
+          <form
+            className="form-grid"
+            onSubmit={(event) => {
+              event.preventDefault()
+              void handlePreviewMappings()
+            }}
+          >
             <label>
               <span>Client</span>
               <select
                 value={selection.clientId}
-                onChange={(event) => setSelection((current) => ({ ...current, clientId: event.target.value, submissionId: '' }))}
+                onChange={(event) =>
+                  setSelection((current) => ({ ...current, clientId: event.target.value, submissionId: '' }))
+                }
               >
                 <option value="">Select a client</option>
                 {data.profiles.map((profile) => (
@@ -347,7 +400,8 @@ export function Component() {
                 <option value="">Optional submission</option>
                 {submissionsForSelection.map((submission) => (
                   <option key={submission.id} value={submission.id}>
-                    {submission.templateId} - {profileName(data.profiles.find((entry) => entry.id === submission.clientId))}
+                    {submission.templateId} -{' '}
+                    {profileName(data.profiles.find((entry) => entry.id === submission.clientId))}
                   </option>
                 ))}
               </select>
@@ -391,13 +445,19 @@ export function Component() {
               )}
             </div>
           ) : (
-            <EmptyState title="No preview yet." detail="Pick a client or submission, then run preview to inspect publish readiness." />
+            <EmptyState
+              title="No preview yet."
+              detail="Pick a client or submission, then run preview to inspect publish readiness."
+            />
           )}
         </PageSection>
       </div>
 
       <div className="split-grid">
-        <PageSection title="Version history" subtitle="Inspect versions and compare changes before publishing or reverting.">
+        <PageSection
+          title="Version history"
+          subtitle="Inspect versions and compare changes before publishing or reverting."
+        >
           {data.versions.length ? (
             <div className="table-shell">
               <table>
@@ -422,15 +482,27 @@ export function Component() {
               </table>
             </div>
           ) : (
-            <EmptyState title="No versions available." detail="Version history will appear here after the template lifecycle begins." />
+            <EmptyState
+              title="No versions available."
+              detail="Version history will appear here after the template lifecycle begins."
+            />
           )}
         </PageSection>
 
-        <PageSection title="Compare and revert" subtitle="Use the current backend versioning behavior without replatforming the template runtime.">
+        <PageSection
+          title="Compare and revert"
+          subtitle="Use the current backend versioning behavior without replatforming the template runtime."
+        >
           <form className="form-grid" onSubmit={handleCompareVersions}>
             <label>
               <span>Base version</span>
-              <select value={compareSelection.baseVersion} onChange={(event) => setCompareSelection((current) => ({ ...current, baseVersion: event.target.value }))} required>
+              <select
+                value={compareSelection.baseVersion}
+                onChange={(event) =>
+                  setCompareSelection((current) => ({ ...current, baseVersion: event.target.value }))
+                }
+                required
+              >
                 <option value="">Select</option>
                 {data.versions.map((version) => (
                   <option key={`base-${version.version}`} value={version.version}>
@@ -441,7 +513,13 @@ export function Component() {
             </label>
             <label>
               <span>Target version</span>
-              <select value={compareSelection.targetVersion} onChange={(event) => setCompareSelection((current) => ({ ...current, targetVersion: event.target.value }))} required>
+              <select
+                value={compareSelection.targetVersion}
+                onChange={(event) =>
+                  setCompareSelection((current) => ({ ...current, targetVersion: event.target.value }))
+                }
+                required
+              >
                 <option value="">Select</option>
                 {data.versions.map((version) => (
                   <option key={`target-${version.version}`} value={version.version}>
@@ -457,7 +535,8 @@ export function Component() {
             <Card className="section-card inset-card">
               <h3>Compare result</h3>
               <p className="muted">
-                Versions {comparePayload.baseVersion} to {comparePayload.targetVersion}: {comparePayload.changed ? 'changed' : 'no change'}
+                Versions {comparePayload.baseVersion} to {comparePayload.targetVersion}:{' '}
+                {comparePayload.changed ? 'changed' : 'no change'}
               </p>
               <pre className="json-block">{JSON.stringify(comparePayload.diff, null, 2)}</pre>
             </Card>
@@ -466,7 +545,13 @@ export function Component() {
           <form className="form-grid" onSubmit={handleRevert}>
             <label>
               <span>Revert to version</span>
-              <select value={revertSelection.targetVersion} onChange={(event) => setRevertSelection((current) => ({ ...current, targetVersion: event.target.value }))} required>
+              <select
+                value={revertSelection.targetVersion}
+                onChange={(event) =>
+                  setRevertSelection((current) => ({ ...current, targetVersion: event.target.value }))
+                }
+                required
+              >
                 <option value="">Select</option>
                 {data.versions.map((version) => (
                   <option key={`revert-${version.version}`} value={version.version}>
@@ -477,7 +562,12 @@ export function Component() {
             </label>
             <label>
               <span>Changelog</span>
-              <textarea rows={3} value={revertSelection.changelog} onChange={(event) => setRevertSelection((current) => ({ ...current, changelog: event.target.value }))} required />
+              <textarea
+                rows={3}
+                value={revertSelection.changelog}
+                onChange={(event) => setRevertSelection((current) => ({ ...current, changelog: event.target.value }))}
+                required
+              />
             </label>
             <button type="submit" disabled={!hasGuard(user, 'canEditTemplate')}>
               Revert version

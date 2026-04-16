@@ -78,19 +78,35 @@ export function Component() {
             <form className="form-grid two-up" onSubmit={handleSave}>
               <label>
                 <span>First name</span>
-                <input name="firstName" defaultValue={data.profile.firstName} disabled={!hasGuard(user, 'canWriteProfiles')} />
+                <input
+                  name="firstName"
+                  defaultValue={data.profile.firstName}
+                  disabled={!hasGuard(user, 'canWriteProfiles')}
+                />
               </label>
               <label>
                 <span>Last name</span>
-                <input name="lastName" defaultValue={data.profile.lastName} disabled={!hasGuard(user, 'canWriteProfiles')} />
+                <input
+                  name="lastName"
+                  defaultValue={data.profile.lastName}
+                  disabled={!hasGuard(user, 'canWriteProfiles')}
+                />
               </label>
               <label>
                 <span>Email</span>
-                <input name="email" defaultValue={String(data.profile.email || '')} disabled={!hasGuard(user, 'canWriteProfiles')} />
+                <input
+                  name="email"
+                  defaultValue={String(data.profile.email || '')}
+                  disabled={!hasGuard(user, 'canWriteProfiles')}
+                />
               </label>
               <label>
                 <span>Phone</span>
-                <input name="phone" defaultValue={String(data.profile.phone || '')} disabled={!hasGuard(user, 'canWriteProfiles')} />
+                <input
+                  name="phone"
+                  defaultValue={String(data.profile.phone || '')}
+                  disabled={!hasGuard(user, 'canWriteProfiles')}
+                />
               </label>
               <button type="submit" disabled={!hasGuard(user, 'canWriteProfiles')}>
                 Save changes
@@ -105,10 +121,33 @@ export function Component() {
             <h3>Household + shortcuts</h3>
             <KeyValueList
               rows={[
-                { label: 'Household', value: data.household ? <Link className="text-link" to={`/households/${data.household.id}`}>{data.household.name}</Link> : 'Not linked yet' },
+                {
+                  label: 'Household',
+                  value: data.household ? (
+                    <Link className="text-link" to={`/households/${data.household.id}`}>
+                      {data.household.name}
+                    </Link>
+                  ) : (
+                    'Not linked yet'
+                  )
+                },
                 { label: 'Household members', value: String(data.householdMembers.length) },
-                { label: 'Forms', value: <Link className="text-link" to={`/forms?profileId=${data.profile.id}`}>{data.submissions.length} linked submissions</Link> },
-                { label: 'Exports', value: <Link className="text-link" to={`/exports?profileId=${data.profile.id}`}>Open exports for this profile</Link> }
+                {
+                  label: 'Forms',
+                  value: (
+                    <Link className="text-link" to={`/forms?profileId=${data.profile.id}`}>
+                      {data.submissions.length} linked submissions
+                    </Link>
+                  )
+                },
+                {
+                  label: 'Exports',
+                  value: (
+                    <Link className="text-link" to={`/exports?profileId=${data.profile.id}`}>
+                      Open exports for this profile
+                    </Link>
+                  )
+                }
               ]}
             />
           </Card>
@@ -120,7 +159,12 @@ export function Component() {
           <form className="form-grid" onSubmit={handleAddNote}>
             <label>
               <span>Add note</span>
-              <textarea rows={4} value={noteBody} onChange={(event) => setNoteBody(event.target.value)} disabled={!hasGuard(user, 'canWriteProfiles')} />
+              <textarea
+                rows={4}
+                value={noteBody}
+                onChange={(event) => setNoteBody(event.target.value)}
+                disabled={!hasGuard(user, 'canWriteProfiles')}
+              />
             </label>
             <button type="submit" disabled={!hasGuard(user, 'canWriteProfiles')}>
               Save note
@@ -162,7 +206,10 @@ export function Component() {
         </PageSection>
       </div>
 
-      <PageSection title="Sensitive data" subtitle="Preserves the current backend guard without weakening access boundaries.">
+      <PageSection
+        title="Sensitive data"
+        subtitle="Preserves the current backend guard without weakening access boundaries."
+      >
         {hasGuard(user, 'canReadSensitiveProfileData') ? (
           sensitive.loading ? (
             <LoadingState label="Loading sensitive data" />

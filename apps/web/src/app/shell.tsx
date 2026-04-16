@@ -143,8 +143,9 @@ export function AppShell() {
             ))}
         </nav>
         <div className="sidebar-footer">
+          <p className="muted compact">Legacy shell is retained temporarily for explicit fallback checks.</p>
           <a className="text-link" href="/legacy">
-            Open legacy shell
+            Open legacy-only shell
           </a>
         </div>
       </aside>
@@ -172,7 +173,11 @@ export function AppShell() {
               <ol className="breadcrumbs" aria-label="Breadcrumb">
                 {crumbs.map((crumb, index) => (
                   <li key={crumb.id}>
-                    {index === crumbs.length - 1 ? <span>{crumb.label}</span> : <NavLink to={crumb.pathname}>{crumb.label}</NavLink>}
+                    {index === crumbs.length - 1 ? (
+                      <span>{crumb.label}</span>
+                    ) : (
+                      <NavLink to={crumb.pathname}>{crumb.label}</NavLink>
+                    )}
                   </li>
                 ))}
               </ol>

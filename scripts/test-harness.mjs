@@ -11,6 +11,21 @@ function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
 }
 
+function normalizeChildEnv(env) {
+  if (process.platform !== 'win32') return env
+  const normalized = {}
+  let pathValue = env.Path ?? env.PATH ?? env.path
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === 'path') {
+      if (key === 'Path') pathValue = value
+      continue
+    }
+    if (!Object.hasOwn(normalized, key)) normalized[key] = value
+  }
+  if (pathValue !== undefined) normalized.Path = pathValue
+  return normalized
+}
+
 function isRetryableNetworkError(error) {
   const code = error?.cause?.code || error?.code
   if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EPIPE') return true
@@ -22,7 +37,11 @@ function isRetryableNetworkError(error) {
 async function fetchWithLifecycleRetry(
   url,
   options = {},
-  { retries = 8, retryDelayMs = 125, requestTimeoutMs = Number.parseInt(process.env.TEST_REQUEST_TIMEOUT_MS || '30000', 10) } = {}
+  {
+    retries = 8,
+    retryDelayMs = 125,
+    requestTimeoutMs = Number.parseInt(process.env.TEST_REQUEST_TIMEOUT_MS || '30000', 10)
+  } = {}
 ) {
   let lastError = null
   for (let attempt = 0; attempt <= retries; attempt += 1) {
@@ -70,10 +89,7 @@ function waitForChildExit(child, timeoutMs) {
   })
 }
 
-async function terminateChild(
-  child,
-  { gracefulSignal = 'SIGTERM', graceMs = 3000, killMs = 2000 } = {}
-) {
+async function terminateChild(child, { gracefulSignal = 'SIGTERM', graceMs = 3000, killMs = 2000 } = {}) {
   if (child.exitCode !== null || child.signalCode !== null) return
 
   const killChild = (signal) => {
@@ -291,7 +307,7 @@ export async function createTestContext(name) {
   const server = spawn(process.execPath, [serverEntrypoint], {
     cwd: testCwd,
     detached: process.platform !== 'win32',
-    env: {
+    env: normalizeChildEnv({
       ...process.env,
       NODE_ENV: process.env.NODE_ENV || 'test',
       PORT: String(port),
@@ -299,7 +315,7 @@ export async function createTestContext(name) {
       KLIENT_BASE_URL: baseUrl,
       E2E_BASE_URL: baseUrl,
       KLIENT_OPS_TOKEN: opsToken
-    },
+    }),
     stdio: ['ignore', 'pipe', 'pipe']
   })
 
@@ -322,7 +338,11 @@ export async function createTestContext(name) {
 
   for (let attempt = 0; attempt < 40; attempt += 1) {
     try {
-      const response = await fetchWithLifecycleRetry(`http://127.0.0.1:${port}/ready`, {}, { retries: 1, retryDelayMs: 50 })
+      const response = await fetchWithLifecycleRetry(
+        `http://127.0.0.1:${port}/ready`,
+        {},
+        { retries: 1, retryDelayMs: 50 }
+      )
       if (response.ok) {
         const sessions = new Map()
         const getSession = (name = 'default') => {

@@ -36,27 +36,37 @@ export function Component() {
   })
 
   if (!hasGuard(user, 'canReadExports')) {
-    return <ErrorState title="Export access required." detail="This route preserves role-based visibility and only loads export operations for advisor and admin roles." />
+    return (
+      <ErrorState
+        title="Export access required."
+        detail="This route preserves role-based visibility and only loads export operations for advisor and admin roles."
+      />
+    )
   }
 
-  const { data, error, loading } = useAsync<ExportsPageData>(
-    async () => {
-      const [exports, templates, profiles, submissions, queueHealth] = await Promise.all([
-        api.get<ExportJob[]>(routes.exports({ status: statusFilter || undefined, profileId: profileFilter || undefined })),
-        api.get<DocumentTemplate[]>(routes.documentTemplates()),
-        api.get<Profile[]>(routes.profiles({ kind: 'client' })),
-        api.get<FormSubmission[]>(routes.formSubmissions()),
-        hasGuard(user, 'canProcessExports')
-          ? api.get<QueueHealthPayload>(routes.exportsQueueHealth()).catch(() => null)
-          : Promise.resolve(null)
-      ])
-      return { exports, templates, profiles, submissions, queueHealth }
-    },
-    [refreshKey, profileFilter, statusFilter, user]
-  )
+  const { data, error, loading } = useAsync<ExportsPageData>(async () => {
+    const [exports, templates, profiles, submissions, queueHealth] = await Promise.all([
+      api.get<ExportJob[]>(
+        routes.exports({ status: statusFilter || undefined, profileId: profileFilter || undefined })
+      ),
+      api.get<DocumentTemplate[]>(routes.documentTemplates()),
+      api.get<Profile[]>(routes.profiles({ kind: 'client' })),
+      api.get<FormSubmission[]>(routes.formSubmissions()),
+      hasGuard(user, 'canProcessExports')
+        ? api.get<QueueHealthPayload>(routes.exportsQueueHealth()).catch(() => null)
+        : Promise.resolve(null)
+    ])
+    return { exports, templates, profiles, submissions, queueHealth }
+  }, [refreshKey, profileFilter, statusFilter, user])
 
-  const profileById = useMemo(() => new Map((data?.profiles || []).map((profile) => [profile.id, profile])), [data?.profiles])
-  const templateById = useMemo(() => new Map((data?.templates || []).map((template) => [template.id, template])), [data?.templates])
+  const profileById = useMemo(
+    () => new Map((data?.profiles || []).map((profile) => [profile.id, profile])),
+    [data?.profiles]
+  )
+  const templateById = useMemo(
+    () => new Map((data?.templates || []).map((template) => [template.id, template])),
+    [data?.templates]
+  )
   const submissionOptions = useMemo(
     () =>
       (data?.submissions || []).filter(
@@ -111,9 +121,24 @@ export function Component() {
     <div className="stack">
       <div className="metrics-grid">
         <MetricCard label="Visible exports" value={data.exports.length} hint="Current filtered result set" />
-        <MetricCard label="Completed" value={data.exports.filter((entry) => entry.status === 'completed').length} hint="Ready for download" />
-        <MetricCard label="Pending" value={data.exports.filter((entry) => ['queued', 'retrying', 'running'].includes(String(entry.status || ''))).length} hint="Waiting on the runtime" />
-        <MetricCard label="Failures" value={data.exports.filter((entry) => ['failed', 'dead-letter'].includes(String(entry.status || ''))).length} hint="Needs retry or operator review" />
+        <MetricCard
+          label="Completed"
+          value={data.exports.filter((entry) => entry.status === 'completed').length}
+          hint="Ready for download"
+        />
+        <MetricCard
+          label="Pending"
+          value={
+            data.exports.filter((entry) => ['queued', 'retrying', 'running'].includes(String(entry.status || '')))
+              .length
+          }
+          hint="Waiting on the runtime"
+        />
+        <MetricCard
+          label="Failures"
+          value={data.exports.filter((entry) => ['failed', 'dead-letter'].includes(String(entry.status || ''))).length}
+          hint="Needs retry or operator review"
+        />
       </div>
 
       <div className="split-grid">
@@ -122,7 +147,11 @@ export function Component() {
           <form className="form-grid" onSubmit={handleCreateExport}>
             <label>
               <span>Template</span>
-              <select value={createForm.templateId} onChange={(event) => setCreateForm((current) => ({ ...current, templateId: event.target.value }))} required>
+              <select
+                value={createForm.templateId}
+                onChange={(event) => setCreateForm((current) => ({ ...current, templateId: event.target.value }))}
+                required
+              >
                 <option value="">Select template</option>
                 {data.templates.map((template) => (
                   <option key={template.id} value={template.id}>
@@ -133,7 +162,11 @@ export function Component() {
             </label>
             <label>
               <span>Client</span>
-              <select value={createForm.clientId} onChange={(event) => setCreateForm((current) => ({ ...current, clientId: event.target.value }))} required>
+              <select
+                value={createForm.clientId}
+                onChange={(event) => setCreateForm((current) => ({ ...current, clientId: event.target.value }))}
+                required
+              >
                 <option value="">Select client</option>
                 {data.profiles.map((profile) => (
                   <option key={profile.id} value={profile.id}>
@@ -144,7 +177,10 @@ export function Component() {
             </label>
             <label>
               <span>Submission</span>
-              <select value={createForm.submissionId} onChange={(event) => setCreateForm((current) => ({ ...current, submissionId: event.target.value }))}>
+              <select
+                value={createForm.submissionId}
+                onChange={(event) => setCreateForm((current) => ({ ...current, submissionId: event.target.value }))}
+              >
                 <option value="">Optional submission</option>
                 {submissionOptions.map((submission) => (
                   <option key={submission.id} value={submission.id}>
@@ -196,7 +232,8 @@ export function Component() {
             )}
           </div>
           <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
-            {statusMessage || 'Queue health remains on the current backend and is surfaced here without changing the export runtime.'}
+            {statusMessage ||
+              'Queue health remains on the current backend and is surfaced here without changing the export runtime.'}
           </p>
           {data.queueHealth ? (
             <div className="pill-list">
@@ -209,7 +246,10 @@ export function Component() {
         </Card>
       </div>
 
-      <PageSection title="Export queue" subtitle="Download-ready items, retries, and runtime status all live in one route.">
+      <PageSection
+        title="Export queue"
+        subtitle="Download-ready items, retries, and runtime status all live in one route."
+      >
         {data.exports.length ? (
           <div className="table-shell">
             <table>
@@ -226,7 +266,9 @@ export function Component() {
               <tbody>
                 {data.exports.map((job) => (
                   <tr key={job.id}>
-                    <td>{templateById.get(String(job.templateId || ''))?.name || job.templateId || 'Unknown template'}</td>
+                    <td>
+                      {templateById.get(String(job.templateId || ''))?.name || job.templateId || 'Unknown template'}
+                    </td>
                     <td>{profileName(profileById.get(String(job.clientId || '')))}</td>
                     <td>
                       <Badge
@@ -248,7 +290,11 @@ export function Component() {
                     <td>
                       <div className="actions-row">
                         {job.artifactReady ? (
-                          <a className="text-link" href={routes.exportDownload(job.id)} data-testid={`export-download-${job.id}`}>
+                          <a
+                            className="text-link"
+                            href={routes.exportDownload(job.id)}
+                            data-testid={`export-download-${job.id}`}
+                          >
                             Download
                           </a>
                         ) : null}

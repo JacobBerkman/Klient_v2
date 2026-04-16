@@ -29,22 +29,25 @@ export function Component() {
   const [spouseId, setSpouseId] = useState('')
   const [spouseForm, setSpouseForm] = useState({ firstName: '', lastName: '', email: '' })
 
-  const { data, error, loading } = useAsync<HouseholdDetailData>(
-    async () => {
-      const [households, clients] = await Promise.all([
-        api.get<Household[]>(routes.households()),
-        api.get<Profile[]>(routes.profiles({ kind: 'client' }))
-      ])
-      return { households, clients }
-    },
-    [householdId, refreshKey]
-  )
+  const { data, error, loading } = useAsync<HouseholdDetailData>(async () => {
+    const [households, clients] = await Promise.all([
+      api.get<Household[]>(routes.households()),
+      api.get<Profile[]>(routes.profiles({ kind: 'client' }))
+    ])
+    return { households, clients }
+  }, [householdId, refreshKey])
 
   if (loading) return <LoadingState label="Loading household" />
   if (error || !data) return <ErrorState title="Household detail failed to load." detail={error?.message} />
 
   const household = data.households.find((entry) => entry.id === householdId)
-  if (!household) return <ErrorState title="Household not found." detail="The requested household is missing from the canonical API response." />
+  if (!household)
+    return (
+      <ErrorState
+        title="Household not found."
+        detail="The requested household is missing from the canonical API response."
+      />
+    )
 
   const profileById = new Map(data.clients.map((client) => [client.id, client]))
   const availableMembers = data.clients.filter((client) => client.householdId !== householdId)
@@ -62,7 +65,10 @@ export function Component() {
 
   return (
     <div className="stack">
-      <PageSection title={household.name} subtitle={`Primary client ${profileName(primaryProfile)} / ${household.members.length} members`}>
+      <PageSection
+        title={household.name}
+        subtitle={`Primary client ${profileName(primaryProfile)} / ${household.members.length} members`}
+      >
         <div className="split-grid">
           <Card className="section-card">
             <h3>Members</h3>
@@ -191,15 +197,27 @@ export function Component() {
           >
             <label>
               <span>First name</span>
-              <input value={spouseForm.firstName} onChange={(event) => setSpouseForm((current) => ({ ...current, firstName: event.target.value }))} required />
+              <input
+                value={spouseForm.firstName}
+                onChange={(event) => setSpouseForm((current) => ({ ...current, firstName: event.target.value }))}
+                required
+              />
             </label>
             <label>
               <span>Last name</span>
-              <input value={spouseForm.lastName} onChange={(event) => setSpouseForm((current) => ({ ...current, lastName: event.target.value }))} required />
+              <input
+                value={spouseForm.lastName}
+                onChange={(event) => setSpouseForm((current) => ({ ...current, lastName: event.target.value }))}
+                required
+              />
             </label>
             <label>
               <span>Email</span>
-              <input type="email" value={spouseForm.email} onChange={(event) => setSpouseForm((current) => ({ ...current, email: event.target.value }))} />
+              <input
+                type="email"
+                value={spouseForm.email}
+                onChange={(event) => setSpouseForm((current) => ({ ...current, email: event.target.value }))}
+              />
             </label>
             <button type="submit" disabled={!hasGuard(user, 'canWriteHouseholds')}>
               Create spouse

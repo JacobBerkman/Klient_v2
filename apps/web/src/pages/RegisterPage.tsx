@@ -45,23 +45,46 @@ export function Component() {
     <Card className="auth-card">
       <p className="eyebrow">Firm setup</p>
       <h2>Create your workspace</h2>
-      <p className="muted">This preserves the current backend registration and session contract while moving the product to real routes.</p>
+      <p className="muted">
+        This preserves the current backend registration and session contract while moving the product to real routes.
+      </p>
       <form className="form-grid" onSubmit={handleSubmit} data-testid="register-form">
         <label>
           <span>Firm name</span>
-          <input aria-label="Firm name" value={form.firmName} onChange={(event) => updateField('firmName', event.target.value)} required />
+          <input
+            aria-label="Firm name"
+            value={form.firmName}
+            onChange={(event) => updateField('firmName', event.target.value)}
+            required
+          />
         </label>
         <label>
           <span>First name</span>
-          <input aria-label="First name" value={form.firstName} onChange={(event) => updateField('firstName', event.target.value)} required />
+          <input
+            aria-label="First name"
+            value={form.firstName}
+            onChange={(event) => updateField('firstName', event.target.value)}
+            required
+          />
         </label>
         <label>
           <span>Last name</span>
-          <input aria-label="Last name" value={form.lastName} onChange={(event) => updateField('lastName', event.target.value)} required />
+          <input
+            aria-label="Last name"
+            value={form.lastName}
+            onChange={(event) => updateField('lastName', event.target.value)}
+            required
+          />
         </label>
         <label>
           <span>Email</span>
-          <input aria-label="Email" type="email" value={form.email} onChange={(event) => updateField('email', event.target.value)} required />
+          <input
+            aria-label="Email"
+            type="email"
+            value={form.email}
+            onChange={(event) => updateField('email', event.target.value)}
+            required
+          />
         </label>
         <label>
           <span>Password</span>
@@ -77,9 +100,14 @@ export function Component() {
           {submitting ? 'Creating account...' : 'Register'}
         </button>
       </form>
-      <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>{statusMessage || 'Create the first admin user for your firm.'}</p>
+      <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
+        {statusMessage || 'Create the first admin user for your firm.'}
+      </p>
       <p className="muted">
-        Already have access? <Link className="text-link" to="/login">Sign in</Link>
+        Already have access?{' '}
+        <Link className="text-link" to="/login">
+          Sign in
+        </Link>
       </p>
     </Card>
   )

@@ -59,17 +59,6 @@ export default [
     },
   },
   {
-    files: ['apps/web/public/**/*.js'],
-    languageOptions: {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-      globals: {
-        ...globals.browser,
-      },
-    },
-    rules: baseRules,
-  },
-  {
     files: ['scripts/**/*.mjs'],
     languageOptions: {
       ecmaVersion: 'latest',

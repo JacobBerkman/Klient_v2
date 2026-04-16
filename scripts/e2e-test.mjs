@@ -5,9 +5,13 @@ import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { createEvidenceRecorder } from './release-evidence.mjs'
 import { createTestContext } from './test-harness.mjs'
-import { provisionChromiumForStrictMode, resolvePlaywrightEvidenceLinkage, resolvePlaywrightLinkageEnv } from './playwright-provisioning.mjs'
+import {
+  provisionChromiumForStrictMode,
+  resolvePlaywrightEvidenceLinkage,
+  resolvePlaywrightLinkageEnv
+} from './playwright-provisioning.mjs'
 
-const uiContractSuites = ['apps/web/public/ui-contract.test.mjs']
+const uiContractSuites = ['apps/api/src/test/web-static-serving.test.mjs']
 const browserSuitePattern = 'tests/e2e'
 const executionMode = 'browser'
 const browserFallbackEnvFlag = 'RELEASE_E2E_ALLOW_FALLBACK'
@@ -82,11 +86,27 @@ function buildArtifactDetails(playwrightJsonReport, env = process.env, reportPat
   }
 }
 
+function normalizeChildEnv(env) {
+  if (process.platform !== 'win32') return env
+  const normalized = {}
+  let pathValue = env.Path ?? env.PATH ?? env.path
+  for (const [key, value] of Object.entries(env)) {
+    if (key.toLowerCase() === 'path') {
+      if (key === 'Path') pathValue = value
+      continue
+    }
+    if (!Object.hasOwn(normalized, key)) normalized[key] = value
+  }
+  if (pathValue !== undefined) normalized.Path = pathValue
+  return normalized
+}
+
 function runCommand(command, args, env, timeoutMs = 0) {
   return new Promise((resolveRun) => {
     const child = spawn(command, args, {
       stdio: 'inherit',
-      env
+      env: normalizeChildEnv(env),
+      shell: process.platform === 'win32' && command.toLowerCase().endsWith('.cmd')
     })
     let timeoutId = null
     if (timeoutMs > 0) {
@@ -152,9 +172,7 @@ function buildPlaywrightReportFailure(path, reason, code = reportValidationFailu
 export function browserFallbackMode(env = process.env) {
   const flagEnabled = parseBooleanSignal(env[browserFallbackEnvFlag]) === true
   const ciSignal = parseBooleanSignal(env.CI)
-  const isCi =
-    ciSignal ??
-    (typeof env.CI === 'string' && env.CI.trim().length > 0)
+  const isCi = ciSignal ?? (typeof env.CI === 'string' && env.CI.trim().length > 0)
   const strictOverride = parseBooleanSignal(env[strictModeEnvFlag])
   const strictMode = strictOverride ?? isCi
   return {
@@ -225,7 +243,11 @@ export async function validatePlaywrightJsonReport(reportPath) {
   }
 }
 
-export async function gatePlaywrightReportOrFail({ reportPath, evidenceRecorder = evidence, uiContractStatus = { status: 'passed', exitCode: 0 } }) {
+export async function gatePlaywrightReportOrFail({
+  reportPath,
+  evidenceRecorder = evidence,
+  uiContractStatus = { status: 'passed', exitCode: 0 }
+}) {
   const validation = await validatePlaywrightJsonReport(reportPath)
   if (validation.ok) return validation
 

@@ -2,23 +2,20 @@
   "schemaVersion": "1.0.0",
   "gate": "e2e",
   "command": "npm run test:e2e",
-  "startedAt": "2026-04-15T22:31:16.911Z",
-  "finishedAt": "2026-04-15T22:31:17.552Z",
-  "durationMs": 641,
+  "startedAt": "2026-04-16T20:57:38.165Z",
+  "finishedAt": "2026-04-16T20:57:38.206Z",
+  "durationMs": 41,
   "status": "failed",
   "metadata": {
     "uiContractSuites": [
-      "apps/web/public/ui-contract.test.mjs"
+      "apps/api/src/test/web-static-serving.test.mjs"
     ],
     "browserSuites": [
       "tests/e2e"
     ]
   },
-  "executionMode": "browser",
-  "details": {
-    "failureCategory": "startup-failure"
-  },
+  "details": {},
   "error": {
-    "message": "Cannot find package '@playwright/test' imported from C:\\Users\\jacob\\OneDrive\\Documents\\GitHub\\Klient_v2\\scripts\\e2e-test.mjs"
+    "message": "e2e exited without explicit evidence finalization"
   }
 }

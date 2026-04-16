@@ -56,7 +56,12 @@ export function appendRepeaterRow(data: Record<string, unknown>, section: FormSe
   }
 }
 
-export function removeRepeaterRow(data: Record<string, unknown>, section: FormSection, sectionIndex: number, rowIndex: number) {
+export function removeRepeaterRow(
+  data: Record<string, unknown>,
+  section: FormSection,
+  sectionIndex: number,
+  rowIndex: number
+) {
   const key = sectionStorageKey(section, sectionIndex)
   const rows = repeaterRows(data, section, sectionIndex)
   return {

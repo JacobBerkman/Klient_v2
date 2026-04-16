@@ -2,6 +2,9 @@
 
 Use this page as the command-level operator runbook for release preflight, deploy, post-deploy validation, and restore drills/recovery.
 
+## Canonical frontend path
+The product UI is the routed React/TypeScript/Vite app under `apps/web/src`. `npm run web:build` compiles it into `apps/web/dist`, and the existing Node backend serves those built assets for product routes. `apps/web/public` is legacy-only and remains available explicitly at `/legacy` and `/legacy/portal` until retirement.
+
 ## Required environment variables
 Set these before running flows (never commit secret values):
 
@@ -62,9 +65,13 @@ Required gate summaries:
 - `api-contract-summary.json`
 - `integration-summary.json`
 - `migration-summary.json`
+- `release-flow-summary.json`
 - `smoke-summary.json`
 - `security-summary.json`
 - `e2e-summary.json`
+
+Canonical release-flow summary path:
+- `artifacts/release-evidence/<release-id>/release-flow-summary.json`
 
 E2E hard requirement:
 - `e2e-summary.json` must include `executionMode` plus `details.artifacts.playwrightJsonReport.path`, `details.artifacts.playwrightJsonReport.valid=true`, and `details.artifacts.playwrightJsonReport.suiteCount>=1`.
@@ -194,6 +201,8 @@ Behavior notes for this command:
 docker compose --env-file .env up --build -d
 ```
 
+The Docker build installs `apps/web` dependencies, runs `npm --prefix apps/web run build`, and copies the generated `apps/web/dist` output into the runtime image.
+
 ### 4) Postdeploy validation (run in this phase after deploy)
 ```bash
 npm run release:go-no-go -- --release-id "$RELEASE_ID" --phase postdeploy
@@ -291,26 +300,27 @@ When running `npm run validate:master`, the hard gate executes these commands in
 
 1. `npm run check:syntax`
 2. `npm run check:conflicts`
-3. `npm run test:contract`
-4. `node scripts/integration-rbac.mjs`
-5. `node scripts/integration-tenancy.mjs`
-6. `npm run test:integration`
-7. `npm run check:migrations`
-8. `npm run test:smoke`
-9. `npm run test:ui-contract`
-10. `npm run test:e2e`
-11. `npm run test:security`
+3. `npm run web:build`
+4. `npm run test:contract`
+5. `node scripts/integration-rbac.mjs`
+6. `node scripts/integration-tenancy.mjs`
+7. `npm run test:integration`
+8. `npm run check:migrations`
+9. `npm run test:smoke`
+10. `npm run test:ui-contract`
+11. `npm run test:e2e`
+12. `npm run test:security`
 
 Release-blocking expectation:
 - Step 2 (`npm run check:conflicts`) is intentionally a hard fail guard. Any merge conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) found in tracked text files **or release-critical scripts under `scripts/*.mjs` (including `scripts/e2e-test.mjs`)** must terminate `validate:master` with a non-zero exit code.
 - Operators should treat this as a deterministic preflight block-by-design and must resolve markers before rerunning.
 
 Conditional final step:
-- `npm run check:merge-main` runs after step 11 only when the workspace has git metadata and a local `main` branch (or when `VALIDATE_MASTER_FORCE_MERGE_PARITY=1`).
+- `npm run check:merge-main` runs after step 12 only when the workspace has git metadata and a local `main` branch (or when `VALIDATE_MASTER_FORCE_MERGE_PARITY=1`).
 
 ## Release gate command ownership (six required commands)
 
-These six commands are the canonical release gate checks. CI runs each command as a standalone job with dedicated logs/artifacts so failures are attributable without rerunning the full `validate:master` gate.
+These six commands are the canonical release evidence gate checks. CI also runs the separate `web_build` job with `npm run web:build` so React compilation/build failures are attributable before runtime/browser validation.
 
 | Gate | CI job id | Command owner | Required command | Evidence file (canonical path) | CI job log artifact prefix |
 |---|---|---|---|---|---|

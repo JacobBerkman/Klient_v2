@@ -18,8 +18,8 @@
   --radius-md: 18px;
   --radius-sm: 12px;
   --content-width: 1320px;
-  --font-sans: "Segoe UI Variable", "Avenir Next", "Trebuchet MS", sans-serif;
-  --font-display: "Georgia", "Iowan Old Style", serif;
+  --font-sans: 'Segoe UI Variable', 'Avenir Next', 'Trebuchet MS', sans-serif;
+  --font-display: 'Georgia', 'Iowan Old Style', serif;
 }
 
 * {

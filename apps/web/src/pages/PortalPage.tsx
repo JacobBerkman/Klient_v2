@@ -33,8 +33,8 @@ type PortalScreenData =
   | {
       mode: 'token'
       templates: FormTemplate[]
-      submissions: PortalPayload['submissions']
-      uploads: PortalPayload['uploads']
+      submissions: NonNullable<PortalPayload['submissions']>
+      uploads: NonNullable<PortalPayload['uploads']>
       profileName: string
       progress: Array<Record<string, unknown>>
     }
@@ -42,7 +42,13 @@ type PortalScreenData =
       mode: 'empty'
     }
 
-function renderField(field: FormField, value: string, onChange: (value: string) => void, disabled: boolean, suffix = '') {
+function renderField(
+  field: FormField,
+  value: string,
+  onChange: (value: string) => void,
+  disabled: boolean,
+  suffix = ''
+) {
   if (field.type === 'textarea') {
     return (
       <label key={`${field.key}${suffix}`}>
@@ -71,7 +77,12 @@ function renderField(field: FormField, value: string, onChange: (value: string) 
   return (
     <label key={`${field.key}${suffix}`}>
       <span>{field.label || field.key}</span>
-      <input type={fieldInputType(field)} value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled} />
+      <input
+        type={fieldInputType(field)}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        disabled={disabled}
+      />
     </label>
   )
 }
@@ -94,7 +105,11 @@ async function postPortalSubmission(token: string, payload: Record<string, unkno
   })
   const body = (await response.json()) as Record<string, unknown>
   if (!response.ok) {
-    throw new Error(String(body.message || (body.error as Record<string, unknown> | undefined)?.message || 'Portal submission failed.'))
+    throw new Error(
+      String(
+        body.message || (body.error as Record<string, unknown> | undefined)?.message || 'Portal submission failed.'
+      )
+    )
   }
   return body
 }
@@ -108,46 +123,42 @@ export function Component() {
   const [draftData, setDraftData] = useState<Record<string, unknown>>({})
   const [statusMessage, setStatusMessage] = useState('')
 
-  const { data, error, loading } = useAsync<PortalScreenData>(
-    async () => {
-      if (token) {
-        const payload = await fetchPortalTokenData(token)
-        return {
-          mode: 'token',
-          templates: payload.availableTemplates || [],
-          submissions: payload.submissions || [],
-          uploads: payload.uploads || [],
-          profileName: profileName(payload.profile),
-          progress: (payload.availableTemplates || []).map((template) => ({
-            templateId: template.id,
-            templateName: template.name,
-            status:
-              (payload.submissions || []).find((entry) => entry.templateId === template.id)?.status || 'not_started'
-          }))
-        }
+  const { data, error, loading } = useAsync<PortalScreenData>(async () => {
+    if (token) {
+      const payload = await fetchPortalTokenData(token)
+      return {
+        mode: 'token',
+        templates: payload.availableTemplates || [],
+        submissions: payload.submissions || [],
+        uploads: payload.uploads || [],
+        profileName: profileName(payload.profile),
+        progress: (payload.availableTemplates || []).map((template) => ({
+          templateId: template.id,
+          templateName: template.name,
+          status: (payload.submissions || []).find((entry) => entry.templateId === template.id)?.status || 'not_started'
+        }))
       }
+    }
 
-      if (user?.role === 'client') {
-        const payload = await api.get<ClientWorkspacePayload>(routes.clientWorkspace())
-        return {
-          mode: 'client',
-          templates: payload.templates || [],
-          submissions: payload.submissions || [],
-          uploads: payload.uploads || [],
-          profileName: profileName(payload.profile),
-          progress: payload.templateProgress || []
-        }
+    if (user?.role === 'client') {
+      const payload = await api.get<ClientWorkspacePayload>(routes.clientWorkspace())
+      return {
+        mode: 'client',
+        templates: payload.templates || [],
+        submissions: payload.submissions || [],
+        uploads: payload.uploads || [],
+        profileName: profileName(payload.profile),
+        progress: payload.templateProgress || []
       }
+    }
 
-      return { mode: 'empty' }
-    },
-    [token, user?.id, user?.role, refreshKey]
-  )
+    return { mode: 'empty' }
+  }, [token, user?.id, user?.role, refreshKey])
 
-  const selectedTemplate = useMemo(
-    () => data?.mode !== 'empty' ? data.templates.find((template) => template.id === selectedTemplateId) || null : null,
-    [data, selectedTemplateId]
-  )
+  const selectedTemplate = useMemo(() => {
+    if (!data || data.mode === 'empty') return null
+    return data.templates.find((template) => template.id === selectedTemplateId) || null
+  }, [data, selectedTemplateId])
 
   useEffect(() => {
     if (!data || data.mode === 'empty') return
@@ -192,8 +203,13 @@ export function Component() {
   if (data.mode === 'empty') {
     return (
       <div className="portal-shell">
-        <PageSection title="Portal access" subtitle="This route is for signed-in clients or token-based portal sessions.">
-          <InlineNotice tone="info">Open `/portal?token=...` for a shared portal link, or sign in as a client to use the workspace route.</InlineNotice>
+        <PageSection
+          title="Portal access"
+          subtitle="This route is for signed-in clients or token-based portal sessions."
+        >
+          <InlineNotice tone="info">
+            Open `/portal?token=...` for a shared portal link, or sign in as a client to use the workspace route.
+          </InlineNotice>
         </PageSection>
       </div>
     )
@@ -220,7 +236,15 @@ export function Component() {
                 {data.progress.map((entry, index) => (
                   <div key={`progress-${index}`} className="row-between">
                     <span>{String(entry.templateName || entry.templateId || `Template ${index + 1}`)}</span>
-                    <Badge tone={String(entry.status) === 'submitted' ? 'success' : String(entry.status) === 'draft' ? 'warning' : 'info'}>
+                    <Badge
+                      tone={
+                        String(entry.status) === 'submitted'
+                          ? 'success'
+                          : String(entry.status) === 'draft'
+                            ? 'warning'
+                            : 'info'
+                      }
+                    >
                       {String(entry.status || 'not_started')}
                     </Badge>
                   </div>
@@ -238,7 +262,9 @@ export function Component() {
                   <Card key={submission.id} className="section-card inset-card">
                     <div className="row-between">
                       <strong>{submission.templateId}</strong>
-                      <Badge tone={submission.status === 'submitted' ? 'success' : 'warning'}>{submission.status}</Badge>
+                      <Badge tone={submission.status === 'submitted' ? 'success' : 'warning'}>
+                        {submission.status}
+                      </Badge>
                     </div>
                     <p className="muted">Updated {formatDateTime(submission.updatedAt || submission.createdAt)}</p>
                   </Card>
@@ -280,7 +306,13 @@ export function Component() {
                               <h3>{section.title || `Section ${sectionIndex + 1}`}</h3>
                               <p className="muted">Add repeatable entries as needed.</p>
                             </div>
-                            <button type="button" className="secondary-button" onClick={() => setDraftData((current) => appendRepeaterRow(current, section, sectionIndex))}>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              onClick={() =>
+                                setDraftData((current) => appendRepeaterRow(current, section, sectionIndex))
+                              }
+                            >
                               Add row
                             </button>
                           </div>
@@ -288,13 +320,20 @@ export function Component() {
                             rows.map((row, rowIndex) => {
                               const rowObject = row && typeof row === 'object' ? (row as Record<string, unknown>) : {}
                               return (
-                                <Card key={`${sectionStorageKey(section, sectionIndex)}-${rowIndex}`} className="section-card inset-card">
+                                <Card
+                                  key={`${sectionStorageKey(section, sectionIndex)}-${rowIndex}`}
+                                  className="section-card inset-card"
+                                >
                                   <div className="row-between">
                                     <strong>Row {rowIndex + 1}</strong>
                                     <button
                                       type="button"
                                       className="ghost-button"
-                                      onClick={() => setDraftData((current) => removeRepeaterRow(current, section, sectionIndex, rowIndex))}
+                                      onClick={() =>
+                                        setDraftData((current) =>
+                                          removeRepeaterRow(current, section, sectionIndex, rowIndex)
+                                        )
+                                      }
                                     >
                                       Remove
                                     </button>
@@ -358,7 +397,10 @@ export function Component() {
               ) : null}
             </div>
           ) : (
-            <EmptyState title="No templates shared." detail="Once templates are shared to this workspace, they will appear here with a proper routed form experience." />
+            <EmptyState
+              title="No templates shared."
+              detail="Once templates are shared to this workspace, they will appear here with a proper routed form experience."
+            />
           )}
         </PageSection>
       </div>

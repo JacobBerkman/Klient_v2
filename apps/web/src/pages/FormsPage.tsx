@@ -38,20 +38,20 @@ export function Component() {
 
   const profileFilter = searchParams.get('profileId') || ''
 
-  const { data, error, loading } = useAsync<FormsPageData>(
-    async () => {
-      const [templates, drafts, submissions, profiles] = await Promise.all([
-        api.get<FormTemplate[]>(routes.formTemplates()),
-        api.get<FormSubmission[]>(routes.formDrafts()),
-        api.get<FormSubmission[]>(routes.formSubmissions()),
-        api.get<Profile[]>(routes.profiles({ kind: 'client' }))
-      ])
-      return { templates, drafts, submissions, profiles }
-    },
-    [refreshKey]
-  )
+  const { data, error, loading } = useAsync<FormsPageData>(async () => {
+    const [templates, drafts, submissions, profiles] = await Promise.all([
+      api.get<FormTemplate[]>(routes.formTemplates()),
+      api.get<FormSubmission[]>(routes.formDrafts()),
+      api.get<FormSubmission[]>(routes.formSubmissions()),
+      api.get<Profile[]>(routes.profiles({ kind: 'client' }))
+    ])
+    return { templates, drafts, submissions, profiles }
+  }, [refreshKey])
 
-  const profileById = useMemo(() => new Map((data?.profiles || []).map((profile) => [profile.id, profile])), [data?.profiles])
+  const profileById = useMemo(
+    () => new Map((data?.profiles || []).map((profile) => [profile.id, profile])),
+    [data?.profiles]
+  )
 
   const visibleDrafts = useMemo(() => {
     if (!data) return []
@@ -107,7 +107,11 @@ export function Component() {
         <MetricCard label="Form templates" value={data.templates.length} hint="Reusable intake and review schemas" />
         <MetricCard label="Drafts" value={visibleDrafts.length} hint="Collaborative work in progress" />
         <MetricCard label="Submissions" value={visibleSubmissions.length} hint="Saved and submitted records" />
-        <MetricCard label="Profile focus" value={profileFilter ? profileName(profileById.get(profileFilter)) : 'All profiles'} hint="Use profile-scoped deep links when needed" />
+        <MetricCard
+          label="Profile focus"
+          value={profileFilter ? profileName(profileById.get(profileFilter)) : 'All profiles'}
+          hint="Use profile-scoped deep links when needed"
+        />
       </div>
 
       <div className="split-grid">
@@ -214,12 +218,18 @@ export function Component() {
             </table>
           </div>
         ) : (
-          <EmptyState title="No form templates yet." detail="Create one here, then route editing to a dedicated submission page." />
+          <EmptyState
+            title="No form templates yet."
+            detail="Create one here, then route editing to a dedicated submission page."
+          />
         )}
       </PageSection>
 
       <div className="split-grid">
-        <PageSection title="Drafts" subtitle="Lock and collaborator state are visible here, with full editing on the detail route.">
+        <PageSection
+          title="Drafts"
+          subtitle="Lock and collaborator state are visible here, with full editing on the detail route."
+        >
           {visibleDrafts.length ? (
             <div className="table-shell">
               <table>
@@ -251,7 +261,11 @@ export function Component() {
                       <td>{collaboratorSummary(draft.collaborators)}</td>
                       <td>{formatDateTime(draft.updatedAt || draft.createdAt)}</td>
                       <td>
-                        <Link className="text-link" data-testid={`submission-link-${draft.id}`} to={`/forms/submissions/${draft.id}`}>
+                        <Link
+                          className="text-link"
+                          data-testid={`submission-link-${draft.id}`}
+                          to={`/forms/submissions/${draft.id}`}
+                        >
                           Open draft
                         </Link>
                       </td>
@@ -265,7 +279,10 @@ export function Component() {
           )}
         </PageSection>
 
-        <PageSection title="Submissions" subtitle="Shareable URLs support browser navigation, deep links, and direct review.">
+        <PageSection
+          title="Submissions"
+          subtitle="Shareable URLs support browser navigation, deep links, and direct review."
+        >
           {visibleSubmissions.length ? (
             <div className="table-shell">
               <table>
@@ -298,7 +315,10 @@ export function Component() {
               </table>
             </div>
           ) : (
-            <EmptyState title="No submissions in scope." detail="Create a draft or submission from the form builder panel above." />
+            <EmptyState
+              title="No submissions in scope."
+              detail="Create a draft or submission from the form builder panel above."
+            />
           )}
         </PageSection>
       </div>

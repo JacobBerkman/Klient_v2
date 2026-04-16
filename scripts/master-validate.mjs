@@ -20,6 +20,7 @@ function shouldIncludeMergeParityStep() {
 const baseGateStepDefinitions = {
   'Static syntax checks': { command: 'npm', args: ['run', 'check:syntax'], evidenceFile: null },
   'Conflict marker guard': { command: 'npm', args: ['run', 'check:conflicts'], evidenceFile: null },
+  'Web build verification': { command: 'npm', args: ['run', 'web:build'], evidenceFile: null },
   'API contract tests': {
     command: 'npm',
     args: ['run', 'test:contract'],
@@ -47,15 +48,28 @@ const baseGateStepDefinitions = {
     args: ['run', 'check:migrations'],
     evidenceFile: resolve(defaultEvidenceDir, 'migration-summary.json')
   },
-  'Smoke test': { command: 'npm', args: ['run', 'test:smoke'], evidenceFile: resolve(defaultEvidenceDir, 'smoke-summary.json') },
+  'Smoke test': {
+    command: 'npm',
+    args: ['run', 'test:smoke'],
+    evidenceFile: resolve(defaultEvidenceDir, 'smoke-summary.json')
+  },
   'UI contract checks': { command: 'npm', args: ['run', 'test:ui-contract'], evidenceFile: null },
-  'E2E browser checks': { command: 'npm', args: ['run', 'test:e2e'], evidenceFile: resolve(defaultEvidenceDir, 'e2e-summary.json') },
-  'Security checks': { command: 'npm', args: ['run', 'test:security'], evidenceFile: resolve(defaultEvidenceDir, 'security-summary.json') }
+  'E2E browser checks': {
+    command: 'npm',
+    args: ['run', 'test:e2e'],
+    evidenceFile: resolve(defaultEvidenceDir, 'e2e-summary.json')
+  },
+  'Security checks': {
+    command: 'npm',
+    args: ['run', 'test:security'],
+    evidenceFile: resolve(defaultEvidenceDir, 'security-summary.json')
+  }
 }
 
 const BASE_GATE_ORDER = Object.freeze([
   'Static syntax checks',
   'Conflict marker guard',
+  'Web build verification',
   'API contract tests',
   'Negative-path RBAC checks',
   'Negative-path tenancy checks',
@@ -82,7 +96,9 @@ function buildOrderedSteps(order, definitions) {
 function assertOrderedInvariant(steps, expectedOrder, label) {
   const observed = steps.map((step) => step.name)
   if (observed.length !== expectedOrder.length) {
-    throw new Error(`${label} command sequence length drifted. expected=${expectedOrder.length} actual=${observed.length}`)
+    throw new Error(
+      `${label} command sequence length drifted. expected=${expectedOrder.length} actual=${observed.length}`
+    )
   }
   for (let index = 0; index < expectedOrder.length; index += 1) {
     if (observed[index] !== expectedOrder[index]) {
@@ -99,7 +115,10 @@ assertOrderedInvariant(baseGateSteps, BASE_GATE_ORDER, 'baseGateSteps')
 const includeMergeParityStep = shouldIncludeMergeParityStep()
 
 const gateSteps = includeMergeParityStep
-  ? Object.freeze([...baseGateSteps, { name: 'Merge/main parity check', command: 'npm', args: ['run', 'check:merge-main'], evidenceFile: null }])
+  ? Object.freeze([
+      ...baseGateSteps,
+      { name: 'Merge/main parity check', command: 'npm', args: ['run', 'check:merge-main'], evidenceFile: null }
+    ])
   : baseGateSteps
 assertOrderedInvariant(
   gateSteps,
@@ -112,7 +131,6 @@ if (!includeMergeParityStep) {
     '\nℹ️ Skipping merge/main parity check because this workspace is missing required git metadata (no .git or no local main branch).\n'
   )
 }
-
 
 function resolveGateStepsFromEnv() {
   const rawFilter = process.env.VALIDATE_MASTER_STEPS
@@ -144,7 +162,8 @@ function envForStep(step) {
   const env = { ...process.env, RELEASE_EVIDENCE_DIR: defaultEvidenceDir }
   if (step.evidenceFile && step.name === 'API contract tests') env.RELEASE_EVIDENCE_CONTRACT_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Integration suites') env.RELEASE_EVIDENCE_INTEGRATION_FILE = step.evidenceFile
-  if (step.evidenceFile && step.name === 'Migration order checks') env.RELEASE_EVIDENCE_MIGRATION_FILE = step.evidenceFile
+  if (step.evidenceFile && step.name === 'Migration order checks')
+    env.RELEASE_EVIDENCE_MIGRATION_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Smoke test') env.RELEASE_EVIDENCE_SMOKE_FILE = step.evidenceFile
   if (step.evidenceFile && step.name === 'Canonical release flow') {
     env.RELEASE_EVIDENCE_RELEASE_FLOW_FILE = step.evidenceFile
@@ -486,7 +505,9 @@ process.on('exit', (code) => {
   if (!finalSummary) {
     const exitFailure =
       failure ||
-      (code === 0 ? new Error('validate:master exited before finalizing evidence') : new Error(`validate:master exited with code ${code}`))
+      (code === 0
+        ? new Error('validate:master exited before finalizing evidence')
+        : new Error(`validate:master exited with code ${code}`))
     finalizeGateSummary(exitFailure)
   }
 })

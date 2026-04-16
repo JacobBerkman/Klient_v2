@@ -84,8 +84,16 @@ export function Component() {
           value={data.filter((template) => template.publishState === 'published').length}
           hint="Ready for export use"
         />
-        <MetricCard label="Draft" value={data.filter((template) => template.publishState !== 'published').length} hint="Still in editing or review" />
-        <MetricCard label="Mappings" value={data.reduce((total, template) => total + (template.mappings?.length || 0), 0)} hint="Current mapped fields across the library" />
+        <MetricCard
+          label="Draft"
+          value={data.filter((template) => template.publishState !== 'published').length}
+          hint="Still in editing or review"
+        />
+        <MetricCard
+          label="Mappings"
+          value={data.reduce((total, template) => total + (template.mappings?.length || 0), 0)}
+          hint="Current mapped fields across the library"
+        />
       </div>
 
       <div className="split-grid">
@@ -94,11 +102,18 @@ export function Component() {
           <form className="form-grid" onSubmit={handleCreateTemplate}>
             <label>
               <span>Name</span>
-              <input value={createForm.name} onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))} required />
+              <input
+                value={createForm.name}
+                onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))}
+                required
+              />
             </label>
             <label>
               <span>File name</span>
-              <input value={createForm.fileName} onChange={(event) => setCreateForm((current) => ({ ...current, fileName: event.target.value }))} />
+              <input
+                value={createForm.fileName}
+                onChange={(event) => setCreateForm((current) => ({ ...current, fileName: event.target.value }))}
+              />
             </label>
             <label>
               <span>Extracted fields</span>
@@ -118,11 +133,20 @@ export function Component() {
           <form className="form-grid" onSubmit={handleAutoBuild}>
             <label>
               <span>Template name</span>
-              <input value={autoBuildName} onChange={(event) => setAutoBuildName(event.target.value)} placeholder="Optional override" />
+              <input
+                value={autoBuildName}
+                onChange={(event) => setAutoBuildName(event.target.value)}
+                placeholder="Optional override"
+              />
             </label>
             <label>
               <span>PDF file</span>
-              <input type="file" accept="application/pdf,.pdf" onChange={(event) => setAutoBuildFile(event.target.files?.[0] || null)} required />
+              <input
+                type="file"
+                accept="application/pdf,.pdf"
+                onChange={(event) => setAutoBuildFile(event.target.files?.[0] || null)}
+                required
+              />
             </label>
             <button type="submit" disabled={!hasGuard(user, 'canEditTemplate')}>
               Run auto-build
@@ -134,7 +158,10 @@ export function Component() {
         </Card>
       </div>
 
-      <PageSection title="Template library" subtitle="Every advertised template route now lands on a concrete editor or detail view.">
+      <PageSection
+        title="Template library"
+        subtitle="Every advertised template route now lands on a concrete editor or detail view."
+      >
         {data.length ? (
           <div className="cards-grid">
             {data.map((template) => (
@@ -160,7 +187,10 @@ export function Component() {
             ))}
           </div>
         ) : (
-          <EmptyState title="No document templates yet." detail="Create one above or use auto-build to seed the first mapping set." />
+          <EmptyState
+            title="No document templates yet."
+            detail="Create one above or use auto-build to seed the first mapping set."
+          />
         )}
       </PageSection>
     </div>

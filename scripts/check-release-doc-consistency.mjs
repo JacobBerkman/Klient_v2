@@ -6,8 +6,7 @@ const filesToRead = {
   quickRef: 'docs/deployment-quick-reference.md',
   checklist: 'docs/release-ready-checklist.md',
   handoff: 'docs/release-handoff-template.md',
-  testMatrix: 'docs/release-flow-test-matrix.md',
-  operationsUi: 'apps/web/public/app.js'
+  testMatrix: 'docs/release-flow-test-matrix.md'
 }
 
 const canonicalE2EEvidenceFields = [
@@ -45,6 +44,7 @@ const canonicalStrictGateCommands = [
 const canonicalHardGateSequence = [
   'npm run check:syntax',
   'npm run check:conflicts',
+  'npm run web:build',
   'npm run test:contract',
   'node scripts/integration-rbac.mjs',
   'node scripts/integration-tenancy.mjs',
@@ -90,7 +90,6 @@ for (const artifactName of canonicalArtifacts) {
 
 for (const command of canonicalCommandLabels) {
   assertContains(contentByKey.quickRef, command, filesToRead.quickRef)
-  assertContains(contentByKey.operationsUi, command, filesToRead.operationsUi)
 }
 
 assertContainsInOrder(contentByKey.quickRef, canonicalHardGateSequence, filesToRead.quickRef)
@@ -108,6 +107,10 @@ assertContains(
   'docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts',
   filesToRead.readme
 )
+assertContains(contentByKey.readme, 'apps/web/src', filesToRead.readme)
+assertContains(contentByKey.readme, 'apps/web/public` is legacy-only', filesToRead.readme)
+assertContains(contentByKey.quickRef, 'npm run web:build', filesToRead.quickRef)
+assertContains(contentByKey.checklist, 'npm run web:build', filesToRead.checklist)
 assertContains(
   contentByKey.checklist,
   'docs/deployment-quick-reference.md#canonical-release-evidence-bundle-required-artifacts',

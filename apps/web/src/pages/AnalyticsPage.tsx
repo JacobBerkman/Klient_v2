@@ -16,8 +16,8 @@ interface AnalyticsPageData {
   dashboard: AnalyticsDashboardPayload
 }
 
-function numericEntries(summary: Record<string, unknown>) {
-  return Object.entries(summary).filter(([, value]) => typeof value === 'number')
+function numericEntries(summary: Record<string, unknown>): Array<[string, number]> {
+  return Object.entries(summary).filter((entry): entry is [string, number] => typeof entry[1] === 'number')
 }
 
 export function Component() {
@@ -28,22 +28,19 @@ export function Component() {
     cohortValue: ''
   })
 
-  const { data, error, loading } = useAsync<AnalyticsPageData>(
-    async () => {
-      const query = {
-        startDate: filters.startDate || undefined,
-        endDate: filters.endDate || undefined,
-        cohortBy: filters.cohortBy || undefined,
-        cohortValue: filters.cohortValue || undefined
-      }
-      const [analytics, dashboard] = await Promise.all([
-        api.get<AnalyticsPayload>(routes.analytics(query)),
-        api.get<AnalyticsDashboardPayload>(routes.analyticsDashboard(query))
-      ])
-      return { analytics, dashboard }
-    },
-    [filters.startDate, filters.endDate, filters.cohortBy, filters.cohortValue]
-  )
+  const { data, error, loading } = useAsync<AnalyticsPageData>(async () => {
+    const query = {
+      startDate: filters.startDate || undefined,
+      endDate: filters.endDate || undefined,
+      cohortBy: filters.cohortBy || undefined,
+      cohortValue: filters.cohortValue || undefined
+    }
+    const [analytics, dashboard] = await Promise.all([
+      api.get<AnalyticsPayload>(routes.analytics(query)),
+      api.get<AnalyticsDashboardPayload>(routes.analyticsDashboard(query))
+    ])
+    return { analytics, dashboard }
+  }, [filters.startDate, filters.endDate, filters.cohortBy, filters.cohortValue])
 
   const summaryEntries = useMemo(
     () => numericEntries((data?.analytics.summary as Record<string, unknown>) || {}),
@@ -73,15 +70,26 @@ export function Component() {
         <div className="form-grid two-up">
           <label>
             <span>Start date</span>
-            <input type="date" value={filters.startDate} onChange={(event) => setFilters((current) => ({ ...current, startDate: event.target.value }))} />
+            <input
+              type="date"
+              value={filters.startDate}
+              onChange={(event) => setFilters((current) => ({ ...current, startDate: event.target.value }))}
+            />
           </label>
           <label>
             <span>End date</span>
-            <input type="date" value={filters.endDate} onChange={(event) => setFilters((current) => ({ ...current, endDate: event.target.value }))} />
+            <input
+              type="date"
+              value={filters.endDate}
+              onChange={(event) => setFilters((current) => ({ ...current, endDate: event.target.value }))}
+            />
           </label>
           <label>
             <span>Cohort by</span>
-            <select value={filters.cohortBy} onChange={(event) => setFilters((current) => ({ ...current, cohortBy: event.target.value }))}>
+            <select
+              value={filters.cohortBy}
+              onChange={(event) => setFilters((current) => ({ ...current, cohortBy: event.target.value }))}
+            >
               <option value="all">All</option>
               <option value="advisor">Advisor</option>
               <option value="stage">Stage</option>
@@ -90,7 +98,10 @@ export function Component() {
           </label>
           <label>
             <span>Cohort value</span>
-            <input value={filters.cohortValue} onChange={(event) => setFilters((current) => ({ ...current, cohortValue: event.target.value }))} />
+            <input
+              value={filters.cohortValue}
+              onChange={(event) => setFilters((current) => ({ ...current, cohortValue: event.target.value }))}
+            />
           </label>
         </div>
       </PageSection>
@@ -99,7 +110,11 @@ export function Component() {
         {summaryEntries.length ? (
           summaryEntries.map(([key, value]) => <MetricCard key={key} label={humanizeKey(key)} value={value} />)
         ) : (
-          <MetricCard label="Summary" value="No metrics" hint="The analytics summary did not include numeric aggregates." />
+          <MetricCard
+            label="Summary"
+            value="No metrics"
+            hint="The analytics summary did not include numeric aggregates."
+          />
         )}
       </div>
 
@@ -127,7 +142,10 @@ export function Component() {
               </table>
             </div>
           ) : (
-            <EmptyState title="No funnel data." detail="The backend did not return funnel rows for the current filter set." />
+            <EmptyState
+              title="No funnel data."
+              detail="The backend did not return funnel rows for the current filter set."
+            />
           )}
         </PageSection>
 
@@ -154,7 +172,10 @@ export function Component() {
               </table>
             </div>
           ) : (
-            <EmptyState title="No bottlenecks reported." detail="Nothing surfaced as a bottleneck for the current filters." />
+            <EmptyState
+              title="No bottlenecks reported."
+              detail="Nothing surfaced as a bottleneck for the current filters."
+            />
           )}
         </PageSection>
       </div>
@@ -168,7 +189,10 @@ export function Component() {
           )}
         </PageSection>
 
-        <PageSection title="Form and export throughput" subtitle="Completion latency and export usage stay visible without opening diagnostics.">
+        <PageSection
+          title="Form and export throughput"
+          subtitle="Completion latency and export usage stay visible without opening diagnostics."
+        >
           <div className="compact-stack">
             {data.dashboard.formCompletionLatency?.length ? (
               <pre className="json-block">{JSON.stringify(data.dashboard.formCompletionLatency, null, 2)}</pre>
@@ -178,7 +202,10 @@ export function Component() {
             {data.dashboard.exportUsage ? (
               <pre className="json-block">{JSON.stringify(data.dashboard.exportUsage, null, 2)}</pre>
             ) : (
-              <EmptyState title="No export usage summary." detail="The analytics endpoint did not return export usage data." />
+              <EmptyState
+                title="No export usage summary."
+                detail="The analytics endpoint did not return export usage data."
+              />
             )}
           </div>
         </PageSection>

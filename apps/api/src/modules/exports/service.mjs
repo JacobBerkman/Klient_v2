@@ -137,9 +137,9 @@ export function createExportsService({ exportsRepository, policy, store }) {
       })
       return created
     },
-    processQueuedExports(user) {
+    async processQueuedExports(user) {
       policy.requireGuard(user, 'canProcessExports')
-      const result = exportsRepository.processQueued()
+      const result = await exportsRepository.processQueued()
       log('info', 'export.lifecycle', {
         type: 'export.lifecycle',
         entity: 'export_batch',

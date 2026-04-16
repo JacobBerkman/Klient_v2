@@ -1,11 +1,4 @@
-import {
-  createContext,
-  useContext,
-  useEffect,
-  useMemo,
-  useState,
-  type PropsWithChildren
-} from 'react'
+import { createContext, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react'
 import { api, routes } from '../lib/client'
 import type { RuntimePayload, User } from '../lib/types'
 
@@ -83,7 +76,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       csrfToken?: string
       mfaRequired?: boolean
       challengeToken?: string
-    }>(routes.login(), payload)
+    }>(routes.login(), payload, { skipCsrf: true })
 
     if (session.mfaRequired) {
       setPendingMfa({
@@ -103,7 +96,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   }
 
   async function register(payload: RegisterPayload) {
-    const session = await api.post<{ user: User }>(routes.register(), payload)
+    const session = await api.post<{ user: User }>(routes.register(), payload, { skipCsrf: true })
     setPendingMfa(null)
     setUser(session.user)
     setStatus('authenticated')

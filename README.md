@@ -24,7 +24,7 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - document templates and queue-backed export job automation with retry/dead-letter orchestration
 - audit trail plus advisor-facing analytics panels (funnel conversion, stage aging, form completion, productivity)
 - invite flow and password reset endpoints
-- internal web UI served by the backend
+- canonical routed React/Vite web UI served by the backend from `apps/web/dist`
 - operational diagnostics for runtime config, storage health, export worker queue, and audit counts
 - Docker + compose deployment artifacts
 - backup, restore, and export worker scripts
@@ -38,8 +38,8 @@ Kinetic Klient is now consolidated onto **one real runtime architecture**:
 
 - a single Node.js HTTP server at `apps/api/src/server.mjs`
 - SQLite-backed persistence in `data/app.db`
-- the advisor web UI served directly from `apps/web/public`
-- the client portal served from `/portal`
+- the canonical routed React/Vite advisor and portal UI in `apps/web/src`, built to `apps/web/dist`
+- `apps/web/public` is legacy-only and remains reachable only through `/legacy` and `/legacy/portal` until retirement
 
 The older duplicate Fastify/TypeScript backend path and related workspace scaffolding have been removed so the repository now has one real startup path.
 
@@ -67,13 +67,42 @@ The repo now treats the plain Node runtime as canonical because it is the path t
 That eliminates the split-brain between competing backend implementations and keeps local, Docker, CI, and smoke verification on the same runtime.
 
 ## Local development
+Install root and web dependencies and create `.env` from `.env.example` when needed:
+
 ```bash
-node apps/api/src/server.mjs
+npm run bootstrap:dev
+```
+
+Run backend only:
+
+```bash
+npm run api:dev
+```
+
+Run the Vite frontend only:
+
+```bash
+npm run web:dev
+```
+
+Run backend and frontend together with prefixed logs:
+
+```bash
+npm run dev
+```
+
+Build and preview the canonical web app:
+
+```bash
+npm run web:build
+npm run web:preview
 ```
 
 Open:
-- `http://localhost:3000`
-- `http://localhost:3000/portal?token=<token>`
+- API/static production server: `http://localhost:3000`
+- Vite dev server: `http://127.0.0.1:5173`
+- Client portal route: `/portal?token=<token>`
+- Temporary legacy shell: `/legacy` and `/legacy/portal`
 
 ## Demo mode (optional, non-production only)
 Set `ENABLE_DEMO_MODE=true` when running locally if you want seeded demo data and UI shortcuts.
@@ -96,6 +125,12 @@ Run the production server contract test:
 
 ```bash
 npm run test:contract
+```
+
+Run the canonical frontend build gate:
+
+```bash
+npm run web:build
 ```
 
 Run the smoke test:

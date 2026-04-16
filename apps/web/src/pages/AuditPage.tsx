@@ -32,9 +32,16 @@ export function Component() {
 
   return (
     <div className="stack">
-      <PageSection title="Audit trail" subtitle="Search the canonical event stream without falling back to the old shell.">
+      <PageSection
+        title="Audit trail"
+        subtitle="Search the canonical event stream without falling back to the old shell."
+      >
         <div className="toolbar">
-          <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search action, entity, actor, or payload" />
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="Search action, entity, actor, or payload"
+          />
         </div>
         {visibleEvents.length ? (
           <div className="table-shell">
@@ -58,7 +65,9 @@ export function Component() {
                     <td>
                       <details>
                         <summary>Payload</summary>
-                        <pre className="json-block">{JSON.stringify({ before: event.before, after: event.after }, null, 2)}</pre>
+                        <pre className="json-block">
+                          {JSON.stringify({ before: event.before, after: event.after }, null, 2)}
+                        </pre>
                       </details>
                     </td>
                   </tr>
