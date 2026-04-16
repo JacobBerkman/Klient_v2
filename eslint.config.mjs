@@ -1,34 +1,39 @@
-import globals from 'globals';
-import sonarjs from 'eslint-plugin-sonarjs';
-import security from 'eslint-plugin-security';
+import globals from 'globals'
+import { dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import sonarjs from 'eslint-plugin-sonarjs'
+import security from 'eslint-plugin-security'
+import tseslint from 'typescript-eslint'
+
+const configDir = dirname(fileURLToPath(import.meta.url))
 
 const weakHashCallPatterns = [
   {
     selector: "CallExpression[callee.property.name='createHash'] Literal[value=/^(md4|md5|sha1)$/i]",
-    message: 'Avoid weak hashing algorithms (MD4/MD5/SHA1). Use SHA-256+ or stronger.',
+    message: 'Avoid weak hashing algorithms (MD4/MD5/SHA1). Use SHA-256+ or stronger.'
   },
   {
     selector: "CallExpression[callee.property.name='createHmac'] Literal[value=/^(md4|md5|sha1)$/i]",
-    message: 'Avoid weak HMAC algorithms (MD4/MD5/SHA1). Use SHA-256+ or stronger.',
-  },
-];
+    message: 'Avoid weak HMAC algorithms (MD4/MD5/SHA1). Use SHA-256+ or stronger.'
+  }
+]
 
 const baseRules = {
   'no-console': 'warn',
   'no-debugger': 'error',
   'sonarjs/no-identical-functions': 'warn',
-  'sonarjs/no-duplicated-branches': 'warn',
-};
+  'sonarjs/no-duplicated-branches': 'warn'
+}
 
 export default [
   {
-    ignores: ['**/node_modules/**', '**/coverage/**'],
+    ignores: ['**/node_modules/**', '**/coverage/**']
   },
   {
     plugins: {
       sonarjs,
-      security,
-    },
+      security
+    }
   },
   {
     files: ['apps/api/**/*.mjs'],
@@ -36,8 +41,8 @@ export default [
       ecmaVersion: 'latest',
       sourceType: 'module',
       globals: {
-        ...globals.node,
-      },
+        ...globals.node
+      }
     },
     rules: {
       ...baseRules,
@@ -47,16 +52,14 @@ export default [
         ...weakHashCallPatterns,
         {
           selector: "CallExpression[callee.property.name='createCipher']",
-          message:
-            'crypto.createCipher is deprecated and unsafe. Use createCipheriv with a modern AEAD cipher instead.',
+          message: 'crypto.createCipher is deprecated and unsafe. Use createCipheriv with a modern AEAD cipher instead.'
         },
         {
           selector: "CallExpression[callee.property.name='createDecipher']",
-          message:
-            'crypto.createDecipher is deprecated and unsafe. Use createDecipheriv with authenticated encryption.',
-        },
-      ],
-    },
+          message: 'crypto.createDecipher is deprecated and unsafe. Use createDecipheriv with authenticated encryption.'
+        }
+      ]
+    }
   },
   {
     files: ['scripts/**/*.mjs'],
@@ -64,13 +67,43 @@ export default [
       ecmaVersion: 'latest',
       sourceType: 'module',
       globals: {
-        ...globals.node,
-      },
+        ...globals.node
+      }
     },
     rules: {
       ...baseRules,
       'security/detect-possible-timing-attacks': 'warn',
-      'no-restricted-syntax': ['warn', ...weakHashCallPatterns],
-    },
+      'no-restricted-syntax': ['warn', ...weakHashCallPatterns]
+    }
   },
-];
+  {
+    files: ['apps/web/src/**/*.{ts,tsx}', 'apps/web/vite.config.ts'],
+    languageOptions: {
+      parser: tseslint.parser,
+      parserOptions: {
+        ecmaVersion: 'latest',
+        sourceType: 'module',
+        project: ['./apps/web/tsconfig.json', './apps/web/tsconfig.node.json'],
+        tsconfigRootDir: configDir
+      },
+      globals: {
+        ...globals.browser
+      }
+    },
+    plugins: {
+      '@typescript-eslint': tseslint.plugin
+    },
+    rules: {
+      'no-console': 'warn',
+      'no-debugger': 'error',
+      '@typescript-eslint/no-unused-vars': [
+        'warn',
+        {
+          argsIgnorePattern: '^_',
+          varsIgnorePattern: '^_',
+          caughtErrorsIgnorePattern: '^_'
+        }
+      ]
+    }
+  }
+]

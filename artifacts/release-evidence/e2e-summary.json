@@ -2,9 +2,9 @@
   "schemaVersion": "1.0.0",
   "gate": "e2e",
   "command": "npm run test:e2e",
-  "startedAt": "2026-04-16T20:57:38.165Z",
-  "finishedAt": "2026-04-16T20:57:38.206Z",
-  "durationMs": 41,
+  "startedAt": "2026-04-16T23:10:51.804Z",
+  "finishedAt": "2026-04-16T23:10:51.811Z",
+  "durationMs": 7,
   "status": "failed",
   "metadata": {
     "uiContractSuites": [
@@ -14,8 +14,11 @@
       "tests/e2e"
     ]
   },
-  "details": {},
+  "executionMode": "browser",
+  "details": {
+    "failureCategory": "startup-failure"
+  },
   "error": {
-    "message": "e2e exited without explicit evidence finalization"
+    "message": "spawn EPERM"
   }
 }

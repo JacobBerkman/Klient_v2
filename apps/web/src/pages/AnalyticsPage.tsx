@@ -3,7 +3,18 @@ import { api, routes } from '../lib/client'
 import { humanizeKey } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import type { AnalyticsDashboardPayload, AnalyticsPayload } from '../lib/types'
-import { EmptyState, ErrorState, LoadingState, MetricCard, PageSection } from '../components/ui'
+import {
+  DataTable,
+  EmptyState,
+  ErrorState,
+  Field,
+  LoadingState,
+  MetricCard,
+  PageHero,
+  PageSection,
+  StatGroup,
+  Toolbar
+} from '../components/ui'
 
 export const handle = {
   title: 'Analytics',
@@ -58,6 +69,16 @@ export function Component() {
 
   return (
     <div className="stack">
+      <PageHero
+        eyebrow="Analytics"
+        title="Spot movement, bottlenecks, and throughput"
+        subtitle="Use date and cohort filters to narrow operational metrics, then export CSV from the same screen."
+        actions={
+          <a className="primary-button button-link" href={csvHref}>
+            Export CSV
+          </a>
+        }
+      />
       <PageSection
         title="Filters"
         subtitle="Adjust cohort and date inputs without leaving the analytics route."
@@ -67,25 +88,22 @@ export function Component() {
           </a>
         }
       >
-        <div className="form-grid two-up">
-          <label>
-            <span>Start date</span>
+        <Toolbar label="Analytics filters">
+          <Field label="Start date">
             <input
               type="date"
               value={filters.startDate}
               onChange={(event) => setFilters((current) => ({ ...current, startDate: event.target.value }))}
             />
-          </label>
-          <label>
-            <span>End date</span>
+          </Field>
+          <Field label="End date">
             <input
               type="date"
               value={filters.endDate}
               onChange={(event) => setFilters((current) => ({ ...current, endDate: event.target.value }))}
             />
-          </label>
-          <label>
-            <span>Cohort by</span>
+          </Field>
+          <Field label="Cohort by">
             <select
               value={filters.cohortBy}
               onChange={(event) => setFilters((current) => ({ ...current, cohortBy: event.target.value }))}
@@ -95,18 +113,17 @@ export function Component() {
               <option value="stage">Stage</option>
               <option value="source">Source</option>
             </select>
-          </label>
-          <label>
-            <span>Cohort value</span>
+          </Field>
+          <Field label="Cohort value">
             <input
               value={filters.cohortValue}
               onChange={(event) => setFilters((current) => ({ ...current, cohortValue: event.target.value }))}
             />
-          </label>
-        </div>
+          </Field>
+        </Toolbar>
       </PageSection>
 
-      <div className="metrics-grid">
+      <StatGroup>
         {summaryEntries.length ? (
           summaryEntries.map(([key, value]) => <MetricCard key={key} label={humanizeKey(key)} value={value} />)
         ) : (
@@ -116,31 +133,29 @@ export function Component() {
             hint="The analytics summary did not include numeric aggregates."
           />
         )}
-      </div>
+      </StatGroup>
 
       <div className="split-grid">
         <PageSection title="Funnel" subtitle="Current funnel counts from the analytics dashboard endpoint.">
           {data.dashboard.funnel?.length ? (
-            <div className="table-shell">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Stage</th>
-                    <th>Count</th>
-                    <th>Details</th>
+            <DataTable caption="Funnel by stage">
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th>Count</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.dashboard.funnel.map((row, index) => (
+                  <tr key={`funnel-${index}`}>
+                    <td>{String(row.label || row.stage || row.id || `Stage ${index + 1}`)}</td>
+                    <td>{String(row.count || row.total || 0)}</td>
+                    <td>{JSON.stringify(row)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {data.dashboard.funnel.map((row, index) => (
-                    <tr key={`funnel-${index}`}>
-                      <td>{String(row.label || row.stage || row.id || `Stage ${index + 1}`)}</td>
-                      <td>{String(row.count || row.total || 0)}</td>
-                      <td>{JSON.stringify(row)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </DataTable>
           ) : (
             <EmptyState
               title="No funnel data."
@@ -151,26 +166,24 @@ export function Component() {
 
         <PageSection title="Bottlenecks" subtitle="Aging and delays surface directly on the analytics route.">
           {data.dashboard.bottlenecks?.length ? (
-            <div className="table-shell">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Stage</th>
-                    <th>Signal</th>
-                    <th>Details</th>
+            <DataTable caption="Reported bottlenecks">
+              <thead>
+                <tr>
+                  <th>Stage</th>
+                  <th>Signal</th>
+                  <th>Details</th>
+                </tr>
+              </thead>
+              <tbody>
+                {data.dashboard.bottlenecks.map((row, index) => (
+                  <tr key={`bottleneck-${index}`}>
+                    <td>{String(row.stage || row.label || `Item ${index + 1}`)}</td>
+                    <td>{String(row.status || row.days || row.count || 'Observed')}</td>
+                    <td>{JSON.stringify(row)}</td>
                   </tr>
-                </thead>
-                <tbody>
-                  {data.dashboard.bottlenecks.map((row, index) => (
-                    <tr key={`bottleneck-${index}`}>
-                      <td>{String(row.stage || row.label || `Item ${index + 1}`)}</td>
-                      <td>{String(row.status || row.days || row.count || 'Observed')}</td>
-                      <td>{JSON.stringify(row)}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </DataTable>
           ) : (
             <EmptyState
               title="No bottlenecks reported."

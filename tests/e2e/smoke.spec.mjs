@@ -22,6 +22,8 @@ test('@release-blocking register and login routes work in the routed shell', asy
   await page.getByRole('button', { name: 'Register' }).click()
 
   await expect(page.getByRole('heading', { name: 'Dashboard', exact: true })).toBeVisible()
+  await expect(page.getByRole('navigation', { name: 'Primary' })).toBeVisible()
+  await expect(page.getByText('Firm overview')).toBeVisible()
 
   await page.getByRole('button', { name: 'Sign out' }).click()
   await expect(page.getByTestId('login-form')).toBeVisible()
@@ -35,30 +37,39 @@ test('@release-blocking routed navigation reaches every advertised backoffice ro
 
   await page.getByRole('link', { name: 'Pipeline', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Pipeline' })).toBeVisible()
+  await expect(page.getByRole('search', { name: 'Pipeline filters' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Profiles', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Profiles' })).toBeVisible()
+  await expect(page.getByRole('group', { name: 'Profiles panel' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Households', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Households' })).toBeVisible()
+  await expect(page.getByText('Keep relationships organized')).toBeVisible()
 
   await page.getByRole('link', { name: 'Forms', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Forms' })).toBeVisible()
+  await expect(page.getByText('Collect, review, and collaborate from one route')).toBeVisible()
 
   await page.getByRole('link', { name: 'Templates', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Templates', level: 2 })).toBeVisible()
+  await expect(page.getByText('Template library')).toBeVisible()
 
   await page.getByRole('link', { name: 'Exports', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Exports' })).toBeVisible()
+  await expect(page.getByText('Queue, monitor, retry, and download deliverables')).toBeVisible()
 
   await page.getByRole('link', { name: 'Analytics', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible()
+  await expect(page.getByRole('search', { name: 'Analytics filters' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Audit', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Audit', exact: true })).toBeVisible()
+  await expect(page.getByRole('search', { name: 'Audit search' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Ops' }).click()
   await expect(page.getByRole('heading', { name: 'Ops' })).toBeVisible()
+  await expect(page.getByText('Release and runtime signals in one place')).toBeVisible()
 })
 
 test('@release-blocking profile and submission detail routes open as shareable URLs', async ({ page, seededRunId }) => {

@@ -6,7 +6,22 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { ProfileDetailPayload } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { Card, ErrorState, InlineNotice, KeyValueList, LoadingState, PageSection } from '../components/ui'
+import {
+  ActionPanel,
+  ButtonLink,
+  Card,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  Field,
+  InlineNotice,
+  KeyValueList,
+  LoadingState,
+  PageHero,
+  PageSection,
+  StatusBadge,
+  Timeline
+} from '../components/ui'
 
 export const handle = {
   title: ({ profileId }: Record<string, string | undefined>) => `Profile ${profileId || ''}`.trim(),
@@ -68,46 +83,61 @@ export function Component() {
 
   return (
     <div className="stack">
+      <PageHero
+        eyebrow="Profile detail"
+        title={profileName(data.profile)}
+        subtitle={`${data.profile.kind} profile with editing, notes, household linkage, sensitive data, form shortcuts, and export shortcuts in one shareable URL.`}
+        actions={
+          <>
+            <ButtonLink to={`/forms?profileId=${data.profile.id}`}>Forms</ButtonLink>
+            <ButtonLink to={`/exports?profileId=${data.profile.id}`}>Exports</ButtonLink>
+          </>
+        }
+        meta={
+          <>
+            <StatusBadge status={data.profile.kind} />
+            <StatusBadge status={data.profile.stage || 'No stage'} />
+          </>
+        }
+      />
       <PageSection
         title={profileName(data.profile)}
         subtitle={`${data.profile.kind} / ${data.profile.stage || 'No stage'} / Updated ${formatDateTime(data.profile.updatedAt || data.profile.createdAt)}`}
       >
         <div className="split-grid">
-          <Card className="section-card">
-            <h3>Editable details</h3>
+          <ActionPanel
+            title="Editable details"
+            subtitle="Core contact fields update through the canonical profile endpoint."
+          >
             <form className="form-grid two-up" onSubmit={handleSave}>
-              <label>
-                <span>First name</span>
+              <Field label="First name">
                 <input
                   name="firstName"
                   defaultValue={data.profile.firstName}
                   disabled={!hasGuard(user, 'canWriteProfiles')}
                 />
-              </label>
-              <label>
-                <span>Last name</span>
+              </Field>
+              <Field label="Last name">
                 <input
                   name="lastName"
                   defaultValue={data.profile.lastName}
                   disabled={!hasGuard(user, 'canWriteProfiles')}
                 />
-              </label>
-              <label>
-                <span>Email</span>
+              </Field>
+              <Field label="Email">
                 <input
                   name="email"
                   defaultValue={String(data.profile.email || '')}
                   disabled={!hasGuard(user, 'canWriteProfiles')}
                 />
-              </label>
-              <label>
-                <span>Phone</span>
+              </Field>
+              <Field label="Phone">
                 <input
                   name="phone"
                   defaultValue={String(data.profile.phone || '')}
                   disabled={!hasGuard(user, 'canWriteProfiles')}
                 />
-              </label>
+              </Field>
               <button type="submit" disabled={!hasGuard(user, 'canWriteProfiles')}>
                 Save changes
               </button>
@@ -115,7 +145,7 @@ export function Component() {
             <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
               {statusMessage || 'Inline editing lives here instead of on the list page.'}
             </p>
-          </Card>
+          </ActionPanel>
 
           <Card className="section-card">
             <h3>Household + shortcuts</h3>
@@ -157,32 +187,31 @@ export function Component() {
       <div className="split-grid">
         <PageSection title="Notes" subtitle="Advisor notes stay on the dedicated detail route.">
           <form className="form-grid" onSubmit={handleAddNote}>
-            <label>
-              <span>Add note</span>
+            <Field label="Add note">
               <textarea
                 rows={4}
                 value={noteBody}
                 onChange={(event) => setNoteBody(event.target.value)}
                 disabled={!hasGuard(user, 'canWriteProfiles')}
               />
-            </label>
+            </Field>
             <button type="submit" disabled={!hasGuard(user, 'canWriteProfiles')}>
               Save note
             </button>
           </form>
-          <div className="compact-stack">
-            {data.notes.map((note) => (
-              <Card key={note.id} className="section-card">
-                <strong>{formatDateTime(note.createdAt)}</strong>
-                <p>{note.body}</p>
-              </Card>
-            ))}
-          </div>
+          <Timeline
+            items={data.notes.map((note) => ({
+              id: note.id,
+              title: formatDateTime(note.createdAt),
+              body: note.body
+            }))}
+            empty={<EmptyState title="No notes yet." detail="Add the first advisor note above." />}
+          />
         </PageSection>
 
         <PageSection title="Stage history" subtitle="Timeline for pipeline movement and progression.">
-          <div className="table-shell">
-            <table>
+          {data.stageHistory.length ? (
+            <DataTable caption="Stage movement history">
               <thead>
                 <tr>
                   <th>From</th>
@@ -201,8 +230,10 @@ export function Component() {
                   </tr>
                 ))}
               </tbody>
-            </table>
-          </div>
+            </DataTable>
+          ) : (
+            <EmptyState title="No stage movement yet." detail="Pipeline stage changes will appear here." />
+          )}
         </PageSection>
       </div>
 

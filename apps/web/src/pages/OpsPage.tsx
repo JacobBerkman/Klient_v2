@@ -3,7 +3,17 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { DiagnosticsPayload, ExportRuntimePayload, HealthPayload } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { EmptyState, ErrorState, LoadingState, MetricCard, PageSection } from '../components/ui'
+import {
+  DataTable,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  MetricCard,
+  PageHero,
+  PageSection,
+  StatGroup,
+  StatusBadge
+} from '../components/ui'
 
 export const handle = {
   title: 'Ops',
@@ -47,7 +57,19 @@ export function Component() {
 
   return (
     <div className="stack">
-      <div className="metrics-grid">
+      <PageHero
+        eyebrow="Admin ops"
+        title="Release and runtime signals in one place"
+        subtitle="Diagnostics, readiness, queue health, and direct release-readiness links remain backed by the current endpoints."
+        meta={
+          <>
+            <StatusBadge status={data.ready.ready ? 'ready pass' : 'ready fail'} />
+            <StatusBadge status={String(data.health.status || 'unknown')} />
+          </>
+        }
+      />
+
+      <StatGroup>
         <MetricCard label="Ready" value={data.ready.ready ? 'Yes' : 'No'} hint="Release readiness endpoint" />
         <MetricCard label="Health" value={String(data.health.status || 'unknown')} hint="Service liveness" />
         <MetricCard
@@ -60,29 +82,29 @@ export function Component() {
           value={data.exportRuntime.recentFailures?.length || 0}
           hint="Latest export runtime failures"
         />
-      </div>
+      </StatGroup>
 
       <div className="split-grid">
         <PageSection title="Runtime checks" subtitle="Readiness and health checks now have a dedicated admin view.">
           {readyChecks.length ? (
-            <div className="table-shell">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Check</th>
-                    <th>Status</th>
+            <DataTable caption="Readiness checks">
+              <thead>
+                <tr>
+                  <th>Check</th>
+                  <th>Status</th>
+                </tr>
+              </thead>
+              <tbody>
+                {readyChecks.map(([key, value]) => (
+                  <tr key={key}>
+                    <td>{key}</td>
+                    <td>
+                      <StatusBadge status={value ? 'pass' : 'fail'} />
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {readyChecks.map(([key, value]) => (
-                    <tr key={key}>
-                      <td>{key}</td>
-                      <td>{value ? 'pass' : 'fail'}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </DataTable>
           ) : (
             <EmptyState title="No readiness checks." detail="The ready endpoint did not return any check entries." />
           )}

@@ -6,7 +6,17 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { Household, Profile } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { Card, ErrorState, LoadingState, PageSection } from '../components/ui'
+import {
+  ActionPanel,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  Field,
+  LoadingState,
+  PageHero,
+  PageSection,
+  StatusBadge
+} from '../components/ui'
 
 export const handle = {
   title: ({ householdId }: Record<string, string | undefined>) => `Household ${householdId || ''}`.trim(),
@@ -65,15 +75,25 @@ export function Component() {
 
   return (
     <div className="stack">
+      <PageHero
+        eyebrow="Household workspace"
+        title={household.name}
+        subtitle="Manage the relationship graph here instead of scattering spouse and member flows across the shell."
+        meta={
+          <>
+            <StatusBadge status={`${household.members.length} members`} />
+            <StatusBadge status={`Primary ${profileName(primaryProfile)}`} />
+          </>
+        }
+      />
       <PageSection
         title={household.name}
         subtitle={`Primary client ${profileName(primaryProfile)} / ${household.members.length} members`}
       >
         <div className="split-grid">
-          <Card className="section-card">
-            <h3>Members</h3>
-            <div className="table-shell">
-              <table>
+          <ActionPanel title="Members" subtitle="Current household composition and role labels.">
+            {household.members.length ? (
+              <DataTable caption="Household members">
                 <thead>
                   <tr>
                     <th>Member</th>
@@ -104,12 +124,13 @@ export function Component() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
-            </div>
-          </Card>
+              </DataTable>
+            ) : (
+              <EmptyState title="No members linked." detail="Add a client from the panel beside this list." />
+            )}
+          </ActionPanel>
 
-          <Card className="section-card">
-            <h3>Add member</h3>
+          <ActionPanel title="Add member" subtitle="Attach an existing client and assign their household role.">
             <form
               className="form-grid"
               onSubmit={(event) => {
@@ -120,8 +141,7 @@ export function Component() {
                 )
               }}
             >
-              <label>
-                <span>Client</span>
+              <Field label="Client">
                 <select value={memberId} onChange={(event) => setMemberId(event.target.value)} required>
                   <option value="">Select a client</option>
                   {availableMembers.map((client) => (
@@ -130,26 +150,24 @@ export function Component() {
                     </option>
                   ))}
                 </select>
-              </label>
-              <label>
-                <span>Role</span>
+              </Field>
+              <Field label="Role">
                 <select value={memberRole} onChange={(event) => setMemberRole(event.target.value)}>
                   <option value="member">Member</option>
                   <option value="dependent">Dependent</option>
                   <option value="spouse">Spouse</option>
                 </select>
-              </label>
+              </Field>
               <button type="submit" disabled={!hasGuard(user, 'canWriteHouseholds')}>
                 Add member
               </button>
             </form>
-          </Card>
+          </ActionPanel>
         </div>
       </PageSection>
 
       <div className="split-grid">
-        <Card className="section-card">
-          <h3>Link existing spouse</h3>
+        <ActionPanel title="Link existing spouse" subtitle="Use this when both clients already exist.">
           <form
             className="form-grid"
             onSubmit={(event) => {
@@ -163,8 +181,7 @@ export function Component() {
               )
             }}
           >
-            <label>
-              <span>Client</span>
+            <Field label="Client">
               <select value={spouseId} onChange={(event) => setSpouseId(event.target.value)} required>
                 <option value="">Select an existing client</option>
                 {availableMembers.map((client) => (
@@ -173,15 +190,17 @@ export function Component() {
                   </option>
                 ))}
               </select>
-            </label>
+            </Field>
             <button type="submit" disabled={!hasGuard(user, 'canWriteHouseholds')}>
               Link spouse
             </button>
           </form>
-        </Card>
+        </ActionPanel>
 
-        <Card className="section-card">
-          <h3>Create spouse</h3>
+        <ActionPanel
+          title="Create spouse"
+          subtitle="Create the spouse profile and link it to this household in one flow."
+        >
           <form
             className="form-grid"
             onSubmit={(event) => {
@@ -195,35 +214,32 @@ export function Component() {
               )
             }}
           >
-            <label>
-              <span>First name</span>
+            <Field label="First name">
               <input
                 value={spouseForm.firstName}
                 onChange={(event) => setSpouseForm((current) => ({ ...current, firstName: event.target.value }))}
                 required
               />
-            </label>
-            <label>
-              <span>Last name</span>
+            </Field>
+            <Field label="Last name">
               <input
                 value={spouseForm.lastName}
                 onChange={(event) => setSpouseForm((current) => ({ ...current, lastName: event.target.value }))}
                 required
               />
-            </label>
-            <label>
-              <span>Email</span>
+            </Field>
+            <Field label="Email">
               <input
                 type="email"
                 value={spouseForm.email}
                 onChange={(event) => setSpouseForm((current) => ({ ...current, email: event.target.value }))}
               />
-            </label>
+            </Field>
             <button type="submit" disabled={!hasGuard(user, 'canWriteHouseholds')}>
               Create spouse
             </button>
           </form>
-        </Card>
+        </ActionPanel>
       </div>
 
       <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>

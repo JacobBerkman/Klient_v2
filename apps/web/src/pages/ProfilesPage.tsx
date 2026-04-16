@@ -6,7 +6,21 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { CustomFieldSchemaPayload, Profile } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { Badge, Card, ErrorState, InlineNotice, LoadingState, PageSection } from '../components/ui'
+import {
+  ActionPanel,
+  ButtonLink,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  Field,
+  InlineNotice,
+  LoadingState,
+  PageHero,
+  PageSection,
+  SegmentedControl,
+  StatusBadge,
+  Toolbar
+} from '../components/ui'
 
 export const handle = {
   title: 'Profiles',
@@ -92,26 +106,32 @@ export function Component() {
 
   return (
     <div className="stack">
+      <PageHero
+        eyebrow="Client directory"
+        title="Profiles are the system of record"
+        subtitle="Search, create, and route into dedicated detail pages for editing, notes, household linkage, forms, and exports."
+        actions={
+          <>
+            <ButtonLink variant="primary" to="/pipeline">
+              Open pipeline
+            </ButtonLink>
+            <ButtonLink to="/households">Manage households</ButtonLink>
+          </>
+        }
+      />
       <PageSection
         title="Directory"
         subtitle="Use route-based detail views for editing while keeping the list page fast and focused."
         action={
-          <div className="actions-row">
-            <button
-              type="button"
-              className={panel === 'directory' ? 'secondary-button' : 'ghost-button'}
-              onClick={() => setSearchParams({ panel: 'directory' })}
-            >
-              Profiles
-            </button>
-            <button
-              type="button"
-              className={panel === 'schema' ? 'secondary-button' : 'ghost-button'}
-              onClick={() => setSearchParams({ panel: 'schema' })}
-            >
-              Custom fields
-            </button>
-          </div>
+          <SegmentedControl
+            label="Profiles panel"
+            value={panel}
+            options={[
+              { label: 'Profiles', value: 'directory' },
+              { label: 'Custom fields', value: 'schema' }
+            ]}
+            onChange={(value) => setSearchParams({ panel: value })}
+          />
         }
       >
         {panel === 'schema' ? (
@@ -119,8 +139,8 @@ export function Component() {
             <InlineNotice tone="info">
               The schema panel now lives on a real routed screen instead of falling through the global shell.
             </InlineNotice>
-            <div className="table-shell">
-              <table>
+            {data.schema.fields.length ? (
+              <DataTable caption="Custom profile field schema">
                 <thead>
                   <tr>
                     <th>Key</th>
@@ -143,12 +163,14 @@ export function Component() {
                     </tr>
                   ))}
                 </tbody>
-              </table>
-            </div>
+              </DataTable>
+            ) : (
+              <EmptyState title="No custom fields yet." detail="Schema fields will appear here when configured." />
+            )}
           </>
         ) : (
           <>
-            <div className="toolbar">
+            <Toolbar label="Profile filters">
               <input
                 aria-label="Search profiles"
                 placeholder="Search by name, email, or phone"
@@ -164,14 +186,15 @@ export function Component() {
                 <option value="prospect">Prospects</option>
                 <option value="client">Clients</option>
               </select>
-            </div>
+            </Toolbar>
 
             <div className="split-grid">
-              <Card className="section-card">
-                <h3>Create profile</h3>
+              <ActionPanel
+                title="Create profile"
+                subtitle="Add the person here, then manage richer details on their profile route."
+              >
                 <form className="form-grid two-up" onSubmit={handleCreateProfile}>
-                  <label>
-                    <span>Kind</span>
+                  <Field label="Kind">
                     <select
                       value={form.kind}
                       onChange={(event) => setForm((current) => ({ ...current, kind: event.target.value }))}
@@ -179,45 +202,40 @@ export function Component() {
                       <option value="prospect">Prospect</option>
                       <option value="client">Client</option>
                     </select>
-                  </label>
-                  <label>
-                    <span>First name</span>
+                  </Field>
+                  <Field label="First name">
                     <input
                       value={form.firstName}
                       onChange={(event) => setForm((current) => ({ ...current, firstName: event.target.value }))}
                       required
                     />
-                  </label>
-                  <label>
-                    <span>Last name</span>
+                  </Field>
+                  <Field label="Last name">
                     <input
                       value={form.lastName}
                       onChange={(event) => setForm((current) => ({ ...current, lastName: event.target.value }))}
                       required
                     />
-                  </label>
-                  <label>
-                    <span>Email</span>
+                  </Field>
+                  <Field label="Email">
                     <input
                       type="email"
                       value={form.email}
                       onChange={(event) => setForm((current) => ({ ...current, email: event.target.value }))}
                     />
-                  </label>
-                  <label>
-                    <span>Phone</span>
+                  </Field>
+                  <Field label="Phone">
                     <input
                       value={form.phone}
                       onChange={(event) => setForm((current) => ({ ...current, phone: event.target.value }))}
                     />
-                  </label>
-                  <label>
-                    <span>Initial stage</span>
+                  </Field>
+                  <Field label="Initial stage" hint="Optional stage id for seeded/imported work.">
                     <input
                       value={form.stage}
                       onChange={(event) => setForm((current) => ({ ...current, stage: event.target.value }))}
                     />
-                  </label>
+                  </Field>
                   <button type="submit" disabled={creating || !hasGuard(user, 'canWriteProfiles')}>
                     {creating ? 'Creating...' : 'Create profile'}
                   </button>
@@ -225,12 +243,14 @@ export function Component() {
                 <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
                   {statusMessage || 'Global create forms have been relocated into the relevant routed page.'}
                 </p>
-              </Card>
+              </ActionPanel>
 
-              <Card className="section-card">
-                <h3>Profile list</h3>
-                <div className="table-shell">
-                  <table>
+              <ActionPanel
+                title="Profile list"
+                subtitle={`${visibleProfiles.length} profiles match the current filters.`}
+              >
+                {visibleProfiles.length ? (
+                  <DataTable caption="Profile directory results">
                     <thead>
                       <tr>
                         <th>Name</th>
@@ -249,7 +269,7 @@ export function Component() {
                             <div className="muted">{profile.email || 'No email on file'}</div>
                           </td>
                           <td>
-                            <Badge tone={profile.kind === 'client' ? 'success' : 'info'}>{profile.kind}</Badge>
+                            <StatusBadge status={profile.kind} />
                           </td>
                           <td>{profile.stage || 'Unassigned'}</td>
                           <td>{profile.householdId || 'Unlinked'}</td>
@@ -266,9 +286,14 @@ export function Component() {
                         </tr>
                       ))}
                     </tbody>
-                  </table>
-                </div>
-              </Card>
+                  </DataTable>
+                ) : (
+                  <EmptyState
+                    title="No profiles match."
+                    detail="Adjust the search or profile type filter, or create a new profile."
+                  />
+                )}
+              </ActionPanel>
             </div>
           </>
         )}

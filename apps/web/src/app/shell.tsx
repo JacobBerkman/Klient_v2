@@ -156,7 +156,9 @@ export function AppShell() {
             <strong>{user ? `${user.firstName} ${user.lastName}` : 'Session'}</strong>
           </div>
           <div className="topbar-actions">
-            <span className="role-pill">{user?.role || 'anonymous'}</span>
+            <span className="role-pill" aria-label="Current role">
+              {user?.role || 'anonymous'}
+            </span>
             <button type="button" className="secondary-button" onClick={() => void logout()}>
               Sign out
             </button>

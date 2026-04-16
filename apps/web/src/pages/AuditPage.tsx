@@ -3,7 +3,16 @@ import { api, routes } from '../lib/client'
 import { auditActor, formatDateTime } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import type { AuditEvent } from '../lib/types'
-import { EmptyState, ErrorState, LoadingState, PageSection } from '../components/ui'
+import {
+  DataTable,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  PageHero,
+  PageSection,
+  StatusBadge,
+  Toolbar
+} from '../components/ui'
 
 export const handle = {
   title: 'Audit',
@@ -32,49 +41,53 @@ export function Component() {
 
   return (
     <div className="stack">
+      <PageHero
+        eyebrow="Audit"
+        title="Trace what changed and who changed it"
+        subtitle="Search the canonical audit stream by action, entity, actor, or payload without leaving the product UI."
+        meta={<StatusBadge status={`${visibleEvents.length} visible events`} />}
+      />
       <PageSection
         title="Audit trail"
         subtitle="Search the canonical event stream without falling back to the old shell."
       >
-        <div className="toolbar">
+        <Toolbar label="Audit search">
           <input
             value={search}
             onChange={(event) => setSearch(event.target.value)}
             placeholder="Search action, entity, actor, or payload"
           />
-        </div>
+        </Toolbar>
         {visibleEvents.length ? (
-          <div className="table-shell">
-            <table>
-              <thead>
-                <tr>
-                  <th>Action</th>
-                  <th>Entity</th>
-                  <th>Actor</th>
-                  <th>When</th>
-                  <th>Details</th>
+          <DataTable caption="Audit events">
+            <thead>
+              <tr>
+                <th>Action</th>
+                <th>Entity</th>
+                <th>Actor</th>
+                <th>When</th>
+                <th>Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {visibleEvents.map((event) => (
+                <tr key={event.id}>
+                  <td>{event.action}</td>
+                  <td>{[event.entityType, event.entityId].filter(Boolean).join(' / ') || 'system'}</td>
+                  <td>{auditActor(event)}</td>
+                  <td>{formatDateTime(event.timestamp)}</td>
+                  <td>
+                    <details>
+                      <summary>Payload</summary>
+                      <pre className="json-block">
+                        {JSON.stringify({ before: event.before, after: event.after }, null, 2)}
+                      </pre>
+                    </details>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {visibleEvents.map((event) => (
-                  <tr key={event.id}>
-                    <td>{event.action}</td>
-                    <td>{[event.entityType, event.entityId].filter(Boolean).join(' / ') || 'system'}</td>
-                    <td>{auditActor(event)}</td>
-                    <td>{formatDateTime(event.timestamp)}</td>
-                    <td>
-                      <details>
-                        <summary>Payload</summary>
-                        <pre className="json-block">
-                          {JSON.stringify({ before: event.before, after: event.after }, null, 2)}
-                        </pre>
-                      </details>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </DataTable>
         ) : (
           <EmptyState title="No audit events match." detail="Try a broader search or wait for more activity." />
         )}

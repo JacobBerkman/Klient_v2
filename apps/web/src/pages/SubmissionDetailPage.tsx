@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, routes } from '../lib/client'
 import {
@@ -22,7 +22,16 @@ import type {
   UserLookup
 } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { Badge, Card, EmptyState, ErrorState, InlineNotice, LoadingState, PageSection } from '../components/ui'
+import {
+  Card,
+  EmptyState,
+  ErrorState,
+  InlineNotice,
+  LoadingState,
+  PageHero,
+  PageSection,
+  StatusBadge
+} from '../components/ui'
 
 export const handle = {
   title: ({ submissionId }: Record<string, string | undefined>) => `Submission ${submissionId || ''}`.trim(),
@@ -281,6 +290,17 @@ export function Component() {
 
   return (
     <div className="stack">
+      <PageHero
+        eyebrow="Submission editor"
+        title={template?.name || submission.templateId}
+        subtitle={`A focused editing surface for ${profileName(profile)} with locks, collaborators, repeatable items, and revision-aware saves.`}
+        meta={
+          <>
+            <StatusBadge status={submission.status} />
+            <StatusBadge status={submission.lock ? 'Locked draft' : 'Unlocked'} />
+          </>
+        }
+      />
       <PageSection
         title={template?.name || submission.templateId}
         subtitle={`${submission.status} for ${profileName(profile)}. Route-based editing keeps this flow shareable and browser-safe.`}
@@ -308,7 +328,7 @@ export function Component() {
               <div>
                 <strong>Status</strong>
                 <div>
-                  <Badge tone={submission.status === 'submitted' ? 'success' : 'info'}>{submission.status}</Badge>
+                  <StatusBadge status={submission.status} />
                 </div>
               </div>
             </div>

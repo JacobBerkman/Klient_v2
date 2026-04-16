@@ -6,7 +6,20 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { DocumentTemplate, ExportJob, FormSubmission, Profile, QueueHealthPayload } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { Badge, Card, EmptyState, ErrorState, LoadingState, MetricCard, PageSection } from '../components/ui'
+import {
+  ActionPanel,
+  ButtonLink,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  Field,
+  LoadingState,
+  MetricCard,
+  PageHero,
+  PageSection,
+  StatGroup,
+  StatusBadge
+} from '../components/ui'
 
 export const handle = {
   title: 'Exports',
@@ -119,7 +132,14 @@ export function Component() {
 
   return (
     <div className="stack">
-      <div className="metrics-grid">
+      <PageHero
+        eyebrow="Exports"
+        title="Queue, monitor, retry, and download deliverables"
+        subtitle="Export work is separated by runtime state so advisors and operators can tell what is ready, blocked, or still processing."
+        actions={hasGuard(user, 'canProcessExports') ? <ButtonLink to="/admin/ops">Runtime health</ButtonLink> : null}
+      />
+
+      <StatGroup>
         <MetricCard label="Visible exports" value={data.exports.length} hint="Current filtered result set" />
         <MetricCard
           label="Completed"
@@ -139,14 +159,15 @@ export function Component() {
           value={data.exports.filter((entry) => ['failed', 'dead-letter'].includes(String(entry.status || ''))).length}
           hint="Needs retry or operator review"
         />
-      </div>
+      </StatGroup>
 
       <div className="split-grid">
-        <Card className="section-card">
-          <h3>Queue export</h3>
+        <ActionPanel
+          title="Queue export"
+          subtitle="Create a new export from an approved template and client submission."
+        >
           <form className="form-grid" onSubmit={handleCreateExport}>
-            <label>
-              <span>Template</span>
+            <Field label="Template">
               <select
                 value={createForm.templateId}
                 onChange={(event) => setCreateForm((current) => ({ ...current, templateId: event.target.value }))}
@@ -159,9 +180,8 @@ export function Component() {
                   </option>
                 ))}
               </select>
-            </label>
-            <label>
-              <span>Client</span>
+            </Field>
+            <Field label="Client">
               <select
                 value={createForm.clientId}
                 onChange={(event) => setCreateForm((current) => ({ ...current, clientId: event.target.value }))}
@@ -174,9 +194,8 @@ export function Component() {
                   </option>
                 ))}
               </select>
-            </label>
-            <label>
-              <span>Submission</span>
+            </Field>
+            <Field label="Submission" hint="Optional, but keeps the artifact tied to a specific form.">
               <select
                 value={createForm.submissionId}
                 onChange={(event) => setCreateForm((current) => ({ ...current, submissionId: event.target.value }))}
@@ -188,18 +207,19 @@ export function Component() {
                   </option>
                 ))}
               </select>
-            </label>
+            </Field>
             <button type="submit" data-testid="create-export-submit" disabled={!hasGuard(user, 'canWriteExports')}>
               Queue export
             </button>
           </form>
-        </Card>
+        </ActionPanel>
 
-        <Card className="section-card">
-          <h3>Filters and runtime</h3>
+        <ActionPanel
+          title="Filters and runtime"
+          subtitle="Narrow the queue and trigger processing without opening diagnostics."
+        >
           <div className="form-grid">
-            <label>
-              <span>Status</span>
+            <Field label="Status">
               <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
                 <option value="">All statuses</option>
                 <option value="queued">Queued</option>
@@ -209,9 +229,8 @@ export function Component() {
                 <option value="failed">Failed</option>
                 <option value="dead-letter">Dead letter</option>
               </select>
-            </label>
-            <label>
-              <span>Client</span>
+            </Field>
+            <Field label="Client">
               <select value={profileFilter} onChange={(event) => setProfileFilter(event.target.value)}>
                 <option value="">All clients</option>
                 {data.profiles.map((profile) => (
@@ -220,7 +239,7 @@ export function Component() {
                   </option>
                 ))}
               </select>
-            </label>
+            </Field>
             {hasGuard(user, 'canProcessExports') ? (
               <button type="button" className="secondary-button" onClick={() => void handleProcessQueue()}>
                 Process queue now
@@ -237,13 +256,13 @@ export function Component() {
           </p>
           {data.queueHealth ? (
             <div className="pill-list">
-              <span className="pill">Pending {String(data.queueHealth.queue?.pending || 0)}</span>
-              <span className="pill">Running {String(data.queueHealth.queue?.running || 0)}</span>
-              <span className="pill">Failed {String(data.queueHealth.queue?.failed || 0)}</span>
-              <span className="pill">Dead letter {String(data.queueHealth.queue?.deadLetter || 0)}</span>
+              <StatusBadge status={`Queued ${String(data.queueHealth.queue?.pending || 0)}`} />
+              <StatusBadge status={`Running ${String(data.queueHealth.queue?.running || 0)}`} />
+              <StatusBadge status={`Failed ${String(data.queueHealth.queue?.failed || 0)}`} />
+              <StatusBadge status={`Dead letter ${String(data.queueHealth.queue?.deadLetter || 0)}`} />
             </div>
           ) : null}
-        </Card>
+        </ActionPanel>
       </div>
 
       <PageSection
@@ -251,65 +270,53 @@ export function Component() {
         subtitle="Download-ready items, retries, and runtime status all live in one route."
       >
         {data.exports.length ? (
-          <div className="table-shell">
-            <table>
-              <thead>
-                <tr>
-                  <th>Template</th>
-                  <th>Client</th>
-                  <th>Status</th>
-                  <th>Attempts</th>
-                  <th>Updated</th>
-                  <th>Actions</th>
+          <DataTable caption="Export queue by current filters">
+            <thead>
+              <tr>
+                <th>Template</th>
+                <th>Client</th>
+                <th>Status</th>
+                <th>Attempts</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.exports.map((job) => (
+                <tr key={job.id}>
+                  <td>
+                    {templateById.get(String(job.templateId || ''))?.name || job.templateId || 'Unknown template'}
+                  </td>
+                  <td>{profileName(profileById.get(String(job.clientId || '')))}</td>
+                  <td>
+                    <StatusBadge status={job.statusLabel || job.status || 'queued'} />
+                  </td>
+                  <td>
+                    {job.attempts || 0} / {job.maxAttempts || 0}
+                  </td>
+                  <td>{formatDateTime(job.updatedAt || job.createdAt)}</td>
+                  <td>
+                    <div className="actions-row">
+                      {job.artifactReady ? (
+                        <a
+                          className="text-link"
+                          href={routes.exportDownload(job.id)}
+                          data-testid={`export-download-${job.id}`}
+                        >
+                          Download
+                        </a>
+                      ) : null}
+                      {job.retryState?.eligible && hasGuard(user, 'canProcessExports') ? (
+                        <button type="button" className="ghost-button" onClick={() => void handleRetry(job.id)}>
+                          Retry
+                        </button>
+                      ) : null}
+                    </div>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {data.exports.map((job) => (
-                  <tr key={job.id}>
-                    <td>
-                      {templateById.get(String(job.templateId || ''))?.name || job.templateId || 'Unknown template'}
-                    </td>
-                    <td>{profileName(profileById.get(String(job.clientId || '')))}</td>
-                    <td>
-                      <Badge
-                        tone={
-                          job.status === 'completed'
-                            ? 'success'
-                            : ['failed', 'dead-letter'].includes(String(job.status || ''))
-                              ? 'danger'
-                              : 'info'
-                        }
-                      >
-                        {job.statusLabel || job.status || 'queued'}
-                      </Badge>
-                    </td>
-                    <td>
-                      {job.attempts || 0} / {job.maxAttempts || 0}
-                    </td>
-                    <td>{formatDateTime(job.updatedAt || job.createdAt)}</td>
-                    <td>
-                      <div className="actions-row">
-                        {job.artifactReady ? (
-                          <a
-                            className="text-link"
-                            href={routes.exportDownload(job.id)}
-                            data-testid={`export-download-${job.id}`}
-                          >
-                            Download
-                          </a>
-                        ) : null}
-                        {job.retryState?.eligible && hasGuard(user, 'canProcessExports') ? (
-                          <button type="button" className="ghost-button" onClick={() => void handleRetry(job.id)}>
-                            Retry
-                          </button>
-                        ) : null}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </DataTable>
         ) : (
           <EmptyState title="No exports in this view." detail="Queue one above or loosen the current filters." />
         )}

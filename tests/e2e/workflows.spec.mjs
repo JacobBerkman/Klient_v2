@@ -76,6 +76,7 @@ test('@release-blocking routed template detail supports preview and publish cont
   await page.goto(`/templates/${documentTemplate.id}`)
 
   await expect(page.getByRole('heading', { name: documentTemplate.name })).toBeVisible()
+  await expect(page.getByText('Template editor')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Mappings' })).toBeVisible()
   await page.getByRole('combobox', { name: 'Client' }).selectOption(client.id)
   await page.getByRole('combobox', { name: 'Submission' }).selectOption(submissionResponse.body.id)
@@ -138,6 +139,7 @@ test('@release-blocking routed portal token lifecycle saves draft and submits fo
 
   await page.goto(`/portal?token=${portalLink.token}`)
   await expect(page.getByRole('heading', { name: `${profile.firstName} ${profile.lastName}` })).toBeVisible()
+  await expect(page.getByText('Secure portal')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Complete a form' })).toBeVisible()
 
   await page.getByRole('textbox', { name: 'Goal' }).fill('Save this as a routed portal draft')

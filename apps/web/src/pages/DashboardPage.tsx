@@ -3,7 +3,19 @@ import { api, routes } from '../lib/client'
 import { formatDateTime, profileName } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import type { DashboardPayload } from '../lib/types'
-import { Card, ErrorState, LoadingState, MetricCard, PageSection } from '../components/ui'
+import {
+  ButtonLink,
+  Card,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  MetricCard,
+  PageHero,
+  PageSection,
+  StatGroup,
+  StatusBadge
+} from '../components/ui'
 
 export const handle = {
   title: 'Dashboard',
@@ -20,7 +32,27 @@ export function Component() {
 
   return (
     <div className="stack" data-testid="dashboard-page">
-      <div className="metrics-grid">
+      <PageHero
+        eyebrow="Firm overview"
+        title="Your advisory command center"
+        subtitle="A focused landing page for the work that needs attention next, with creation flows moved into the right routed screens."
+        actions={
+          <>
+            <ButtonLink variant="primary" to="/pipeline">
+              Open pipeline
+            </ButtonLink>
+            <ButtonLink to="/profiles">Create or review profiles</ButtonLink>
+          </>
+        }
+        meta={
+          <>
+            <StatusBadge status={`${data.stats.prospects} prospects`} />
+            <StatusBadge status={`${data.stats.clients} clients`} />
+          </>
+        }
+      />
+
+      <StatGroup>
         <MetricCard
           label="Total profiles"
           value={data.stats.totalProfiles}
@@ -29,25 +61,17 @@ export function Component() {
         <MetricCard label="Households" value={data.stats.households} hint="Linked relationship groups" />
         <MetricCard label="Forms" value={data.stats.forms} hint="Drafts and submissions" />
         <MetricCard label="Exports" value={data.stats.exports} hint="Queued and completed packages" />
-      </div>
+      </StatGroup>
 
       <div className="cards-grid">
         <Card className="section-card">
           <p className="eyebrow">Shortcuts</p>
           <h3>Jump into active work</h3>
-          <div className="compact-stack">
-            <Link className="text-link" to="/pipeline">
-              Open pipeline board
-            </Link>
-            <Link className="text-link" to="/profiles">
-              Review profiles
-            </Link>
-            <Link className="text-link" to="/forms">
-              Manage forms
-            </Link>
-            <Link className="text-link" to="/exports">
-              Queue exports
-            </Link>
+          <div className="actions-row">
+            <ButtonLink to="/pipeline">Pipeline board</ButtonLink>
+            <ButtonLink to="/profiles">Profiles</ButtonLink>
+            <ButtonLink to="/forms">Forms</ButtonLink>
+            <ButtonLink to="/exports">Exports</ButtonLink>
           </div>
         </Card>
 
@@ -79,13 +103,17 @@ export function Component() {
               ))}
             </div>
           ) : (
-            <p className="muted">No profiles yet.</p>
+            <EmptyState
+              title="No profiles yet."
+              detail="Add a prospect or client from Profiles to start filling the workspace."
+              action={<ButtonLink to="/profiles">Open profiles</ButtonLink>}
+            />
           )}
         </PageSection>
 
         <PageSection title="Recent activity" subtitle="Latest audit trail events flowing through the current backend.">
-          <div className="table-shell">
-            <table>
+          {data.recentAuditEvents.length ? (
+            <DataTable caption="Recent firm activity">
               <thead>
                 <tr>
                   <th>Action</th>
@@ -102,8 +130,10 @@ export function Component() {
                   </tr>
                 ))}
               </tbody>
-            </table>
-          </div>
+            </DataTable>
+          ) : (
+            <EmptyState title="No recent activity." detail="Audit events will appear here as the workspace changes." />
+          )}
         </PageSection>
       </div>
     </div>

@@ -13,7 +13,16 @@ import { formatDateTime, profileName } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import type { ClientWorkspacePayload, FormField, FormTemplate, PortalPayload } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { Badge, Card, EmptyState, ErrorState, InlineNotice, LoadingState, PageSection } from '../components/ui'
+import {
+  Card,
+  EmptyState,
+  ErrorState,
+  InlineNotice,
+  LoadingState,
+  PageHero,
+  PageSection,
+  StatusBadge
+} from '../components/ui'
 
 export const handle = {
   title: 'Portal',
@@ -203,6 +212,11 @@ export function Component() {
   if (data.mode === 'empty') {
     return (
       <div className="portal-shell">
+        <PageHero
+          eyebrow="Client workspace"
+          title="Portal"
+          subtitle="Use a secure token link or sign in as a client to access forms and uploads."
+        />
         <PageSection
           title="Portal access"
           subtitle="This route is for signed-in clients or token-based portal sessions."
@@ -218,16 +232,22 @@ export function Component() {
   return (
     <div className="portal-shell">
       <div className="stack">
-        <Card className="section-card">
-          <p className="eyebrow">{data.mode === 'client' ? 'Client workspace' : 'Secure portal'}</p>
-          <h1>{data.profileName}</h1>
-          <p className="muted">
-            {data.mode === 'client'
-              ? 'The client route is now a first-class screen instead of a nav item that falls through to placeholder text.'
-              : 'Shared portal sessions now resolve through the routed app instead of a standalone fallback page.'}
-          </p>
-          {statusMessage ? <InlineNotice tone="info">{statusMessage}</InlineNotice> : null}
-        </Card>
+        <PageHero
+          eyebrow={data.mode === 'client' ? 'Client workspace' : 'Secure portal'}
+          title={data.profileName}
+          subtitle={
+            data.mode === 'client'
+              ? 'Your forms, drafts, and uploads are organized in one workspace.'
+              : 'Your secure shared link opens the same polished routed workspace.'
+          }
+          meta={
+            <>
+              <StatusBadge status={`${data.templates.length} forms`} />
+              <StatusBadge status={`${data.uploads.length} uploads`} />
+            </>
+          }
+        />
+        {statusMessage ? <InlineNotice tone="info">{statusMessage}</InlineNotice> : null}
 
         <div className="split-grid">
           <PageSection title="Progress" subtitle="See what is complete, in draft, or still waiting.">
@@ -236,17 +256,7 @@ export function Component() {
                 {data.progress.map((entry, index) => (
                   <div key={`progress-${index}`} className="row-between">
                     <span>{String(entry.templateName || entry.templateId || `Template ${index + 1}`)}</span>
-                    <Badge
-                      tone={
-                        String(entry.status) === 'submitted'
-                          ? 'success'
-                          : String(entry.status) === 'draft'
-                            ? 'warning'
-                            : 'info'
-                      }
-                    >
-                      {String(entry.status || 'not_started')}
-                    </Badge>
+                    <StatusBadge status={String(entry.status || 'not_started')} />
                   </div>
                 ))}
               </div>
@@ -262,9 +272,7 @@ export function Component() {
                   <Card key={submission.id} className="section-card inset-card">
                     <div className="row-between">
                       <strong>{submission.templateId}</strong>
-                      <Badge tone={submission.status === 'submitted' ? 'success' : 'warning'}>
-                        {submission.status}
-                      </Badge>
+                      <StatusBadge status={submission.status} />
                     </div>
                     <p className="muted">Updated {formatDateTime(submission.updatedAt || submission.createdAt)}</p>
                   </Card>

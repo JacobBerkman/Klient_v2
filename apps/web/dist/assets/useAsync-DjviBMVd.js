@@ -1,1 +1,0 @@
-import{i as e,n as t}from"./jsx-runtime-CUBmso4R.js";var n=e(t(),1);function r(e,t){let[r,i]=(0,n.useState)({loading:!0,error:null,data:null});return(0,n.useEffect)(()=>{let t=!0;return i(e=>({...e,loading:!0,error:null})),e().then(e=>{t&&i({loading:!1,error:null,data:e})}).catch(e=>{t&&i({loading:!1,error:e,data:null})}),()=>{t=!1}},t),r}export{r as t};

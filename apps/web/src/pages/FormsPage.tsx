@@ -6,7 +6,19 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { FormSubmission, FormTemplate, Profile } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { Badge, Card, EmptyState, ErrorState, LoadingState, MetricCard, PageSection } from '../components/ui'
+import {
+  ActionPanel,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  Field,
+  LoadingState,
+  MetricCard,
+  PageHero,
+  PageSection,
+  StatGroup,
+  StatusBadge
+} from '../components/ui'
 
 export const handle = {
   title: 'Forms',
@@ -103,7 +115,19 @@ export function Component() {
 
   return (
     <div className="stack">
-      <div className="metrics-grid">
+      <PageHero
+        eyebrow="Forms"
+        title="Collect, review, and collaborate from one route"
+        subtitle="Templates, drafts, submissions, collaborators, and locks are separated from the shell and exposed where the work happens."
+        meta={
+          <>
+            <StatusBadge status={`${visibleDrafts.length} drafts`} />
+            <StatusBadge status={`${visibleSubmissions.length} submissions`} />
+          </>
+        }
+      />
+
+      <StatGroup>
         <MetricCard label="Form templates" value={data.templates.length} hint="Reusable intake and review schemas" />
         <MetricCard label="Drafts" value={visibleDrafts.length} hint="Collaborative work in progress" />
         <MetricCard label="Submissions" value={visibleSubmissions.length} hint="Saved and submitted records" />
@@ -112,14 +136,15 @@ export function Component() {
           value={profileFilter ? profileName(profileById.get(profileFilter)) : 'All profiles'}
           hint="Use profile-scoped deep links when needed"
         />
-      </div>
+      </StatGroup>
 
       <div className="split-grid">
-        <Card className="section-card">
-          <h3>Create submission</h3>
+        <ActionPanel
+          title="Create submission"
+          subtitle="Start a draft or create a submitted record for a selected client."
+        >
           <form className="form-grid" onSubmit={handleCreateSubmission}>
-            <label>
-              <span>Client</span>
+            <Field label="Client">
               <select
                 value={submissionForm.clientId}
                 onChange={(event) => setSubmissionForm((current) => ({ ...current, clientId: event.target.value }))}
@@ -132,9 +157,8 @@ export function Component() {
                   </option>
                 ))}
               </select>
-            </label>
-            <label>
-              <span>Template</span>
+            </Field>
+            <Field label="Template">
               <select
                 value={submissionForm.templateId}
                 onChange={(event) => setSubmissionForm((current) => ({ ...current, templateId: event.target.value }))}
@@ -147,9 +171,8 @@ export function Component() {
                   </option>
                 ))}
               </select>
-            </label>
-            <label>
-              <span>Initial state</span>
+            </Field>
+            <Field label="Initial state">
               <select
                 value={submissionForm.status}
                 onChange={(event) => setSubmissionForm((current) => ({ ...current, status: event.target.value }))}
@@ -157,32 +180,32 @@ export function Component() {
                 <option value="draft">Draft</option>
                 <option value="submitted">Submitted</option>
               </select>
-            </label>
+            </Field>
             <button type="submit" disabled={!hasGuard(user, 'canWriteForms')}>
               Create submission
             </button>
           </form>
-        </Card>
+        </ActionPanel>
 
-        <Card className="section-card">
-          <h3>Create form template</h3>
+        <ActionPanel
+          title="Create form template"
+          subtitle="Create a shell template now; detailed editing remains in form workflows."
+        >
           <form className="form-grid" onSubmit={handleCreateTemplate}>
-            <label>
-              <span>Name</span>
+            <Field label="Name">
               <input
                 value={templateForm.name}
                 onChange={(event) => setTemplateForm((current) => ({ ...current, name: event.target.value }))}
                 required
               />
-            </label>
-            <label>
-              <span>Description</span>
+            </Field>
+            <Field label="Description">
               <textarea
                 rows={3}
                 value={templateForm.description}
                 onChange={(event) => setTemplateForm((current) => ({ ...current, description: event.target.value }))}
               />
-            </label>
+            </Field>
             <button type="submit" disabled={!hasGuard(user, 'canWriteForms')}>
               Create form template
             </button>
@@ -190,33 +213,31 @@ export function Component() {
           <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
             {statusMessage || 'Form creation flows now live on form pages instead of the global shell.'}
           </p>
-        </Card>
+        </ActionPanel>
       </div>
 
       <PageSection title="Templates" subtitle="Current intake and workflow schemas available for draft creation.">
         {data.templates.length ? (
-          <div className="table-shell">
-            <table>
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th>Description</th>
-                  <th>Sections</th>
+          <DataTable caption="Available form templates">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Description</th>
+                <th>Sections</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.templates.map((template) => (
+                <tr key={template.id}>
+                  <td>
+                    <strong>{template.name}</strong>
+                  </td>
+                  <td>{template.description || 'No description'}</td>
+                  <td>{template.sections.length}</td>
                 </tr>
-              </thead>
-              <tbody>
-                {data.templates.map((template) => (
-                  <tr key={template.id}>
-                    <td>
-                      <strong>{template.name}</strong>
-                    </td>
-                    <td>{template.description || 'No description'}</td>
-                    <td>{template.sections.length}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </DataTable>
         ) : (
           <EmptyState
             title="No form templates yet."
@@ -231,49 +252,47 @@ export function Component() {
           subtitle="Lock and collaborator state are visible here, with full editing on the detail route."
         >
           {visibleDrafts.length ? (
-            <div className="table-shell">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Draft</th>
-                    <th>Client</th>
-                    <th>Lock</th>
-                    <th>Collaborators</th>
-                    <th>Updated</th>
-                    <th>Actions</th>
+            <DataTable caption="Draft submissions">
+              <thead>
+                <tr>
+                  <th>Draft</th>
+                  <th>Client</th>
+                  <th>Lock</th>
+                  <th>Collaborators</th>
+                  <th>Updated</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleDrafts.map((draft) => (
+                  <tr key={draft.id}>
+                    <td>
+                      <strong>{draft.templateId}</strong>
+                      <div className="muted">Revision {draft.revisionId || 1}</div>
+                    </td>
+                    <td>{profileName(profileById.get(draft.clientId))}</td>
+                    <td>
+                      {draft.lock ? (
+                        <StatusBadge status={`Locked by ${draft.lock.holderUserId}`} />
+                      ) : (
+                        <StatusBadge status="Open" />
+                      )}
+                    </td>
+                    <td>{collaboratorSummary(draft.collaborators)}</td>
+                    <td>{formatDateTime(draft.updatedAt || draft.createdAt)}</td>
+                    <td>
+                      <Link
+                        className="text-link"
+                        data-testid={`submission-link-${draft.id}`}
+                        to={`/forms/submissions/${draft.id}`}
+                      >
+                        Open draft
+                      </Link>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {visibleDrafts.map((draft) => (
-                    <tr key={draft.id}>
-                      <td>
-                        <strong>{draft.templateId}</strong>
-                        <div className="muted">Revision {draft.revisionId || 1}</div>
-                      </td>
-                      <td>{profileName(profileById.get(draft.clientId))}</td>
-                      <td>
-                        {draft.lock ? (
-                          <Badge tone="warning">Locked by {draft.lock.holderUserId}</Badge>
-                        ) : (
-                          <Badge tone="success">Open</Badge>
-                        )}
-                      </td>
-                      <td>{collaboratorSummary(draft.collaborators)}</td>
-                      <td>{formatDateTime(draft.updatedAt || draft.createdAt)}</td>
-                      <td>
-                        <Link
-                          className="text-link"
-                          data-testid={`submission-link-${draft.id}`}
-                          to={`/forms/submissions/${draft.id}`}
-                        >
-                          Open draft
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </DataTable>
           ) : (
             <EmptyState title="No drafts in scope." detail="Draft collaboration now has its own routed editing flow." />
           )}
@@ -284,36 +303,34 @@ export function Component() {
           subtitle="Shareable URLs support browser navigation, deep links, and direct review."
         >
           {visibleSubmissions.length ? (
-            <div className="table-shell">
-              <table>
-                <thead>
-                  <tr>
-                    <th>Template</th>
-                    <th>Client</th>
-                    <th>Status</th>
-                    <th>Updated</th>
-                    <th>Actions</th>
+            <DataTable caption="Submitted forms">
+              <thead>
+                <tr>
+                  <th>Template</th>
+                  <th>Client</th>
+                  <th>Status</th>
+                  <th>Updated</th>
+                  <th>Actions</th>
+                </tr>
+              </thead>
+              <tbody>
+                {visibleSubmissions.map((submission) => (
+                  <tr key={submission.id}>
+                    <td>{submission.templateId}</td>
+                    <td>{profileName(profileById.get(submission.clientId))}</td>
+                    <td>
+                      <StatusBadge status={submission.status} />
+                    </td>
+                    <td>{formatDateTime(submission.updatedAt || submission.createdAt)}</td>
+                    <td>
+                      <Link className="text-link" to={`/forms/submissions/${submission.id}`}>
+                        Open detail
+                      </Link>
+                    </td>
                   </tr>
-                </thead>
-                <tbody>
-                  {visibleSubmissions.map((submission) => (
-                    <tr key={submission.id}>
-                      <td>{submission.templateId}</td>
-                      <td>{profileName(profileById.get(submission.clientId))}</td>
-                      <td>
-                        <Badge tone={submission.status === 'submitted' ? 'success' : 'info'}>{submission.status}</Badge>
-                      </td>
-                      <td>{formatDateTime(submission.updatedAt || submission.createdAt)}</td>
-                      <td>
-                        <Link className="text-link" to={`/forms/submissions/${submission.id}`}>
-                          Open detail
-                        </Link>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+                ))}
+              </tbody>
+            </DataTable>
           ) : (
             <EmptyState
               title="No submissions in scope."

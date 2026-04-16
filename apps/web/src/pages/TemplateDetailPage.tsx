@@ -14,7 +14,17 @@ import type {
   TemplateVersionComparePayload
 } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { Badge, Card, EmptyState, ErrorState, InlineNotice, LoadingState, PageSection } from '../components/ui'
+import {
+  Card,
+  EmptyState,
+  ErrorState,
+  Field,
+  InlineNotice,
+  LoadingState,
+  PageHero,
+  PageSection,
+  StatusBadge
+} from '../components/ui'
 
 export const handle = {
   title: ({ templateId }: Record<string, string | undefined>) => `Template ${templateId || ''}`.trim(),
@@ -179,6 +189,18 @@ export function Component() {
 
   return (
     <div className="stack">
+      <PageHero
+        eyebrow="Template editor"
+        title={template.name}
+        subtitle="Preview mappings, publish with a changelog, compare versions, and revert from a dedicated editor route."
+        meta={
+          <>
+            <StatusBadge status={template.publishState || 'draft'} />
+            <StatusBadge status={`${template.mappings.length} mappings`} />
+            <StatusBadge status={`${data.versions.length} versions`} />
+          </>
+        }
+      />
       <PageSection
         title={template.name}
         subtitle={`${template.publishState || 'draft'} template. Updated ${formatDateTime(template.updatedAt || template.createdAt)}.`}
@@ -187,9 +209,7 @@ export function Component() {
           <Card className="section-card">
             <h3>Status</h3>
             <div className="compact-stack">
-              <Badge tone={template.publishState === 'published' ? 'success' : 'warning'}>
-                {template.publishState || 'draft'}
-              </Badge>
+              <StatusBadge status={template.publishState || 'draft'} />
               <p className="muted">File: {template.fileName}</p>
               <p className="muted">Version count: {data.versions.length}</p>
               <p className="muted">Mappings: {template.mappings.length}</p>
@@ -202,23 +222,21 @@ export function Component() {
               <button type="button" onClick={() => void handlePreviewMappings()}>
                 Run preview
               </button>
-              <label>
-                <span>Version bump</span>
+              <Field label="Version bump">
                 <input
                   value={publishForm.versionBump}
                   onChange={(event) => setPublishForm((current) => ({ ...current, versionBump: event.target.value }))}
                   placeholder="1.0.0"
                 />
-              </label>
-              <label>
-                <span>Publish changelog</span>
+              </Field>
+              <Field label="Publish changelog">
                 <textarea
                   rows={3}
                   value={publishForm.changelog}
                   onChange={(event) => setPublishForm((current) => ({ ...current, changelog: event.target.value }))}
                   placeholder="Describe this publish."
                 />
-              </label>
+              </Field>
               <button
                 type="button"
                 className="secondary-button"

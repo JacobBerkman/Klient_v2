@@ -6,7 +6,18 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { BoardPayload, Profile } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { Badge, Card, ErrorState, LoadingState, PageSection } from '../components/ui'
+import {
+  Badge,
+  ButtonLink,
+  DataTable,
+  EmptyState,
+  ErrorState,
+  LoadingState,
+  PageHero,
+  PageSection,
+  SegmentedControl,
+  Toolbar
+} from '../components/ui'
 
 export const handle = {
   title: 'Pipeline',
@@ -69,29 +80,35 @@ export function Component() {
 
   return (
     <div className="stack">
+      <PageHero
+        eyebrow="Pipeline"
+        title="Move prospects with less friction"
+        subtitle="Switch views, search quickly, and move stages from compact cards while preserving the current board API."
+        actions={
+          <>
+            <ButtonLink variant="primary" to="/profiles">
+              Add profile
+            </ButtonLink>
+            <ButtonLink to="/analytics">Review analytics</ButtonLink>
+          </>
+        }
+      />
       <PageSection
         title="Prospects and clients"
         subtitle="Switch between the stage-based prospect board and the active client roster."
         action={
-          <div className="actions-row">
-            <button
-              type="button"
-              className={viewMode === 'prospects' ? 'secondary-button' : 'ghost-button'}
-              onClick={() => startTransition(() => setViewMode('prospects'))}
-            >
-              Prospects
-            </button>
-            <button
-              type="button"
-              className={viewMode === 'clients' ? 'secondary-button' : 'ghost-button'}
-              onClick={() => startTransition(() => setViewMode('clients'))}
-            >
-              Clients
-            </button>
-          </div>
+          <SegmentedControl
+            label="Pipeline view"
+            value={viewMode}
+            options={[
+              { label: 'Prospects', value: 'prospects' },
+              { label: 'Clients', value: 'clients' }
+            ]}
+            onChange={(value) => startTransition(() => setViewMode(value as typeof viewMode))}
+          />
         }
       >
-        <div className="toolbar">
+        <Toolbar label="Pipeline filters">
           <input
             aria-label="Search pipeline"
             placeholder="Search by name, email, or phone"
@@ -99,7 +116,7 @@ export function Component() {
             onChange={(event) => setSearch(event.target.value)}
           />
           {moveMessage ? <Badge tone="info">{moveMessage}</Badge> : null}
-        </div>
+        </Toolbar>
 
         {viewMode === 'prospects' ? (
           <div className="kanban-grid">
@@ -122,11 +139,13 @@ export function Component() {
                   setDropStage('')
                 }}
               >
-                <div className="row-between">
-                  <strong>{column.label}</strong>
-                  <Badge tone={column.cards.length ? 'info' : 'neutral'}>{column.cards.length}</Badge>
+                <div className="kanban-column-header">
+                  <div className="row-between">
+                    <strong>{column.label}</strong>
+                    <Badge tone={column.cards.length ? 'info' : 'neutral'}>{column.cards.length}</Badge>
+                  </div>
+                  <p className="muted compact">Drop cards here or use each card stage selector.</p>
                 </div>
-                <p className="muted">Stage `{column.stage}`</p>
                 {column.cards.map((card) => (
                   <article
                     key={card.id}
@@ -164,41 +183,42 @@ export function Component() {
                     </div>
                   </article>
                 ))}
+                {!column.cards.length ? (
+                  <EmptyState title="No cards here." detail={`No matching prospects are in ${column.label}.`} />
+                ) : null}
               </div>
             ))}
           </div>
         ) : (
-          <div className="table-shell">
-            <table>
-              <thead>
-                <tr>
-                  <th>Client</th>
-                  <th>Household</th>
-                  <th>Stage</th>
-                  <th>Updated</th>
-                  <th>Actions</th>
+          <DataTable caption="Active clients">
+            <thead>
+              <tr>
+                <th>Client</th>
+                <th>Household</th>
+                <th>Stage</th>
+                <th>Updated</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredClients.map((client) => (
+                <tr key={client.id}>
+                  <td>
+                    <strong>{profileName(client)}</strong>
+                    <div className="muted">{client.email || 'No email on file'}</div>
+                  </td>
+                  <td>{client.householdId || 'Unlinked'}</td>
+                  <td>{client.stage || 'Client'}</td>
+                  <td>{formatDateTime(client.updatedAt || client.createdAt)}</td>
+                  <td>
+                    <Link className="text-link" to={`/profiles/${client.id}`}>
+                      Open profile
+                    </Link>
+                  </td>
                 </tr>
-              </thead>
-              <tbody>
-                {filteredClients.map((client) => (
-                  <tr key={client.id}>
-                    <td>
-                      <strong>{profileName(client)}</strong>
-                      <div className="muted">{client.email || 'No email on file'}</div>
-                    </td>
-                    <td>{client.householdId || 'Unlinked'}</td>
-                    <td>{client.stage || 'Client'}</td>
-                    <td>{formatDateTime(client.updatedAt || client.createdAt)}</td>
-                    <td>
-                      <Link className="text-link" to={`/profiles/${client.id}`}>
-                        Open profile
-                      </Link>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+              ))}
+            </tbody>
+          </DataTable>
         )}
       </PageSection>
     </div>

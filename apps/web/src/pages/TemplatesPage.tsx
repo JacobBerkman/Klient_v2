@@ -6,7 +6,20 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { DocumentTemplate } from '../lib/types'
 import { useAuth } from '../app/auth'
-import { Badge, Card, EmptyState, ErrorState, LoadingState, MetricCard, PageSection } from '../components/ui'
+import {
+  ActionPanel,
+  ButtonLink,
+  Card,
+  EmptyState,
+  ErrorState,
+  Field,
+  LoadingState,
+  MetricCard,
+  PageHero,
+  PageSection,
+  StatGroup,
+  StatusBadge
+} from '../components/ui'
 
 export const handle = {
   title: 'Templates',
@@ -77,7 +90,14 @@ export function Component() {
 
   return (
     <div className="stack">
-      <div className="metrics-grid">
+      <PageHero
+        eyebrow="Template library"
+        title="Build and publish documents without leaving the routed app"
+        subtitle="Create, auto-build, map, preview, publish, revert, and export from dedicated template routes."
+        actions={<ButtonLink to="/exports">Open exports</ButtonLink>}
+      />
+
+      <StatGroup>
         <MetricCard label="Templates" value={data.length} hint="Document-ready templates" />
         <MetricCard
           label="Published"
@@ -94,60 +114,59 @@ export function Component() {
           value={data.reduce((total, template) => total + (template.mappings?.length || 0), 0)}
           hint="Current mapped fields across the library"
         />
-      </div>
+      </StatGroup>
 
       <div className="split-grid">
-        <Card className="section-card">
-          <h3>Create document template</h3>
+        <ActionPanel
+          title="Create document template"
+          subtitle="Seed a template manually when extracted fields are already known."
+        >
           <form className="form-grid" onSubmit={handleCreateTemplate}>
-            <label>
-              <span>Name</span>
+            <Field label="Name">
               <input
                 value={createForm.name}
                 onChange={(event) => setCreateForm((current) => ({ ...current, name: event.target.value }))}
                 required
               />
-            </label>
-            <label>
-              <span>File name</span>
+            </Field>
+            <Field label="File name">
               <input
                 value={createForm.fileName}
                 onChange={(event) => setCreateForm((current) => ({ ...current, fileName: event.target.value }))}
               />
-            </label>
-            <label>
-              <span>Extracted fields</span>
+            </Field>
+            <Field label="Extracted fields" hint="Comma-separated field ids from the document.">
               <input
                 value={createForm.extractedFields}
                 onChange={(event) => setCreateForm((current) => ({ ...current, extractedFields: event.target.value }))}
               />
-            </label>
+            </Field>
             <button type="submit" disabled={!hasGuard(user, 'canEditTemplate')}>
               Create template
             </button>
           </form>
-        </Card>
+        </ActionPanel>
 
-        <Card className="section-card">
-          <h3>Auto-build from PDF</h3>
+        <ActionPanel
+          title="Auto-build from PDF"
+          subtitle="Upload a PDF and let the existing backend infer fields and mappings."
+        >
           <form className="form-grid" onSubmit={handleAutoBuild}>
-            <label>
-              <span>Template name</span>
+            <Field label="Template name">
               <input
                 value={autoBuildName}
                 onChange={(event) => setAutoBuildName(event.target.value)}
                 placeholder="Optional override"
               />
-            </label>
-            <label>
-              <span>PDF file</span>
+            </Field>
+            <Field label="PDF file">
               <input
                 type="file"
                 accept="application/pdf,.pdf"
                 onChange={(event) => setAutoBuildFile(event.target.files?.[0] || null)}
                 required
               />
-            </label>
+            </Field>
             <button type="submit" disabled={!hasGuard(user, 'canEditTemplate')}>
               Run auto-build
             </button>
@@ -155,7 +174,7 @@ export function Component() {
           <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
             {statusMessage || 'Auto-build stays intact, but now starts from a real templates screen.'}
           </p>
-        </Card>
+        </ActionPanel>
       </div>
 
       <PageSection
@@ -171,9 +190,7 @@ export function Component() {
                     <p className="eyebrow">Template</p>
                     <h3>{template.name}</h3>
                   </div>
-                  <Badge tone={template.publishState === 'published' ? 'success' : 'warning'}>
-                    {template.publishState || 'draft'}
-                  </Badge>
+                  <StatusBadge status={template.publishState || 'draft'} />
                 </div>
                 <p className="muted">File: {template.fileName}</p>
                 <p className="muted">
