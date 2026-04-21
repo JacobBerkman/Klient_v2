@@ -94,6 +94,12 @@ export class StoreTemplateRepository extends TemplateRepository {
   updateTemplateMappings(user, templateId, mappings, input) {
     return this.store.updateTemplateMappings(user, templateId, mappings, input)
   }
+  getTemplateSourcePdf(user, templateId) {
+    return this.store.getTemplateSourcePdf(user, templateId)
+  }
+  updateTemplatePdfLayout(user, templateId, input) {
+    return this.store.updateTemplatePdfLayout(user, templateId, input)
+  }
   publishTemplate(user, templateId, input) {
     return this.store.publishTemplate(user, templateId, input)
   }

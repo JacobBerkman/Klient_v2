@@ -1,15 +1,5 @@
 import { assert, createTestContext } from './test-harness.mjs'
-import { PDFDocument } from 'pdf-lib'
-
-async function createTemplateIngestionPdf() {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([612, 792])
-  const form = pdf.getForm()
-  form.createTextField('client_name').addToPage(page, { x: 72, y: 700, width: 240, height: 24 })
-  form.createTextField('dependent_1_name').addToPage(page, { x: 72, y: 660, width: 240, height: 24 })
-  form.createTextField('dependent_2_name').addToPage(page, { x: 72, y: 620, width: 240, height: 24 })
-  return pdf.save()
-}
+import { createTemplateWorkflowPdf, pdfBytesForJson } from './pdf-fixtures.mjs'
 
 const context = await createTestContext('templates')
 
@@ -17,24 +7,24 @@ try {
   await context.login('admin@demo.test', 'ChangeMe123!', 'admin')
   const headers = context.authHeaders('admin')
 
-  const sourcePdf = await createTemplateIngestionPdf()
+  const sourcePdf = await createTemplateWorkflowPdf()
   const generated = await context.requestAs('admin', '/api/templates/auto-build', {
     method: 'POST',
     headers,
     body: JSON.stringify({
       name: 'PDF Auto Generated Intake',
       fileName: 'pdf-auto-generated-intake.pdf',
-      fileBytes: Array.from(sourcePdf)
+      fileBytes: pdfBytesForJson(sourcePdf)
     })
   })
   const formTemplatesAfterAutoBuild = await context.requestAs('admin', '/api/forms/templates', { headers })
   const generatedForm = formTemplatesAfterAutoBuild.find((entry) => entry.id === generated.linkedFormTemplateId)
-  assert(generated.extraction?.status === 'success', 'PDF auto-build should report successful extraction')
+  assert(generated.extraction?.status === 'completed', 'PDF auto-build should report completed extraction')
   assert(
     Array.isArray(generated.extraction?.fields) && generated.extraction.fields.length >= 3,
     'PDF extracted fields missing'
   )
-  assert(generated.sourceArtifact?.objectKey, 'PDF auto-build should persist source artifact metadata')
+  assert(generated.sourceArtifact?.key, 'PDF auto-build should persist source artifact key metadata')
   assert(generated.linkedFormTemplateId, 'PDF auto-build should create a linked form template')
   assert(
     generatedForm?.generatedFromDocumentTemplateId === generated.id,
@@ -51,6 +41,11 @@ try {
         0
     ) >= 1,
     'PDF auto-build summary should include repeatable section count'
+  )
+  assert(generated.exportReadiness?.status === 'ready', 'PDF auto-build should mark source-backed export ready')
+  assert(
+    !generated.extraction?.diagnostics?.some((entry) => String(entry.severity || '').toLowerCase() === 'error'),
+    'Successful PDF auto-build should not include error diagnostics'
   )
 
   const template = await context.requestAs('admin', '/api/templates', {

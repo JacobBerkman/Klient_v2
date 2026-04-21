@@ -139,6 +139,14 @@ db.exec(`
     consumed_at TEXT
   );
 
+  CREATE TABLE IF NOT EXISTS export_worker_heartbeats (
+    worker_id TEXT PRIMARY KEY,
+    started_at TEXT NOT NULL,
+    last_heartbeat_at TEXT NOT NULL,
+    mode TEXT,
+    payload TEXT NOT NULL
+  );
+
 `)
 
 function hasColumn(table, column) {
@@ -985,6 +993,70 @@ export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs
   }
 }
 
+export function recordExportWorkerHeartbeat(workerId, payload = {}) {
+  const normalizedWorkerId = String(workerId || 'worker').trim() || 'worker'
+  const timestamp = nowIso()
+  const existing = db
+    .prepare('SELECT started_at AS startedAt FROM export_worker_heartbeats WHERE worker_id = ?')
+    .get(normalizedWorkerId)
+  db.prepare(
+    `
+    INSERT INTO export_worker_heartbeats (worker_id, started_at, last_heartbeat_at, mode, payload)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(worker_id) DO UPDATE SET
+      last_heartbeat_at = excluded.last_heartbeat_at,
+      mode = excluded.mode,
+      payload = excluded.payload
+  `
+  ).run(
+    normalizedWorkerId,
+    existing?.startedAt || timestamp,
+    timestamp,
+    String(payload.mode || 'companion'),
+    JSON.stringify({ ...payload, workerId: normalizedWorkerId, lastHeartbeatAt: timestamp })
+  )
+  return { workerId: normalizedWorkerId, startedAt: existing?.startedAt || timestamp, lastHeartbeatAt: timestamp }
+}
+
+export function readExportWorkerHeartbeat({ staleAfterMs = 30_000 } = {}) {
+  const rows = db
+    .prepare(
+      `
+    SELECT worker_id AS workerId, started_at AS startedAt, last_heartbeat_at AS lastHeartbeatAt, mode, payload
+    FROM export_worker_heartbeats
+    ORDER BY last_heartbeat_at DESC
+  `
+    )
+    .all()
+  const workers = rows.map((row) => {
+    let payload = {}
+    try {
+      payload = row.payload ? JSON.parse(row.payload) : {}
+    } catch {
+      payload = {}
+    }
+    const ageMs = Math.max(0, Date.now() - Number(new Date(row.lastHeartbeatAt || 0)))
+    return {
+      ...payload,
+      workerId: row.workerId,
+      startedAt: row.startedAt,
+      lastHeartbeatAt: row.lastHeartbeatAt,
+      mode: row.mode || payload.mode || 'companion',
+      ageMs,
+      observedRecently: ageMs <= staleAfterMs
+    }
+  })
+  const latest = workers[0] || null
+  return {
+    workerMode: 'companion',
+    manualProcessEndpointDeprecated: true,
+    lastWorkerHeartbeatAt: latest?.lastHeartbeatAt || null,
+    workerObservedRecently: latest?.observedRecently === true,
+    staleAfterMs,
+    workers
+  }
+}
+
 export async function processExportQueueTickAsync({
   workerId = 'worker',
   limit = 5,
@@ -1123,6 +1195,8 @@ export function readExportWorkerStatus() {
     )
     .get(nowIso()).count
 
+  const heartbeat = readExportWorkerHeartbeat()
+  const pending = (byStatus.queued || 0) + (byStatus.retrying || 0)
   return {
     queued: (byStatus.queued || 0) + (byStatus.retrying || 0),
     running: byStatus.running || 0,
@@ -1136,7 +1210,13 @@ export function readExportWorkerStatus() {
     activeLeases,
     retryCounts,
     byStatus,
-    latestJob: latest?.payload ? JSON.parse(latest.payload) : null
+    latestJob: latest?.payload ? JSON.parse(latest.payload) : null,
+    workerMode: heartbeat.workerMode,
+    manualProcessEndpointDeprecated: heartbeat.manualProcessEndpointDeprecated,
+    lastWorkerHeartbeatAt: heartbeat.lastWorkerHeartbeatAt,
+    workerObservedRecently: heartbeat.workerObservedRecently,
+    pendingWithoutWorker: pending > 0 && !heartbeat.workerObservedRecently,
+    workerHeartbeat: heartbeat
   }
 }
 

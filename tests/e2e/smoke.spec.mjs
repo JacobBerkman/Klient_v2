@@ -207,11 +207,21 @@ test('@release-blocking stage movement and export download work in the routed pr
   await page.getByTestId('create-export-submit').click()
   await expect(page.getByText('Export queued.')).toBeVisible()
 
-  await page.getByRole('button', { name: 'Process queue now' }).click()
-  await expect(page.getByText('Queued export processing triggered.')).toBeVisible()
+  await expect(page.getByText('Queued, waiting for worker').first()).toBeVisible()
+  await expect
+    .poll(
+      async () => {
+        const response = await apiFromPage(page, 'GET', '/api/exports?sort=updatedAt_desc', undefined, auth)
+        const job = response.body.find((entry) => entry.templateId === documentTemplate.id)
+        return job?.status || 'missing'
+      },
+      { timeout: 15_000 }
+    )
+    .toBe('completed')
+  await page.reload()
 
   const downloadLink = page.getByRole('link', { name: 'Download' }).first()
-  await expect(downloadLink).toBeVisible()
+  await expect(downloadLink).toBeVisible({ timeout: 15_000 })
   const downloadHref = await downloadLink.getAttribute('href')
   expect(downloadHref).toBeTruthy()
   const downloadResponse = await page.request.get(downloadHref)

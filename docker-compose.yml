@@ -2,7 +2,7 @@ services:
   kinetic-klient:
     build: .
     ports:
-      - "3000:3000"
+      - '3000:3000'
     read_only: true
     tmpfs:
       - /tmp
@@ -60,9 +60,70 @@ services:
       SAML_ISSUER: ${SAML_ISSUER:-}
       SAML_CERT: ${SAML_CERT:-}
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/health"]
+      test: ['CMD', 'wget', '-qO-', 'http://127.0.0.1:3000/health']
       interval: 30s
       timeout: 5s
       retries: 3
       start_period: 10s
+    restart: unless-stopped
+
+  kinetic-klient-export-worker:
+    build: .
+    command: ['node', 'scripts/export-worker.mjs']
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/tmp
+    volumes:
+      - ./data:/app/data
+    environment:
+      NODE_ENV: production
+      APP_SECRET: ${APP_SECRET}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      EXPORT_WORKER_ID: ${EXPORT_WORKER_ID:-compose-export-worker}
+      EXPORT_WORKER_POLL_MS: ${EXPORT_WORKER_POLL_MS:-500}
+      EXPORT_WORKER_LEASE_MS: ${EXPORT_WORKER_LEASE_MS:-15000}
+      EXPORT_WORKER_BATCH_SIZE: ${EXPORT_WORKER_BATCH_SIZE:-5}
+
+      AUTH_PROVIDER: ${AUTH_PROVIDER}
+      ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS: ${ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS:-}
+
+      KLIENT_OPS_TOKEN_ACTIVE: ${KLIENT_OPS_TOKEN_ACTIVE:-}
+      KLIENT_OPS_TOKEN_PREVIOUS: ${KLIENT_OPS_TOKEN_PREVIOUS:-}
+      KLIENT_OPS_TOKENS: ${KLIENT_OPS_TOKENS:-}
+      KLIENT_OPS_TOKEN: ${KLIENT_OPS_TOKEN}
+
+      PII_KEY_PROVIDER: ${PII_KEY_PROVIDER:-env}
+      PII_ACTIVE_KEY_ID: ${PII_ACTIVE_KEY_ID:-}
+      PII_KEYRING: ${PII_KEYRING:-}
+      PII_KMS_KEY_ALIAS: ${PII_KMS_KEY_ALIAS:-}
+      PII_KMS_ACTIVE_KEY_ID: ${PII_KMS_ACTIVE_KEY_ID:-}
+      PII_KMS_KEYRING: ${PII_KMS_KEYRING:-}
+
+      STORAGE_PROVIDER: ${STORAGE_PROVIDER:-local}
+      STORAGE_LOCAL_DIR: ${STORAGE_LOCAL_DIR:-}
+      STORAGE_BUCKET_DOCUMENTS: ${STORAGE_BUCKET_DOCUMENTS:-}
+      STORAGE_BUCKET_EXPORTS: ${STORAGE_BUCKET_EXPORTS:-}
+      STORAGE_ENDPOINT: ${STORAGE_ENDPOINT:-}
+      STORAGE_REGION: ${STORAGE_REGION:-}
+      STORAGE_ACCESS_KEY_ID: ${STORAGE_ACCESS_KEY_ID:-}
+      STORAGE_SECRET_ACCESS_KEY: ${STORAGE_SECRET_ACCESS_KEY:-}
+      STORAGE_FORCE_PATH_STYLE: ${STORAGE_FORCE_PATH_STYLE:-}
+      STORAGE_EXPORT_TTL_DAYS: ${STORAGE_EXPORT_TTL_DAYS:-}
+      STORAGE_EXPORT_ARCHIVE_AFTER_DAYS: ${STORAGE_EXPORT_ARCHIVE_AFTER_DAYS:-}
+      STORAGE_EXPORT_PURGE_AFTER_DAYS: ${STORAGE_EXPORT_PURGE_AFTER_DAYS:-}
+      STORAGE_UPLOAD_TTL_DAYS: ${STORAGE_UPLOAD_TTL_DAYS:-}
+      STORAGE_UPLOAD_ARCHIVE_AFTER_DAYS: ${STORAGE_UPLOAD_ARCHIVE_AFTER_DAYS:-}
+      STORAGE_UPLOAD_PURGE_AFTER_DAYS: ${STORAGE_UPLOAD_PURGE_AFTER_DAYS:-}
+
+      OIDC_ISSUER_URL: ${OIDC_ISSUER_URL:-}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+      OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+      SAML_ENTRY_POINT: ${SAML_ENTRY_POINT:-}
+      SAML_ISSUER: ${SAML_ISSUER:-}
+      SAML_CERT: ${SAML_CERT:-}
+    depends_on:
+      kinetic-klient:
+        condition: service_started
     restart: unless-stopped

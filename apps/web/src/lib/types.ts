@@ -360,6 +360,21 @@ export interface DocumentTemplate {
     message?: string
     [key: string]: unknown
   } | null
+  pdfLayout?: {
+    fields?: Array<{
+      fieldName?: string
+      pageIndex?: number
+      x?: number
+      y?: number
+      width?: number
+      height?: number
+      locked?: boolean
+      [key: string]: unknown
+    }>
+    updatedAt?: string
+    updatedByUserId?: string
+    [key: string]: unknown
+  } | null
   versions: TemplateVersion[]
   versionHash?: string | null
   publishState?: string
@@ -418,6 +433,11 @@ export interface QueueHealthPayload {
     stalled?: number
     readyNow?: number
     activeLeasesCount?: number
+    workerMode?: string
+    manualProcessEndpointDeprecated?: boolean
+    lastWorkerHeartbeatAt?: string | null
+    workerObservedRecently?: boolean
+    pendingWithoutWorker?: boolean
     retries?: Record<string, unknown>
     machineState?: Record<string, unknown>
     [key: string]: unknown

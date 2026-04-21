@@ -59,6 +59,8 @@ export const routes = {
   documentTemplates: () => '/api/templates',
   documentTemplateAutoBuild: () => '/api/templates/auto-build',
   documentTemplateMappings: (templateId: string) => joinPath('/api/templates', templateId, 'mappings'),
+  documentTemplateSourcePdf: (templateId: string) => joinPath('/api/templates', templateId, 'source-pdf'),
+  documentTemplatePdfLayout: (templateId: string) => joinPath('/api/templates', templateId, 'pdf-layout'),
   documentTemplateMappingsPreview: (templateId: string) =>
     joinPath('/api/templates', templateId, 'mappings', 'preview'),
   documentTemplatePublish: (templateId: string) => joinPath('/api/templates', templateId, 'publish'),

@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import {
   closeDatabase,
   processExportQueueTickAsync,
+  recordExportWorkerHeartbeat,
   readExportWorkerStatus,
   readStorageHealth
 } from '../apps/api/src/storage.mjs'
@@ -64,8 +65,9 @@ async function processJob(job) {
 }
 
 async function runTick() {
+  recordExportWorkerHeartbeat(workerId, { mode: 'companion', pollMs, leaseMs, batchSize, runOnce })
   let crashed = false
-  return processExportQueueTickAsync({
+  const result = await processExportQueueTickAsync({
     workerId,
     limit: batchSize,
     leaseMs,
@@ -78,6 +80,15 @@ async function runTick() {
     },
     processor: processJob
   })
+  recordExportWorkerHeartbeat(workerId, {
+    mode: 'companion',
+    pollMs,
+    leaseMs,
+    batchSize,
+    runOnce,
+    lastResult: result
+  })
+  return result
 }
 
 function toQueueMachineState(queue = {}) {

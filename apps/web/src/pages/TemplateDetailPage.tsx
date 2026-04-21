@@ -248,8 +248,14 @@ export function Component() {
               <p className="muted">
                 Size: {template.sourceArtifact?.sizeBytes ? `${template.sourceArtifact.sizeBytes} bytes` : 'Unknown'}
               </p>
+              <p className="muted">Object key: {template.sourceArtifact?.key || 'Unavailable'}</p>
               <p className="muted">Checksum: {template.sourceArtifact?.checksum || 'Unavailable'}</p>
               <StatusBadge status={template.sourceArtifact ? 'source pdf persisted' : 'summary fallback only'} />
+              {template.sourceArtifact ? (
+                <Link className="text-link" to={`/templates/${template.id}/mapper`}>
+                  Open visual mapper
+                </Link>
+              ) : null}
             </div>
           </Card>
 

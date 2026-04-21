@@ -35,6 +35,16 @@ interface ExportsPageData {
   queueHealth: QueueHealthPayload | null
 }
 
+function exportStateCopy(job: ExportJob) {
+  const status = String(job.status || '').toLowerCase()
+  if (status === 'completed') return job.artifactReady ? 'Completed and downloadable' : 'Completed, artifact pending'
+  if (status === 'running' || status === 'processing') return 'Processing with export worker'
+  if (status === 'failed') return job.retryState?.eligible ? 'Failed, retry available' : 'Failed, operator review'
+  if (status === 'dead-letter') return 'Dead-letter, operator action'
+  if (status === 'retrying') return 'Retry scheduled'
+  return 'Queued, waiting for worker'
+}
+
 export function Component() {
   const { user } = useAuth()
   const [searchParams] = useSearchParams()
@@ -171,6 +181,7 @@ export function Component() {
           <form className="form-grid" onSubmit={handleCreateExport}>
             <Field label="Template">
               <select
+                data-testid="create-export-template"
                 value={createForm.templateId}
                 onChange={(event) => setCreateForm((current) => ({ ...current, templateId: event.target.value }))}
                 required
@@ -185,6 +196,7 @@ export function Component() {
             </Field>
             <Field label="Client">
               <select
+                data-testid="create-export-client"
                 value={createForm.clientId}
                 onChange={(event) => setCreateForm((current) => ({ ...current, clientId: event.target.value }))}
                 required
@@ -199,6 +211,7 @@ export function Component() {
             </Field>
             <Field label="Submission" hint="Optional, but keeps the artifact tied to a specific form.">
               <select
+                data-testid="create-export-submission"
                 value={createForm.submissionId}
                 onChange={(event) => setCreateForm((current) => ({ ...current, submissionId: event.target.value }))}
               >
@@ -212,6 +225,7 @@ export function Component() {
             </Field>
             <Field label="Artifact type">
               <select
+                data-testid="create-export-type"
                 value={createForm.type}
                 onChange={(event) => setCreateForm((current) => ({ ...current, type: event.target.value }))}
               >
@@ -227,7 +241,7 @@ export function Component() {
 
         <ActionPanel
           title="Filters and runtime"
-          subtitle="Narrow the queue and trigger processing without opening diagnostics."
+          subtitle="Narrow the queue and inspect companion-worker state without opening diagnostics."
         >
           <div className="form-grid">
             <Field label="Status">
@@ -253,7 +267,7 @@ export function Component() {
             </Field>
             {hasGuard(user, 'canProcessExports') ? (
               <button type="button" className="secondary-button" onClick={() => void handleProcessQueue()}>
-                Process queue now
+                Run recovery tick
               </button>
             ) : (
               <Link className="text-link" to="/admin/ops">
@@ -263,10 +277,13 @@ export function Component() {
           </div>
           <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
             {statusMessage ||
-              'Queue health remains on the current backend and is surfaced here without changing the export runtime.'}
+              'Exports are processed by the companion worker. The manual tick is a deprecated recovery path for admins.'}
           </p>
           {data.queueHealth ? (
             <div className="pill-list">
+              <StatusBadge
+                status={data.queueHealth.queue?.workerObservedRecently ? 'Worker observed' : 'Worker not observed'}
+              />
               <StatusBadge status={`Queued ${String(data.queueHealth.queue?.pending || 0)}`} />
               <StatusBadge status={`Running ${String(data.queueHealth.queue?.running || 0)}`} />
               <StatusBadge status={`Failed ${String(data.queueHealth.queue?.failed || 0)}`} />
@@ -311,6 +328,7 @@ export function Component() {
                   </td>
                   <td>
                     <StatusBadge status={job.statusLabel || job.status || 'queued'} />
+                    <div className="muted">{exportStateCopy(job)}</div>
                     {job.artifact?.diagnostics?.length ? (
                       <div className="muted">{job.artifact.diagnostics.length} renderer diagnostics</div>
                     ) : null}

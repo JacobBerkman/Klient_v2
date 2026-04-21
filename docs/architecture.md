@@ -76,7 +76,8 @@ Each module exposes `service.mjs` and is composed in `apps/api/src/modules/index
 - Current stateful runtime remains in `apps/api/src/store.mjs`.
 - Repository adapters bridge module services to legacy state logic during migration.
 - Export queue orchestration (queue list/create/retry/process + bulk retry + health snapshot) is now extracted from `store.mjs` into `modules/exports/store-repository.mjs`, with `store.mjs` retaining thin permission-checked delegation methods for backward compatibility.
-- Intentional compatibility layer retained: `POST /api/exports/process` remains available as a controlled fallback for operator-driven queue drain/recovery, while release-blocking validation now executes the canonical `scripts/export-worker.mjs` worker path.
+- Export processing uses a companion worker model. The API enqueues jobs, `scripts/export-worker.mjs` drains them in local/dev/prod, and queue diagnostics expose `workerMode`, `lastWorkerHeartbeatAt`, `workerObservedRecently`, and `pendingWithoutWorker`.
+- Intentional compatibility layer retained: `POST /api/exports/process` remains available as a deprecated controlled fallback for operator-driven queue drain/recovery, while release-blocking validation now executes the canonical `scripts/export-worker.mjs` worker path.
 
 ### Template ingestion and export rendering
 
@@ -86,6 +87,7 @@ Each module exposes `service.mjs` and is composed in `apps/api/src/modules/index
 - Failed extraction is explicit: malformed PDFs, no AcroForm, no fields, and ambiguous repeaters are surfaced as diagnostics; the system does not create a fake linked form on failure.
 - Export rendering runs through `modules/exports/store-repository.mjs` and `export-artifact.mjs`. Source-backed PDF jobs fill the uploaded AcroForm template via `export-renderers/pdf-template.mjs`; XLSX jobs generate structured advisor workbooks.
 - Completed export bytes are persisted to object storage metadata before a job is marked downloadable. Download routes serve persisted bytes, with compatibility re-rendering only for old completed jobs that have no object pointer.
+- `/templates/:templateId/mapper` is an additive AcroForm visual mapper. It serves PDF preview, extracted-field overlays, and versioned/audited `pdfLayout` placement edits without replacing the AcroForm-driven export renderer.
 
 ## Incremental migration delta (Task 9)
 

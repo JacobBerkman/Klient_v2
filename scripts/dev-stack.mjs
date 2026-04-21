@@ -81,10 +81,28 @@ const web = startProcess({
 children.add(api)
 children.add(web)
 
+let worker = null
+if (process.env.DEV_EXPORT_WORKER !== '0') {
+  worker = startProcess({
+    name: 'exports',
+    command: nodeCommand,
+    args: ['--env-file=.env', 'scripts/export-worker.mjs'],
+    env: {
+      ...process.env,
+      EXPORT_WORKER_ID: process.env.EXPORT_WORKER_ID || 'dev-stack-export-worker',
+      EXPORT_WORKER_POLL_MS: process.env.EXPORT_WORKER_POLL_MS || '500'
+    }
+  })
+  children.add(worker)
+} else {
+  process.stdout.write('[exports] disabled by DEV_EXPORT_WORKER=0\n')
+}
+
 for (const [name, child] of [
   ['api', api],
-  ['web', web]
-]) {
+  ['web', web],
+  ['exports', worker]
+].filter((entry) => Boolean(entry[1]))) {
   child.on('exit', (code, signal) => {
     children.delete(child)
     if (shuttingDown) return

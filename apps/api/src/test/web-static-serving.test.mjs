@@ -45,7 +45,13 @@ test('built React app is the canonical static shell for routed deep links', asyn
   const baseUrl = `http://${address.address}:${address.port}`
 
   try {
-    for (const path of ['/dashboard', '/profiles/profile-123', '/forms/submissions/submission-123', '/portal']) {
+    for (const path of [
+      '/dashboard',
+      '/profiles/profile-123',
+      '/forms/submissions/submission-123',
+      '/templates/template-123/mapper',
+      '/portal'
+    ]) {
       const { response, text } = await requestText(baseUrl, path)
       assert.equal(response.status, 200, `${path} should be served as an SPA route`)
       assert.match(response.headers.get('content-type') || '', /text\/html/)

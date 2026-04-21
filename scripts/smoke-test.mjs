@@ -3,7 +3,7 @@ import { createEvidenceRecorder } from './release-evidence.mjs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PDFDocument } from 'pdf-lib'
+import { createTemplateWorkflowPdf, pdfBytesForJson } from './pdf-fixtures.mjs'
 
 const evidence = createEvidenceRecorder({
   gate: 'smoke',
@@ -12,7 +12,6 @@ const evidence = createEvidenceRecorder({
   command: 'npm run test:smoke'
 })
 
-const context = await createTestContext('smoke')
 const workerScript = fileURLToPath(new URL('./export-worker.mjs', import.meta.url))
 
 function wait(ms) {
@@ -40,15 +39,6 @@ function runWorkerTick(ctx, extraEnv = {}) {
   return result.stdout
 }
 
-async function createSmokeTemplatePdf() {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([612, 792])
-  const form = pdf.getForm()
-  form.createTextField('client_name').addToPage(page, { x: 72, y: 700, width: 240, height: 24 })
-  form.createTextField('salary').addToPage(page, { x: 72, y: 660, width: 160, height: 24 })
-  return pdf.save()
-}
-
 async function waitForExportCompletion(ctx, exportIds, { maxTicks = 30 } = {}) {
   const remaining = new Set(exportIds)
   for (let attempt = 0; attempt < maxTicks; attempt += 1) {
@@ -66,7 +56,10 @@ async function waitForExportCompletion(ctx, exportIds, { maxTicks = 30 } = {}) {
   return []
 }
 
+let context = null
+
 try {
+  context = await createTestContext('smoke')
   await context.request('/health')
   const ready = await context.request('/ready')
   assert(ready.status === 'ready', 'Readiness endpoint did not report ready state.')
@@ -86,19 +79,19 @@ try {
     })
   })
 
-  const sourcePdf = await createSmokeTemplatePdf()
+  const sourcePdf = await createTemplateWorkflowPdf()
   const template = await context.request('/api/templates/auto-build', {
     method: 'POST',
     headers,
     body: JSON.stringify({
       name: 'Auto Build Test',
       fileName: 'smoke-template.pdf',
-      fileBytes: Array.from(sourcePdf)
+      fileBytes: pdfBytesForJson(sourcePdf)
     })
   })
-  assert(template.extraction?.status === 'success', 'Smoke PDF template extraction should succeed.')
+  assert(template.extraction?.status === 'completed', 'Smoke PDF template extraction should complete.')
   assert(template.linkedFormTemplateId, 'Smoke PDF auto-build should create a linked form template.')
-  assert(template.sourceArtifact?.objectKey, 'Smoke PDF auto-build should persist the source artifact.')
+  assert(template.sourceArtifact?.key, 'Smoke PDF auto-build should persist the source artifact key.')
 
   const publishResult = await context.request(`/api/templates/${template.id}/publish`, {
     method: 'POST',
@@ -243,7 +236,8 @@ try {
   console.log(JSON.stringify(summary, null, 2))
 } catch (error) {
   evidence.finalize({ status: 'failed', error })
+  process.exitCode = 1
   throw error
 } finally {
-  await context.shutdown()
+  await context?.shutdown?.()
 }

@@ -2,7 +2,7 @@ import { assert, createTestContext } from './test-harness.mjs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { PDFDocument } from 'pdf-lib'
+import { createTemplateWorkflowPdf, pdfBytesForJson } from './pdf-fixtures.mjs'
 
 const TERMINAL_EXPORT_STATUSES = new Set(['completed', 'failed', 'dead-letter'])
 const workerScript = fileURLToPath(new URL('./export-worker.mjs', import.meta.url))
@@ -64,20 +64,6 @@ async function consumeResponse(response) {
   await response.arrayBuffer()
 }
 
-async function createExportTemplatePdf() {
-  const pdf = await PDFDocument.create()
-  const page = pdf.addPage([612, 792])
-  const form = pdf.getForm()
-  const addText = (name, y) => form.createTextField(name).addToPage(page, { x: 72, y, width: 240, height: 24 })
-  addText('client_name', 700)
-  addText('salary', 660)
-  addText('started', 620)
-  const retired = form.createCheckBox('retired')
-  retired.addToPage(page, { x: 72, y: 580, width: 18, height: 18 })
-  addText('missing_with_default', 540)
-  return Buffer.from(await pdf.save())
-}
-
 async function waitForExport(context, matcher, { maxTicks = 40 } = {}) {
   for (let attempt = 0; attempt < maxTicks; attempt += 1) {
     const exportsList = await context.request('/api/exports?sort=updatedAt_desc', {
@@ -122,14 +108,14 @@ async function main() {
         email: `export.client+${Date.now()}@example.com`
       })
     })
-    const sourcePdf = await createExportTemplatePdf()
+    const sourcePdf = await createTemplateWorkflowPdf()
     const template = await context.request('/api/templates/auto-build', {
       method: 'POST',
       headers,
       body: JSON.stringify({
         name: 'Export Template',
         fileName: 'export-template.pdf',
-        fileBytes: Array.from(sourcePdf)
+        fileBytes: pdfBytesForJson(sourcePdf)
       })
     })
     await context.request(`/api/templates/${template.id}/publish`, {

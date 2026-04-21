@@ -12,6 +12,7 @@ import {
 } from './playwright-provisioning.mjs'
 
 const uiContractSuites = ['apps/api/src/test/web-static-serving.test.mjs']
+const exportWorkerScript = resolve(process.cwd(), 'scripts/export-worker.mjs')
 const browserSuitePattern = 'tests/e2e'
 const executionMode = 'browser'
 const browserFallbackEnvFlag = 'RELEASE_E2E_ALLOW_FALLBACK'
@@ -297,6 +298,7 @@ export async function main(deps = {}) {
   } = deps
 
   let context
+  let exportWorker = null
   try {
     context = await createContext('e2e-browser-suite')
   } catch (error) {
@@ -314,6 +316,22 @@ export async function main(deps = {}) {
   const playwrightReportPath = resolvePlaywrightReportPath(process.env)
 
   try {
+    exportWorker = spawn(process.execPath, [exportWorkerScript], {
+      cwd: context.testCwd,
+      env: normalizeChildEnv({
+        ...process.env,
+        NODE_ENV: 'test',
+        ALLOW_DEV_FALLBACK_APP_SECRET: 'true',
+        EXPORT_WORKER_ID: 'e2e-companion-export-worker',
+        EXPORT_WORKER_POLL_MS: '100',
+        EXPORT_WORKER_LEASE_MS: '5000',
+        EXPORT_WORKER_BATCH_SIZE: '10'
+      }),
+      stdio: ['ignore', 'pipe', 'pipe']
+    })
+    exportWorker.stdout?.resume()
+    exportWorker.stderr?.resume()
+
     await removeFile(playwrightReportPath, { force: true })
 
     const baseEnv = {
@@ -524,6 +542,9 @@ export async function main(deps = {}) {
     })
     throw error
   } finally {
+    if (exportWorker && !exportWorker.killed) {
+      exportWorker.kill('SIGTERM')
+    }
     await context.shutdown()
   }
 }

@@ -993,6 +993,11 @@ export function createHttpServer({ modules }) {
             generatedAt: new Date().toISOString(),
             queueStatus: queueHealth?.queue || readExportWorkerStatus(),
             workerStatus: {
+              workerMode: queueHealth?.queue?.workerMode || 'companion',
+              manualProcessEndpointDeprecated: queueHealth?.queue?.manualProcessEndpointDeprecated === true,
+              lastWorkerHeartbeatAt: queueHealth?.queue?.lastWorkerHeartbeatAt || null,
+              workerObservedRecently: queueHealth?.queue?.workerObservedRecently === true,
+              pendingWithoutWorker: queueHealth?.queue?.pendingWithoutWorker === true,
               activeLeases: Number(queueHealth?.queue?.activeLeasesCount || 0),
               stalled: Number(queueHealth?.queue?.stalled || 0),
               retrying: Number(queueHealth?.queue?.retrying || 0),
@@ -1670,6 +1675,31 @@ export function createHttpServer({ modules }) {
         const result = modules.templates.updateMappings(user, id, body.mappings || [], {
           expectedVersionHash: body.expectedVersionHash || null
         })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/source-pdf') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadTemplate')
+        const source = await modules.templates.getSourcePdf(user, id)
+        const fileName = sanitizeDownloadFilename(source.fileName || `${id}.pdf`)
+        res.writeHead(200, {
+          ...baseHeaders(),
+          'X-Request-Id': requestId,
+          'Content-Type': source.contentType || 'application/pdf',
+          'Content-Length': String(source.sizeBytes || source.body?.length || 0),
+          'Content-Disposition': `inline; filename=\"${fileName}\"`,
+          'Cache-Control': 'private, no-store'
+        })
+        finalizeLog(200)
+        return res.end(source.body)
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/pdf-layout') && req.method === 'PATCH') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canEditTemplate')
+        const result = modules.templates.updatePdfLayout(user, id, await parseBody(req))
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }

@@ -67,6 +67,7 @@ test('PDF auto-build persists source artifact and creates linked generated form 
   assert.equal(documentTemplate.extraction.status, 'completed')
   assert.equal(documentTemplate.extractedFields.length, 4)
   assert.equal(documentTemplate.sourceArtifact?.contentType, 'application/pdf')
+  assert.ok(documentTemplate.sourceArtifact?.key)
   assert.ok(documentTemplate.sourceArtifact?.checksum)
   assert.ok(documentTemplate.linkedFormTemplateId)
   assert.equal(documentTemplate.autoBuildSummary?.fieldCount, 4)
@@ -93,6 +94,17 @@ test('PDF auto-build persists source artifact and creates linked generated form 
   assert.equal(mappingByField.dependents_1_name.sourcePath, 'dependents.0.name')
   assert.equal(mappingByField.dependents_1_name.repeaterPath, 'dependents')
   assert.equal(mappingByField.dependents_2_name.sourcePath, 'dependents.1.name')
+
+  const sourceDownload = await store.getTemplateSourcePdf(user, documentTemplate.id)
+  assert.equal(sourceDownload.contentType, 'application/pdf')
+  assert.ok(sourceDownload.body.length > 100)
+
+  const updatedLayout = store.updateTemplatePdfLayout(user, documentTemplate.id, {
+    fields: [{ fieldName: 'client_name', pageIndex: 0, x: 100, y: 650, width: 220, height: 24, locked: true }]
+  })
+  assert.equal(updatedLayout.pdfLayout.fields[0].fieldName, 'client_name')
+  assert.equal(updatedLayout.pdfLayout.fields[0].locked, true)
+  assert.ok(updatedLayout.versions.some((entry) => entry.event === 'pdf_layout_updated'))
 })
 
 test('PDF auto-build does not create linked form or mappings when extraction fails', async () => {

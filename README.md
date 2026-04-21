@@ -56,7 +56,7 @@ The older duplicate Fastify/TypeScript backend path and related workspace scaffo
 - masked sensitive data handling for SSNs and tax IDs
 - form template creation plus advisor and portal submission flows
 - PDF document template ingestion with persisted source artifacts, AcroForm field extraction, linked generated form templates, and extraction diagnostics
-- production-grade template mapper/editor UX with mapping inspector, autosave state, AcroForm field status, linked form visibility, and mapping preview checks
+- AcroForm visual mapper route with PDF preview, extracted field overlays, numeric placement editing, linked form visibility, and mapping/readiness checks
 - template-driven export jobs that fill uploaded AcroForm PDFs when available, generate structured advisor XLSX workbooks, persist completed artifacts, and preserve retry/dead-letter queue behavior
 - invite and password reset flows
 - readiness/health probes, backup/restore scripts, Docker packaging, and smoke coverage
@@ -92,10 +92,16 @@ Run the Vite frontend only:
 npm run web:dev
 ```
 
-Run backend and frontend together with prefixed logs:
+Run backend, frontend, and the companion export worker together with prefixed logs:
 
 ```bash
 npm run dev
+```
+
+Disable the local companion worker only when testing the deprecated manual recovery path:
+
+```bash
+DEV_EXPORT_WORKER=0 npm run dev
 ```
 
 Build and preview the canonical web app:
@@ -297,10 +303,12 @@ node scripts/restore-db.mjs data/backup-<timestamp>.db
 ## Export worker
 
 ```bash
-node scripts/export-worker.mjs
+npm run exports:worker
 ```
 
-The worker is the canonical queue processor for export jobs. Completed PDF/XLSX artifacts are persisted to configured object storage metadata and downloaded from `GET /api/exports/:id/download`; old completed jobs without persisted objects retain a compatibility re-render fallback.
+The companion worker is the canonical queue processor for export jobs in local, Docker, and production deployments. `npm run dev` starts it automatically; `npm run exports:worker:once` runs one recovery/diagnostic tick. The admin `POST /api/exports/process` endpoint remains for recovery only and should not be used as the normal runtime path.
+
+Completed PDF/XLSX artifacts are persisted to configured object storage metadata and downloaded from `GET /api/exports/:id/download`; old completed jobs without persisted objects retain a compatibility re-render fallback. Ops diagnostics expose `workerMode`, heartbeat timing, `workerObservedRecently`, and `pendingWithoutWorker` so operators can distinguish queued jobs waiting on a worker from actively processing jobs.
 
 ## Docker
 

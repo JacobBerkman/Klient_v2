@@ -179,6 +179,8 @@ docker compose --env-file .env up --build -d
 
 The Dockerfile builds the React app during image creation and copies the generated `apps/web/dist` assets into the runtime image, so deployments do not rely on checked-in build output. The app will be available at `http://localhost:3000`; legacy fallback remains explicit at `/legacy` and `/legacy/portal`.
 
+`docker-compose.yml` also starts `kinetic-klient-export-worker`, a companion process that runs `node scripts/export-worker.mjs` against the same storage/database volume. Production deployments must run this worker (or an equivalent scheduler using the same command) alongside the API; the API only enqueues export jobs.
+
 ### Container filesystem policy
 
 - The runtime container is designed to run with a **read-only root filesystem**.
@@ -319,13 +321,15 @@ Rollback is mandatory if health checks degrade, smoke fails, or security regress
 
 ## Background export processing
 
-Queued exports can be processed out of band with:
+Queued exports are processed by the companion worker:
 
 ```bash
-node scripts/export-worker.mjs
+npm run exports:worker
 ```
 
 The worker fills source-backed AcroForm PDFs from persisted uploaded template artifacts, writes structured XLSX workbooks for advisor operations, stores completed bytes in the configured object storage provider, and leaves renderer/fallback diagnostics on the export job. Download endpoints serve the persisted artifact for completed jobs; compatibility re-rendering is retained only for older completed jobs that predate persisted object metadata.
+
+`POST /api/exports/process` is deprecated for normal operation. It remains available as an authenticated admin recovery tick when the companion worker is unavailable or during a controlled diagnostic, and the UI labels it as a recovery action rather than the primary export lifecycle.
 
 ## Logs and shutdown
 

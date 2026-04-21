@@ -43,6 +43,7 @@ export const router = createBrowserRouter([
       { path: '/forms', lazy: () => import('../pages/FormsPage') },
       { path: '/forms/submissions/:submissionId', lazy: () => import('../pages/SubmissionDetailPage') },
       { path: '/templates', lazy: () => import('../pages/TemplatesPage') },
+      { path: '/templates/:templateId/mapper', lazy: () => import('../pages/TemplateMapperPage') },
       { path: '/templates/:templateId', lazy: () => import('../pages/TemplateDetailPage') },
       { path: '/exports', lazy: () => import('../pages/ExportsPage') },
       { path: '/analytics', lazy: () => import('../pages/AnalyticsPage') },

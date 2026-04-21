@@ -493,6 +493,7 @@ function createTemplateVersion(template, event, overrides = {}) {
   )
   const sourceArtifact = deepClone(overrides.sourceArtifact || template.sourceArtifact || null)
   const autoBuildSummary = deepClone(overrides.autoBuildSummary || template.autoBuildSummary || null)
+  const pdfLayout = deepClone(overrides.pdfLayout || template.pdfLayout || { fields: [] })
   return {
     version: (template.versions?.length || 0) + 1,
     event,
@@ -504,6 +505,7 @@ function createTemplateVersion(template, event, overrides = {}) {
     sourceArtifact,
     linkedFormTemplateId: overrides.linkedFormTemplateId || template.linkedFormTemplateId || null,
     autoBuildSummary,
+    pdfLayout,
     publishState,
     immutable: overrides.immutable === true,
     changelog: overrides.changelog || null,
@@ -535,6 +537,7 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
     extraction: template.extraction || { status: 'completed', reasonCode: null, error: null },
     sourceArtifact: template.sourceArtifact || template.documentMetadata?.sourceArtifact || null,
     linkedFormTemplateId: template.linkedFormTemplateId || null,
+    pdfLayout: template.pdfLayout || null,
     generatedFromDocumentTemplateId: template.generatedFromDocumentTemplateId || null,
     generation: template.generation || null,
     autoBuildSummary: template.autoBuildSummary || null,
@@ -553,6 +556,7 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
       ),
       sourceArtifact: deepClone(entry.sourceArtifact || template.sourceArtifact || null),
       linkedFormTemplateId: entry.linkedFormTemplateId || template.linkedFormTemplateId || null,
+      pdfLayout: deepClone(entry.pdfLayout || template.pdfLayout || { fields: [] }),
       autoBuildSummary: deepClone(entry.autoBuildSummary || template.autoBuildSummary || null),
       publishState: entry.publishState || publishState,
       immutable: entry.immutable === true,
@@ -629,6 +633,7 @@ function documentTemplateAdapter(entry) {
     },
     sourceArtifact,
     linkedFormTemplateId: entry.linkedFormTemplateId || null,
+    pdfLayout: deepClone(entry.pdfLayout || { fields: [] }),
     autoBuildSummary:
       entry.autoBuildSummary ||
       (extractedFields.length || mappingCount
@@ -2934,6 +2939,7 @@ export function createStore({
           linkedFormTemplateId: input.linkedFormTemplateId || null,
           autoBuildSummary: deepClone(input.autoBuildSummary || null),
           exportReadiness: deepClone(input.exportReadiness || null),
+          pdfLayout: deepClone(input.pdfLayout || { fields: [] }),
           publishState: 'draft',
           versions: [
             {
@@ -2948,6 +2954,7 @@ export function createStore({
               sourceArtifact: deepClone(input.sourceArtifact || null),
               linkedFormTemplateId: input.linkedFormTemplateId || null,
               autoBuildSummary: deepClone(input.autoBuildSummary || null),
+              pdfLayout: deepClone(input.pdfLayout || { fields: [] }),
               createdAt,
               actorUserId: user.id
             }
@@ -3021,6 +3028,69 @@ export function createStore({
           extractedFields: deepClone(template.extractedFields || []),
           count: template.mappings.length
         }
+      })
+      persist()
+      return documentTemplateAdapter(template)
+    },
+    async getTemplateSourcePdf(user, templateId) {
+      const firmContext = requireFirmContext(user, { method: 'store.getTemplateSourcePdf' })
+      requirePermission(user, 'templates:read')
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
+      )
+      const sourceArtifact = template.sourceArtifact || template.documentMetadata?.sourceArtifact || null
+      if (!sourceArtifact?.bucket || !sourceArtifact?.key) {
+        throw new Error('Template source PDF is not available.')
+      }
+      const stored = await objectStorage.getObject(sourceArtifact)
+      return {
+        body: stored.body,
+        fileName: sourceArtifact.fileName || template.fileName || `${template.id}.pdf`,
+        contentType: stored.contentType || sourceArtifact.contentType || 'application/pdf',
+        checksum: stored.checksum || sourceArtifact.checksum || null,
+        sizeBytes: stored.body.length
+      }
+    },
+    updateTemplatePdfLayout(user, templateId, input = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.updateTemplatePdfLayout' })
+      requirePermission(user, 'templates:write')
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
+      )
+      const fields = Array.isArray(input.fields) ? input.fields : []
+      const normalized = fields
+        .map((field, index) => ({
+          fieldName: String(field?.fieldName || '').trim(),
+          pageIndex: Math.max(0, Number.parseInt(String(field?.pageIndex ?? 0), 10) || 0),
+          x: Number(field?.x ?? 0),
+          y: Number(field?.y ?? 0),
+          width: Math.max(1, Number(field?.width ?? 1)),
+          height: Math.max(1, Number(field?.height ?? 1)),
+          locked: field?.locked === true,
+          order: index
+        }))
+        .filter((field) => field.fieldName)
+      const previousLayout = deepClone(template.pdfLayout || { fields: [] })
+      template.pdfLayout = {
+        fields: normalized,
+        updatedAt: now(),
+        updatedByUserId: user.id
+      }
+      template.versions.push(
+        createTemplateVersion(template, 'pdf_layout_updated', {
+          pdfLayout: template.pdfLayout,
+          diff: { pdfLayout: { changed: true } },
+          actorUserId: user.id
+        })
+      )
+      template.updatedAt = now()
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.pdf_layout_updated', {
+        before: { pdfLayout: previousLayout },
+        after: { pdfLayout: template.pdfLayout }
       })
       persist()
       return documentTemplateAdapter(template)
@@ -3754,6 +3824,17 @@ export function createStore({
         diagnostics: extractionDiagnostics,
         fields: extraction.fields || []
       }
+      const pdfLayout = {
+        fields: (extraction.fields || []).map((field, index) => ({
+          fieldName: String(field.fieldName || field.name || `field_${index + 1}`),
+          pageIndex: Number.isInteger(field.pageIndex) ? field.pageIndex : 0,
+          x: Number(field.x ?? 72),
+          y: Number(field.y ?? Math.max(72, 700 - index * 32)),
+          width: Number(field.width ?? 180),
+          height: Number(field.height ?? 24),
+          locked: false
+        }))
+      }
       const autoBuildSummary = {
         ...generated.summary,
         linkedFormTemplateId: null,
@@ -3773,6 +3854,7 @@ export function createStore({
         extractedFields: extraction.fields || [],
         extraction: extractionEnvelope,
         sourceArtifact,
+        pdfLayout,
         autoBuildSummary,
         exportReadiness:
           extraction.status === 'failed'
