@@ -187,7 +187,7 @@ export function createExportsService({ exportsRepository, policy, store }) {
         deadLetterIncluded: result?.includeDeadLetter === true
       }
     },
-    getDownload(user, exportId) {
+    async getDownload(user, exportId) {
       policy.requireGuard(user, 'canReadExports')
       return exportsRepository.getDownload(createFirmContext(user), exportId)
     }

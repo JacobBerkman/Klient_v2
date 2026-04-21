@@ -47,16 +47,35 @@ interface SubmissionDetailData {
 
 function inputControl(
   field: FormField,
-  value: string,
-  onChange: (value: string) => void,
+  value: unknown,
+  onChange: (value: unknown) => void,
   disabled: boolean,
   labelSuffix = ''
 ) {
+  if (field.type === 'checkbox' || field.type === 'boolean') {
+    return (
+      <label key={`${field.key}${labelSuffix}`} className="checkbox-field">
+        <input
+          type="checkbox"
+          checked={value === true || String(value || '').toLowerCase() === 'true'}
+          onChange={(event) => onChange(event.target.checked)}
+          disabled={disabled}
+        />
+        <span>{field.label || field.key}</span>
+      </label>
+    )
+  }
+
   if (field.type === 'textarea') {
     return (
       <label key={`${field.key}${labelSuffix}`}>
         <span>{field.label || field.key}</span>
-        <textarea rows={4} value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled} />
+        <textarea
+          rows={4}
+          value={String(value || '')}
+          onChange={(event) => onChange(event.target.value)}
+          disabled={disabled}
+        />
       </label>
     )
   }
@@ -65,7 +84,7 @@ function inputControl(
     return (
       <label key={`${field.key}${labelSuffix}`}>
         <span>{field.label || field.key}</span>
-        <select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
+        <select value={String(value || '')} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
           <option value="">Select</option>
           {(field.options || []).map((option) => (
             <option key={option} value={option}>
@@ -82,7 +101,7 @@ function inputControl(
       <span>{field.label || field.key}</span>
       <input
         type={fieldInputType(field)}
-        value={value}
+        value={String(value || '')}
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled}
       />
@@ -298,6 +317,7 @@ export function Component() {
           <>
             <StatusBadge status={submission.status} />
             <StatusBadge status={submission.lock ? 'Locked draft' : 'Unlocked'} />
+            {template?.generatedFromDocumentTemplateId ? <StatusBadge status="Generated PDF form" /> : null}
           </>
         }
       />
@@ -320,6 +340,11 @@ export function Component() {
               <div>
                 <strong>Template ID</strong>
                 <div className="muted">{submission.templateId}</div>
+                {template?.generatedFromDocumentTemplateId ? (
+                  <Link className="text-link" to={`/templates/${template.generatedFromDocumentTemplateId}`}>
+                    Open source document template
+                  </Link>
+                ) : null}
               </div>
               <div>
                 <strong>Updated</strong>
@@ -460,7 +485,7 @@ export function Component() {
                                   {(section.fields || []).map((field) =>
                                     inputControl(
                                       field,
-                                      String(rowObject[field.key] || ''),
+                                      rowObject[field.key],
                                       (nextValue) =>
                                         setEditorData((current) =>
                                           updateRepeaterRow(current, section, sectionIndex, rowIndex, {
@@ -491,7 +516,7 @@ export function Component() {
                       {(section.fields || []).map((field) =>
                         inputControl(
                           field,
-                          String(editorData[field.key] || ''),
+                          editorData[field.key],
                           (nextValue) =>
                             setEditorData((current) => ({
                               ...current,

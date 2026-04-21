@@ -90,11 +90,11 @@ export async function registerAdminViaApi(page, seededRunId, label = 'admin') {
   expect(response.ok()).toBeTruthy()
   const body = await response.json()
   const setCookie = response.headers()['set-cookie'] || ''
-  const sessionMatch = setCookie.match(/__Host-klient-session=([^;,\s]+)/)
-  const csrfCookieMatch = setCookie.match(/__Host-klient-csrf=([^;,\s]+)/)
+  const sessionMatch = setCookie.match(/(?:klient-session|__Host-klient-session)=([^;,\s]+)/)
+  const csrfCookieMatch = setCookie.match(/(?:klient-csrf|__Host-klient-csrf)=([^;,\s]+)/)
   const sessionCookie = [
-    sessionMatch ? `__Host-klient-session=${sessionMatch[1]}` : '',
-    csrfCookieMatch ? `__Host-klient-csrf=${csrfCookieMatch[1]}` : ''
+    sessionMatch ? `${sessionMatch[0].split('=')[0]}=${sessionMatch[1]}` : '',
+    csrfCookieMatch ? `${csrfCookieMatch[0].split('=')[0]}=${csrfCookieMatch[1]}` : ''
   ]
     .filter(Boolean)
     .join('; ')
@@ -132,7 +132,7 @@ function upsertCookie(cookieHeader, name, value) {
 
 function applyAuthCookies(auth, setCookieHeader) {
   if (!auth || !setCookieHeader) return
-  for (const name of ['__Host-klient-session', '__Host-klient-csrf']) {
+  for (const name of ['klient-session', '__Host-klient-session', 'klient-csrf', '__Host-klient-csrf']) {
     const match = setCookieHeader.match(new RegExp(`${name}=([^;,\\s]+)`))
     if (match) {
       auth.sessionCookie = upsertCookie(auth.sessionCookie, name, match[1])

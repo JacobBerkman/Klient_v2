@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto'
 import {
   closeDatabase,
-  processExportQueueTick,
+  processExportQueueTickAsync,
   readExportWorkerStatus,
   readStorageHealth
 } from '../apps/api/src/storage.mjs'
-import { buildExportArtifact } from '../apps/api/src/export-artifact.mjs'
+import { renderExportArtifact } from '../apps/api/src/export-artifact.mjs'
 import { objectStorage } from '../apps/api/src/object-storage/index.mjs'
 
 const workerId = process.env.EXPORT_WORKER_ID || `export-worker-${process.pid}-${randomUUID().slice(0, 8)}`
@@ -15,7 +15,7 @@ const batchSize = Number(process.env.EXPORT_WORKER_BATCH_SIZE || 5)
 const runOnce = process.env.EXPORT_WORKER_ONCE === '1'
 const crashAfterLease = process.env.EXPORT_WORKER_CRASH_AFTER_LEASE === '1'
 
-function processJob(job) {
+async function processJob(job) {
   if (job.output) {
     return job.output
   }
@@ -25,14 +25,34 @@ function processJob(job) {
     error.failureClass = 'transient'
     throw error
   }
-  const artifact = buildExportArtifact(job)
+  const artifact = await renderExportArtifact(job, { objectStorage })
   const key = `${job.firmId}/exports/${artifact.fileName}`
+  const stored = await objectStorage.putObject({
+    bucket: objectStorage.bucketExports,
+    key,
+    body: artifact.body,
+    contentType: artifact.object.contentType,
+    retentionClass: artifact.object.retentionClass,
+    metadata: {
+      checksum: artifact.artifact.checksum,
+      exportJobId: job.id,
+      renderer: artifact.artifact.renderer,
+      templateId: job.templateId,
+      clientId: job.clientId
+    }
+  })
   return {
-    ...artifact,
+    fileName: artifact.fileName,
+    preview: artifact.preview,
+    artifact: {
+      ...artifact.artifact,
+      checksum: stored.checksum || artifact.artifact.checksum,
+      sizeBytes: artifact.body.length
+    },
     object: {
       bucket: objectStorage.bucketExports,
       key,
-      checksum: artifact.object.checksum,
+      checksum: stored.checksum || artifact.object.checksum,
       contentType: artifact.object.contentType,
       retentionClass: artifact.object.retentionClass
     },
@@ -43,9 +63,9 @@ function processJob(job) {
   }
 }
 
-function runTick() {
+async function runTick() {
   let crashed = false
-  return processExportQueueTick({
+  return processExportQueueTickAsync({
     workerId,
     limit: batchSize,
     leaseMs,
@@ -75,7 +95,7 @@ function toQueueMachineState(queue = {}) {
 
 if (runOnce) {
   const before = readExportWorkerStatus()
-  const result = runTick()
+  const result = await runTick()
   const after = readExportWorkerStatus()
   console.log(
     JSON.stringify(
@@ -113,7 +133,7 @@ console.log(
 )
 
 while (!stopping) {
-  const result = runTick()
+  const result = await runTick()
   const queue = readExportWorkerStatus()
   const diagnostics = {
     message: 'export-worker.tick',

@@ -14,7 +14,7 @@
     "check:merge-main": "bash scripts/verify-main-merge.sh",
     "check:migrations": "node scripts/migration-order-check.mjs",
     "check:release-docs": "node scripts/check-release-doc-consistency.mjs",
-    "check:syntax": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/api/src/test/web-static-serving.test.mjs && node --check scripts/api-contract-test.mjs && node --check scripts/backup-db.mjs && node --check scripts/check-release-doc-consistency.mjs && node --check scripts/check-release-gate-commands.mjs && node --check scripts/dev-stack.mjs && node --check scripts/export-worker.mjs && node --check scripts/integration-aggregate-exports-handoff.mjs && node --check scripts/integration-csrf.mjs && node --check scripts/master-integration.mjs && node --check scripts/master-validate.mjs && node --check scripts/migration-order-check.mjs && node --check scripts/reencrypt-pii.mjs && node --check scripts/reset-test-data.mjs && node --check scripts/restore-db.mjs && node --check scripts/security-checks.mjs && node --check scripts/smoke-test.mjs && node --check scripts/release-go-no-go.mjs && node --check scripts/validate-release-evidence.mjs && node --check scripts/e2e-test.mjs && node --check playwright.config.mjs",
+    "check:syntax": "node --check apps/api/src/runtime.mjs && node --check apps/api/src/storage.mjs && node --check apps/api/src/server.mjs && node --check apps/api/src/store.mjs && node --check apps/api/src/modules/templates/template-form-builder.mjs && node --check apps/api/src/export-renderers/pdf-template.mjs && node --check apps/api/src/test/local-dev-csrf.test.mjs && node --check apps/api/src/test/template-autobuild-linked-form.test.mjs && node --check apps/api/src/test/template-driven-export.test.mjs && node --check apps/api/src/test/web-static-serving.test.mjs && node --check scripts/api-contract-test.mjs && node --check scripts/backup-db.mjs && node --check scripts/check-release-doc-consistency.mjs && node --check scripts/check-release-gate-commands.mjs && node --check scripts/dev-stack.mjs && node --check scripts/export-worker.mjs && node --check scripts/integration-aggregate-exports-handoff.mjs && node --check scripts/integration-csrf.mjs && node --check scripts/master-integration.mjs && node --check scripts/master-validate.mjs && node --check scripts/migration-order-check.mjs && node --check scripts/reencrypt-pii.mjs && node --check scripts/reset-test-data.mjs && node --check scripts/restore-db.mjs && node --check scripts/security-checks.mjs && node --check scripts/smoke-test.mjs && node --check scripts/release-go-no-go.mjs && node --check scripts/validate-release-evidence.mjs && node --check scripts/e2e-test.mjs && node --check playwright.config.mjs",
     "dev": "node scripts/dev-stack.mjs",
     "format:check": "prettier --check \"apps/api/**/*.mjs\" \"apps/web/src/**/*.{ts,tsx,css}\" \"apps/web/index.html\" \"apps/web/vite.config.ts\" \"scripts/**/*.mjs\"",
     "lint": "eslint \"apps/api/**/*.mjs\" \"scripts/**/*.mjs\" \"apps/web/src/**/*.{ts,tsx}\" \"apps/web/vite.config.ts\"",
@@ -53,5 +53,8 @@
     "globals": "^17.4.0",
     "prettier": "^3.8.1",
     "typescript-eslint": "^8.58.2"
+  },
+  "dependencies": {
+    "pdf-lib": "^1.17.1"
   }
 }

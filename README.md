@@ -4,14 +4,15 @@ This repository contains a **single-command runnable advisory onboarding app** w
 
 ## User-facing claim status (audited)
 
-| Claim | Status | Notes |
-|---|---|---|
-| Advisory onboarding dashboard + prospects/clients/households/forms | `implemented` | Fully available in current runtime. |
-| Advisor analytics panels (funnel, stage aging, completion, productivity) | `implemented` | Available in advisor UI and analytics endpoints. |
-| Collaborative draft editing safeguards | `implemented` | Conflict guard + lease recovery are now enforced across API + UI draft flows with integration coverage. See [Milestone M2](docs/milestones/claims-roadmap.md#milestone-m2-draft-collaboration-hardening). |
-| Queue-backed export/document automation | `implemented` | Queue orchestration now includes retry-safe processing, dead-letter handling, machine-usable queue diagnostics, and verified artifact readiness/download flows. See [Milestone M3](docs/milestones/claims-roadmap.md#milestone-m3-export-automation). |
+| Claim                                                                    | Status        | Notes                                                                                                                                                                                                                                                 |
+| ------------------------------------------------------------------------ | ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Advisory onboarding dashboard + prospects/clients/households/forms       | `implemented` | Fully available in current runtime.                                                                                                                                                                                                                   |
+| Advisor analytics panels (funnel, stage aging, completion, productivity) | `implemented` | Available in advisor UI and analytics endpoints.                                                                                                                                                                                                      |
+| Collaborative draft editing safeguards                                   | `implemented` | Conflict guard + lease recovery are now enforced across API + UI draft flows with integration coverage. See [Milestone M2](docs/milestones/claims-roadmap.md#milestone-m2-draft-collaboration-hardening).                                             |
+| Queue-backed export/document automation                                  | `implemented` | Queue orchestration now includes retry-safe processing, dead-letter handling, machine-usable queue diagnostics, and verified artifact readiness/download flows. See [Milestone M3](docs/milestones/claims-roadmap.md#milestone-m3-export-automation). |
 
 ## What is included
+
 - admin firm bootstrap and sign-in
 - persistent SQLite-backed local data storage in `data/app.db`
 - dashboard with stats and recent activity
@@ -30,10 +31,12 @@ This repository contains a **single-command runnable advisory onboarding app** w
 - backup, restore, and export worker scripts
 
 ## Environment
+
 Copy `.env.example` to `.env` for deployment-oriented runs.
 In production, `APP_SECRET` must be set to a long random value.
 
 ## Run locally
+
 Kinetic Klient is now consolidated onto **one real runtime architecture**:
 
 - a single Node.js HTTP server at `apps/api/src/server.mjs`
@@ -44,6 +47,7 @@ Kinetic Klient is now consolidated onto **one real runtime architecture**:
 The older duplicate Fastify/TypeScript backend path and related workspace scaffolding have been removed so the repository now has one real startup path.
 
 ## Product capabilities
+
 - firm admin registration and sign-in
 - persistent session-backed advisory workspace
 - dashboard with recent activity and operating stats
@@ -51,14 +55,16 @@ The older duplicate Fastify/TypeScript backend path and related workspace scaffo
 - household creation, member management, and spouse linking/creation
 - masked sensitive data handling for SSNs and tax IDs
 - form template creation plus advisor and portal submission flows
-- document templates, auto-build mappings, export jobs, and worker processing
-- production-grade template mapper/editor UX with mapping inspector, autosave state, AcroForm field status, and mapping preview checks
-- upgraded export rendering (PDF layout + formatted XLSX worksheet metadata) while preserving queue/object metadata behavior
+- PDF document template ingestion with persisted source artifacts, AcroForm field extraction, linked generated form templates, and extraction diagnostics
+- production-grade template mapper/editor UX with mapping inspector, autosave state, AcroForm field status, linked form visibility, and mapping preview checks
+- template-driven export jobs that fill uploaded AcroForm PDFs when available, generate structured advisor XLSX workbooks, persist completed artifacts, and preserve retry/dead-letter queue behavior
 - invite and password reset flows
 - readiness/health probes, backup/restore scripts, Docker packaging, and smoke coverage
 
 ## Runtime architecture kept
+
 The repo now treats the plain Node runtime as canonical because it is the path that already:
+
 - serves the API and static UI together,
 - persists real state to SQLite,
 - powers the smoke test and Docker startup path,
@@ -67,6 +73,7 @@ The repo now treats the plain Node runtime as canonical because it is the path t
 That eliminates the split-brain between competing backend implementations and keeps local, Docker, CI, and smoke verification on the same runtime.
 
 ## Local development
+
 Install root and web dependencies and create `.env` from `.env.example` when needed:
 
 ```bash
@@ -99,28 +106,33 @@ npm run web:preview
 ```
 
 Open:
+
 - API/static production server: `http://localhost:3000`
 - Vite dev server: `http://127.0.0.1:5173`
 - Client portal route: `/portal?token=<token>`
 - Temporary legacy shell: `/legacy` and `/legacy/portal`
 
 ## Demo mode (optional, non-production only)
+
 Set `ENABLE_DEMO_MODE=true` when running locally if you want seeded demo data and UI shortcuts.
 
 Demo credentials (only when demo mode is enabled):
+
 - Email: `admin@demo.test`
 - Password: `ChangeMe123!`
 
 ## Security notes
+
 - In production, set `APP_SECRET` to a long random secret.
 - New passwords must be at least 12 characters and include uppercase, lowercase, and numeric characters.
 - Sessions expire after 8 hours.
-- User session authentication is cookie-only (`__Host-klient-session`); login/register/invite-accept no longer return a legacy bearer `token` field.
+- User session authentication is cookie-only. Production/HTTPS uses `__Host-klient-session` and `__Host-klient-csrf`; local HTTP development uses `klient-session` and `klient-csrf` so browsers persist cookies correctly without weakening production security.
 - Repeated failed login attempts are rate limited.
 - Sensitive identifiers are stored encrypted and only returned in masked form.
 - Sensitive identifiers now use envelope encryption metadata (`keyId`, `alg`, `createdAt`, `ciphertext`) with key-provider backed rotation support and audited unmask policy checks.
 
 ## Testing
+
 Run the production server contract test:
 
 ```bash
@@ -133,8 +145,7 @@ Run the canonical frontend build gate:
 npm run web:build
 ```
 
-Run the smoke test:
-Smoke test the full runtime:
+Smoke test the full runtime, including PDF template auto-build, generated form submission, worker processing, persisted PDF/XLSX artifacts, and downloads:
 
 ```bash
 npm run test:smoke
@@ -153,6 +164,7 @@ npm run test:e2e
 ```
 
 ### E2E execution expectations (local + CI)
+
 - Local:
   - `npm run test:e2e` runs UI contracts plus Playwright browser suites.
   - `E2E_GREP='@release-blocking' npm run test:e2e` runs only the release-blocking critical path.
@@ -185,7 +197,9 @@ NODE_ENV=test node --test apps/api/src/test/server-route-wiring.test.mjs
 ```
 
 CI uses this same canonical gate (`npm run validate:master`) across supported Node versions (20 and 22), uploads gate logs plus parity/backup evidence artifacts, and exposes `required-status-checks` as the branch-protection-friendly merge check.
+
 ## Main parity check
+
 Run the parity sync/report command:
 
 ```bash
@@ -193,6 +207,7 @@ npm run check:main-parity
 ```
 
 Expected outputs:
+
 - `OK: 'main' is fully merged into 'work'.` from `verify-main-merge.sh` plus `OK: 'work' is fully merged with 'main'.` when parity is complete (or a `MISSING:` line when work is behind)
 - `artifacts/main-parity.json` containing `workBranch`, `mainBranch`, `mergeBase`, `aheadCount`, `behindCount`, and `missingCommitShas`
 
@@ -202,8 +217,8 @@ Run the standard integration coverage (tenancy, RBAC, templates, exports, portal
 npm run test:integration
 ```
 
-
 ## Release operations (canonical flow)
+
 For production release execution, use one source of truth: `docs/deployment-quick-reference.md#canonical-operator-flow-exact-command-sequence`.
 That runbook defines preflight, deploy, postdeploy, and restore/restore-drill commands plus diagnostics interpretation.
 Use `docs/release-ready-checklist.md` for pass/fail policy and approval gates, not for alternate command ordering.
@@ -213,6 +228,7 @@ Use `docs/deployment-quick-reference.md#canonical-release-evidence-bundle-requir
 Use that bundle directory (with `bundle-manifest.json`) as the primary file set for GO/NO-GO review circulation.
 
 ## Health checks
+
 ```bash
 curl http://localhost:3000/health
 curl http://localhost:3000/ready
@@ -226,6 +242,7 @@ curl -H "Authorization: Bearer <token>" http://localhost:3000/api/ops/diagnostic
 ```
 
 ## API shape
+
 The supported runtime API is the plain Node server mounted under `/api`, for example:
 
 ```bash
@@ -233,36 +250,60 @@ curl -X POST http://localhost:3000/api/login \
   -H 'Content-Type: application/json' \
   -d '{"email":"admin@demo.test","password":"ChangeMe123!"}'
 ```
+
 `/ready` now includes config validation output, SQLite quick-check results, export worker status summary, and audit event counts. `/api/ops/diagnostics` adds richer startup/runtime metadata for on-call troubleshooting.
 User-session API calls under `/api/*` authenticate via session cookies, while `/api/ops/*` accepts bearer auth via the rotation-safe ops token set (`KLIENT_OPS_TOKEN_ACTIVE`, `KLIENT_OPS_TOKEN_PREVIOUS`, `KLIENT_OPS_TOKENS`, or legacy `KLIENT_OPS_TOKEN`).
 
 Public runtime feature flags are available at `GET /api/runtime`.
 
+## Template-to-export workflow
+
+The canonical advisor workflow is implemented through the existing API and routed React UI:
+
+1. Upload or auto-build a PDF document template at `/templates`.
+2. The server extracts AcroForm fields, persists the original PDF artifact, creates a document template, and creates a linked generated form template when extraction succeeds.
+3. Review extraction diagnostics, generated schema, mappings, linked form readiness, and export readiness on the template detail page.
+4. Create a submission from the generated form in `/forms`.
+5. Queue PDF or XLSX exports from `/templates/:templateId` or `/exports`.
+6. The export worker fills the uploaded PDF template when possible, produces structured XLSX workbooks, stores completed artifact bytes, and exposes downloads from `/exports`.
+
+If PDF extraction fails, the document template records explicit diagnostics and no linked form is created. Legacy/manual document templates without a source PDF can still use explicit summary fallback behavior, but source-backed templates do not fake success when the uploaded template cannot be used.
+
 ## Portal view
+
 Open `http://localhost:3000/portal?token=...` with a generated portal token to review shared client data, save drafts, and submit onboarding form responses.
 
 ## Backup
+
 ```bash
 node scripts/backup-db.mjs
 ```
+
 ## Data location
+
 Runtime data is stored in:
+
 - `data/app.db`
 
 Delete the file to reseed state. If `ENABLE_DEMO_MODE=true`, the demo dataset is seeded; otherwise startup state remains empty.
 
 ## Backups
+
 ```bash
 node scripts/backup-db.mjs
 node scripts/restore-db.mjs data/backup-<timestamp>.db
 ```
 
 ## Export worker
+
 ```bash
 node scripts/export-worker.mjs
 ```
 
+The worker is the canonical queue processor for export jobs. Completed PDF/XLSX artifacts are persisted to configured object storage metadata and downloaded from `GET /api/exports/:id/download`; old completed jobs without persisted objects retain a compatibility re-render fallback.
+
 ## Docker
+
 ```bash
 docker compose --env-file .env up --build -d
 ```
@@ -273,8 +314,8 @@ See `DEPLOYMENT.md` for deployment details.
 
 Run `node scripts/reencrypt-pii.mjs` to re-encrypt stored PII fields using the active key configured by `PII_ACTIVE_KEY_ID` and `PII_KEYRING`. Add `--validate` to assert that no legacy `*Ciphertext` values remain and all encrypted envelopes use the active key ID. The script returns one JSON object with rotation metrics (`rotatedProfiles`, `rotatedFields`, `activeKeyId`) and an optional `validation` block when requested.
 
-
 ## Documentation freshness owner
+
 - **Owner:** Release Operations (Release Manager + SRE primary).
 - **Expectation:** update README links whenever release runbook command flow or runtime validation evidence requirements change.
 

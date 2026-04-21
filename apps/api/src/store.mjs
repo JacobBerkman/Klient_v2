@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { runtime } from './runtime.mjs'
-import { loadState, processExportQueueTick, saveState } from './storage.mjs'
+import { loadState, processExportQueueTickAsync, saveState } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
 import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
@@ -11,7 +11,7 @@ import { createCanonicalAuditEvent } from './modules/audit/schema.mjs'
 import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs'
 import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
-import { buildExportArtifact } from './export-artifact.mjs'
+import { renderExportArtifact } from './export-artifact.mjs'
 import { resolveExportData } from './export-data-resolution.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
 import {
@@ -24,6 +24,7 @@ import {
 } from './modules/forms/schema/form-definition-validator.mjs'
 import { validateMappingRules } from './modules/templates/schema/mapping-rules-validator.mjs'
 import { extractTemplateFieldsFromPdfBytes } from './modules/templates/template-ingestion.mjs'
+import { buildFormTemplateFromExtractedFields } from './modules/templates/template-form-builder.mjs'
 import { createDefaultFirmStageConfig, getStageKey, normalizeFirmStageConfig } from './stage-config.mjs'
 
 const SESSION_MAX_AGE_MS = 1000 * 60 * 60 * 8
@@ -490,6 +491,8 @@ function createTemplateVersion(template, event, overrides = {}) {
   const extraction = deepClone(
     overrides.extraction || template.extraction || { status: 'completed', reasonCode: null, error: null }
   )
+  const sourceArtifact = deepClone(overrides.sourceArtifact || template.sourceArtifact || null)
+  const autoBuildSummary = deepClone(overrides.autoBuildSummary || template.autoBuildSummary || null)
   return {
     version: (template.versions?.length || 0) + 1,
     event,
@@ -498,6 +501,9 @@ function createTemplateVersion(template, event, overrides = {}) {
     formSchema,
     extractedFields,
     extraction,
+    sourceArtifact,
+    linkedFormTemplateId: overrides.linkedFormTemplateId || template.linkedFormTemplateId || null,
+    autoBuildSummary,
     publishState,
     immutable: overrides.immutable === true,
     changelog: overrides.changelog || null,
@@ -527,6 +533,12 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
     mappingRules: mappings,
     extractedFields: template.extractedFields || [],
     extraction: template.extraction || { status: 'completed', reasonCode: null, error: null },
+    sourceArtifact: template.sourceArtifact || template.documentMetadata?.sourceArtifact || null,
+    linkedFormTemplateId: template.linkedFormTemplateId || null,
+    generatedFromDocumentTemplateId: template.generatedFromDocumentTemplateId || null,
+    generation: template.generation || null,
+    autoBuildSummary: template.autoBuildSummary || null,
+    exportReadiness: template.exportReadiness || null,
     publishState,
     status: publishState, // deprecated internal alias for compatibility payloads
     versions: (template.versions || []).map((entry, index) => ({
@@ -539,6 +551,9 @@ function normalizeTemplateAggregate(template, fallbackKind = 'document') {
       extraction: deepClone(
         entry.extraction || template.extraction || { status: 'completed', reasonCode: null, error: null }
       ),
+      sourceArtifact: deepClone(entry.sourceArtifact || template.sourceArtifact || null),
+      linkedFormTemplateId: entry.linkedFormTemplateId || template.linkedFormTemplateId || null,
+      autoBuildSummary: deepClone(entry.autoBuildSummary || template.autoBuildSummary || null),
       publishState: entry.publishState || publishState,
       immutable: entry.immutable === true,
       changelog: entry.changelog || null,
@@ -571,22 +586,61 @@ function formTemplateAdapter(entry) {
     name: entry.name,
     description: entry.description || '',
     sections: deepClone(entry.formSchema?.sections || []),
+    generatedFromDocumentTemplateId: entry.generatedFromDocumentTemplateId || null,
+    generation: deepClone(entry.generation || null),
     createdAt: entry.createdAt,
     updatedAt: entry.updatedAt
   }
 }
 
 function documentTemplateAdapter(entry) {
+  const extraction = deepClone(entry.extraction || { status: 'completed', reasonCode: null, error: null })
+  const extractedFields = deepClone(entry.extractedFields || [])
+  const sourceArtifact = deepClone(entry.sourceArtifact || entry.documentMetadata?.sourceArtifact || null)
+  const mappingCount = Array.isArray(entry.mappings) ? entry.mappings.length : 0
+  const exportReadiness =
+    entry.exportReadiness ||
+    (extraction.status === 'failed'
+      ? {
+          status: 'blocked',
+          reason: extraction.reasonCode || 'extraction_failed',
+          message: extraction.error?.message || 'Template extraction failed.'
+        }
+      : {
+          status: sourceArtifact ? 'ready' : 'summary_fallback',
+          reason: sourceArtifact ? null : 'missing_source_artifact',
+          message: sourceArtifact
+            ? 'Source PDF is available for template-driven export.'
+            : 'No source PDF artifact is linked; exports use explicit summary fallback.'
+        })
   return {
     id: entry.id,
     firmId: entry.firmId,
     name: entry.name,
     fileName: entry.documentMetadata?.fileName || 'template.pdf',
+    documentMetadata: deepClone(entry.documentMetadata || {}),
     blueprint: deepClone(entry.blueprint || { sections: [] }),
     formSchema: deepClone(entry.formSchema || { sections: [] }),
     mappings: deepClone(entry.mappings || []),
-    extractedFields: deepClone(entry.extractedFields || []),
-    extraction: deepClone(entry.extraction || { status: 'completed', reasonCode: null, error: null }),
+    extractedFields,
+    extraction: {
+      ...extraction,
+      fields: Array.isArray(extraction.fields) ? deepClone(extraction.fields) : extractedFields
+    },
+    sourceArtifact,
+    linkedFormTemplateId: entry.linkedFormTemplateId || null,
+    autoBuildSummary:
+      entry.autoBuildSummary ||
+      (extractedFields.length || mappingCount
+        ? {
+            fieldCount: extractedFields.length,
+            mappingCount,
+            linkedFormTemplateId: entry.linkedFormTemplateId || null,
+            repeatableSectionCount: 0,
+            ambiguousRepeaterCount: 0
+          }
+        : null),
+    exportReadiness,
     versions: deepClone(entry.versions || []),
     status: entry.publishState || 'draft',
     publishState: entry.publishState || 'draft',
@@ -606,6 +660,22 @@ function collectSchemaPaths(fields = [], parentPath = '', output = new Map()) {
     if (normalizedType === 'repeater') {
       collectSchemaPaths(field.fields || [], fullPath, output)
     }
+  }
+  return output
+}
+
+function collectFormSchemaSourcePaths(sections = [], output = new Map()) {
+  for (let index = 0; index < sections.length; index += 1) {
+    const section = sections[index]
+    if (!section || typeof section !== 'object' || Array.isArray(section)) continue
+    const repeatable =
+      section.repeatable === true || section.repeater === true || String(section.type || '') === 'repeater'
+    const sectionKey = String(section.key || section.path || section.id || section.title || `section_${index + 1}`)
+      .trim()
+      .replace(/\s+/g, '_')
+      .replace(/[^a-zA-Z0-9_]/g, '')
+      .toLowerCase()
+    collectSchemaPaths(section.fields || [], repeatable ? sectionKey : '', output)
   }
   return output
 }
@@ -2352,6 +2422,8 @@ export function createStore({
           formSchema,
           blueprint: { sections: [] },
           mappings: [],
+          generatedFromDocumentTemplateId: input.generatedFromDocumentTemplateId || null,
+          generation: input.generation || null,
           publishState: 'draft',
           versions: [
             {
@@ -2360,6 +2432,7 @@ export function createStore({
               formSchema,
               blueprint: { sections: [] },
               mappings: [],
+              generation: input.generation || null,
               publishState: 'draft',
               createdAt,
               actorUserId: user.id
@@ -2442,6 +2515,9 @@ export function createStore({
         name: input.name,
         description: input.description || '',
         sections: input.sections || input.formSchema?.sections || [],
+        formSchema: input.formSchema,
+        generatedFromDocumentTemplateId: input.generatedFromDocumentTemplateId || null,
+        generation: input.generation || null,
         blueprint: { sections: [] },
         mappings: []
       })
@@ -2828,11 +2904,7 @@ export function createStore({
         contextPath: '/formSchema'
       })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
-      collectSchemaPaths(
-        formSchemaResult.schema.sections.flatMap((section) => section.fields || []),
-        '',
-        allowedSourcePaths
-      )
+      collectFormSchemaSourcePaths(formSchemaResult.schema.sections, allowedSourcePaths)
       const normalizedExtractedFields = normalizeExtractedFields(input.extractedFields || input.requiredPdfFields || [])
       const requiredPdfFields = normalizeRequiredPdfFields(normalizedExtractedFields)
       const mappings = validateMappingRules(input.mappings || [], {
@@ -2849,12 +2921,19 @@ export function createStore({
           kind: 'document',
           name: input.name,
           description: input.description || '',
-          documentMetadata: { fileName: input.fileName || 'template.pdf' },
+          documentMetadata: {
+            fileName: input.fileName || 'template.pdf',
+            ...(input.documentMetadata && typeof input.documentMetadata === 'object' ? input.documentMetadata : {})
+          },
           blueprint: input.blueprint || { sections: [] },
           mappings,
           extractedFields: normalizedExtractedFields,
           formSchema: formSchemaResult.schema,
           extraction: deepClone(input.extraction || { status: 'completed', reasonCode: null, error: null }),
+          sourceArtifact: deepClone(input.sourceArtifact || null),
+          linkedFormTemplateId: input.linkedFormTemplateId || null,
+          autoBuildSummary: deepClone(input.autoBuildSummary || null),
+          exportReadiness: deepClone(input.exportReadiness || null),
           publishState: 'draft',
           versions: [
             {
@@ -2866,6 +2945,9 @@ export function createStore({
               formSchema: formSchemaResult.schema,
               publishState: 'draft',
               extraction: deepClone(input.extraction || { status: 'completed', reasonCode: null, error: null }),
+              sourceArtifact: deepClone(input.sourceArtifact || null),
+              linkedFormTemplateId: input.linkedFormTemplateId || null,
+              autoBuildSummary: deepClone(input.autoBuildSummary || null),
               createdAt,
               actorUserId: user.id
             }
@@ -2879,6 +2961,7 @@ export function createStore({
       addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.created', {
         name: template.name
       })
+      persist()
       return documentTemplateAdapter(template)
     },
     updateTemplateMappings(user, templateId, mappings, input = {}) {
@@ -2895,11 +2978,7 @@ export function createStore({
         contextPath: '/formSchema'
       })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
-      collectSchemaPaths(
-        formSchemaResult.schema.sections.flatMap((section) => section.fields || []),
-        '',
-        allowedSourcePaths
-      )
+      collectFormSchemaSourcePaths(formSchemaResult.schema.sections, allowedSourcePaths)
       const requiredPdfFields = normalizeRequiredPdfFields(input.requiredPdfFields || template.extractedFields || [])
       const normalizedMappings = validateMappingRules(mappings || [], {
         contextPath: '/mappings',
@@ -2982,11 +3061,7 @@ export function createStore({
         contextPath: '/formSchema'
       })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
-      collectSchemaPaths(
-        formSchemaResult.schema.sections.flatMap((section) => section.fields || []),
-        '',
-        allowedSourcePaths
-      )
+      collectFormSchemaSourcePaths(formSchemaResult.schema.sections, allowedSourcePaths)
       let issues = []
       try {
         validateMappingRules(template.mappings || [], {
@@ -3057,11 +3132,7 @@ export function createStore({
         contextPath: '/formSchema'
       })
       const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
-      collectSchemaPaths(
-        formSchemaResult.schema.sections.flatMap((section) => section.fields || []),
-        '',
-        allowedSourcePaths
-      )
+      collectFormSchemaSourcePaths(formSchemaResult.schema.sections, allowedSourcePaths)
       validateMappingRules(template.mappings || [], {
         contextPath: '/mappings',
         repeaterPaths: formSchemaResult.repeaterPaths,
@@ -3259,26 +3330,45 @@ export function createStore({
       return exportsRepository.getDownload(user, exportId)
     },
     async processQueuedExports() {
-      const result = processExportQueueTick({
+      const result = await processExportQueueTickAsync({
         workerId: 'api-process-endpoint',
         limit: 10,
         leaseMs: 15_000,
-        processor(job) {
+        async processor(job) {
           const failCount = Number(job?.metadata?.simulateFailuresRemaining || 0)
           if (failCount > 0) {
-            job.metadata.simulateFailuresRemaining = failCount - 1
             throw new Error(`Simulated export failure for ${job.id}`)
           }
-          const artifact = buildExportArtifact(job)
+          const artifact = await renderExportArtifact(job, { objectStorage })
           const key = `${job.firmId}/exports/${artifact.fileName}`
+          const stored = await objectStorage.putObject({
+            bucket: objectStorage.bucketExports,
+            key,
+            body: artifact.body,
+            contentType: artifact.object.contentType,
+            retentionClass: artifact.object.retentionClass,
+            metadata: {
+              checksum: artifact.artifact.checksum,
+              exportJobId: job.id,
+              renderer: artifact.artifact.renderer,
+              templateId: job.templateId,
+              clientId: job.clientId
+            }
+          })
           return {
-            ...artifact,
+            fileName: artifact.fileName,
+            preview: artifact.preview,
+            artifact: {
+              ...artifact.artifact,
+              checksum: stored.checksum || artifact.artifact.checksum,
+              sizeBytes: artifact.body.length
+            },
             idempotencyKey: job.execution?.idempotencyKey || job.idempotencyKey || job.id,
             execution: job.execution || null,
             object: {
               bucket: objectStorage.bucketExports,
               key,
-              checksum: artifact.object.checksum,
+              checksum: stored.checksum || artifact.object.checksum,
               contentType: artifact.object.contentType,
               retentionClass: artifact.object.retentionClass
             }
@@ -3286,7 +3376,6 @@ export function createStore({
         }
       })
       return { processed: result.processed, leased: result.leased, failed: result.failed }
-      return exportsRepository.processQueued()
     },
     listAudit(user) {
       requirePermission(user, 'audit:read')
@@ -3569,7 +3658,7 @@ export function createStore({
       persist()
       return { ok: true }
     },
-    autoBuildTemplate(user, input) {
+    async autoBuildTemplate(user, input = {}) {
       requirePermission(user, 'templates:write')
       const pdfBytes =
         typeof input.fileBytesBase64 === 'string'
@@ -3577,37 +3666,168 @@ export function createStore({
           : Array.isArray(input.fileBytes)
             ? Buffer.from(input.fileBytes)
             : null
-      const extraction = extractTemplateFieldsFromPdfBytes(pdfBytes)
-      const extractedFieldNames = extraction.fields.map((entry) => entry.fieldName)
-      const uniqueMappings = []
-      const seenPdfFields = new Set()
-      extractedFieldNames.forEach((field) => {
-        if (seenPdfFields.has(field)) return
-        seenPdfFields.add(field)
-        uniqueMappings.push({
-          pdfField: field,
-          sourcePath: field.replace(/\s+/g, '_').toLowerCase()
+      const fileName = input.fileName || 'uploaded.pdf'
+      const legacyFields = Array.isArray(input.fields)
+        ? input.fields
+        : Array.isArray(input.extractedFields)
+          ? input.extractedFields
+          : []
+      const extraction =
+        pdfBytes && pdfBytes.length
+          ? await extractTemplateFieldsFromPdfBytes(pdfBytes)
+          : legacyFields.length
+            ? {
+                status: 'completed',
+                reasonCode: null,
+                error: null,
+                diagnostics: [
+                  {
+                    type: 'auto_build',
+                    severity: 'warning',
+                    code: 'TEMPLATE_AUTOBUILD_LEGACY_FIELDS',
+                    message: 'Template was generated from explicit field names without an uploaded source PDF.',
+                    details: { source: 'fields' }
+                  }
+                ],
+                fields: legacyFields
+                  .map((field) =>
+                    typeof field === 'string'
+                      ? {
+                          fieldName: field,
+                          fieldType: 'text',
+                          pageIndex: null,
+                          required: false,
+                          readOnly: false
+                        }
+                      : {
+                          fieldName: String(field?.fieldName || field?.name || field?.key || ''),
+                          fieldType: String(field?.fieldType || field?.type || 'text'),
+                          pageIndex: Number.isInteger(field?.pageIndex) ? field.pageIndex : null,
+                          required: field?.required === true,
+                          readOnly: field?.readOnly === true
+                        }
+                  )
+                  .filter((field) => field.fieldName)
+              }
+            : await extractTemplateFieldsFromPdfBytes(pdfBytes)
+      let sourceArtifact = null
+      if (pdfBytes && pdfBytes.length && Buffer.from(pdfBytes).toString('latin1').startsWith('%PDF-')) {
+        const checksum = createHash('sha256').update(pdfBytes).digest('hex')
+        const key = `${user.firmId}/templates/${randomUUID()}-${sanitizeFileName(fileName)}`
+        const stored = await objectStorage.putObject({
+          bucket: objectStorage.bucketDocuments,
+          key,
+          body: pdfBytes,
+          contentType: 'application/pdf',
+          retentionClass: 'uploaded_document',
+          metadata: {
+            checksum,
+            fileName,
+            templateName: input.name || fileName,
+            uploadedByUserId: user.id,
+            purpose: 'document_template_source'
+          }
         })
-      })
-      const sections = extractedFieldNames.reduce((acc, field) => {
-        const sectionKey = String(field).split('.')[0] || 'general'
-        acc[sectionKey] ||= []
-        acc[sectionKey].push(field)
-        return acc
-      }, {})
-      return this.createDocumentTemplate(user, {
-        name: input.name,
-        fileName: input.fileName || 'uploaded.pdf',
-        blueprint: { sections },
-        mappings: uniqueMappings,
-        extractedFields: extraction.fields,
-        extraction: {
-          status: extraction.status,
-          reasonCode: extraction.reasonCode,
-          error: extraction.error || null,
-          diagnostics: Array.isArray(extraction.diagnostics) ? extraction.diagnostics : []
+        sourceArtifact = {
+          bucket: objectStorage.bucketDocuments,
+          key,
+          fileName,
+          contentType: 'application/pdf',
+          checksum: stored.checksum || checksum,
+          sizeBytes: pdfBytes.length,
+          retentionClass: 'uploaded_document'
         }
+      }
+
+      const generated =
+        extraction.status === 'completed'
+          ? buildFormTemplateFromExtractedFields(extraction.fields || [])
+          : { formSchema: { sections: [] }, mappings: [], diagnostics: [], summary: { fieldCount: 0, mappingCount: 0 } }
+      const extractionDiagnostics = [
+        ...(Array.isArray(extraction.diagnostics) ? extraction.diagnostics : []),
+        ...(Array.isArray(generated.diagnostics) ? generated.diagnostics : [])
+      ]
+      const extractionEnvelope = {
+        status: extraction.status,
+        reasonCode: extraction.reasonCode,
+        error: extraction.error || null,
+        diagnostics: extractionDiagnostics,
+        fields: extraction.fields || []
+      }
+      const autoBuildSummary = {
+        ...generated.summary,
+        linkedFormTemplateId: null,
+        sourceArtifactAvailable: Boolean(sourceArtifact),
+        extractionStatus: extraction.status
+      }
+      const documentTemplate = this.createDocumentTemplate(user, {
+        name: input.name || fileName.replace(/\.pdf$/i, ''),
+        fileName,
+        documentMetadata: {
+          fileName,
+          sourceArtifact
+        },
+        blueprint: { sections: generated.formSchema.sections || [] },
+        formSchema: generated.formSchema,
+        mappings: extraction.status === 'completed' ? generated.mappings : [],
+        extractedFields: extraction.fields || [],
+        extraction: extractionEnvelope,
+        sourceArtifact,
+        autoBuildSummary,
+        exportReadiness:
+          extraction.status === 'failed'
+            ? {
+                status: 'blocked',
+                reason: extraction.reasonCode || 'extraction_failed',
+                message: extraction.error?.message || 'Template extraction failed.'
+              }
+            : {
+                status: sourceArtifact ? 'ready' : 'summary_fallback',
+                reason: sourceArtifact ? null : 'missing_source_artifact',
+                message: sourceArtifact
+                  ? 'Source PDF is available for template-driven export.'
+                  : 'No source PDF artifact is linked; exports use explicit summary fallback.'
+              }
       })
+
+      const aggregate = state.templateAggregates.find((entry) => entry.id === documentTemplate.id)
+      if (aggregate && extraction.status === 'completed') {
+        const generatedForm = this.createTemplateAggregate(user, {
+          kind: 'form',
+          name: `${documentTemplate.name} Form`,
+          description: `Generated from ${fileName}.`,
+          formSchema: generated.formSchema,
+          generatedFromDocumentTemplateId: documentTemplate.id,
+          generation: {
+            source: sourceArtifact ? 'pdf_acroform' : 'legacy_fields',
+            documentTemplateId: documentTemplate.id,
+            sourceFileName: fileName,
+            generatedAt: now(),
+            fieldCount: generated.summary.fieldCount,
+            repeatableSectionCount: generated.summary.repeatableSectionCount || 0,
+            diagnostics: extractionDiagnostics
+          }
+        })
+        aggregate.linkedFormTemplateId = generatedForm.id
+        aggregate.autoBuildSummary = { ...autoBuildSummary, linkedFormTemplateId: generatedForm.id }
+        aggregate.versions.push(
+          createTemplateVersion(aggregate, 'linked_form_generated', {
+            linkedFormTemplateId: generatedForm.id,
+            autoBuildSummary: aggregate.autoBuildSummary,
+            sourceArtifact,
+            extraction: extractionEnvelope,
+            actorUserId: user.id
+          })
+        )
+        addAudit(user.firmId, user.id, 'template_aggregate', aggregate.id, 'document_template.linked_form_generated', {
+          linkedFormTemplateId: generatedForm.id,
+          source: generatedForm.generation?.source || 'auto_build'
+        })
+        persist()
+        return documentTemplateAdapter(aggregate)
+      }
+
+      return aggregate ? documentTemplateAdapter(aggregate) : documentTemplate
     },
     createPortalLink(user, profileId, options = {}) {
       const firmContext = requireFirmContext(user, { method: 'store.createPortalLink' })

@@ -38,12 +38,15 @@ function normalizePublishPreflightIssue(issue = {}, index = 0) {
   const rowIndex = normalizeIssueRowIndex(issue)
   const message = String(issue?.message || 'Validation issue')
   const sourceMeta = issue?.meta && typeof issue.meta === 'object' ? issue.meta : {}
-  const repeaterPath = normalizeRepeaterPath(issue?.repeaterPath || sourceMeta.repeaterPath || sourceMeta.normalizedRepeaterPath)
+  const repeaterPath = normalizeRepeaterPath(
+    issue?.repeaterPath || sourceMeta.repeaterPath || sourceMeta.normalizedRepeaterPath
+  )
   const issueId = sourceMeta.issueId || [code, rowIndex ?? 'global', field || path || index].join(':')
   const rowAnchor = rowIndex != null ? `#mapping-row-${rowIndex}` : ''
   const inspectorTarget = String(sourceMeta.inspectorTarget || field || sourceMeta.fieldKey || 'sourcePath')
   const rowId = String(issue?.rowId || sourceMeta.rowId || '').trim()
-  const severity = String(issue?.severity || sourceMeta.severity || 'error').toLowerCase() === 'warning' ? 'warning' : 'error'
+  const severity =
+    String(issue?.severity || sourceMeta.severity || 'error').toLowerCase() === 'warning' ? 'warning' : 'error'
   const blocking = issue?.blocking === false || sourceMeta.blocking === false ? false : severity !== 'warning'
   return {
     code,
@@ -121,7 +124,8 @@ function normalizeExtractionEnvelope(extraction = {}) {
     status: extraction?.status === 'failed' ? 'failed' : 'completed',
     reasonCode,
     error: normalizedError,
-    diagnostics
+    diagnostics,
+    fields: Array.isArray(extraction?.fields) ? extraction.fields : []
   }
 }
 
@@ -202,9 +206,9 @@ export function createTemplatesService({ templateRepository, policy, store = nul
       policy.requireGuard(user, 'canEditTemplate')
       return runMutation(() => templateRepository.createDocumentTemplate(user, input))
     },
-    autoBuild(user, input) {
+    async autoBuild(user, input) {
       policy.requireGuard(user, 'canEditTemplate')
-      const template = runMutation(() => templateRepository.autoBuildTemplate(user, input))
+      const template = await runMutation(() => templateRepository.autoBuildTemplate(user, input))
       return {
         ...template,
         extraction: normalizeExtractionEnvelope(template?.extraction || {})

@@ -2,16 +2,19 @@ import { randomUUID } from 'node:crypto'
 import {
   enqueueExportJob,
   listExportQueueJobs,
-  processExportQueueTick,
+  processExportQueueTickAsync,
   readExportWorkerStatus,
   requeueExportJob
 } from '../../storage.mjs'
-import { buildExportArtifact, buildExportArtifactPayload } from '../../export-artifact.mjs'
+import { renderExportArtifact, renderExportArtifactPayload } from '../../export-artifact.mjs'
 import { resolveExportData, computeMappingVersionHash } from '../../export-data-resolution.mjs'
 import { createFirmContext, validateEntityOwnership } from '../shared/tenancy.mjs'
 
 function latestTemplateVersion(template) {
-  const latest = Array.isArray(template?.versions) && template.versions.length > 0 ? template.versions[template.versions.length - 1] : null
+  const latest =
+    Array.isArray(template?.versions) && template.versions.length > 0
+      ? template.versions[template.versions.length - 1]
+      : null
   return latest?.versionHash || template?.versionHash || latest?.version || null
 }
 
@@ -20,9 +23,14 @@ function resolveSubmission(state, firmId, submissionId, clientId) {
     return state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === firmId) || null
   }
   const candidates = state.formSubmissions
-    .filter((entry) => entry.firmId === firmId && (!clientId || entry.profileId === clientId))
-    .sort((a, b) => String(b.submittedAt || b.createdAt || '').localeCompare(String(a.submittedAt || a.createdAt || '')) ||
-      String(b.id).localeCompare(String(a.id)))
+    .filter(
+      (entry) => entry.firmId === firmId && (!clientId || entry.clientId === clientId || entry.profileId === clientId)
+    )
+    .sort(
+      (a, b) =>
+        String(b.submittedAt || b.createdAt || '').localeCompare(String(a.submittedAt || a.createdAt || '')) ||
+        String(b.id).localeCompare(String(a.id))
+    )
   return candidates[0] || null
 }
 
@@ -37,7 +45,10 @@ function createRenderContext({ firm, template, client, submission }) {
       version: latestTemplateVersion(template),
       versionHash: latestTemplateVersion(template),
       mappingVersionHash,
-      mappings
+      mappings,
+      sourceArtifact: template?.sourceArtifact || template?.documentMetadata?.sourceArtifact || null,
+      exportReadiness: template?.exportReadiness || null,
+      linkedFormTemplateId: template?.linkedFormTemplateId || null
     },
     firm: firm
       ? {
@@ -47,24 +58,29 @@ function createRenderContext({ firm, template, client, submission }) {
           branding: firm.branding || null
         }
       : null,
-    client: client ? {
-      id: client.id,
-      firstName: client.firstName || null,
-      lastName: client.lastName || null,
-      email: client.email || null,
-      phone: client.phone || null,
-      dateOfBirth: client.dateOfBirth || null,
-      kind: client.kind || null,
-      stage: client.stage || null,
-      source: client.source || null
-    } : null,
-    submission: submission ? {
-      id: submission.id,
-      profileId: submission.profileId || null,
-      templateId: submission.templateId || null,
-      submittedAt: submission.submittedAt || submission.createdAt || null,
-      data: submission.data || {}
-    } : null,
+    client: client
+      ? {
+          id: client.id,
+          firstName: client.firstName || null,
+          lastName: client.lastName || null,
+          email: client.email || null,
+          phone: client.phone || null,
+          dateOfBirth: client.dateOfBirth || null,
+          kind: client.kind || null,
+          stage: client.stage || null,
+          source: client.source || null
+        }
+      : null,
+    submission: submission
+      ? {
+          id: submission.id,
+          profileId: submission.clientId || submission.profileId || null,
+          clientId: submission.clientId || submission.profileId || null,
+          templateId: submission.templateId || null,
+          submittedAt: submission.submittedAt || submission.createdAt || null,
+          data: submission.data || {}
+        }
+      : null,
     resolved: {
       ...resolved,
       mappingVersionHash
@@ -142,7 +158,10 @@ function summarizeQueueMachineState(jobs = [], generatedAt) {
       active: retrying.length,
       readyNow: retryReadyNow.length,
       scheduledLater: retryScheduledLater.length,
-      countsByAttempt: Object.entries(retryCountsByAttempt).map(([attempt, count]) => ({ attempt: Number(attempt), count }))
+      countsByAttempt: Object.entries(retryCountsByAttempt).map(([attempt, count]) => ({
+        attempt: Number(attempt),
+        count
+      }))
     },
     failed: {
       count: failed.length,
@@ -159,7 +178,13 @@ function summarizeQueueMachineState(jobs = [], generatedAt) {
   }
 }
 
-export function createStoreExportsRepository({ state, persist, addAuditEvent, objectStorage, now = () => new Date().toISOString() }) {
+export function createStoreExportsRepository({
+  state,
+  persist,
+  addAuditEvent,
+  objectStorage,
+  now = () => new Date().toISOString()
+}) {
   function parseIsoDate(value) {
     if (!value) return null
     const parsed = new Date(value)
@@ -209,7 +234,9 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
   return {
     list(user, options = {}) {
       state.exportJobs = listExportQueueJobs()
-      const status = String(options.status || '').trim().toLowerCase()
+      const status = String(options.status || '')
+        .trim()
+        .toLowerCase()
       const profileId = String(options.profileId || options.clientId || '').trim()
       const fromDate = parseIsoDate(options.fromDate)
       const toDate = parseIsoDate(options.toDate)
@@ -265,9 +292,13 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
     },
     retry(user, exportId) {
       const firmContext = createFirmContext(user, { method: 'exports.retry' })
-      const existing = validateEntityOwnership(firmContext, state.exportJobs.find((entry) => entry.id === exportId), {
-        entityName: 'Export'
-      })
+      const existing = validateEntityOwnership(
+        firmContext,
+        state.exportJobs.find((entry) => entry.id === exportId),
+        {
+          entityName: 'Export'
+        }
+      )
 
       const updated = requeueExportJob(exportId)
       if (!updated) throw new Error('Export not found.')
@@ -339,25 +370,45 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
     },
     async processQueued() {
       const before = readExportWorkerStatus()
-      const result = processExportQueueTick({
+      const result = await processExportQueueTickAsync({
         workerId: 'api-process-endpoint',
         limit: 10,
         leaseMs: 15_000,
-        processor(job) {
+        async processor(job) {
           const failCount = Number(job?.metadata?.simulateFailuresRemaining || 0)
           if (failCount > 0) {
             throw new Error(`Simulated export failure for ${job.id}`)
           }
-          const artifact = buildExportArtifact(job)
+          const artifact = await renderExportArtifact(job, { objectStorage })
           const key = `${job.firmId}/exports/${artifact.fileName}`
+          const stored = await objectStorage.putObject({
+            bucket: objectStorage.bucketExports,
+            key,
+            body: artifact.body,
+            contentType: artifact.object.contentType,
+            retentionClass: artifact.object.retentionClass,
+            metadata: {
+              checksum: artifact.artifact.checksum,
+              exportJobId: job.id,
+              renderer: artifact.artifact.renderer,
+              templateId: job.templateId,
+              clientId: job.clientId
+            }
+          })
           return {
-            ...artifact,
+            fileName: artifact.fileName,
+            preview: artifact.preview,
+            artifact: {
+              ...artifact.artifact,
+              checksum: stored.checksum || artifact.artifact.checksum,
+              sizeBytes: artifact.body.length
+            },
             idempotencyKey: job.execution?.idempotencyKey || job.idempotencyKey || job.id,
             execution: job.execution || null,
             object: {
               bucket: objectStorage.bucketExports,
               key,
-              checksum: artifact.object.checksum,
+              checksum: stored.checksum || artifact.object.checksum,
               contentType: artifact.object.contentType,
               retentionClass: artifact.object.retentionClass
             }
@@ -369,14 +420,33 @@ export function createStoreExportsRepository({ state, persist, addAuditEvent, ob
       const retried = Math.max(0, Number(after.byStatus?.retrying || 0) - Number(before.byStatus?.retrying || 0))
       return { processed: result.processed, leased: result.leased, failed: result.failed, deadLettered, retried }
     },
-    getDownload(user, exportId) {
+    async getDownload(user, exportId) {
       const firmContext = createFirmContext(user, { method: 'exports.download' })
-      const job = validateEntityOwnership(firmContext, state.exportJobs.find((entry) => entry.id === exportId), {
-        entityName: 'Export'
-      })
+      const job = validateEntityOwnership(
+        firmContext,
+        state.exportJobs.find((entry) => entry.id === exportId),
+        {
+          entityName: 'Export'
+        }
+      )
       if (job.status !== 'completed') throw new Error('Export is not completed yet.')
 
-      const payload = buildExportArtifactPayload(job)
+      if (job.output?.object?.bucket && job.output?.object?.key) {
+        try {
+          const stored = await objectStorage.getObject(job.output.object)
+          return {
+            body: stored.body,
+            fileName: job.output.fileName,
+            contentType: stored.contentType || job.output.object.contentType,
+            checksum: stored.checksum || job.output.object.checksum,
+            sizeBytes: stored.body.length
+          }
+        } catch {
+          // Older completed jobs recorded object metadata before artifact bytes were persisted.
+        }
+      }
+
+      const payload = await renderExportArtifactPayload(job, { objectStorage })
       return {
         body: payload.body,
         fileName: payload.fileName,

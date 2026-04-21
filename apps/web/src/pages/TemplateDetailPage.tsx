@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useParams } from 'react-router-dom'
+import { Link, useParams } from 'react-router-dom'
 import { ApiError, api, routes } from '../lib/client'
 import { formatDateTime, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type {
   DocumentTemplate,
+  FormTemplate,
   FormSubmission,
   MappingRow,
   Profile,
@@ -38,6 +39,7 @@ interface TemplateDetailData {
   transitions: Array<Record<string, unknown>>
   profiles: Profile[]
   submissions: FormSubmission[]
+  formTemplates: FormTemplate[]
 }
 
 function emptyMapping(): MappingRow {
@@ -50,6 +52,14 @@ function emptyMapping(): MappingRow {
     transformType: '',
     transformExpression: ''
   }
+}
+
+function fieldMeta(field: Record<string, unknown> | string, key: string) {
+  return field && typeof field === 'object' && !Array.isArray(field) ? field[key] : undefined
+}
+
+function fieldName(field: Record<string, unknown> | string) {
+  return String(fieldMeta(field, 'fieldName') || field)
 }
 
 export function Component() {
@@ -66,17 +76,23 @@ export function Component() {
   const [revertSelection, setRevertSelection] = useState({ targetVersion: '', changelog: '' })
 
   const { data, error, loading } = useAsync<TemplateDetailData>(async () => {
-    const [templates, versions, transitions, profiles, submissions] = await Promise.all([
+    const [templates, versions, transitions, profiles, submissions, formTemplates] = await Promise.all([
       api.get<DocumentTemplate[]>(routes.documentTemplates()),
       api.get<TemplateVersion[]>(routes.documentTemplateVersions(templateId)),
       api.get<Array<Record<string, unknown>>>(routes.documentTemplatePublishTransitions(templateId)),
       api.get<Profile[]>(routes.profiles({ kind: 'client' })),
-      api.get<FormSubmission[]>(routes.formSubmissions())
+      api.get<FormSubmission[]>(routes.formSubmissions()),
+      api.get<FormTemplate[]>(routes.formTemplates())
     ])
-    return { templates, versions, transitions, profiles, submissions }
+    return { templates, versions, transitions, profiles, submissions, formTemplates }
   }, [templateId, refreshKey])
 
   const template = data?.templates.find((entry) => entry.id === templateId) || null
+  const linkedForm = data?.formTemplates.find((entry) => entry.id === template?.linkedFormTemplateId) || null
+  const extractionFields = template?.extraction?.fields?.length
+    ? template.extraction.fields
+    : template?.extractedFields || []
+  const extractionDiagnostics = template?.extraction?.diagnostics || []
 
   useEffect(() => {
     if (!template) return
@@ -144,6 +160,21 @@ export function Component() {
     }
   }
 
+  async function handleQueueExport(type: 'pdf' | 'xlsx') {
+    if (!template || !selection.clientId) return
+    try {
+      await api.post(routes.exports(), {
+        templateId: template.id,
+        clientId: selection.clientId,
+        submissionId: selection.submissionId || undefined,
+        type
+      })
+      setStatusMessage(`${type.toUpperCase()} export queued.`)
+    } catch (exportError) {
+      setStatusMessage(exportError instanceof Error ? exportError.message : 'Export queue failed.')
+    }
+  }
+
   async function handleCompareVersions(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     if (!template) return
@@ -198,9 +229,86 @@ export function Component() {
             <StatusBadge status={template.publishState || 'draft'} />
             <StatusBadge status={`${template.mappings.length} mappings`} />
             <StatusBadge status={`${data.versions.length} versions`} />
+            <StatusBadge status={template.exportReadiness?.status || 'export readiness unknown'} />
           </>
         }
       />
+      <PageSection
+        title="Source and generated form"
+        subtitle="Auto-build output is visible here: source artifact, extracted fields, linked form, and export readiness."
+      >
+        <div className="detail-grid">
+          <Card className="section-card">
+            <h3>Source PDF</h3>
+            <div className="compact-stack">
+              <p className="muted">
+                File: {template.sourceArtifact?.fileName || template.fileName || 'No source artifact'}
+              </p>
+              <p className="muted">Content type: {template.sourceArtifact?.contentType || 'Not persisted'}</p>
+              <p className="muted">
+                Size: {template.sourceArtifact?.sizeBytes ? `${template.sourceArtifact.sizeBytes} bytes` : 'Unknown'}
+              </p>
+              <p className="muted">Checksum: {template.sourceArtifact?.checksum || 'Unavailable'}</p>
+              <StatusBadge status={template.sourceArtifact ? 'source pdf persisted' : 'summary fallback only'} />
+            </div>
+          </Card>
+
+          <Card className="section-card">
+            <h3>Extraction readiness</h3>
+            <div className="compact-stack">
+              <StatusBadge status={template.extraction?.status || 'unknown'} />
+              <StatusBadge status={`${extractionFields.length} fields`} />
+              <StatusBadge status={`${template.autoBuildSummary?.repeatableSectionCount || 0} repeaters`} />
+              <StatusBadge status={template.exportReadiness?.status || 'not assessed'} />
+              {template.extraction?.error?.message ? (
+                <InlineNotice tone="warning">{template.extraction.error.message}</InlineNotice>
+              ) : null}
+            </div>
+          </Card>
+
+          <Card className="section-card">
+            <h3>Linked form template</h3>
+            {linkedForm ? (
+              <div className="compact-stack">
+                <Link className="text-link" to={`/forms?templateId=${linkedForm.id}`}>
+                  {linkedForm.name}
+                </Link>
+                <p className="muted">Sections: {linkedForm.sections.length}</p>
+                <p className="muted">Generated from: {linkedForm.generation?.source || 'auto-build'}</p>
+              </div>
+            ) : (
+              <EmptyState
+                title="No linked form generated."
+                detail="Failed or manually created templates can still use summary fallback exports when explicitly supported."
+              />
+            )}
+          </Card>
+        </div>
+
+        {extractionDiagnostics.length ? (
+          <div className="table-shell">
+            <table>
+              <thead>
+                <tr>
+                  <th>Diagnostic</th>
+                  <th>Severity</th>
+                  <th>Message</th>
+                </tr>
+              </thead>
+              <tbody>
+                {extractionDiagnostics.map((diagnostic, index) => (
+                  <tr key={`diagnostic-${index}`}>
+                    <td>{String(diagnostic.code || diagnostic.reasonCode || 'diagnostic')}</td>
+                    <td>{String(diagnostic.severity || 'info')}</td>
+                    <td>{String(diagnostic.message || 'No message')}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : null}
+      </PageSection>
+
       <PageSection
         title={template.name}
         subtitle={`${template.publishState || 'draft'} template. Updated ${formatDateTime(template.updatedAt || template.createdAt)}.`}
@@ -217,7 +325,7 @@ export function Component() {
           </Card>
 
           <Card className="section-card">
-            <h3>Publish controls</h3>
+            <h3>Publish and export controls</h3>
             <div className="compact-stack">
               <button type="button" onClick={() => void handlePreviewMappings()}>
                 Run preview
@@ -245,8 +353,26 @@ export function Component() {
               >
                 Publish template
               </button>
+              <div className="actions-row">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void handleQueueExport('pdf')}
+                  disabled={!selection.clientId || !hasGuard(user, 'canWriteExports')}
+                >
+                  Queue PDF
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => void handleQueueExport('xlsx')}
+                  disabled={!selection.clientId || !hasGuard(user, 'canWriteExports')}
+                >
+                  Queue XLSX
+                </button>
+              </div>
               <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
-                {statusMessage || 'Preview and publish now live on a dedicated editor route.'}
+                {statusMessage || 'Choose a client in Preview before queuing a template-driven export.'}
               </p>
             </div>
           </Card>
@@ -254,6 +380,47 @@ export function Component() {
       </PageSection>
 
       <div className="split-grid">
+        <PageSection
+          title="Extracted fields"
+          subtitle="AcroForm fields remain visible so mappings can be reviewed against the uploaded PDF."
+        >
+          {extractionFields.length ? (
+            <div className="table-shell">
+              <table>
+                <thead>
+                  <tr>
+                    <th>Field</th>
+                    <th>Type</th>
+                    <th>Page</th>
+                    <th>Required</th>
+                    <th>Read only</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {extractionFields.map((field, index) => (
+                    <tr key={`${fieldName(field)}-${index}`}>
+                      <td>{fieldName(field)}</td>
+                      <td>{String(fieldMeta(field, 'fieldType') || 'text')}</td>
+                      <td>
+                        {fieldMeta(field, 'pageIndex') === null || fieldMeta(field, 'pageIndex') === undefined
+                          ? 'Unknown'
+                          : Number(fieldMeta(field, 'pageIndex')) + 1}
+                      </td>
+                      <td>{fieldMeta(field, 'required') ? 'Yes' : 'No'}</td>
+                      <td>{fieldMeta(field, 'readOnly') ? 'Yes' : 'No'}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ) : (
+            <EmptyState
+              title="No extracted fields."
+              detail="Upload a fillable AcroForm PDF through Auto-build to populate this table."
+            />
+          )}
+        </PageSection>
+
         <PageSection
           title="Mappings"
           subtitle="Edit source paths, transforms, and repeater selectors without returning to the shell."

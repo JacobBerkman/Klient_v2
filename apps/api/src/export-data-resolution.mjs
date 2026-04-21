@@ -129,7 +129,9 @@ export function canonicalizeMappings(inputMappings = []) {
 }
 
 export function computeMappingVersionHash(mappings = []) {
-  return createHash('sha256').update(stableSerialize(canonicalizeMappings(mappings))).digest('hex')
+  return createHash('sha256')
+    .update(stableSerialize(canonicalizeMappings(mappings)))
+    .digest('hex')
 }
 
 export function resolveExportData({ mappings = [], profile = null, submission = null } = {}) {
@@ -146,7 +148,10 @@ export function resolveExportData({ mappings = [], profile = null, submission = 
         blocking: isRequired
       })
     }
-    if ((transformed === null || transformed === undefined || transformed === '') && Object.hasOwn(rule || {}, 'defaultValue')) {
+    if (
+      (transformed === null || transformed === undefined || transformed === '') &&
+      Object.hasOwn(rule || {}, 'defaultValue')
+    ) {
       addWarning(warnings, 'FALLBACK_DEFAULT_APPLIED', 'Default value applied after transform.')
     }
     if (rawValue != null && (transformed === null || transformed === undefined || transformed === '')) {
@@ -157,8 +162,14 @@ export function resolveExportData({ mappings = [], profile = null, submission = 
     const targetType = String(rule.targetType || '').trim()
     if (targetType && value != null) {
       const valueType = Array.isArray(value) ? 'array' : typeof value
-      const normalizedType = valueType === 'number' || valueType === 'boolean' || valueType === 'string' ? valueType : 'text'
-      if (normalizedType !== targetType && !(targetType === 'text' && normalizedType === 'string')) {
+      const normalizedType =
+        valueType === 'number' || valueType === 'boolean' || valueType === 'string' ? valueType : 'text'
+      const compatible =
+        normalizedType === targetType ||
+        (targetType === 'text' && normalizedType === 'string') ||
+        (targetType === 'select' && normalizedType === 'string') ||
+        (targetType === 'checkbox' && ['boolean', 'string'].includes(normalizedType))
+      if (!compatible) {
         addWarning(
           warnings,
           'TYPE_MISMATCH_HINT',

@@ -985,6 +985,72 @@ export function processExportQueueTick({ workerId = 'worker', limit = 5, leaseMs
   }
 }
 
+export async function processExportQueueTickAsync({
+  workerId = 'worker',
+  limit = 5,
+  leaseMs = 30_000,
+  processor,
+  onLeased
+} = {}) {
+  const startedAt = Date.now()
+  const stalledJobs = listExportQueueJobs().filter((job) => {
+    if (job.status !== 'running' || !job.leaseExpiresAt) return false
+    return Number(new Date(job.leaseExpiresAt)) <= startedAt
+  })
+  let timedOutRecovered = 0
+  for (const stalledJob of stalledJobs) {
+    markExportJobFailed(stalledJob.id, `Export lease timed out for job ${stalledJob.id}`, {
+      maxAttempts: stalledJob.maxAttempts || 3,
+      workerId,
+      failureClass: 'transient'
+    })
+    timedOutRecovered += 1
+  }
+  const leased = leaseExportJobs({ workerId, limit, leaseMs })
+  await onLeased?.(leased)
+  let processed = 0
+  let failed = 0
+  let skipped = 0
+
+  for (const job of leased) {
+    const current = getExportJob(job.id)
+    if (current?.status === 'completed' || current?.status === 'dead-letter') {
+      skipped += 1
+      continue
+    }
+    try {
+      const output = await processor?.({
+        ...job,
+        execution: {
+          idempotencyKey: job.idempotencyKey || job.id,
+          workerId,
+          leasedAt: new Date(startedAt).toISOString(),
+          leaseMs
+        }
+      })
+      markExportJobCompleted(job.id, output)
+      processed += 1
+    } catch (error) {
+      markExportJobFailed(job.id, error?.message || String(error), {
+        maxAttempts: job.maxAttempts || 3,
+        workerId,
+        failureClass: error?.failureClass || null
+      })
+      failed += 1
+    }
+  }
+
+  return {
+    leased: leased.length,
+    processed,
+    failed,
+    skipped,
+    timedOutRecovered,
+    durationMs: Date.now() - startedAt,
+    timestamp: nowIso()
+  }
+}
+
 export function readQuerySummary() {
   return {
     firms: db.prepare('SELECT COUNT(*) AS count FROM firms').get().count,

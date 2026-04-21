@@ -49,6 +49,7 @@ export function Component() {
   })
 
   const profileFilter = searchParams.get('profileId') || ''
+  const templateFilter = searchParams.get('templateId') || ''
 
   const { data, error, loading } = useAsync<FormsPageData>(async () => {
     const [templates, drafts, submissions, profiles] = await Promise.all([
@@ -74,6 +75,11 @@ export function Component() {
     if (!data) return []
     return data.submissions.filter((entry) => !profileFilter || entry.clientId === profileFilter)
   }, [data, profileFilter])
+
+  const visibleTemplates = useMemo(() => {
+    if (!data) return []
+    return data.templates.filter((entry) => !templateFilter || entry.id === templateFilter)
+  }, [data, templateFilter])
 
   async function handleCreateTemplate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -128,7 +134,7 @@ export function Component() {
       />
 
       <StatGroup>
-        <MetricCard label="Form templates" value={data.templates.length} hint="Reusable intake and review schemas" />
+        <MetricCard label="Form templates" value={visibleTemplates.length} hint="Reusable intake and review schemas" />
         <MetricCard label="Drafts" value={visibleDrafts.length} hint="Collaborative work in progress" />
         <MetricCard label="Submissions" value={visibleSubmissions.length} hint="Saved and submitted records" />
         <MetricCard
@@ -216,24 +222,45 @@ export function Component() {
         </ActionPanel>
       </div>
 
-      <PageSection title="Templates" subtitle="Current intake and workflow schemas available for draft creation.">
-        {data.templates.length ? (
+      <PageSection
+        title="Templates"
+        subtitle="Generated PDF forms and manual intake schemas available for draft creation."
+      >
+        {visibleTemplates.length ? (
           <DataTable caption="Available form templates">
             <thead>
               <tr>
                 <th>Name</th>
+                <th>Source</th>
                 <th>Description</th>
                 <th>Sections</th>
               </tr>
             </thead>
             <tbody>
-              {data.templates.map((template) => (
+              {visibleTemplates.map((template) => (
                 <tr key={template.id}>
                   <td>
                     <strong>{template.name}</strong>
+                    {template.generatedFromDocumentTemplateId ? (
+                      <div className="muted">Generated from PDF auto-build</div>
+                    ) : null}
+                  </td>
+                  <td>
+                    {template.generatedFromDocumentTemplateId ? (
+                      <Link className="text-link" to={`/templates/${template.generatedFromDocumentTemplateId}`}>
+                        Source template
+                      </Link>
+                    ) : (
+                      <StatusBadge status="Manual" />
+                    )}
                   </td>
                   <td>{template.description || 'No description'}</td>
-                  <td>{template.sections.length}</td>
+                  <td>
+                    {template.sections.length}
+                    {template.generation?.repeatableSectionCount ? (
+                      <div className="muted">{template.generation.repeatableSectionCount} repeatable</div>
+                    ) : null}
+                  </td>
                 </tr>
               ))}
             </tbody>

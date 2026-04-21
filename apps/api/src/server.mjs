@@ -40,12 +40,14 @@ const bootedAt = new Date().toISOString()
 const startupDiagnostics = validateRuntimeConfig()
 const COOKIE_POLICY = Object.freeze({
   session: {
-    name: '__Host-klient-session',
+    secureName: '__Host-klient-session',
+    localName: 'klient-session',
     path: '/',
     sameSite: 'Strict'
   },
   csrf: {
-    name: '__Host-klient-csrf',
+    secureName: '__Host-klient-csrf',
+    localName: 'klient-csrf',
     path: '/',
     sameSite: 'Strict'
   }
@@ -104,12 +106,32 @@ function parseCookies(req) {
   )
 }
 
-function cookieConfig(req, overrides = {}) {
+function forwardedProto(req) {
   const xfProto = String(req.headers['x-forwarded-proto'] || '')
     .split(',')[0]
     .trim()
     .toLowerCase()
-  const secure = runtime.isProduction ? true : xfProto === 'https'
+  return xfProto
+}
+
+function shouldUseSecureCookies(req) {
+  if (runtime.isProduction) return true
+  if (forwardedProto(req) === 'https') return true
+  return req.socket?.encrypted === true
+}
+
+function cookieName(req, kind) {
+  const policy = COOKIE_POLICY[kind]
+  return shouldUseSecureCookies(req) ? policy.secureName : policy.localName
+}
+
+function cookieNamesForRead(kind) {
+  const policy = COOKIE_POLICY[kind]
+  return runtime.isProduction ? [policy.secureName] : [policy.localName, policy.secureName]
+}
+
+function cookieConfig(req, overrides = {}) {
+  const secure = shouldUseSecureCookies(req)
   return {
     secure,
     sameSite: overrides.sameSite || 'Strict',
@@ -131,7 +153,7 @@ function serializeCookie(name, value, options = {}) {
 
 function buildSessionCookie(req, sessionToken) {
   return serializeCookie(
-    COOKIE_POLICY.session.name,
+    cookieName(req, 'session'),
     sessionToken,
     cookieConfig(req, {
       path: COOKIE_POLICY.session.path,
@@ -142,14 +164,16 @@ function buildSessionCookie(req, sessionToken) {
 }
 
 function clearSessionCookie(req) {
-  return serializeCookie(
-    COOKIE_POLICY.session.name,
-    '',
-    cookieConfig(req, {
-      path: COOKIE_POLICY.session.path,
-      sameSite: COOKIE_POLICY.session.sameSite,
-      maxAge: 0
-    })
+  return cookieNamesForRead('session').map((name) =>
+    serializeCookie(
+      name,
+      '',
+      cookieConfig(req, {
+        path: COOKIE_POLICY.session.path,
+        sameSite: COOKIE_POLICY.session.sameSite,
+        maxAge: 0
+      })
+    )
   )
 }
 
@@ -182,8 +206,10 @@ function opsTokenFingerprint(token) {
 
 function resolveSessionToken(req) {
   const cookies = parseCookies(req)
-  const cookieToken = String(cookies[COOKIE_POLICY.session.name] || '').trim()
-  if (cookieToken) return cookieToken
+  for (const name of cookieNamesForRead('session')) {
+    const cookieToken = String(cookies[name] || '').trim()
+    if (cookieToken) return cookieToken
+  }
   return ''
 }
 
@@ -228,6 +254,11 @@ function getExpectedOrigins(req) {
   for (const candidateProtocol of protocols) {
     if (host) origins.add(`${candidateProtocol}://${host}`)
     if (forwardedHost) origins.add(`${candidateProtocol}://${forwardedHost}`)
+  }
+  if (!runtime.isProduction) {
+    ;['http://127.0.0.1:3000', 'http://localhost:3000', 'http://127.0.0.1:5173', 'http://localhost:5173'].forEach(
+      (origin) => origins.add(origin)
+    )
   }
   return origins
 }
@@ -320,7 +351,7 @@ function issueCsrfForSession(req, sessionToken, userId) {
     headers: {
       [CSRF_HEADER]: token.rawToken,
       'Set-Cookie': serializeCookie(
-        COOKIE_POLICY.csrf.name,
+        cookieName(req, 'csrf'),
         token.tokenId,
         cookieConfig(req, {
           path: COOKIE_POLICY.csrf.path,
@@ -333,14 +364,16 @@ function issueCsrfForSession(req, sessionToken, userId) {
 }
 
 function clearCsrfCookie(req) {
-  return serializeCookie(
-    COOKIE_POLICY.csrf.name,
-    '',
-    cookieConfig(req, {
-      path: COOKIE_POLICY.csrf.path,
-      sameSite: COOKIE_POLICY.csrf.sameSite,
-      maxAge: 0
-    })
+  return cookieNamesForRead('csrf').map((name) =>
+    serializeCookie(
+      name,
+      '',
+      cookieConfig(req, {
+        path: COOKIE_POLICY.csrf.path,
+        sameSite: COOKIE_POLICY.csrf.sameSite,
+        maxAge: 0
+      })
+    )
   )
 }
 
@@ -348,7 +381,10 @@ function validateCsrf(req, requestId, sessionToken, user) {
   const originError = validateOriginAndReferer(req, requestId)
   if (originError) return originError
   const cookies = parseCookies(req)
-  const cookieTokenId = String(cookies[COOKIE_POLICY.csrf.name] || '').trim()
+  const cookieTokenId =
+    cookieNamesForRead('csrf')
+      .map((name) => String(cookies[name] || '').trim())
+      .find(Boolean) || ''
   const headerToken = String(req.headers[CSRF_HEADER] || '').trim()
   if (!headerToken) return getCsrfErrorResponse('Missing CSRF token.', requestId)
   const [headerTokenId, nonce, signature] = headerToken.split('.')
@@ -1140,7 +1176,11 @@ export function createHttpServer({ modules }) {
         return replyJson(
           200,
           { ok: true, mfa: result, token: rotatedSession.token, user: rotatedSession.user, sessionRotated: true },
-          { 'X-Request-Id': requestId, ...csrf.headers }
+          {
+            'X-Request-Id': requestId,
+            ...csrf.headers,
+            'Set-Cookie': [buildSessionCookie(req, rotatedSession.token), csrf.headers['Set-Cookie']]
+          }
         )
       }
       if (pathname === '/api/auth/mfa/backup-codes/rotate' && req.method === 'POST') {
@@ -1178,7 +1218,10 @@ export function createHttpServer({ modules }) {
           firmId: sessionUser?.firmId || null
         })
         finalizeLog(200)
-        return replyJson(200, result, { 'X-Request-Id': requestId, 'Set-Cookie': clearCsrfCookie(req) })
+        return replyJson(200, result, {
+          'X-Request-Id': requestId,
+          'Set-Cookie': [...clearSessionCookie(req), ...clearCsrfCookie(req)]
+        })
       }
       if (pathname === '/api/dashboard' && req.method === 'GET') {
         const user = requireUser()
@@ -1607,7 +1650,7 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/templates/auto-build' && req.method === 'POST') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canEditTemplate')
-        const result = modules.templates.autoBuild(user, await parseBody(req))
+        const result = await modules.templates.autoBuild(user, await parseBody(req))
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -1762,7 +1805,7 @@ export function createHttpServer({ modules }) {
         const id = pathname.split('/')[3]
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadExports')
-        const artifact = modules.exports.getDownload(user, id)
+        const artifact = await modules.exports.getDownload(user, id)
         log('info', 'export.lifecycle.downloaded', {
           requestId,
           userId: user.id,

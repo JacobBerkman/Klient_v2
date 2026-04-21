@@ -10,6 +10,9 @@ export function sectionStorageKey(section: FormSection, index: number) {
 
 export function fieldInputType(field: FormField) {
   switch (field.type) {
+    case 'checkbox':
+    case 'boolean':
+      return 'checkbox'
     case 'number':
       return 'number'
     case 'date':

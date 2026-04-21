@@ -164,6 +164,17 @@ function parseCookieFromHeader(rawHeader, cookieName) {
     ?.split(';')[0]
 }
 
+function parseAnyCookieFromHeader(rawHeader, cookieNames) {
+  for (const cookieName of cookieNames) {
+    const cookie = parseCookieFromHeader(rawHeader, cookieName)
+    if (cookie) return cookie
+  }
+  return ''
+}
+
+const SESSION_COOKIE_NAMES = ['klient-session', '__Host-klient-session']
+const CSRF_COOKIE_NAMES = ['klient-csrf', '__Host-klient-csrf']
+
 function createSessionClient(port) {
   return {
     csrfToken: '',
@@ -181,14 +192,14 @@ function createSessionClient(port) {
         throw new Error(`CSRF bootstrap failed: ${csrfData?.message || csrfData?.error?.message || 'unknown error'}`)
       }
       this.csrfToken = csrfData.csrfToken
-      this.csrfCookie = parseCookieFromHeader(csrfResponse.headers.get('set-cookie'), '__Host-klient-csrf') || ''
+      this.csrfCookie = parseAnyCookieFromHeader(csrfResponse.headers.get('set-cookie'), CSRF_COOKIE_NAMES) || ''
       return { csrfToken: this.csrfToken, csrfCookie: this.csrfCookie }
     },
     updateStateFromResponse(response) {
       const setCookie = response.headers.get('set-cookie') || ''
       const nextCsrfToken = response.headers.get('x-csrf-token')
-      const nextSessionCookie = parseCookieFromHeader(setCookie, '__Host-klient-session')
-      const nextCsrfCookie = parseCookieFromHeader(setCookie, '__Host-klient-csrf')
+      const nextSessionCookie = parseAnyCookieFromHeader(setCookie, SESSION_COOKIE_NAMES)
+      const nextCsrfCookie = parseAnyCookieFromHeader(setCookie, CSRF_COOKIE_NAMES)
 
       if (nextSessionCookie) this.sessionCookie = nextSessionCookie
       if (nextCsrfToken) this.csrfToken = nextCsrfToken
@@ -209,7 +220,7 @@ function createSessionClient(port) {
           headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
           if (!headers.Cookie) {
             headers.Cookie = [this.sessionCookie, csrfCookie].filter(Boolean).join('; ')
-          } else if (csrfCookie && !headers.Cookie.includes('__Host-klient-csrf=')) {
+          } else if (csrfCookie && !CSRF_COOKIE_NAMES.some((name) => headers.Cookie.includes(`${name}=`))) {
             headers.Cookie = `${headers.Cookie}; ${csrfCookie}`
           }
           headers.Origin = headers.Origin || `http://127.0.0.1:${port}`
@@ -246,7 +257,7 @@ function createSessionClient(port) {
           headers['X-CSRF-Token'] = headers['X-CSRF-Token'] || csrfToken
           if (!headers.Cookie) {
             headers.Cookie = [this.sessionCookie, csrfCookie].filter(Boolean).join('; ')
-          } else if (csrfCookie && !headers.Cookie.includes('__Host-klient-csrf=')) {
+          } else if (csrfCookie && !CSRF_COOKIE_NAMES.some((name) => headers.Cookie.includes(`${name}=`))) {
             headers.Cookie = `${headers.Cookie}; ${csrfCookie}`
           }
           headers.Origin = headers.Origin || `http://127.0.0.1:${port}`
@@ -278,7 +289,7 @@ function createSessionClient(port) {
         body: JSON.stringify({ email, password })
       })
       const data = await response.json()
-      const sessionCookie = parseCookieFromHeader(response.headers.get('set-cookie'), '__Host-klient-session')
+      const sessionCookie = parseAnyCookieFromHeader(response.headers.get('set-cookie'), SESSION_COOKIE_NAMES)
       if (!response.ok || !sessionCookie) {
         throw new Error(`Login failed: ${data?.message || data?.error?.message || 'missing session cookie'}`)
       }

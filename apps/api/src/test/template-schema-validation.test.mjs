@@ -12,7 +12,8 @@ async function loadStore() {
   process.chdir(tempDir)
   try {
     process.env.APP_SECRET = 'test-secret-for-template-schema'
-    const moduleUrl = pathToFileURL(resolve(repoRoot, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
+    const moduleUrl =
+      pathToFileURL(resolve(repoRoot, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
     const mod = await import(moduleUrl)
     return mod.createStore()
   } finally {
@@ -86,7 +87,9 @@ test('rejects common expression operator mistakes with actionable metadata', asy
       assert.ok(issueCodes.includes('expression_operator_assignment'))
       assert.ok(issueCodes.includes('expression_operator_textual_logic'))
       assert.ok(issueCodes.includes('expression_incomplete_ternary'))
-      const assignmentIssue = (error.details?.issues || []).find((issue) => issue.code === 'expression_operator_assignment')
+      const assignmentIssue = (error.details?.issues || []).find(
+        (issue) => issue.code === 'expression_operator_assignment'
+      )
       assert.equal(assignmentIssue?.field, 'transform.expression')
       assert.match(String(assignmentIssue?.meta?.suggestion || ''), /equality/i)
       return true
@@ -188,7 +191,10 @@ test('rejects duplicate targets, unknown paths, and missing required fields', as
     },
     (error) => {
       assert.equal(error.code, 'SCHEMA_VALIDATION_FAILED')
-      assert.match(JSON.stringify(error.details.issues), /Duplicate pdfField|not a known profile\/form schema path|Required mapping/)
+      assert.match(
+        JSON.stringify(error.details.issues),
+        /Duplicate pdfField|not a known profile\/form schema path|Required mapping/
+      )
       return true
     }
   )
@@ -205,7 +211,12 @@ test('mapping preview resolves values for selected client and submission', async
       { pdfField: 'goals', sourcePath: 'goals' }
     ]
   })
-  const profile = store.createProfile(user, { kind: 'client', firstName: 'Casey', lastName: 'Preview', stage: 'intake' })
+  const profile = store.createProfile(user, {
+    kind: 'client',
+    firstName: 'Casey',
+    lastName: 'Preview',
+    stage: 'intake'
+  })
   const formTemplate = store.createFormTemplate(user, {
     name: 'Preview Form',
     sections: [{ key: 'goals', label: 'Goals', type: 'text' }]
@@ -226,7 +237,6 @@ test('mapping preview resolves values for selected client and submission', async
   assert.ok(preview.rows.some((row) => row.pdfField === 'goals'))
 })
 
-
 test('mapping preview resolves profile and submission explicit path prefixes', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)
@@ -239,7 +249,12 @@ test('mapping preview resolves profile and submission explicit path prefixes', a
       { pdfField: 'goal_via_form', sourcePath: 'form.goals' }
     ]
   })
-  const profile = store.createProfile(user, { kind: 'client', firstName: 'Morgan', lastName: 'Prefix', stage: 'intake' })
+  const profile = store.createProfile(user, {
+    kind: 'client',
+    firstName: 'Morgan',
+    lastName: 'Prefix',
+    stage: 'intake'
+  })
   const formTemplate = store.createFormTemplate(user, {
     name: 'Prefix Form',
     sections: [{ key: 'goals', label: 'Goals', type: 'text' }]
@@ -301,8 +316,16 @@ test('legacy and modern mapping payloads produce equivalent runtime preview outp
     submissionId: submission.id
   })
 
-  const modernRows = modernPreview.rows.map((row) => ({ pdfField: row.pdfField, sourcePath: row.sourcePath, value: row.value }))
-  const legacyRows = legacyPreview.rows.map((row) => ({ pdfField: row.pdfField, sourcePath: row.sourcePath, value: row.value }))
+  const modernRows = modernPreview.rows.map((row) => ({
+    pdfField: row.pdfField,
+    sourcePath: row.sourcePath,
+    value: row.value
+  }))
+  const legacyRows = legacyPreview.rows.map((row) => ({
+    pdfField: row.pdfField,
+    sourcePath: row.sourcePath,
+    value: row.value
+  }))
   assert.deepEqual(legacyRows, modernRows)
 })
 
@@ -358,7 +381,7 @@ test('auto-build template flow stays healthy with firm-aware source path validat
   const store = await loadStore()
   const user = createAdvisor(store)
 
-  const built = store.autoBuildTemplate(user, {
+  const built = await store.autoBuildTemplate(user, {
     name: 'Auto-build regression guard',
     fileBytes: [0x25, 0x50, 0x44, 0x46, 0x2d]
   })
@@ -447,7 +470,12 @@ test('publish blocks when preview contains unresolved required mappings', async 
     name: 'Publish blocking preview guard',
     mappings: [{ pdfField: 'required_first_name', sourcePath: 'profile.missingRequiredPath', required: true }]
   })
-  const profile = store.createProfile(user, { kind: 'client', firstName: 'Parker', lastName: 'Blocker', stage: 'intake' })
+  const profile = store.createProfile(user, {
+    kind: 'client',
+    firstName: 'Parker',
+    lastName: 'Blocker',
+    stage: 'intake'
+  })
   const formTemplate = store.createFormTemplate(user, {
     name: 'Publish blocker form',
     sections: [{ key: 'goal', label: 'Goal', type: 'text' }]
@@ -509,7 +537,12 @@ test('repeatable section mappings stay consistent across preview, publish prefli
     clientId: profile.id,
     templateId: formTemplate.id,
     status: 'submitted',
-    data: { assets: [{ accountName: '401k', value: 100000 }, { accountName: 'Roth IRA', value: 45000 }] }
+    data: {
+      assets: [
+        { accountName: '401k', value: 100000 },
+        { accountName: 'Roth IRA', value: 45000 }
+      ]
+    }
   })
 
   const preview = store.previewTemplateMappings(user, template.id, {
@@ -534,7 +567,9 @@ test('repeatable section mappings stay consistent across preview, publish prefli
     type: 'json'
   })
   const previewRowByField = Object.fromEntries(preview.rows.map((row) => [row.pdfField, row]))
-  const exportRowByField = Object.fromEntries((exportJob.renderContext?.resolved?.rows || []).map((row) => [row.pdfField, row]))
+  const exportRowByField = Object.fromEntries(
+    (exportJob.renderContext?.resolved?.rows || []).map((row) => [row.pdfField, row])
+  )
   assert.deepEqual(exportRowByField.asset_row?.value, previewRowByField.asset_row?.value)
   assert.equal(exportJob.renderContext?.resolved?.mappingVersionHash, preview.mappingVersionHash)
 })

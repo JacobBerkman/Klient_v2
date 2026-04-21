@@ -13,7 +13,8 @@ async function loadStore() {
   process.chdir(tempDir)
   try {
     process.env.APP_SECRET = 'test-secret-for-template-ingestion'
-    const moduleUrl = pathToFileURL(resolve(repoRoot, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
+    const moduleUrl =
+      pathToFileURL(resolve(repoRoot, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
     const mod = await import(moduleUrl)
     return mod.createStore()
   } finally {
@@ -37,7 +38,7 @@ test('autoBuildTemplate extracts AcroForm metadata and snapshots it in versions'
   const user = createAdvisor(store)
   const pdf = readFileSync(join(fixtureDir, 'acroform-mixed.pdf'))
 
-  const template = store.autoBuildTemplate(user, {
+  const template = await store.autoBuildTemplate(user, {
     name: 'Extracted Template',
     fileName: 'acroform-mixed.pdf',
     fileBytesBase64: pdf.toString('base64')
@@ -78,7 +79,7 @@ test('autoBuildTemplate returns failed extraction status for non-form pdf', asyn
   const user = createAdvisor(store)
   const pdf = readFileSync(join(fixtureDir, 'non-form.pdf'))
 
-  const template = store.autoBuildTemplate(user, {
+  const template = await store.autoBuildTemplate(user, {
     name: 'No Form Template',
     fileName: 'non-form.pdf',
     fileBytesBase64: pdf.toString('base64')
@@ -99,7 +100,7 @@ test('autoBuildTemplate returns failed extraction status for malformed files', a
   const user = createAdvisor(store)
   const pdf = readFileSync(join(fixtureDir, 'malformed.pdf'))
 
-  const template = store.autoBuildTemplate(user, {
+  const template = await store.autoBuildTemplate(user, {
     name: 'Malformed Template',
     fileName: 'malformed.pdf',
     fileBytesBase64: pdf.toString('base64')
@@ -121,7 +122,7 @@ test('autoBuildTemplate returns failed extraction status for AcroForm PDFs with 
     'latin1'
   )
 
-  const template = store.autoBuildTemplate(user, {
+  const template = await store.autoBuildTemplate(user, {
     name: 'No Fields Template',
     fileName: 'no-fields.pdf',
     fileBytesBase64: noFieldsPdf.toString('base64')

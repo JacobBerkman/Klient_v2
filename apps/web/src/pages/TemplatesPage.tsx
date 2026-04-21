@@ -31,6 +31,7 @@ export function Component() {
   const { user } = useAuth()
   const [refreshKey, setRefreshKey] = useState(0)
   const [statusMessage, setStatusMessage] = useState('')
+  const [autoBuildResult, setAutoBuildResult] = useState<DocumentTemplate | null>(null)
   const [createForm, setCreateForm] = useState({
     name: '',
     fileName: 'template.pdf',
@@ -71,14 +72,19 @@ export function Component() {
     setStatusMessage('')
     try {
       const bytes = Array.from(new Uint8Array(await autoBuildFile.arrayBuffer()))
-      await api.post(routes.documentTemplateAutoBuild(), {
+      const built = await api.post<DocumentTemplate>(routes.documentTemplateAutoBuild(), {
         name: autoBuildName || autoBuildFile.name.replace(/\.pdf$/i, ''),
         fileName: autoBuildFile.name,
         fileBytes: bytes
       })
       setAutoBuildName('')
       setAutoBuildFile(null)
-      setStatusMessage('Auto-build template created.')
+      setAutoBuildResult(built)
+      setStatusMessage(
+        built.extraction?.status === 'failed'
+          ? built.extraction.error?.message || 'Auto-build completed with extraction errors.'
+          : `Auto-build completed: ${built.autoBuildSummary?.fieldCount || built.extractedFields.length} fields, ${built.autoBuildSummary?.mappingCount || built.mappings.length} mappings.`
+      )
       setRefreshKey((value) => value + 1)
     } catch (buildError) {
       setStatusMessage(buildError instanceof Error ? buildError.message : 'Auto-build failed.')
@@ -174,6 +180,39 @@ export function Component() {
           <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
             {statusMessage || 'Auto-build stays intact, but now starts from a real templates screen.'}
           </p>
+          {autoBuildResult ? (
+            <Card className="section-card inset-card">
+              <div className="row-between">
+                <div>
+                  <strong>{autoBuildResult.name}</strong>
+                  <p className="muted">
+                    {autoBuildResult.sourceArtifact
+                      ? 'Source PDF persisted for template export.'
+                      : 'No source PDF artifact linked.'}
+                  </p>
+                </div>
+                <StatusBadge status={autoBuildResult.extraction?.status || 'completed'} />
+              </div>
+              <div className="pill-list">
+                <StatusBadge status={`${autoBuildResult.autoBuildSummary?.fieldCount || 0} fields`} />
+                <StatusBadge status={`${autoBuildResult.autoBuildSummary?.repeatableSectionCount || 0} repeaters`} />
+                {autoBuildResult.linkedFormTemplateId ? (
+                  <StatusBadge status="Linked form generated" />
+                ) : (
+                  <StatusBadge status="No linked form" />
+                )}
+              </div>
+              {autoBuildResult.extraction?.diagnostics?.length ? (
+                <p className="muted">
+                  Diagnostics:{' '}
+                  {autoBuildResult.extraction.diagnostics.map((entry) => String(entry.code || 'diagnostic')).join(', ')}
+                </p>
+              ) : null}
+              <Link className="text-link" to={`/templates/${autoBuildResult.id}`}>
+                Review generated template
+              </Link>
+            </Card>
+          ) : null}
         </ActionPanel>
       </div>
 
@@ -193,6 +232,11 @@ export function Component() {
                   <StatusBadge status={template.publishState || 'draft'} />
                 </div>
                 <p className="muted">File: {template.fileName}</p>
+                <div className="pill-list">
+                  <StatusBadge status={template.extraction?.status || 'completed'} />
+                  <StatusBadge status={template.exportReadiness?.status || 'summary_fallback'} />
+                  {template.linkedFormTemplateId ? <StatusBadge status="Linked form" /> : null}
+                </div>
                 <p className="muted">
                   {template.mappings?.length || 0} mappings, {template.versions?.length || 0} versions
                 </p>

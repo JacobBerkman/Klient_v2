@@ -3,6 +3,7 @@ import { createEvidenceRecorder } from './release-evidence.mjs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { PDFDocument } from 'pdf-lib'
 
 const evidence = createEvidenceRecorder({
   gate: 'smoke',
@@ -37,6 +38,15 @@ function runWorkerTick(ctx, extraEnv = {}) {
     throw new Error(`Export worker tick failed (${result.status}): ${result.stderr || result.stdout}`)
   }
   return result.stdout
+}
+
+async function createSmokeTemplatePdf() {
+  const pdf = await PDFDocument.create()
+  const page = pdf.addPage([612, 792])
+  const form = pdf.getForm()
+  form.createTextField('client_name').addToPage(page, { x: 72, y: 700, width: 240, height: 24 })
+  form.createTextField('salary').addToPage(page, { x: 72, y: 660, width: 160, height: 24 })
+  return pdf.save()
 }
 
 async function waitForExportCompletion(ctx, exportIds, { maxTicks = 30 } = {}) {
@@ -76,11 +86,19 @@ try {
     })
   })
 
+  const sourcePdf = await createSmokeTemplatePdf()
   const template = await context.request('/api/templates/auto-build', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ name: 'Auto Build Test', fields: ['client.name', 'client.address', 'assets.account'] })
+    body: JSON.stringify({
+      name: 'Auto Build Test',
+      fileName: 'smoke-template.pdf',
+      fileBytes: Array.from(sourcePdf)
+    })
   })
+  assert(template.extraction?.status === 'success', 'Smoke PDF template extraction should succeed.')
+  assert(template.linkedFormTemplateId, 'Smoke PDF auto-build should create a linked form template.')
+  assert(template.sourceArtifact?.objectKey, 'Smoke PDF auto-build should persist the source artifact.')
 
   const publishResult = await context.request(`/api/templates/${template.id}/publish`, {
     method: 'POST',
@@ -88,22 +106,20 @@ try {
     body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Smoke publish validation' })
   })
 
-  const formTemplate = await context.request('/api/forms/templates', {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({
-      name: 'Smoke Export Intake',
-      sections: [{ title: 'Basics', key: 'basics', fields: [{ key: 'salary', label: 'Salary', type: 'number' }] }]
-    })
-  })
+  const formTemplates = await context.request('/api/forms/templates', { headers })
+  const generatedFormTemplate = formTemplates.find((entry) => entry.id === template.linkedFormTemplateId)
+  assert(
+    generatedFormTemplate?.generatedFromDocumentTemplateId === template.id,
+    'Generated form template linkage missing.'
+  )
   const submission = await context.request('/api/forms/submissions', {
     method: 'POST',
     headers,
     body: JSON.stringify({
       clientId: profile.id,
-      templateId: formTemplate.id,
+      templateId: generatedFormTemplate.id,
       status: 'submitted',
-      data: { salary: 1000 }
+      data: { client_name: 'Smoke Path', salary: 1000 }
     })
   })
   await context.request(`/api/templates/${template.id}/mappings`, {
@@ -122,6 +138,11 @@ try {
     headers,
     body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: 'pdf' })
   })
+  const xlsxJob = await context.request('/api/exports', {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: 'xlsx' })
+  })
   const flakyJob = await context.request('/api/exports', {
     method: 'POST',
     headers,
@@ -135,25 +156,54 @@ try {
     })
   })
 
-  const completedExports = await waitForExportCompletion(context, [exportJob.id, flakyJob.id])
+  const completedExports = await waitForExportCompletion(context, [exportJob.id, xlsxJob.id, flakyJob.id])
   const exportsList = await context.request('/api/exports?sort=updatedAt_desc', { headers: context.authHeaders() })
   const queueHealth = await context.request('/api/ops/exports/queue', { headers: context.opsHeaders() })
 
-  assert(exportsList.some((entry) => entry.id === exportJob.id), 'Export job missing from export list.')
-  assert(exportsList.some((entry) => entry.id === flakyJob.id), 'Flaky export job missing from export list.')
+  assert(
+    exportsList.some((entry) => entry.id === exportJob.id),
+    'Export job missing from export list.'
+  )
+  assert(
+    exportsList.some((entry) => entry.id === xlsxJob.id),
+    'XLSX export job missing from export list.'
+  )
+  assert(
+    exportsList.some((entry) => entry.id === flakyJob.id),
+    'Flaky export job missing from export list.'
+  )
   const trackedSmokeExport = exportsList.find((entry) => entry.id === exportJob.id) || null
+  const trackedXlsxExport = exportsList.find((entry) => entry.id === xlsxJob.id) || null
   const trackedFlakyExport = exportsList.find((entry) => entry.id === flakyJob.id) || null
-  assert(completedExports.length === 2, 'Smoke export jobs did not both complete via worker execution.')
+  assert(completedExports.length === 3, 'Smoke export jobs did not all complete via worker execution.')
   assert(trackedSmokeExport?.status === 'completed', 'Primary smoke export did not complete.')
+  assert(trackedXlsxExport?.status === 'completed', 'XLSX smoke export did not complete.')
   assert(trackedFlakyExport?.status === 'completed', 'Flaky smoke export did not recover and complete.')
   assert(publishResult.status === 'published', 'Template publish failed.')
   assert(typeof queueHealth?.queue?.pending === 'number', 'Queue health pending counter missing.')
-  assert(typeof queueHealth?.queue?.machineState?.completed?.count === 'number', 'Queue machine completed count missing.')
-  assert(typeof queueHealth?.queue?.machineState?.deadLetter?.count === 'number', 'Queue machine dead-letter count missing.')
+  assert(
+    typeof queueHealth?.queue?.machineState?.completed?.count === 'number',
+    'Queue machine completed count missing.'
+  )
+  assert(
+    typeof queueHealth?.queue?.machineState?.deadLetter?.count === 'number',
+    'Queue machine dead-letter count missing.'
+  )
   assert(queueHealth?.queue?.stalled === 0, 'Queue health should not report stalled worker leases in smoke.')
 
   assert(trackedSmokeExport?.artifactAvailable === true, 'Completed smoke export artifact should be marked ready.')
-  const completedDownloadTarget = exportsList.find((entry) => entry.id === trackedSmokeExport.id && entry.status === 'completed')
+  assert(trackedXlsxExport?.artifactAvailable === true, 'Completed XLSX smoke export artifact should be marked ready.')
+  assert(
+    trackedSmokeExport?.output?.artifact?.renderer === 'pdf-lib-acroform',
+    'PDF smoke export should fill the uploaded template.'
+  )
+  assert(
+    trackedXlsxExport?.output?.artifact?.renderer === 'structured-xlsx',
+    'XLSX smoke export should use structured workbook renderer.'
+  )
+  const completedDownloadTarget = exportsList.find(
+    (entry) => entry.id === trackedSmokeExport.id && entry.status === 'completed'
+  )
   assert(Boolean(completedDownloadTarget), 'Completed smoke export should be available in export listing.')
   const download = await context.rawRequest(`/api/exports/${completedDownloadTarget.id}/download`, {
     headers: { Cookie: context.sessionCookie }
@@ -161,14 +211,28 @@ try {
   assert(download.status === 200, 'Completed smoke export should be downloadable.')
   const downloadType = download.headers.get('content-type') || ''
   assert(downloadType === 'application/pdf', 'Completed smoke export download should return PDF content type.')
+  const xlsxDownload = await context.rawRequest(`/api/exports/${trackedXlsxExport.id}/download`, {
+    headers: { Cookie: context.sessionCookie }
+  })
+  assert(xlsxDownload.status === 200, 'Completed XLSX smoke export should be downloadable.')
+  const xlsxDownloadType = xlsxDownload.headers.get('content-type') || ''
+  assert(
+    xlsxDownloadType === 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    'Completed XLSX smoke export download should return workbook content type.'
+  )
+  await xlsxDownload.arrayBuffer()
 
   const summary = {
     ok: true,
     profileId: profile.id,
     templateId: template.id,
+    linkedFormTemplateId: template.linkedFormTemplateId,
     exportJobId: trackedSmokeExport?.id || exportJob.id,
     exportStatus: exportsList.find((entry) => entry.id === (trackedSmokeExport?.id || exportJob.id))?.status,
-    exportArtifactReady: exportsList.find((entry) => entry.id === (trackedSmokeExport?.id || exportJob.id))?.artifactAvailable,
+    exportArtifactReady: exportsList.find((entry) => entry.id === (trackedSmokeExport?.id || exportJob.id))
+      ?.artifactAvailable,
+    xlsxJobId: trackedXlsxExport?.id || xlsxJob.id,
+    xlsxStatus: trackedXlsxExport?.status,
     flakyJobId: flakyJob.id,
     flakyStatus: exportsList.find((entry) => entry.id === flakyJob.id)?.status,
     queuePending: queueHealth?.queue?.pending,

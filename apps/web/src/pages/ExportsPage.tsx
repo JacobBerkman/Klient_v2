@@ -45,7 +45,8 @@ export function Component() {
   const [createForm, setCreateForm] = useState({
     templateId: '',
     clientId: searchParams.get('profileId') || '',
-    submissionId: ''
+    submissionId: '',
+    type: 'pdf'
   })
 
   if (!hasGuard(user, 'canReadExports')) {
@@ -95,9 +96,10 @@ export function Component() {
       await api.post(routes.exports(), {
         templateId: createForm.templateId,
         clientId: createForm.clientId,
-        submissionId: createForm.submissionId || undefined
+        submissionId: createForm.submissionId || undefined,
+        type: createForm.type
       })
-      setStatusMessage('Export queued.')
+      setStatusMessage(`${createForm.type.toUpperCase()} export queued.`)
       setCreateForm((current) => ({ ...current, submissionId: '' }))
       setRefreshKey((value) => value + 1)
     } catch (createError) {
@@ -208,6 +210,15 @@ export function Component() {
                 ))}
               </select>
             </Field>
+            <Field label="Artifact type">
+              <select
+                value={createForm.type}
+                onChange={(event) => setCreateForm((current) => ({ ...current, type: event.target.value }))}
+              >
+                <option value="pdf">PDF</option>
+                <option value="xlsx">XLSX workbook</option>
+              </select>
+            </Field>
             <button type="submit" data-testid="create-export-submit" disabled={!hasGuard(user, 'canWriteExports')}>
               Queue export
             </button>
@@ -275,6 +286,7 @@ export function Component() {
               <tr>
                 <th>Template</th>
                 <th>Client</th>
+                <th>Artifact</th>
                 <th>Status</th>
                 <th>Attempts</th>
                 <th>Updated</th>
@@ -289,7 +301,19 @@ export function Component() {
                   </td>
                   <td>{profileName(profileById.get(String(job.clientId || '')))}</td>
                   <td>
+                    <div className="compact-stack">
+                      <StatusBadge status={String(job.type || job.artifact?.format || 'pdf').toUpperCase()} />
+                      {job.artifact?.renderer ? <span className="muted">{job.artifact.renderer}</span> : null}
+                      {job.artifact?.fallbackReason ? (
+                        <span className="muted">Fallback: {job.artifact.fallbackReason}</span>
+                      ) : null}
+                    </div>
+                  </td>
+                  <td>
                     <StatusBadge status={job.statusLabel || job.status || 'queued'} />
+                    {job.artifact?.diagnostics?.length ? (
+                      <div className="muted">{job.artifact.diagnostics.length} renderer diagnostics</div>
+                    ) : null}
                   </td>
                   <td>
                     {job.attempts || 0} / {job.maxAttempts || 0}

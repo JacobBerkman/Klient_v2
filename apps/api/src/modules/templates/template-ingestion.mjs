@@ -1,3 +1,5 @@
+import { PDFDocument } from 'pdf-lib'
+
 const PDF_HEADER = '%PDF-'
 
 const EXTRACTION_REASON = {
@@ -131,7 +133,7 @@ function resolveAcroFormObject(pdfText, pdfObjects) {
   return pdfObjects.get(Number(refMatch[1])) || null
 }
 
-export function extractTemplateFieldsFromPdfBytes(bytes) {
+export function extractTemplateFieldsFromPdfBytesLightweight(bytes) {
   if (!bytes || bytes.length === 0) {
     const reasonCode = EXTRACTION_REASON.malformed
     return {
@@ -204,7 +206,7 @@ export function extractTemplateFieldsFromPdfBytes(bytes) {
     extracted.push({
       fieldName: field.name,
       fieldType: parseFieldType(dict, field.flags, field.ft),
-      pageIndex: field.pageRef != null ? pageIndexByRef.get(field.pageRef) ?? null : null,
+      pageIndex: field.pageRef != null ? (pageIndexByRef.get(field.pageRef) ?? null) : null,
       required: (field.flags & 2) !== 0,
       readOnly: (field.flags & 1) !== 0
     })
@@ -222,4 +224,121 @@ export function extractTemplateFieldsFromPdfBytes(bytes) {
   }
 
   return { status: 'completed', reasonCode: null, error: null, diagnostics: [], fields: extracted }
+}
+
+function normalizePdfLibFieldType(field) {
+  const typeName = String(field?.constructor?.name || '').toLowerCase()
+  if (typeName.includes('textfield')) return 'text'
+  if (typeName.includes('checkbox')) return 'checkbox'
+  if (typeName.includes('radiogroup')) return 'radio'
+  if (typeName.includes('dropdown') || typeName.includes('optionlist')) return 'choice'
+  if (typeName.includes('signature')) return 'signature'
+  return 'unknown'
+}
+
+function fieldBoolean(field, methodName) {
+  try {
+    return typeof field?.[methodName] === 'function' ? field[methodName]() === true : false
+  } catch {
+    return false
+  }
+}
+
+function normalizePdfLibFields(fields = []) {
+  return fields
+    .map((field) => {
+      let fieldName = ''
+      try {
+        fieldName = String(field?.getName?.() || '').trim()
+      } catch {
+        fieldName = ''
+      }
+      if (!fieldName) return null
+      return {
+        fieldName,
+        fieldType: normalizePdfLibFieldType(field),
+        pageIndex: null,
+        required: fieldBoolean(field, 'isRequired'),
+        readOnly: fieldBoolean(field, 'isReadOnly')
+      }
+    })
+    .filter(Boolean)
+}
+
+function mergePdfLibAndLightweightFields(pdfLibFields, lightweightFields) {
+  if (Array.isArray(lightweightFields) && lightweightFields.length >= pdfLibFields.length) {
+    return lightweightFields
+  }
+  const lightweightByName = new Map()
+  for (const field of lightweightFields || []) {
+    if (!lightweightByName.has(field.fieldName)) lightweightByName.set(field.fieldName, field)
+  }
+  return pdfLibFields.map((field) => ({
+    ...field,
+    pageIndex: lightweightByName.get(field.fieldName)?.pageIndex ?? field.pageIndex,
+    required: field.required || lightweightByName.get(field.fieldName)?.required === true,
+    readOnly: field.readOnly || lightweightByName.get(field.fieldName)?.readOnly === true
+  }))
+}
+
+async function extractTemplateFieldsWithPdfLib(bytes) {
+  try {
+    const pdf = await PDFDocument.load(Buffer.from(bytes), { ignoreEncryption: true, updateMetadata: false })
+    const fields = normalizePdfLibFields(pdf.getForm().getFields())
+    if (!fields.length) {
+      const reasonCode = EXTRACTION_REASON.noFields
+      return {
+        status: 'failed',
+        reasonCode,
+        error: buildIngestionError(reasonCode),
+        diagnostics: buildIngestionDiagnostics(reasonCode, { stage: 'fields', parser: 'pdf-lib' }),
+        fields: []
+      }
+    }
+    return { status: 'completed', reasonCode: null, error: null, diagnostics: [], fields }
+  } catch (error) {
+    const reasonCode = EXTRACTION_REASON.malformed
+    return {
+      status: 'failed',
+      reasonCode,
+      error: buildIngestionError(reasonCode),
+      diagnostics: buildIngestionDiagnosticsWithParserError(reasonCode, error),
+      fields: []
+    }
+  }
+}
+
+function buildIngestionDiagnosticsWithParserError(reasonCode, error) {
+  return buildIngestionDiagnostics(reasonCode, {
+    stage: 'pdf-lib',
+    parser: 'pdf-lib',
+    message: String(error?.message || error || 'PDF parsing failed.')
+  })
+}
+
+export async function extractTemplateFieldsFromPdfBytes(bytes) {
+  const lightweight = extractTemplateFieldsFromPdfBytesLightweight(bytes)
+  if (!bytes || bytes.length === 0 || lightweight.reasonCode === EXTRACTION_REASON.malformed) {
+    return lightweight
+  }
+
+  const pdfLib = await extractTemplateFieldsWithPdfLib(bytes)
+  if (pdfLib.status === 'completed') {
+    return {
+      ...pdfLib,
+      fields: mergePdfLibAndLightweightFields(
+        pdfLib.fields,
+        lightweight.status === 'completed' ? lightweight.fields : []
+      )
+    }
+  }
+
+  if (lightweight.status === 'completed') return lightweight
+  if (
+    lightweight.reasonCode === EXTRACTION_REASON.noAcroForm ||
+    lightweight.reasonCode === EXTRACTION_REASON.noFields
+  ) {
+    return lightweight
+  }
+  return pdfLib
 }

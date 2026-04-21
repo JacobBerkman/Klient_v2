@@ -1,6 +1,7 @@
 # Release Candidate Routed-Flow Test Matrix
 
 ## Purpose
+
 Define the minimum deterministic automation matrix that must pass before freezing a release candidate (RC).
 
 ## Canonical browser release gate
@@ -22,12 +23,12 @@ For canonical provisioning/fallback/evidence/remediation policy, use:
 
 ## Routed flow to deterministic test mapping
 
-| Routed flow | Deterministic automated test(s) | Why this is the primary gate |
-|---|---|---|
-| Admin bootstrap (register + login + dashboard landing) | `npx playwright test tests/e2e/smoke.spec.mjs --grep "registers a firm admin and lands on dashboard"` | End-to-end routed UI + API workflow with deterministic seeded IDs validates bootstrap and authentication path in one run. |
-| Advisor workflow completion (template detail preview + publish) | `npx playwright test tests/e2e/workflows.spec.mjs --grep "routed template detail supports preview and publish controls"` | Deterministically covers routed template detail/editor behavior without returning to the legacy shell. |
-| Portal submit lifecycle (draft -> submitted) | `npx playwright test tests/e2e/workflows.spec.mjs --grep "routed portal token lifecycle saves draft and submits form"` | Explicitly verifies the routed `/portal` submission lifecycle and keeps legacy portal coverage isolated in `tests/e2e/legacy.spec.mjs`. |
-| Release smoke journey (health/ready + profile/template/submission/export path) | `npm run test:smoke` | Validates the canonical production smoke path and writes release evidence in the canonical schema. |
+| Routed flow                                                                                                             | Deterministic automated test(s)                                                                                          | Why this is the primary gate                                                                                                                       |
+| ----------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Admin bootstrap (register + login + dashboard landing)                                                                  | `npx playwright test tests/e2e/smoke.spec.mjs --grep "registers a firm admin and lands on dashboard"`                    | End-to-end routed UI + API workflow with deterministic seeded IDs validates bootstrap and authentication path in one run.                          |
+| Advisor workflow completion (template detail preview + publish)                                                         | `npx playwright test tests/e2e/workflows.spec.mjs --grep "routed template detail supports preview and publish controls"` | Deterministically covers routed template detail/editor behavior without returning to the legacy shell.                                             |
+| Portal submit lifecycle (draft -> submitted)                                                                            | `npx playwright test tests/e2e/workflows.spec.mjs --grep "routed portal token lifecycle saves draft and submits form"`   | Explicitly verifies the routed `/portal` submission lifecycle and keeps legacy portal coverage isolated in `tests/e2e/legacy.spec.mjs`.            |
+| Release smoke journey (health/ready + PDF template auto-build + generated form submission + PDF/XLSX exports/downloads) | `npm run test:smoke`                                                                                                     | Validates the canonical production smoke path, including persisted template/export artifacts, and writes release evidence in the canonical schema. |
 
 ## Targeted gap-fill strategy (avoid broad duplicate suites)
 
@@ -80,11 +81,13 @@ Verification commands:
 - `RELEASE_E2E_STRICT_MODE=1 RELEASE_E2E_ALLOW_FALLBACK=0 E2E_GREP='@release-blocking' npm run test:e2e`
 
 Evidence validation mode schema markers (must remain stable in validation output contracts):
+
 - `validationMode=local`
 - `validationMode=ci`
 - `validationMode=unpacked-artifact`
 
 Required E2E artifact schema markers (must remain synchronized with runbook/checklist/handoff docs):
+
 - `executionMode`
 - `details.artifacts.playwrightJsonReport.path`
 - `details.artifacts.playwrightJsonReport.valid`

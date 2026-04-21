@@ -185,6 +185,17 @@ export interface FormTemplate {
   name: string
   description?: string
   sections: FormSection[]
+  generatedFromDocumentTemplateId?: string | null
+  generation?: {
+    source?: string
+    documentTemplateId?: string
+    sourceFileName?: string
+    generatedAt?: string
+    fieldCount?: number
+    repeatableSectionCount?: number
+    diagnostics?: Array<Record<string, unknown>>
+    [key: string]: unknown
+  } | null
   createdAt?: string
   updatedAt?: string
 }
@@ -319,7 +330,36 @@ export interface DocumentTemplate {
       message?: string
     } | null
     diagnostics?: Array<Record<string, unknown>>
+    fields?: Array<Record<string, unknown>>
   }
+  documentMetadata?: Record<string, unknown>
+  sourceArtifact?: {
+    bucket?: string
+    key?: string
+    fileName?: string
+    contentType?: string
+    checksum?: string
+    sizeBytes?: number
+    retentionClass?: string
+    [key: string]: unknown
+  } | null
+  linkedFormTemplateId?: string | null
+  autoBuildSummary?: {
+    fieldCount?: number
+    mappingCount?: number
+    linkedFormTemplateId?: string | null
+    sourceArtifactAvailable?: boolean
+    extractionStatus?: string
+    repeatableSectionCount?: number
+    ambiguousRepeaterCount?: number
+    [key: string]: unknown
+  } | null
+  exportReadiness?: {
+    status?: string
+    reason?: string | null
+    message?: string
+    [key: string]: unknown
+  } | null
   versions: TemplateVersion[]
   versionHash?: string | null
   publishState?: string
@@ -349,7 +389,17 @@ export interface ExportJob {
     hint?: string
   }
   output?: Record<string, unknown> | null
-  artifact?: Record<string, unknown> | null
+  artifact?: {
+    format?: string
+    renderer?: string
+    fallbackReason?: string | null
+    diagnostics?: Array<Record<string, unknown>>
+    sourceArtifactChecksum?: string | null
+    fileName?: string | null
+    contentType?: string | null
+    checksum?: string
+    [key: string]: unknown
+  } | null
   [key: string]: unknown
 }
 

@@ -55,6 +55,9 @@ function isObject(value) {
 function normalizePath(value) {
   return String(value || '')
     .replace(/\[(\*|\d+)\]/g, '')
+    .split('.')
+    .filter((segment) => !/^\d+$/.test(segment))
+    .join('.')
     .replace(/\.{2,}/g, '.')
     .replace(/^\.|\.$/g, '')
 }
@@ -228,7 +231,9 @@ function normalizeAllowedSourcePaths(allowedSourcePaths = null) {
 export function validateMappingRules(input, options = {}) {
   const contextPath = options.contextPath || '/mappings'
   const repeaterPaths = options.repeaterPaths || new Set()
-  const requiredPdfFields = new Set((options.requiredPdfFields || []).map((value) => String(value || '').trim()).filter(Boolean))
+  const requiredPdfFields = new Set(
+    (options.requiredPdfFields || []).map((value) => String(value || '').trim()).filter(Boolean)
+  )
   const allowedSourcePaths = normalizeAllowedSourcePaths(options.allowedSourcePaths)
   const enforceKnownSourcePaths = options.enforceKnownSourcePaths === true
   const mappings = convertLegacyMappingRules(input)
@@ -297,12 +302,19 @@ export function validateMappingRules(input, options = {}) {
         const sourceLeafNormalized = sourceLeaf.toLowerCase().replace(/[^a-z0-9]+/g, '')
         const candidateSuggestions = [...allowedSourcePaths.keys()]
           .map((candidatePath) => {
-            const candidateLeaf = String(candidatePath || '').split('.').pop() || String(candidatePath || '')
+            const candidateLeaf =
+              String(candidatePath || '')
+                .split('.')
+                .pop() || String(candidatePath || '')
             const normalizedCandidateLeaf = candidateLeaf.toLowerCase().replace(/[^a-z0-9]+/g, '')
             let score = 0
             if (sourceLeafNormalized && normalizedCandidateLeaf) {
               if (sourceLeafNormalized === normalizedCandidateLeaf) score = 1
-              else if (sourceLeafNormalized.includes(normalizedCandidateLeaf) || normalizedCandidateLeaf.includes(sourceLeafNormalized)) score = 0.82
+              else if (
+                sourceLeafNormalized.includes(normalizedCandidateLeaf) ||
+                normalizedCandidateLeaf.includes(sourceLeafNormalized)
+              )
+                score = 0.82
             }
             return {
               path: candidatePath,

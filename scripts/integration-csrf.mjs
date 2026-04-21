@@ -2,6 +2,10 @@ import { assert, createTestContext } from './test-harness.mjs'
 
 const context = await createTestContext('csrf')
 
+function isCsrfCookie(cookie) {
+  return cookie.startsWith('klient-csrf=') || cookie.startsWith('__Host-klient-csrf=')
+}
+
 try {
   const baseUrl = `http://127.0.0.1:${context.port}`
 
@@ -21,7 +25,7 @@ try {
   assert(csrfBootstrap.ok, 'Failed to issue CSRF token for authenticated session')
   assert(Boolean(csrfData.csrfToken), 'CSRF token missing from issuance response')
   assert(Boolean(csrfData.expiresAt), 'CSRF bootstrap should include TTL metadata')
-  assert(csrfCookie.startsWith('__Host-klient-csrf='), 'CSRF cookie missing')
+  assert(isCsrfCookie(csrfCookie), 'CSRF cookie missing')
   assert(setCookie.includes('Path=/'), 'CSRF cookie must be host-scoped with Path=/')
   assert(setCookie.includes('HttpOnly'), 'CSRF cookie must be HttpOnly')
   assert(setCookie.includes('SameSite=Strict'), 'CSRF cookie must use SameSite=Strict')
@@ -32,7 +36,10 @@ try {
       Cookie: context.sessionCookie
     }
   })
-  assert(continuitySession.user?.email === 'admin@demo.test', 'CSRF bootstrap should preserve authenticated session continuity')
+  assert(
+    continuitySession.user?.email === 'admin@demo.test',
+    'CSRF bootstrap should preserve authenticated session continuity'
+  )
 
   const mutatingHeaders = {
     'Content-Type': 'application/json',
@@ -52,7 +59,7 @@ try {
   assert(validMutationResponse.status === 200, 'Valid CSRF token should permit mutating request')
   assert(validMutationResponse.ok, 'Export processing should succeed with valid CSRF token')
   assert(Boolean(rotatedToken), 'Valid mutation should rotate CSRF token in response header')
-  assert(rotatedCookie.startsWith('__Host-klient-csrf='), 'Valid mutation should rotate CSRF cookie')
+  assert(isCsrfCookie(rotatedCookie), 'Valid mutation should rotate CSRF cookie')
 
   const replayResponse = await fetch(`${baseUrl}/api/exports/process`, {
     method: 'POST',

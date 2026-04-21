@@ -59,11 +59,19 @@ async function jsonFetch(port, path, options = {}) {
 
 function extractSessionCookie(response) {
   const raw = response.headers.get('set-cookie') || ''
-  const match = raw
-    .split(',')
-    .map((entry) => entry.trim())
-    .find((entry) => entry.startsWith('__Host-klient-session='))
+  const match = ['klient-session', '__Host-klient-session']
+    .map((name) =>
+      raw
+        .split(',')
+        .map((entry) => entry.trim())
+        .find((entry) => entry.startsWith(`${name}=`))
+    )
+    .find(Boolean)
   return match ? match.split(';')[0] : ''
+}
+
+function isSessionCookie(cookie) {
+  return cookie.startsWith('klient-session=') || cookie.startsWith('__Host-klient-session=')
 }
 
 test('production Node server contract supports auth and profile workflows', async (t) => {
@@ -112,7 +120,7 @@ test('production Node server contract supports auth and profile workflows', asyn
   assert.equal(login.user.email, 'admin@demo.test')
   assert.equal(Object.hasOwn(login, 'token'), false)
   const adminCookie = extractSessionCookie(loginResponse)
-  assert.ok(adminCookie.startsWith('__Host-klient-session='))
+  assert.ok(isSessionCookie(adminCookie))
 
   const { response: csrfResponse, data: csrf } = await jsonFetch(port, '/api/csrf', {
     headers: { Cookie: adminCookie }
@@ -257,7 +265,7 @@ test('production Node server contract supports auth and profile workflows', asyn
   assert.equal(acceptInviteResponse.status, 200, JSON.stringify(readonlySession))
   assert.equal(Object.hasOwn(readonlySession, 'token'), false)
   const readonlyCookie = extractSessionCookie(acceptInviteResponse)
-  assert.ok(readonlyCookie.startsWith('__Host-klient-session='))
+  assert.ok(isSessionCookie(readonlyCookie))
 
   const readonlyAuth = { Cookie: readonlyCookie }
   const { response: readonlyVersionsResponse, data: readonlyVersions } = await jsonFetch(
@@ -292,7 +300,7 @@ test('production Node server contract supports auth and profile workflows', asyn
   assert.equal(outsiderRegisterResponse.status, 201, JSON.stringify(outsider))
   assert.equal(Object.hasOwn(outsider, 'token'), false)
   const outsiderCookie = extractSessionCookie(outsiderRegisterResponse)
-  assert.ok(outsiderCookie.startsWith('__Host-klient-session='))
+  assert.ok(isSessionCookie(outsiderCookie))
 
   const outsiderAuth = { Cookie: outsiderCookie }
   const { response: outsiderVersionsResponse } = await jsonFetch(port, `/api/templates/${template.id}/versions`, {
