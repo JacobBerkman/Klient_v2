@@ -1,10 +1,7 @@
-import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
 import { assert, createTestContext } from './test-harness.mjs'
 import { createEvidenceRecorder } from './release-evidence.mjs'
+import { runExportWorkerTick } from './export-worker-tick.mjs'
 
-const workerScript = fileURLToPath(new URL('./export-worker.mjs', import.meta.url))
 const evidence = createEvidenceRecorder({
   gate: 'release-flow',
   defaultFile: 'release-flow-summary.json',
@@ -17,22 +14,14 @@ function wait(ms) {
 }
 
 function runWorkerTick(context) {
-  const result = spawnSync(process.execPath, [workerScript], {
+  runExportWorkerTick({
     cwd: context.testCwd,
     env: {
-      ...process.env,
-      EXPORT_WORKER_ONCE: '1',
       EXPORT_WORKER_POLL_MS: '25',
       EXPORT_WORKER_LEASE_MS: '5000',
-      EXPORT_WORKER_BATCH_SIZE: '10',
-      NODE_ENV: 'test',
-      ALLOW_DEV_FALLBACK_APP_SECRET: 'true'
-    },
-    encoding: 'utf8'
+      EXPORT_WORKER_BATCH_SIZE: '10'
+    }
   })
-  if (result.status !== 0) {
-    throw new Error(`Export worker tick failed (${result.status}): ${result.stderr || result.stdout}`)
-  }
 }
 
 const steps = []

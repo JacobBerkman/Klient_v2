@@ -1,10 +1,16 @@
-import { spawn } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { pathToFileURL } from 'node:url'
 import { createEvidenceRecorder } from './release-evidence.mjs'
 import { createTestContext } from './test-harness.mjs'
+import {
+  normalizeChildEnv,
+  releaseChildStdio,
+  startManagedProcess,
+  terminateManagedProcess,
+  waitForManagedExit
+} from './process-lifecycle.mjs'
 import {
   provisionChromiumForStrictMode,
   resolvePlaywrightEvidenceLinkage,
@@ -87,38 +93,36 @@ function buildArtifactDetails(playwrightJsonReport, env = process.env, reportPat
   }
 }
 
-function normalizeChildEnv(env) {
-  if (process.platform !== 'win32') return env
-  const normalized = {}
-  let pathValue = env.Path ?? env.PATH ?? env.path
-  for (const [key, value] of Object.entries(env)) {
-    if (key.toLowerCase() === 'path') {
-      if (key === 'Path') pathValue = value
-      continue
-    }
-    if (!Object.hasOwn(normalized, key)) normalized[key] = value
-  }
-  if (pathValue !== undefined) normalized.Path = pathValue
-  return normalized
-}
-
 function runCommand(command, args, env, timeoutMs = 0) {
+  const managed = startManagedProcess({
+    command,
+    args,
+    label: `${command} ${args.join(' ')}`.trim(),
+    stdio: 'inherit',
+    env: normalizeChildEnv(env),
+    shell: process.platform === 'win32' && command.toLowerCase().endsWith('.cmd')
+  })
   return new Promise((resolveRun) => {
-    const child = spawn(command, args, {
-      stdio: 'inherit',
-      env: normalizeChildEnv(env),
-      shell: process.platform === 'win32' && command.toLowerCase().endsWith('.cmd')
-    })
+    let settled = false
     let timeoutId = null
+    const finish = (result) => {
+      if (settled) return
+      settled = true
+      if (timeoutId) clearTimeout(timeoutId)
+      releaseChildStdio(managed)
+      resolveRun(result)
+    }
     if (timeoutMs > 0) {
       timeoutId = setTimeout(() => {
-        child.kill('SIGTERM')
+        void terminateManagedProcess(managed, { graceMs: 1500, killMs: 1500 }).finally(() =>
+          finish({ code: 1, signal: 'TIMEOUT' })
+        )
       }, timeoutMs)
       timeoutId.unref()
     }
-    child.on('exit', (code, signal) => resolveRun({ code: code ?? 1, signal }))
-    child.on('error', (error) => resolveRun({ code: 1, signal: null, error }))
-    child.on('close', () => {
+    managed.child.on('exit', (code, signal) => finish({ code: code ?? 1, signal }))
+    managed.child.on('error', (error) => finish({ code: 1, signal: null, error }))
+    managed.child.on('close', () => {
       if (timeoutId) clearTimeout(timeoutId)
     })
   })
@@ -316,9 +320,12 @@ export async function main(deps = {}) {
   const playwrightReportPath = resolvePlaywrightReportPath(process.env)
 
   try {
-    exportWorker = spawn(process.execPath, [exportWorkerScript], {
+    exportWorker = startManagedProcess({
+      command: process.execPath,
+      args: [exportWorkerScript],
+      label: 'e2e-companion-export-worker',
       cwd: context.testCwd,
-      env: normalizeChildEnv({
+      env: {
         ...process.env,
         NODE_ENV: 'test',
         ALLOW_DEV_FALLBACK_APP_SECRET: 'true',
@@ -326,11 +333,11 @@ export async function main(deps = {}) {
         EXPORT_WORKER_POLL_MS: '100',
         EXPORT_WORKER_LEASE_MS: '5000',
         EXPORT_WORKER_BATCH_SIZE: '10'
-      }),
+      },
       stdio: ['ignore', 'pipe', 'pipe']
     })
-    exportWorker.stdout?.resume()
-    exportWorker.stderr?.resume()
+    exportWorker.child.stdout?.resume()
+    exportWorker.child.stderr?.resume()
 
     await removeFile(playwrightReportPath, { force: true })
 
@@ -542,8 +549,10 @@ export async function main(deps = {}) {
     })
     throw error
   } finally {
-    if (exportWorker && !exportWorker.killed) {
-      exportWorker.kill('SIGTERM')
+    if (exportWorker) {
+      await terminateManagedProcess(exportWorker, { label: 'e2e-companion-export-worker' }).catch(() => {})
+      await waitForManagedExit(exportWorker, 1000)
+      releaseChildStdio(exportWorker)
     }
     await context.shutdown()
   }

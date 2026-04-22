@@ -1,4 +1,9 @@
-import { spawn } from 'node:child_process'
+import {
+  describeProcessFailure,
+  releaseChildStdio,
+  startManagedProcess,
+  terminateManagedProcess
+} from './process-lifecycle.mjs'
 
 export function runCommandProcess({
   command,
@@ -26,7 +31,8 @@ export function runCommandProcess({
       console.log(`   Invariant: ${invariant}`)
     }
 
-    const child = spawn(command, args, { stdio, cwd, env, shell })
+    const managed = startManagedProcess({ command, args, label: displayLabel, stdio, cwd, env, shell })
+    const child = managed.child
 
     const isPiped = (value) => value === 'pipe'
     const shouldDrainStdout = stdio === 'pipe' || (Array.isArray(stdio) && isPiped(stdio[1]))
@@ -60,6 +66,7 @@ export function runCommandProcess({
         clearTimeout(closeFallbackId)
         closeFallbackId = null
       }
+      releaseChildStdio(managed)
     }
 
     const settle = (resolver, value) => {
@@ -81,7 +88,12 @@ export function runCommandProcess({
         settle(
           reject,
           new Error(
-            `${displayLabel} timed out after ${timeoutMs}ms (stdio=${stdioMode}; waiting for ${shouldPreferClose ? 'close' : 'exit'})`
+            describeProcessFailure(
+              managed,
+              `${displayLabel} timed out after ${timeoutMs}ms (stdio=${stdioMode}; waiting for ${
+                shouldPreferClose ? 'close' : 'exit'
+              })`
+            )
           )
         )
         return
@@ -140,8 +152,9 @@ export function runCommandProcess({
           return
         }
         timeoutTriggered = true
-        child.kill('SIGTERM')
-        finalizeCompletion('timeout', null, null)
+        void terminateManagedProcess(managed, { graceMs: 1500, killMs: 1500, label: displayLabel }).finally(() =>
+          finalizeCompletion('timeout', null, null)
+        )
       }, timeoutMs)
       timeoutId.unref()
     }
@@ -162,6 +175,7 @@ export function runSuite(suite, index, total) {
     label: suite.script,
     invariant: suite.invariant,
     index,
-    total
+    total,
+    timeoutMs: suite.timeoutMs || 0
   })
 }

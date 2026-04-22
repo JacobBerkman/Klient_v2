@@ -76,6 +76,7 @@ export function Component() {
   const { templateId = '' } = useParams()
   const canvasRef = useRef<HTMLCanvasElement | null>(null)
   const pointerRef = useRef<PointerState | null>(null)
+  const savedLayoutRef = useRef('')
   const [fields, setFields] = useState<LayoutField[]>([])
   const [statusMessage, setStatusMessage] = useState('')
   const [renderError, setRenderError] = useState('')
@@ -88,7 +89,9 @@ export function Component() {
 
   useEffect(() => {
     if (!template) return
-    setFields(defaultLayout(template))
+    const nextFields = defaultLayout(template)
+    setFields(nextFields)
+    savedLayoutRef.current = JSON.stringify(nextFields)
     setPageIndex(0)
   }, [template?.id, template?.updatedAt])
 
@@ -187,6 +190,7 @@ export function Component() {
     setStatusMessage('')
     try {
       await api.patch(routes.documentTemplatePdfLayout(template.id), { fields })
+      savedLayoutRef.current = JSON.stringify(fields)
       setStatusMessage('PDF layout saved.')
     } catch (saveError) {
       setStatusMessage(saveError instanceof Error ? saveError.message : 'Unable to save PDF layout.')
@@ -223,6 +227,7 @@ export function Component() {
     .filter(Boolean)
   const mappedPdfFields = new Set((template.mappings || []).map((mapping) => String(mapping.pdfField || '').trim()))
   const missingMappingFields = extractedFieldNames.filter((name) => !mappedPdfFields.has(name))
+  const unsavedLayout = JSON.stringify(fields) !== savedLayoutRef.current
 
   return (
     <div className="stack">
@@ -240,7 +245,9 @@ export function Component() {
             <StatusBadge status={template.extraction?.status || 'unknown'} />
             <StatusBadge status={template.sourceArtifact ? 'source pdf available' : 'no source pdf'} />
             <StatusBadge status={`${fields.length} overlays`} />
+            <StatusBadge status={`${visibleFields.length} on page ${pageIndex + 1}`} />
             <StatusBadge status={missingMappingFields.length ? 'missing mappings' : 'mapping complete'} />
+            <StatusBadge status={unsavedLayout ? 'unsaved layout changes' : 'layout saved'} />
           </>
         }
       />
@@ -309,6 +316,10 @@ export function Component() {
               <p className="muted">
                 Filled AcroForm export remains canonical. Layout metadata supports review, overlay adjustments, and
                 test-fill validation.
+              </p>
+              <p className="muted">
+                Renderer mode:{' '}
+                {template.sourceArtifact ? 'source-backed AcroForm fill' : 'fallback summary export only'}.
               </p>
               {missingMappingFields.length ? (
                 <p className="inline-notice inline-notice-warning">

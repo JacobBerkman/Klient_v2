@@ -1,8 +1,6 @@
 import { createEvidenceRecorder } from './release-evidence.mjs'
 import { assert, createTestContext } from './test-harness.mjs'
-import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { runExportWorkerTick } from './export-worker-tick.mjs'
 
 const evidence = createEvidenceRecorder({
   gate: 'e2e',
@@ -12,29 +10,20 @@ const evidence = createEvidenceRecorder({
 })
 
 const context = await createTestContext('e2e-workflows')
-const workerScript = fileURLToPath(new URL('./export-worker.mjs', import.meta.url))
 
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
 }
 
 function runWorkerTick() {
-  const result = spawnSync(process.execPath, [workerScript], {
+  runExportWorkerTick({
     cwd: context.testCwd,
     env: {
-      ...process.env,
-      EXPORT_WORKER_ONCE: '1',
       EXPORT_WORKER_POLL_MS: '25',
       EXPORT_WORKER_LEASE_MS: '5000',
-      EXPORT_WORKER_BATCH_SIZE: '10',
-      NODE_ENV: 'test',
-      ALLOW_DEV_FALLBACK_APP_SECRET: 'true'
-    },
-    encoding: 'utf8'
+      EXPORT_WORKER_BATCH_SIZE: '10'
+    }
   })
-  if (result.status !== 0) {
-    throw new Error(`E2E worker tick failed (${result.status}): ${result.stderr || result.stdout}`)
-  }
 }
 
 try {

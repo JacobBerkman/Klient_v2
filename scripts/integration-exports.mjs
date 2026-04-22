@@ -1,56 +1,36 @@
 import { assert, createTestContext } from './test-harness.mjs'
-import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { runExportWorkerTick } from './export-worker-tick.mjs'
 import { assertMappingsCoverPdfFields, mergeMappingsByPdfField } from './mapping-fixtures.mjs'
 import { createTemplateWorkflowPdf, pdfBytesForJson } from './pdf-fixtures.mjs'
 
 const TERMINAL_EXPORT_STATUSES = new Set(['completed', 'failed', 'dead-letter'])
-const workerScript = fileURLToPath(new URL('./export-worker.mjs', import.meta.url))
 
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
 }
 
 function processQueueTick(context) {
-  const result = spawnSync(process.execPath, [workerScript], {
+  return runExportWorkerTick({
     cwd: context.testCwd,
     env: {
-      ...process.env,
-      EXPORT_WORKER_ONCE: '1',
       EXPORT_WORKER_POLL_MS: '25',
       EXPORT_WORKER_LEASE_MS: '5000',
-      EXPORT_WORKER_BATCH_SIZE: '10',
-      NODE_ENV: 'test',
-      ALLOW_DEV_FALLBACK_APP_SECRET: 'true'
-    },
-    encoding: 'utf8'
+      EXPORT_WORKER_BATCH_SIZE: '10'
+    }
   })
-  if (result.status !== 0) {
-    throw new Error(`Worker tick failed (${result.status}): ${result.stderr || result.stdout}`)
-  }
-  return result.stdout
 }
 
 function crashAfterLeaseTick(context) {
-  const result = spawnSync(process.execPath, [workerScript], {
+  runExportWorkerTick({
     cwd: context.testCwd,
     env: {
-      ...process.env,
-      EXPORT_WORKER_ONCE: '1',
       EXPORT_WORKER_CRASH_AFTER_LEASE: '1',
       EXPORT_WORKER_LEASE_MS: '450',
-      EXPORT_WORKER_BATCH_SIZE: '1',
-      NODE_ENV: 'test',
-      ALLOW_DEV_FALLBACK_APP_SECRET: 'true'
+      EXPORT_WORKER_BATCH_SIZE: '1'
     },
-    encoding: 'utf8'
+    label: 'crash-after-lease worker tick',
+    expectedStatus: 92
   })
-  if (result.status !== 92) {
-    throw new Error(
-      `Expected crash-after-lease worker exit=92, received ${result.status}. ${result.stderr || result.stdout}`
-    )
-  }
 }
 
 async function processQueued(context, times = 1) {

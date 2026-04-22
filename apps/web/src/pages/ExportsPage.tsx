@@ -35,14 +35,19 @@ interface ExportsPageData {
   queueHealth: QueueHealthPayload | null
 }
 
-function exportStateCopy(job: ExportJob) {
+function exportStateCopy(job: ExportJob, queueHealth: QueueHealthPayload | null) {
   const status = String(job.status || '').toLowerCase()
   if (status === 'completed') return job.artifactReady ? 'Completed and downloadable' : 'Completed, artifact pending'
   if (status === 'running' || status === 'processing') return 'Processing with export worker'
   if (status === 'failed') return job.retryState?.eligible ? 'Failed, retry available' : 'Failed, operator review'
   if (status === 'dead-letter') return 'Dead-letter, operator action'
-  if (status === 'retrying') return 'Retry scheduled'
-  return 'Queued, waiting for worker'
+  if (status === 'retrying') {
+    return queueHealth?.queue?.workerObservedRecently
+      ? 'Retry scheduled; worker observed'
+      : 'Retry scheduled; worker not observed'
+  }
+  if (queueHealth?.queue?.pendingWithoutWorker) return 'Queued, waiting for companion worker heartbeat'
+  return queueHealth?.queue?.workerObservedRecently ? 'Queued, worker observed' : 'Queued, worker not observed'
 }
 
 export function Component() {
@@ -284,8 +289,12 @@ export function Component() {
               <StatusBadge
                 status={data.queueHealth.queue?.workerObservedRecently ? 'Worker observed' : 'Worker not observed'}
               />
+              <StatusBadge status={`Mode ${String(data.queueHealth.queue?.workerMode || 'companion')}`} />
+              {data.queueHealth.queue?.pendingWithoutWorker ? <StatusBadge status="Pending without worker" /> : null}
               <StatusBadge status={`Queued ${String(data.queueHealth.queue?.pending || 0)}`} />
               <StatusBadge status={`Running ${String(data.queueHealth.queue?.running || 0)}`} />
+              <StatusBadge status={`Active leases ${String(data.queueHealth.queue?.activeLeasesCount || 0)}`} />
+              <StatusBadge status={`Stalled ${String(data.queueHealth.queue?.stalled || 0)}`} />
               <StatusBadge status={`Failed ${String(data.queueHealth.queue?.failed || 0)}`} />
               <StatusBadge status={`Dead letter ${String(data.queueHealth.queue?.deadLetter || 0)}`} />
             </div>
@@ -328,7 +337,7 @@ export function Component() {
                   </td>
                   <td>
                     <StatusBadge status={job.statusLabel || job.status || 'queued'} />
-                    <div className="muted">{exportStateCopy(job)}</div>
+                    <div className="muted">{exportStateCopy(job, data.queueHealth)}</div>
                     {job.artifact?.diagnostics?.length ? (
                       <div className="muted">{job.artifact.diagnostics.length} renderer diagnostics</div>
                     ) : null}

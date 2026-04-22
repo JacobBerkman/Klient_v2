@@ -1,29 +1,19 @@
-import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import {
+  describeProcessFailure,
+  releaseChildStdio,
+  startManagedProcess,
+  terminateManagedProcess
+} from './process-lifecycle.mjs'
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 const serverEntrypoint = resolve(repoRoot, 'apps/api/src/server.mjs')
 
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
-}
-
-function normalizeChildEnv(env) {
-  if (process.platform !== 'win32') return env
-  const normalized = {}
-  let pathValue = env.Path ?? env.PATH ?? env.path
-  for (const [key, value] of Object.entries(env)) {
-    if (key.toLowerCase() === 'path') {
-      if (key === 'Path') pathValue = value
-      continue
-    }
-    if (!Object.hasOwn(normalized, key)) normalized[key] = value
-  }
-  if (pathValue !== undefined) normalized.Path = pathValue
-  return normalized
 }
 
 function isRetryableNetworkError(error) {
@@ -63,72 +53,6 @@ async function fetchWithLifecycleRetry(
   throw lastError
 }
 
-function waitForChildExit(child, timeoutMs) {
-  return new Promise((resolveExit) => {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      resolveExit(true)
-      return
-    }
-
-    let settled = false
-    const finish = (exited) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      child.removeListener('exit', onExitOrClose)
-      child.removeListener('close', onExitOrClose)
-      child.removeListener('error', onExitOrClose)
-      resolveExit(exited)
-    }
-    const onExitOrClose = () => finish(true)
-    const timeout = setTimeout(() => finish(false), timeoutMs)
-
-    child.on('exit', onExitOrClose)
-    child.on('close', onExitOrClose)
-    child.on('error', onExitOrClose)
-  })
-}
-
-async function terminateChild(child, { gracefulSignal = 'SIGTERM', graceMs = 3000, killMs = 2000 } = {}) {
-  if (child.exitCode !== null || child.signalCode !== null) return
-
-  const killChild = (signal) => {
-    // Ensure process groups started by the API server are terminated together so worker descendants
-    // cannot keep aggregate integration runners alive after handoff to the next suite.
-    if (process.platform !== 'win32' && Number.isInteger(child.pid)) {
-      try {
-        process.kill(-child.pid, signal)
-        return
-      } catch (error) {
-        if (error?.code !== 'ESRCH') {
-          throw error
-        }
-      }
-    }
-    child.kill(signal)
-  }
-
-  killChild(gracefulSignal)
-  const exitedGracefully = await waitForChildExit(child, graceMs)
-  if (exitedGracefully) return
-
-  killChild('SIGKILL')
-  const exitedAfterForceKill = await waitForChildExit(child, killMs)
-  if (!exitedAfterForceKill) {
-    throw new Error(`Failed to terminate child process ${child.pid ?? '<unknown>'}`)
-  }
-}
-
-function releaseChildStdio(child) {
-  for (const stream of [child.stdout, child.stderr]) {
-    if (!stream) continue
-    stream.removeAllListeners('data')
-    if (!stream.destroyed) {
-      stream.destroy()
-    }
-  }
-}
-
 function isCsrfExemptPath(path) {
   return [
     '/api/login',
@@ -148,6 +72,22 @@ function deterministicPort(name) {
     hash = (hash * 31 + seed.charCodeAt(index)) % 1_000_000
   }
   return base + (hash % modulo)
+}
+
+async function waitForServerUnavailable(baseUrl, { attempts = 20, delayMs = 50 } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      const response = await fetch(`${baseUrl}/ready`, { signal: AbortSignal.timeout(250) })
+      if (response.ok) {
+        await wait(delayMs)
+        continue
+      }
+    } catch {
+      return true
+    }
+    await wait(delayMs)
+  }
+  return false
 }
 
 function shouldDropAuthHeader(value) {
@@ -315,21 +255,6 @@ export async function createTestContext(name) {
     resetBehavior === 'isolated' ? await mkdtemp(join(tmpdir(), `klient-${name}-`)) : resolve(process.cwd())
 
   const opsToken = process.env.KLIENT_OPS_TOKEN || 'ops-token-abcdefghijklmnopqrstuvwxyz'
-  const server = spawn(process.execPath, [serverEntrypoint], {
-    cwd: testCwd,
-    detached: process.platform !== 'win32',
-    env: normalizeChildEnv({
-      ...process.env,
-      NODE_ENV: process.env.NODE_ENV || 'test',
-      PORT: String(port),
-      HOST: '127.0.0.1',
-      KLIENT_BASE_URL: baseUrl,
-      E2E_BASE_URL: baseUrl,
-      KLIENT_OPS_TOKEN: opsToken
-    }),
-    stdio: ['ignore', 'pipe', 'pipe']
-  })
-
   let bootError = ''
   let bootOutput = ''
   const appendBootLog = (chunk) => {
@@ -339,15 +264,44 @@ export async function createTestContext(name) {
       bootOutput = bootOutput.slice(-16_000)
     }
   }
+  let server
+  try {
+    server = startManagedProcess({
+      command: process.execPath,
+      args: [serverEntrypoint],
+      label: `api-test-server:${name}`,
+      cwd: testCwd,
+      detached: process.platform !== 'win32',
+      env: {
+        ...process.env,
+        NODE_ENV: process.env.NODE_ENV || 'test',
+        PORT: String(port),
+        HOST: '127.0.0.1',
+        KLIENT_BASE_URL: baseUrl,
+        E2E_BASE_URL: baseUrl,
+        KLIENT_OPS_TOKEN: opsToken
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      onStdout: appendBootLog,
+      onStderr: (chunk) => {
+        bootError += chunk.toString()
+        appendBootLog(chunk)
+      }
+    })
+  } catch (error) {
+    if (resetBehavior === 'isolated') {
+      await rm(testCwd, { recursive: true, force: true })
+    }
+    throw error
+  }
 
-  // Drain stdio so high-volume request logging cannot block the child process on a full pipe buffer.
-  server.stdout.on('data', appendBootLog)
-  server.stderr.on('data', (chunk) => {
-    bootError += chunk.toString()
-    appendBootLog(chunk)
+  let spawnError = null
+  server.child.once('error', (error) => {
+    spawnError = error
   })
 
   for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (spawnError) break
     try {
       const response = await fetchWithLifecycleRetry(
         `http://127.0.0.1:${port}/ready`,
@@ -399,7 +353,11 @@ export async function createTestContext(name) {
           },
           async shutdown() {
             try {
-              await terminateChild(server)
+              await terminateManagedProcess(server, { label: `api-test-server:${name}` })
+              const closed = await waitForServerUnavailable(baseUrl)
+              if (!closed) {
+                throw new Error(`Server port ${port} still responds after shutdown for ${name}.`)
+              }
             } finally {
               releaseChildStdio(server)
               if (resetBehavior === 'isolated') {
@@ -434,10 +392,13 @@ export async function createTestContext(name) {
     await wait(100)
   }
 
-  await terminateChild(server)
+  await terminateManagedProcess(server, { label: `api-test-server:${name}` }).catch(() => {})
   releaseChildStdio(server)
   if (resetBehavior === 'isolated') {
     await rm(testCwd, { recursive: true, force: true })
   }
-  throw new Error(`Server failed to start for ${name}. ${bootError || bootOutput}`.trim())
+  const startupDetails = spawnError
+    ? describeProcessFailure(server, `Server failed to start for ${name}: ${spawnError.message}`)
+    : `Server failed to start for ${name}. ${bootError || bootOutput}`.trim()
+  throw new Error(startupDetails)
 }

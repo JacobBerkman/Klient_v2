@@ -207,6 +207,8 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   await page.getByRole('link', { name: 'Open visual mapper' }).click()
   await expect(page.getByRole('heading', { name: documentTemplate.name })).toBeVisible()
   await expect(page.getByText('source pdf available')).toBeVisible()
+  await expect(page.getByText('mapping complete')).toBeVisible()
+  await expect(page.getByText('layout saved')).toBeVisible()
   const overlay = page.getByTestId('pdf-field-overlay-client_name')
   await expect(overlay).toBeVisible()
   const overlayBox = await overlay.boundingBox()
@@ -222,8 +224,10 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   await page.mouse.down()
   await page.mouse.move(resizeBox.x + 28, resizeBox.y + 14)
   await page.mouse.up()
+  await expect(page.getByText('unsaved layout changes')).toBeVisible()
   await page.getByRole('button', { name: 'Save PDF layout' }).click()
   await expect(page.getByText('PDF layout saved.')).toBeVisible()
+  await expect(page.getByText('layout saved')).toBeVisible()
   const previewPromise = page.waitForEvent('popup')
   await page.getByRole('button', { name: 'Generate test-fill preview' }).click()
   const previewPage = await previewPromise
@@ -267,6 +271,13 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   await page.getByTestId('create-export-type').selectOption('xlsx')
   await page.getByRole('button', { name: 'Queue export' }).click()
   await expect(page.getByText('XLSX export queued.')).toBeVisible()
+
+  await expect
+    .poll(async () => {
+      const response = await apiFromPage(page, 'GET', '/api/ops/exports/queue', undefined, auth)
+      return response.body?.queue?.workerMode
+    })
+    .toBe('companion')
 
   await expect
     .poll(async () => {

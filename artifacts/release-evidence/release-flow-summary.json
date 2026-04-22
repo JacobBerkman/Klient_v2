@@ -2,15 +2,15 @@
   "schemaVersion": "1.0.0",
   "gate": "release-flow",
   "command": "npm run test:release-flow",
-  "startedAt": "2026-04-22T15:58:24.064Z",
-  "finishedAt": "2026-04-22T15:58:24.071Z",
-  "durationMs": 7,
+  "startedAt": "2026-04-22T17:39:08.021Z",
+  "finishedAt": "2026-04-22T17:39:08.027Z",
+  "durationMs": 6,
   "status": "failed",
   "metadata": {},
   "details": {
     "flow": "canonical-release-readiness",
     "status": "failed",
-    "generatedAt": "2026-04-22T15:58:24.071Z",
+    "generatedAt": "2026-04-22T17:39:08.026Z",
     "checks": {
       "total": 0,
       "passed": 0,
@@ -18,11 +18,11 @@
     },
     "steps": [],
     "failure": {
-      "message": "spawn EPERM",
+      "message": "api-test-server:release-canonical-flow failed to start: spawn EPERM",
       "failedStep": null
     }
   },
   "error": {
-    "message": "spawn EPERM"
+    "message": "api-test-server:release-canonical-flow failed to start: spawn EPERM"
   }
 }

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process'
+import { releaseChildStdio, startManagedProcess, terminateManagedProcess } from './process-lifecycle.mjs'
 
 const isWindows = process.platform === 'win32'
 const nodeCommand = process.execPath
@@ -20,12 +20,16 @@ function prefixStream(stream, prefix, target) {
 }
 
 function startProcess({ name, command, args, env = process.env }) {
-  const child = spawn(command, args, {
+  const managed = startManagedProcess({
+    label: name,
+    command,
+    args,
     cwd: process.cwd(),
     env,
     stdio: ['inherit', 'pipe', 'pipe'],
     shell: false
   })
+  const { child } = managed
 
   prefixStream(child.stdout, `[${name}]`, process.stdout)
   prefixStream(child.stderr, `[${name}]`, process.stderr)
@@ -34,29 +38,25 @@ function startProcess({ name, command, args, env = process.env }) {
     process.stdout.write(`[${name}] started: ${command} ${args.join(' ')}\n`)
   })
 
-  return child
+  return managed
 }
 
 const children = new Set()
 let shuttingDown = false
 
-function shutdown(exitCode = 0) {
+async function shutdown(exitCode = 0) {
   if (shuttingDown) return
   shuttingDown = true
 
-  for (const child of children) {
-    if (!child.killed) child.kill('SIGTERM')
-  }
-
-  setTimeout(() => {
-    for (const child of children) {
-      if (!child.killed) child.kill('SIGKILL')
-    }
-  }, 2_000).unref()
-
-  setTimeout(() => {
-    process.exit(exitCode)
-  }, 2_100).unref()
+  await Promise.all(
+    [...children].map(async (managed) => {
+      await terminateManagedProcess(managed, { label: managed.label, graceMs: 2000, killMs: 1500 }).catch((error) => {
+        process.stderr.write(`[${managed.label}] shutdown failed: ${error.message}\n`)
+      })
+      releaseChildStdio(managed)
+    })
+  )
+  process.exit(exitCode)
 }
 
 const api = startProcess({
@@ -103,20 +103,20 @@ for (const [name, child] of [
   ['web', web],
   ['exports', worker]
 ].filter((entry) => Boolean(entry[1]))) {
-  child.on('exit', (code, signal) => {
+  child.child.on('exit', (code, signal) => {
     children.delete(child)
     if (shuttingDown) return
     const detail = signal ? `signal ${signal}` : `code ${code ?? 0}`
     process.stderr.write(`[${name}] exited with ${detail}\n`)
-    shutdown(Number.isInteger(code) ? code : 1)
+    void shutdown(Number.isInteger(code) ? code : 1)
   })
 
-  child.on('error', (error) => {
+  child.child.on('error', (error) => {
     if (shuttingDown) return
     process.stderr.write(`[${name}] failed to start: ${error.message}\n`)
-    shutdown(1)
+    void shutdown(1)
   })
 }
 
-process.on('SIGINT', () => shutdown(0))
-process.on('SIGTERM', () => shutdown(0))
+process.on('SIGINT', () => void shutdown(0))
+process.on('SIGTERM', () => void shutdown(0))

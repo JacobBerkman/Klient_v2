@@ -1,38 +1,28 @@
 import { assert, createTestContext } from './test-harness.mjs'
-import { spawnSync } from 'node:child_process'
-import { resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
-
-const workerScript = fileURLToPath(new URL('./export-worker.mjs', import.meta.url))
+import { runExportWorkerTick } from './export-worker-tick.mjs'
 
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
 }
 
 function runWorkerTick(context, envOverrides = {}) {
-  const result = spawnSync(process.execPath, [workerScript], {
+  return runExportWorkerTick({
     cwd: context.testCwd,
     env: {
-      ...process.env,
-      EXPORT_WORKER_ONCE: '1',
       EXPORT_WORKER_POLL_MS: '25',
       EXPORT_WORKER_LEASE_MS: '450',
       EXPORT_WORKER_BATCH_SIZE: '25',
-      NODE_ENV: 'test',
-      ALLOW_DEV_FALLBACK_APP_SECRET: 'true',
       ...envOverrides
     },
-    encoding: 'utf8'
+    expectedStatus: envOverrides.EXPORT_WORKER_CRASH_AFTER_LEASE === '1' ? 92 : 0
   })
-  return result
 }
 
 async function waitForExportStatus(context, headers, exportIds, terminalStatuses, maxTicks = 60) {
   const targetIds = new Set(exportIds)
   let latest = []
   for (let tick = 0; tick < maxTicks; tick += 1) {
-    const worker = runWorkerTick(context)
-    if (worker.status !== 0) throw new Error(`Worker tick failed (${worker.status}): ${worker.stderr || worker.stdout}`)
+    runWorkerTick(context)
     latest = await context.request('/api/exports?sort=updatedAt_desc', { headers })
     const settled = latest.filter((entry) => targetIds.has(entry.id) && terminalStatuses.has(entry.status))
     if (settled.length === exportIds.length) return settled
@@ -112,8 +102,7 @@ async function main() {
       headers,
       body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: 'pdf' })
     })
-    const crash = runWorkerTick(context, { EXPORT_WORKER_CRASH_AFTER_LEASE: '1', EXPORT_WORKER_BATCH_SIZE: '1' })
-    assert(crash.status === 92, 'Crash-after-lease worker should exit with 92 for recovery simulation.')
+    runWorkerTick(context, { EXPORT_WORKER_CRASH_AFTER_LEASE: '1', EXPORT_WORKER_BATCH_SIZE: '1' })
     await wait(500)
 
     const recovered = await waitForExportStatus(context, headers, [stuckCandidate.id], new Set(['completed']))

@@ -310,6 +310,10 @@ The companion worker is the canonical queue processor for export jobs in local, 
 
 Completed PDF/XLSX artifacts are persisted to configured object storage metadata and downloaded from `GET /api/exports/:id/download`; old completed jobs without persisted objects retain a compatibility re-render fallback. Ops diagnostics expose `workerMode`, heartbeat timing, `workerObservedRecently`, and `pendingWithoutWorker` so operators can distinguish queued jobs waiting on a worker from actively processing jobs.
 
+## Mapper MVP scope
+
+The visual mapper is MVP-canonical for previewing source PDFs, reviewing extracted AcroForm overlays, editing placement with drag/resize or numeric coordinates, saving audited layout metadata, and generating temporary test-fill previews. Snapping, alignment guides, and bulk placement refinement are intentionally post-MVP; the export renderer remains AcroForm-field driven rather than layout-overlay driven.
+
 ## Docker
 
 ```bash

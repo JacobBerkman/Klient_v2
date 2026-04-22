@@ -4,29 +4,53 @@ import { runSuite } from './runner-lifecycle.mjs'
 
 const integrationSuiteDefinitions = {
   'integration-tenancy.mjs': {
-    invariant: 'Tenant isolation blocks cross-tenant read/write access and cross-tenant audit visibility.'
+    invariant: 'Tenant isolation blocks cross-tenant read/write access and cross-tenant audit visibility.',
+    timeoutMs: 120_000
   },
-  'integration-rbac.mjs': { invariant: 'Direct RBAC checks enforce readonly/advisor restrictions for privileged routes.' },
+  'integration-rbac.mjs': {
+    invariant: 'Direct RBAC checks enforce readonly/advisor restrictions for privileged routes.',
+    timeoutMs: 120_000
+  },
   'integration-rbac-matrix.mjs': {
-    invariant: 'Policy matrix allow/deny behavior is enforced for every role/route guard pairing.'
+    invariant: 'Policy matrix allow/deny behavior is enforced for every role/route guard pairing.',
+    timeoutMs: 120_000
   },
-  'integration-templates.mjs': { invariant: 'Template lifecycle remains consistent across create/update/publish pathways.' },
-  'integration-exports.mjs': { invariant: 'Export workflows maintain expected lifecycle transitions and retry behavior.' },
+  'integration-templates.mjs': {
+    invariant: 'Template lifecycle remains consistent across create/update/publish pathways.',
+    timeoutMs: 180_000
+  },
+  'integration-exports.mjs': {
+    invariant: 'Export workflows maintain expected lifecycle transitions and retry behavior.',
+    timeoutMs: 240_000
+  },
   'integration-export-stress.mjs': {
-    invariant: 'Export queue remains stable under concurrent load, retry backoff, and stuck-job recovery conditions.'
+    invariant: 'Export queue remains stable under concurrent load, retry backoff, and stuck-job recovery conditions.',
+    timeoutMs: 240_000
   },
-  'integration-portal-lifecycle.mjs': { invariant: 'Portal access lifecycle enforces token, submission, and upload requirements.' },
+  'integration-portal-lifecycle.mjs': {
+    invariant: 'Portal access lifecycle enforces token, submission, and upload requirements.',
+    timeoutMs: 180_000
+  },
   'integration-submission-repeatable-items.mjs': {
-    invariant: 'Repeatable submission data remains stable through create/update flows.'
+    invariant: 'Repeatable submission data remains stable through create/update flows.',
+    timeoutMs: 180_000
   },
-  'integration-analytics.mjs': { invariant: 'Analytics endpoints remain queryable with authenticated data-scoped responses.' },
+  'integration-analytics.mjs': {
+    invariant: 'Analytics endpoints remain queryable with authenticated data-scoped responses.',
+    timeoutMs: 120_000
+  },
   'integration-e2e-workflows.mjs': {
     invariant:
-      'Release-blocking end-to-end workflow (bootstrap/login, inline profile edit, board move, template/submission, worker-driven export completion, portal draft+submit) remains deterministic.'
+      'Release-blocking end-to-end workflow (bootstrap/login, inline profile edit, board move, template/submission, worker-driven export completion, portal draft+submit) remains deterministic.',
+    timeoutMs: 240_000
   },
-  'integration-csrf.mjs': { invariant: 'CSRF protection is enforced for protected methods while exempt routes remain functional.' },
+  'integration-csrf.mjs': {
+    invariant: 'CSRF protection is enforced for protected methods while exempt routes remain functional.',
+    timeoutMs: 120_000
+  },
   'integration-audit.mjs': {
-    invariant: 'Required canonical audit events and payload fields are emitted for sensitive actions.'
+    invariant: 'Required canonical audit events and payload fields are emitted for sensitive actions.',
+    timeoutMs: 120_000
   }
 }
 

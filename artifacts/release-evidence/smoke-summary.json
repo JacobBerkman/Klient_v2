@@ -2,13 +2,13 @@
   "schemaVersion": "1.0.0",
   "gate": "smoke",
   "command": "npm run test:smoke",
-  "startedAt": "2026-04-22T15:56:21.044Z",
-  "finishedAt": "2026-04-22T15:56:21.049Z",
-  "durationMs": 5,
+  "startedAt": "2026-04-22T17:38:35.488Z",
+  "finishedAt": "2026-04-22T17:38:35.492Z",
+  "durationMs": 4,
   "status": "failed",
   "metadata": {},
   "details": {},
   "error": {
-    "message": "spawn EPERM"
+    "message": "api-test-server:smoke failed to start: spawn EPERM"
   }
 }
