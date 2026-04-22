@@ -2,6 +2,7 @@ import { assert, createTestContext } from './test-harness.mjs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertMappingsCoverPdfFields, mergeMappingsByPdfField } from './mapping-fixtures.mjs'
 import { createTemplateWorkflowPdf, pdfBytesForJson } from './pdf-fixtures.mjs'
 
 const TERMINAL_EXPORT_STATUSES = new Set(['completed', 'failed', 'dead-letter'])
@@ -157,17 +158,19 @@ async function main() {
       })
     })
 
+    const exportMappings = mergeMappingsByPdfField(template.mappings, [
+      { pdfField: 'client_name', sourcePath: 'profile.firstName' },
+      { pdfField: 'salary', sourcePath: 'salary', transform: { type: 'currency' } },
+      { pdfField: 'started', sourcePath: 'startDate', transform: { type: 'date' } },
+      { pdfField: 'retired', sourcePath: 'isRetired', transform: { type: 'checkbox' } },
+      { pdfField: 'missing_with_default', sourcePath: 'missing.path', defaultValue: 'N/A' }
+    ])
+    assertMappingsCoverPdfFields(exportMappings, template.extractedFields || template.extraction?.fields || [])
     await context.request(`/api/templates/${template.id}/mappings`, {
       method: 'POST',
       headers,
       body: JSON.stringify({
-        mappings: [
-          { pdfField: 'client_name', sourcePath: 'profile.firstName' },
-          { pdfField: 'salary', sourcePath: 'salary', transform: { type: 'currency' } },
-          { pdfField: 'started', sourcePath: 'startDate', transform: { type: 'date' } },
-          { pdfField: 'retired', sourcePath: 'isRetired', transform: { type: 'checkbox' } },
-          { pdfField: 'missing_with_default', sourcePath: 'missing.path', defaultValue: 'N/A' }
-        ]
+        mappings: exportMappings
       })
     })
 

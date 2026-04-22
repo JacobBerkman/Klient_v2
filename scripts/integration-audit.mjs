@@ -9,7 +9,12 @@ try {
   const profile = await context.request('/api/profiles', {
     method: 'POST',
     headers,
-    body: JSON.stringify({ kind: 'client', firstName: 'Audit', lastName: 'Target', email: `audit+${Date.now()}@demo.test` })
+    body: JSON.stringify({
+      kind: 'client',
+      firstName: 'Audit',
+      lastName: 'Target',
+      email: `audit+${Date.now()}@demo.test`
+    })
   })
 
   await context.request(`/api/profiles/${profile.id}/sensitive`, {
@@ -46,7 +51,7 @@ try {
   await context.request(`/api/templates/${template.id}/mappings`, {
     method: 'POST',
     headers,
-    body: JSON.stringify({ mappings: [{ pdfField: 'client_name', sourcePath: 'profile.firstName' }] })
+    body: JSON.stringify({ mappings: [{ pdfField: 'client.firstName', sourcePath: 'profile.firstName' }] })
   })
 
   await context.request(`/api/templates/${template.id}/publish`, {
@@ -80,11 +85,25 @@ try {
   ]
 
   for (const group of requiredActionGroups) {
-    assert(audit.some((entry) => group.includes(entry.action)), `missing audit action ${group.join(' or ')}`)
+    assert(
+      audit.some((entry) => group.includes(entry.action)),
+      `missing audit action ${group.join(' or ')}`
+    )
   }
 
   const sample = audit[0]
-  for (const field of ['actor', 'firmId', 'entityType', 'entityId', 'action', 'before', 'after', 'requestId', 'ip', 'timestamp']) {
+  for (const field of [
+    'actor',
+    'firmId',
+    'entityType',
+    'entityId',
+    'action',
+    'before',
+    'after',
+    'requestId',
+    'ip',
+    'timestamp'
+  ]) {
     assert(Object.prototype.hasOwnProperty.call(sample, field), `missing canonical audit field ${field}`)
   }
   for (const group of requiredActionGroups) {

@@ -3,6 +3,7 @@ import { createEvidenceRecorder } from './release-evidence.mjs'
 import { spawnSync } from 'node:child_process'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { assertMappingsCoverPdfFields, mergeMappingsByPdfField } from './mapping-fixtures.mjs'
 import { createTemplateWorkflowPdf, pdfBytesForJson } from './pdf-fixtures.mjs'
 
 const evidence = createEvidenceRecorder({
@@ -112,17 +113,28 @@ try {
       clientId: profile.id,
       templateId: generatedFormTemplate.id,
       status: 'submitted',
-      data: { client_name: 'Smoke Path', salary: 1000 }
+      data: {
+        client_name: 'Smoke Path',
+        salary: 1000,
+        started: '2026-04-22',
+        retired: false,
+        missing_with_default: 'Smoke default path',
+        dependents: [{ name: 'Smoke Dependent One' }, { name: 'Smoke Dependent Two' }]
+      }
     })
   })
+  const smokeMappings = mergeMappingsByPdfField(template.mappings, [
+    { pdfField: 'client_name', sourcePath: 'client_name' },
+    { pdfField: 'salary', sourcePath: 'salary', transform: { type: 'currency' } },
+    { pdfField: 'started', sourcePath: 'started', transform: { type: 'date' } },
+    { pdfField: 'retired', sourcePath: 'retired', transform: { type: 'checkbox' } }
+  ])
+  assertMappingsCoverPdfFields(smokeMappings, template.extractedFields || template.extraction?.fields || [])
   await context.request(`/api/templates/${template.id}/mappings`, {
     method: 'POST',
     headers,
     body: JSON.stringify({
-      mappings: [
-        { pdfField: 'client_name', sourcePath: 'profile.firstName' },
-        { pdfField: 'salary', sourcePath: 'salary', transform: { type: 'currency' } }
-      ]
+      mappings: smokeMappings
     })
   })
 

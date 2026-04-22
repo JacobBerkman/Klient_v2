@@ -62,6 +62,26 @@ function fieldName(field: Record<string, unknown> | string) {
   return String(fieldMeta(field, 'fieldName') || field)
 }
 
+function validationPreviewFromError(error: unknown): TemplatePreviewPayload | null {
+  if (!(error instanceof ApiError) || !error.details || typeof error.details !== 'object') return null
+  const details = error.details as Record<string, unknown>
+  const issues = Array.isArray(details.issues) ? (details.issues as Array<Record<string, unknown>>) : []
+  if (!issues.length) return null
+  return {
+    issues,
+    publishReadiness:
+      details.publishReadiness && typeof details.publishReadiness === 'object'
+        ? (details.publishReadiness as TemplatePreviewPayload['publishReadiness'])
+        : {
+            summary: {
+              status: 'blocked',
+              blockersCount: issues.length,
+              warningsCount: 0
+            }
+          }
+  }
+}
+
 export function Component() {
   const { templateId = '' } = useParams()
   const { user } = useAuth()
@@ -106,6 +126,10 @@ export function Component() {
       ),
     [data?.submissions, selection.clientId, templateId]
   )
+  const requiredMappingFields = extractionFields.map((field) => fieldName(field)).filter(Boolean)
+  const mappedPdfFields = new Set(mappings.map((mapping) => String(mapping.pdfField || '').trim()).filter(Boolean))
+  const missingMappingFields = requiredMappingFields.filter((name) => !mappedPdfFields.has(name))
+  const mappingReadinessStatus = missingMappingFields.length ? 'missing required mappings' : 'complete mappings'
 
   async function handleSaveMappings() {
     if (!template) return
@@ -117,7 +141,17 @@ export function Component() {
       setStatusMessage('Mappings saved.')
       setRefreshKey((value) => value + 1)
     } catch (saveError) {
-      setStatusMessage(saveError instanceof Error ? saveError.message : 'Mapping save failed.')
+      const validationPreview = validationPreviewFromError(saveError)
+      if (validationPreview) {
+        setPreview(validationPreview)
+        setStatusMessage(
+          `Mapping save failed with ${validationPreview.issues?.length || 0} validation issue${
+            validationPreview.issues?.length === 1 ? '' : 's'
+          }.`
+        )
+      } else {
+        setStatusMessage(saveError instanceof Error ? saveError.message : 'Mapping save failed.')
+      }
     }
   }
 
@@ -440,6 +474,21 @@ export function Component() {
           title="Mappings"
           subtitle="Edit source paths, transforms, and repeater selectors without returning to the shell."
         >
+          <div className="section-toolbar">
+            <StatusBadge status={mappingReadinessStatus} />
+            <StatusBadge status={`${requiredMappingFields.length} required PDF fields`} />
+            <StatusBadge status={`${missingMappingFields.length} missing`} />
+          </div>
+          {missingMappingFields.length ? (
+            <InlineNotice tone="warning">
+              Missing required mappings: {missingMappingFields.slice(0, 6).join(', ')}
+              {missingMappingFields.length > 6 ? `, and ${missingMappingFields.length - 6} more` : ''}.
+            </InlineNotice>
+          ) : (
+            <InlineNotice tone="success">
+              Every extracted PDF field has a mapping row. Save will still validate transforms and repeater paths.
+            </InlineNotice>
+          )}
           <div className="table-shell">
             <table>
               <thead>
@@ -625,6 +674,8 @@ export function Component() {
                     <thead>
                       <tr>
                         <th>Code</th>
+                        <th>Field</th>
+                        <th>Target</th>
                         <th>Message</th>
                         <th>Severity</th>
                       </tr>
@@ -633,6 +684,15 @@ export function Component() {
                       {preview.issues.map((issue, index) => (
                         <tr key={`issue-${index}`}>
                           <td>{String(issue.code || issue.errorCode || 'issue')}</td>
+                          <td>{String(issue.field || '-')}</td>
+                          <td>
+                            {String(
+                              (issue.meta as Record<string, unknown> | undefined)?.requiredPdfField ||
+                                (issue.meta as Record<string, unknown> | undefined)?.fieldKey ||
+                                issue.path ||
+                                '-'
+                            )}
+                          </td>
                           <td>{String(issue.message || issue.errorMessage || 'Validation issue')}</td>
                           <td>{String(issue.severity || 'error')}</td>
                         </tr>

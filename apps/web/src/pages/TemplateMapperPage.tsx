@@ -216,6 +216,13 @@ export function Component() {
   const visibleFields = fields
     .map((field, index) => ({ field, index }))
     .filter(({ field }) => Number(field.pageIndex || 0) === pageIndex)
+  const extractedFieldNames = (
+    template.extraction?.fields?.length ? template.extraction.fields : template.extractedFields || []
+  )
+    .map((field) => fieldName(field))
+    .filter(Boolean)
+  const mappedPdfFields = new Set((template.mappings || []).map((mapping) => String(mapping.pdfField || '').trim()))
+  const missingMappingFields = extractedFieldNames.filter((name) => !mappedPdfFields.has(name))
 
   return (
     <div className="stack">
@@ -233,6 +240,7 @@ export function Component() {
             <StatusBadge status={template.extraction?.status || 'unknown'} />
             <StatusBadge status={template.sourceArtifact ? 'source pdf available' : 'no source pdf'} />
             <StatusBadge status={`${fields.length} overlays`} />
+            <StatusBadge status={missingMappingFields.length ? 'missing mappings' : 'mapping complete'} />
           </>
         }
       />
@@ -302,6 +310,16 @@ export function Component() {
                 Filled AcroForm export remains canonical. Layout metadata supports review, overlay adjustments, and
                 test-fill validation.
               </p>
+              {missingMappingFields.length ? (
+                <p className="inline-notice inline-notice-warning">
+                  Mapping readiness is blocked by missing fields: {missingMappingFields.slice(0, 5).join(', ')}
+                  {missingMappingFields.length > 5 ? `, and ${missingMappingFields.length - 5} more` : ''}.
+                </p>
+              ) : (
+                <p className="inline-notice inline-notice-success">
+                  Mapping readiness is complete for every extracted PDF field.
+                </p>
+              )}
               <div className="actions-row">
                 <button type="button" onClick={() => void handleSave()}>
                   Save PDF layout

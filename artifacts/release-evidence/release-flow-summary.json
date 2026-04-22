@@ -1,0 +1,28 @@
+{
+  "schemaVersion": "1.0.0",
+  "gate": "release-flow",
+  "command": "npm run test:release-flow",
+  "startedAt": "2026-04-22T15:58:24.064Z",
+  "finishedAt": "2026-04-22T15:58:24.071Z",
+  "durationMs": 7,
+  "status": "failed",
+  "metadata": {},
+  "details": {
+    "flow": "canonical-release-readiness",
+    "status": "failed",
+    "generatedAt": "2026-04-22T15:58:24.071Z",
+    "checks": {
+      "total": 0,
+      "passed": 0,
+      "failed": 0
+    },
+    "steps": [],
+    "failure": {
+      "message": "spawn EPERM",
+      "failedStep": null
+    }
+  },
+  "error": {
+    "message": "spawn EPERM"
+  }
+}
