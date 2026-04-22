@@ -97,6 +97,9 @@ export class StoreTemplateRepository extends TemplateRepository {
   getTemplateSourcePdf(user, templateId) {
     return this.store.getTemplateSourcePdf(user, templateId)
   }
+  previewTemplateTestFill(user, templateId, input) {
+    return this.store.previewTemplateTestFill(user, templateId, input)
+  }
   updateTemplatePdfLayout(user, templateId, input) {
     return this.store.updateTemplatePdfLayout(user, templateId, input)
   }

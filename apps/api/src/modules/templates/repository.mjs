@@ -16,6 +16,9 @@ export class TemplateRepository {
   previewTemplateMappings(_firmContext, _templateId, _input) {
     throwRepositoryScaffoldError('TemplateRepository', 'previewTemplateMappings')
   }
+  previewTemplateTestFill(_firmContext, _templateId, _input) {
+    throwRepositoryScaffoldError('TemplateRepository', 'previewTemplateTestFill')
+  }
   compareTemplateVersions() {
     throwRepositoryScaffoldError('TemplateRepository', 'compareTemplateVersions')
   }

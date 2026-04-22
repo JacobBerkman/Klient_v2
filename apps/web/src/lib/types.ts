@@ -184,6 +184,10 @@ export interface FormTemplate {
   firmId: string
   name: string
   description?: string
+  formSchema?: {
+    sections?: FormSection[]
+    [key: string]: unknown
+  }
   sections: FormSection[]
   generatedFromDocumentTemplateId?: string | null
   generation?: {
@@ -196,6 +200,8 @@ export interface FormTemplate {
     diagnostics?: Array<Record<string, unknown>>
     [key: string]: unknown
   } | null
+  status?: string
+  publishState?: string
   createdAt?: string
   updatedAt?: string
 }

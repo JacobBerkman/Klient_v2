@@ -242,7 +242,9 @@ export function Component() {
                   <td>
                     <strong>{template.name}</strong>
                     {template.generatedFromDocumentTemplateId ? (
-                      <div className="muted">Generated from PDF auto-build</div>
+                      <div className="muted">
+                        Generated from PDF auto-build: {template.generatedFromDocumentTemplateId}
+                      </div>
                     ) : null}
                   </td>
                   <td>
@@ -257,6 +259,9 @@ export function Component() {
                   <td>{template.description || 'No description'}</td>
                   <td>
                     {template.sections.length}
+                    {template.generation?.fieldCount ? (
+                      <div className="muted">{template.generation.fieldCount} extracted fields</div>
+                    ) : null}
                     {template.generation?.repeatableSectionCount ? (
                       <div className="muted">{template.generation.repeatableSectionCount} repeatable</div>
                     ) : null}

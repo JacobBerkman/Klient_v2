@@ -2,13 +2,13 @@
   "schemaVersion": "1.0.0",
   "gate": "integration",
   "command": "npm run test:integration",
-  "startedAt": "2026-04-21T21:35:46.334Z",
-  "finishedAt": "2026-04-21T21:35:46.541Z",
-  "durationMs": 207,
+  "startedAt": "2026-04-21T23:37:50.958Z",
+  "finishedAt": "2026-04-21T23:37:51.269Z",
+  "durationMs": 311,
   "status": "failed",
   "metadata": {},
   "details": {},
   "error": {
-    "message": "integration-templates.mjs exited with code 1 after 199ms (exit)"
+    "message": "integration-templates.mjs exited with code 1 after 301ms (exit)"
   }
 }

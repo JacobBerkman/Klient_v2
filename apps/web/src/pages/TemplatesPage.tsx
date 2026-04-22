@@ -196,12 +196,15 @@ export function Component() {
               <div className="pill-list">
                 <StatusBadge status={`${autoBuildResult.autoBuildSummary?.fieldCount || 0} fields`} />
                 <StatusBadge status={`${autoBuildResult.autoBuildSummary?.repeatableSectionCount || 0} repeaters`} />
+                <StatusBadge status={autoBuildResult.exportReadiness?.status || 'export readiness unknown'} />
                 {autoBuildResult.linkedFormTemplateId ? (
                   <StatusBadge status="Linked form generated" />
                 ) : (
                   <StatusBadge status="No linked form" />
                 )}
               </div>
+              <p className="muted">Linked form: {autoBuildResult.linkedFormTemplateId || 'Unavailable'}</p>
+              <p className="muted">Source key: {autoBuildResult.sourceArtifact?.key || 'Unavailable'}</p>
               {autoBuildResult.extraction?.diagnostics?.length ? (
                 <p className="muted">
                   Diagnostics:{' '}
@@ -232,11 +235,23 @@ export function Component() {
                   <StatusBadge status={template.publishState || 'draft'} />
                 </div>
                 <p className="muted">File: {template.fileName}</p>
+                <p className="muted">
+                  Source artifact:{' '}
+                  {template.sourceArtifact?.key
+                    ? `${template.sourceArtifact.key} (${template.sourceArtifact.contentType || 'application/pdf'})`
+                    : 'Not persisted'}
+                </p>
                 <div className="pill-list">
                   <StatusBadge status={template.extraction?.status || 'completed'} />
                   <StatusBadge status={template.exportReadiness?.status || 'summary_fallback'} />
                   {template.linkedFormTemplateId ? <StatusBadge status="Linked form" /> : null}
                 </div>
+                {template.extraction?.diagnostics?.length ? (
+                  <p className="muted">
+                    Diagnostics:{' '}
+                    {template.extraction.diagnostics.map((entry) => String(entry.code || 'diagnostic')).join(', ')}
+                  </p>
+                ) : null}
                 <p className="muted">
                   {template.mappings?.length || 0} mappings, {template.versions?.length || 0} versions
                 </p>

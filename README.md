@@ -56,7 +56,7 @@ The older duplicate Fastify/TypeScript backend path and related workspace scaffo
 - masked sensitive data handling for SSNs and tax IDs
 - form template creation plus advisor and portal submission flows
 - PDF document template ingestion with persisted source artifacts, AcroForm field extraction, linked generated form templates, and extraction diagnostics
-- AcroForm visual mapper route with PDF preview, extracted field overlays, numeric placement editing, linked form visibility, and mapping/readiness checks
+- AcroForm visual mapper route with PDF preview, extracted field overlays, page navigation, drag/resize placement editing, test-fill preview, linked form visibility, and mapping/readiness checks
 - template-driven export jobs that fill uploaded AcroForm PDFs when available, generate structured advisor XLSX workbooks, persist completed artifacts, and preserve retry/dead-letter queue behavior
 - invite and password reset flows
 - readiness/health probes, backup/restore scripts, Docker packaging, and smoke coverage

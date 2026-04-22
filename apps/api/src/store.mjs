@@ -13,6 +13,7 @@ import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
 import { renderExportArtifact } from './export-artifact.mjs'
 import { resolveExportData } from './export-data-resolution.mjs'
+import { renderPdfFromTemplate } from './export-renderers/pdf-template.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
 import {
   requireFirmContext,
@@ -632,7 +633,7 @@ function documentTemplateAdapter(entry) {
       fields: Array.isArray(extraction.fields) ? deepClone(extraction.fields) : extractedFields
     },
     sourceArtifact,
-    linkedFormTemplateId: entry.linkedFormTemplateId || null,
+    linkedFormTemplateId: entry.linkedFormTemplateId || entry.autoBuildSummary?.linkedFormTemplateId || null,
     pdfLayout: deepClone(entry.pdfLayout || { fields: [] }),
     autoBuildSummary:
       entry.autoBuildSummary ||
@@ -640,7 +641,7 @@ function documentTemplateAdapter(entry) {
         ? {
             fieldCount: extractedFields.length,
             mappingCount,
-            linkedFormTemplateId: entry.linkedFormTemplateId || null,
+            linkedFormTemplateId: entry.linkedFormTemplateId || entry.autoBuildSummary?.linkedFormTemplateId || null,
             repeatableSectionCount: 0,
             ambiguousRepeaterCount: 0
           }
@@ -3053,6 +3054,55 @@ export function createStore({
         sizeBytes: stored.body.length
       }
     },
+    async previewTemplateTestFill(user, templateId, input = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.previewTemplateTestFill' })
+      requirePermission(user, 'templates:write')
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
+      )
+      const sourceArtifact = template.sourceArtifact || template.documentMetadata?.sourceArtifact || null
+      if (!sourceArtifact?.bucket || !sourceArtifact?.key) {
+        throw new Error('Template source PDF is not available.')
+      }
+      const stored = await objectStorage.getObject(sourceArtifact)
+      const values = input.values && typeof input.values === 'object' ? input.values : {}
+      const extractedFields = Array.isArray(template.extraction?.fields)
+        ? template.extraction.fields
+        : template.extractedFields || []
+      const resolvedRows = extractedFields
+        .map((field, index) => {
+          const pdfField = String(typeof field === 'string' ? field : field?.fieldName || field?.name || '').trim()
+          if (!pdfField) return null
+          const fieldType = String(typeof field === 'object' ? field.fieldType || field.type || '' : '').toLowerCase()
+          const sampleValue =
+            Object.hasOwn(values, pdfField) || Object.hasOwn(values, String(index))
+              ? (values[pdfField] ?? values[String(index)])
+              : fieldType.includes('checkbox')
+                ? true
+                : `Preview ${index + 1}`
+          return {
+            pdfField,
+            sourcePath: `preview.${pdfField}`,
+            value: sampleValue,
+            required: field?.required === true
+          }
+        })
+        .filter(Boolean)
+      const rendered = await renderPdfFromTemplate({
+        sourcePdfBytes: stored.body,
+        resolvedRows,
+        flatten: input.flatten === true
+      })
+      return {
+        body: rendered.body,
+        fileName: `${template.name || template.id}-test-fill.pdf`,
+        contentType: 'application/pdf',
+        diagnostics: rendered.diagnostics || [],
+        sizeBytes: rendered.body.length
+      }
+    },
     updateTemplatePdfLayout(user, templateId, input = {}) {
       const firmContext = requireFirmContext(user, { method: 'store.updateTemplatePdfLayout' })
       requirePermission(user, 'templates:write')
@@ -3890,23 +3940,31 @@ export function createStore({
             diagnostics: extractionDiagnostics
           }
         })
-        aggregate.linkedFormTemplateId = generatedForm.id
-        aggregate.autoBuildSummary = { ...autoBuildSummary, linkedFormTemplateId: generatedForm.id }
-        aggregate.versions.push(
-          createTemplateVersion(aggregate, 'linked_form_generated', {
+        const linkedAggregate = state.templateAggregates.find((entry) => entry.id === documentTemplate.id) || aggregate
+        linkedAggregate.linkedFormTemplateId = generatedForm.id
+        linkedAggregate.autoBuildSummary = { ...autoBuildSummary, linkedFormTemplateId: generatedForm.id }
+        linkedAggregate.versions.push(
+          createTemplateVersion(linkedAggregate, 'linked_form_generated', {
             linkedFormTemplateId: generatedForm.id,
-            autoBuildSummary: aggregate.autoBuildSummary,
+            autoBuildSummary: linkedAggregate.autoBuildSummary,
             sourceArtifact,
             extraction: extractionEnvelope,
             actorUserId: user.id
           })
         )
-        addAudit(user.firmId, user.id, 'template_aggregate', aggregate.id, 'document_template.linked_form_generated', {
-          linkedFormTemplateId: generatedForm.id,
-          source: generatedForm.generation?.source || 'auto_build'
-        })
+        addAudit(
+          user.firmId,
+          user.id,
+          'template_aggregate',
+          linkedAggregate.id,
+          'document_template.linked_form_generated',
+          {
+            linkedFormTemplateId: generatedForm.id,
+            source: generatedForm.generation?.source || 'auto_build'
+          }
+        )
         persist()
-        return documentTemplateAdapter(aggregate)
+        return documentTemplateAdapter(linkedAggregate)
       }
 
       return aggregate ? documentTemplateAdapter(aggregate) : documentTemplate

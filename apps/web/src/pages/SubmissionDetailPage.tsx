@@ -341,9 +341,16 @@ export function Component() {
                 <strong>Template ID</strong>
                 <div className="muted">{submission.templateId}</div>
                 {template?.generatedFromDocumentTemplateId ? (
-                  <Link className="text-link" to={`/templates/${template.generatedFromDocumentTemplateId}`}>
-                    Open source document template
-                  </Link>
+                  <div className="compact-stack">
+                    <Link className="text-link" to={`/templates/${template.generatedFromDocumentTemplateId}`}>
+                      Open source document template
+                    </Link>
+                    <div className="muted">
+                      Generated from {template.generation?.source || 'pdf_acroform'} with{' '}
+                      {template.generation?.fieldCount || template.sections.flatMap((section) => section.fields).length}{' '}
+                      fields.
+                    </div>
+                  </div>
                 ) : null}
               </div>
               <div>

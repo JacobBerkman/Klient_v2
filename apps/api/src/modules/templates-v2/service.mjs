@@ -1,26 +1,61 @@
+function clone(value) {
+  if (value === undefined) return undefined
+  return JSON.parse(JSON.stringify(value))
+}
+
+function normalizeExtraction(extraction = {}) {
+  return {
+    status: extraction?.status === 'failed' ? 'failed' : 'completed',
+    reasonCode: extraction?.reasonCode || null,
+    error: extraction?.error || null,
+    diagnostics: Array.isArray(extraction?.diagnostics) ? clone(extraction.diagnostics) : [],
+    fields: Array.isArray(extraction?.fields) ? clone(extraction.fields) : []
+  }
+}
+
 function toLegacyDocument(template) {
+  const documentMetadata = clone(template.documentMetadata || { fileName: template.fileName || 'template.pdf' })
+  const sourceArtifact = clone(template.sourceArtifact || template.documentMetadata?.sourceArtifact || null)
+  const extraction = normalizeExtraction(template.extraction || {})
   return {
     id: template.id,
     firmId: template.firmId,
     name: template.name,
+    description: template.description || '',
     fileName: template.documentMetadata?.fileName || 'template.pdf',
-    blueprint: template.blueprint || { sections: [] },
-    mappings: template.mappings || [],
-    versions: template.versions || [],
+    documentMetadata,
+    blueprint: clone(template.blueprint || { sections: [] }),
+    mappings: clone(template.mappings || []),
+    mappingRules: clone(template.mappingRules || template.mappings || []),
+    versions: clone(template.versions || []),
     status: template.publishState || 'draft',
     publishState: template.publishState || 'draft',
+    extractedFields: clone(template.extractedFields || extraction.fields || []),
+    extraction,
+    sourceArtifact,
+    linkedFormTemplateId: template.linkedFormTemplateId || template.autoBuildSummary?.linkedFormTemplateId || null,
+    autoBuildSummary: clone(template.autoBuildSummary || null),
+    exportReadiness: clone(template.exportReadiness || null),
+    pdfLayout: clone(template.pdfLayout || null),
+    versionHash: template.versionHash || null,
     createdAt: template.createdAt,
     updatedAt: template.updatedAt
   }
 }
 
 function toLegacyForm(template) {
+  const formSchema = clone(template.formSchema || { sections: template.sections || [] })
   return {
     id: template.id,
     firmId: template.firmId,
     name: template.name,
     description: template.description || '',
-    sections: template.formSchema?.sections || [],
+    formSchema,
+    sections: clone(formSchema.sections || []),
+    generatedFromDocumentTemplateId: template.generatedFromDocumentTemplateId || null,
+    generation: clone(template.generation || null),
+    status: template.publishState || 'draft',
+    publishState: template.publishState || 'draft',
     createdAt: template.createdAt,
     updatedAt: template.updatedAt
   }
@@ -55,7 +90,9 @@ export function createTemplatesV2Service({ templatesV2Repository, policy }) {
         kind: 'form',
         name: input.name,
         description: input.description || '',
-        formSchema: { sections: input.sections || [] }
+        formSchema: input.formSchema || { sections: input.sections || [] },
+        generatedFromDocumentTemplateId: input.generatedFromDocumentTemplateId || null,
+        generation: input.generation || null
       })
       return toLegacyForm(created)
     },

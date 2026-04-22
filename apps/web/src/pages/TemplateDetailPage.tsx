@@ -251,6 +251,9 @@ export function Component() {
               <p className="muted">Object key: {template.sourceArtifact?.key || 'Unavailable'}</p>
               <p className="muted">Checksum: {template.sourceArtifact?.checksum || 'Unavailable'}</p>
               <StatusBadge status={template.sourceArtifact ? 'source pdf persisted' : 'summary fallback only'} />
+              <StatusBadge
+                status={template.sourceArtifact ? 'template-driven filled PDF' : 'fallback summary export'}
+              />
               {template.sourceArtifact ? (
                 <Link className="text-link" to={`/templates/${template.id}/mapper`}>
                   Open visual mapper
@@ -279,8 +282,14 @@ export function Component() {
                 <Link className="text-link" to={`/forms?templateId=${linkedForm.id}`}>
                   {linkedForm.name}
                 </Link>
+                <p className="muted">Form template ID: {linkedForm.id}</p>
+                <p className="muted">Source document ID: {linkedForm.generatedFromDocumentTemplateId || template.id}</p>
                 <p className="muted">Sections: {linkedForm.sections.length}</p>
                 <p className="muted">Generated from: {linkedForm.generation?.source || 'auto-build'}</p>
+                <p className="muted">
+                  Generation summary: {linkedForm.generation?.fieldCount || 0} fields,{' '}
+                  {linkedForm.generation?.repeatableSectionCount || 0} repeaters
+                </p>
               </div>
             ) : (
               <EmptyState

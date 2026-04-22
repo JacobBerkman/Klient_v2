@@ -61,6 +61,7 @@ export const routes = {
   documentTemplateMappings: (templateId: string) => joinPath('/api/templates', templateId, 'mappings'),
   documentTemplateSourcePdf: (templateId: string) => joinPath('/api/templates', templateId, 'source-pdf'),
   documentTemplatePdfLayout: (templateId: string) => joinPath('/api/templates', templateId, 'pdf-layout'),
+  documentTemplateTestFillPreview: (templateId: string) => joinPath('/api/templates', templateId, 'test-fill-preview'),
   documentTemplateMappingsPreview: (templateId: string) =>
     joinPath('/api/templates', templateId, 'mappings', 'preview'),
   documentTemplatePublish: (templateId: string) => joinPath('/api/templates', templateId, 'publish'),
@@ -232,6 +233,35 @@ class ApiClient {
       ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
       ...options
     })
+  }
+
+  async postBlob(path: string, payload?: unknown, options: RequestOptions = {}) {
+    if (path.startsWith('/api/') && !options.skipCsrf) await this.ensureCsrf()
+    const headers = new Headers(options.headers || {})
+    if (payload !== undefined && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
+    if (path.startsWith('/api/') && !options.skipCsrf && this.csrfToken) headers.set('X-CSRF-Token', this.csrfToken)
+    const response = await fetch(path, {
+      ...options,
+      method: 'POST',
+      ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
+      credentials: 'same-origin',
+      headers
+    })
+    const nextToken = response.headers.get('x-csrf-token')
+    if (nextToken) this.setCsrfToken(nextToken)
+    if (!response.ok) {
+      const message = response.headers.get('content-type')?.includes('application/json')
+        ? ((await response.json()) as { message?: string })?.message
+        : await response.text()
+      throw new ApiError(message || response.statusText || 'Request failed.', {
+        status: response.status,
+        requestId: response.headers.get('x-request-id')
+      })
+    }
+    return {
+      blob: await response.blob(),
+      headers: response.headers
+    }
   }
 
   patch<T>(path: string, payload?: unknown, options: RequestOptions = {}) {

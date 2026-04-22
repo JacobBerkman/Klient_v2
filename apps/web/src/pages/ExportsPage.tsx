@@ -121,10 +121,10 @@ export function Component() {
     setStatusMessage('')
     try {
       await api.post(routes.exportsProcess(), {})
-      setStatusMessage('Queued export processing triggered.')
+      setStatusMessage('Recovery tick completed.')
       setRefreshKey((value) => value + 1)
     } catch (processError) {
-      setStatusMessage(processError instanceof Error ? processError.message : 'Queue processing failed.')
+      setStatusMessage(processError instanceof Error ? processError.message : 'Recovery tick failed.')
     }
   }
 

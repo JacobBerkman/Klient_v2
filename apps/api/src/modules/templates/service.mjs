@@ -238,6 +238,10 @@ export function createTemplatesService({ templateRepository, policy, store = nul
       policy.requireGuard(user, 'canReadTemplate')
       return templateRepository.getTemplateSourcePdf(user, templateId)
     },
+    previewTestFill(user, templateId, input = {}) {
+      policy.requireGuard(user, 'canEditTemplate')
+      return templateRepository.previewTemplateTestFill(user, templateId, input)
+    },
     updatePdfLayout(user, templateId, input = {}) {
       policy.requireGuard(user, 'canEditTemplate')
       return runMutation(() => templateRepository.updateTemplatePdfLayout(user, templateId, input))

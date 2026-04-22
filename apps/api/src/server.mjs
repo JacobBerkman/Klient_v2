@@ -1703,6 +1703,24 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/test-fill-preview') && req.method === 'POST') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canEditTemplate')
+        const preview = await modules.templates.previewTestFill(user, id, await parseBody(req))
+        const fileName = sanitizeDownloadFilename(preview.fileName || `${id}-test-fill.pdf`)
+        res.writeHead(200, {
+          ...baseHeaders(),
+          'X-Request-Id': requestId,
+          'Content-Type': preview.contentType || 'application/pdf',
+          'Content-Length': String(preview.sizeBytes || preview.body?.length || 0),
+          'Content-Disposition': `inline; filename=\"${fileName}\"`,
+          'Cache-Control': 'private, no-store',
+          'X-Mapper-Diagnostics': String(preview.diagnostics?.length || 0)
+        })
+        finalizeLog(200)
+        return res.end(preview.body)
+      }
       if (pathname.startsWith('/api/templates/') && pathname.endsWith('/mappings/preview') && req.method === 'POST') {
         const id = pathname.split('/')[3]
         const body = await parseBody(req)

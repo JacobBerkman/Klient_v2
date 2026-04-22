@@ -87,7 +87,7 @@ Each module exposes `service.mjs` and is composed in `apps/api/src/modules/index
 - Failed extraction is explicit: malformed PDFs, no AcroForm, no fields, and ambiguous repeaters are surfaced as diagnostics; the system does not create a fake linked form on failure.
 - Export rendering runs through `modules/exports/store-repository.mjs` and `export-artifact.mjs`. Source-backed PDF jobs fill the uploaded AcroForm template via `export-renderers/pdf-template.mjs`; XLSX jobs generate structured advisor workbooks.
 - Completed export bytes are persisted to object storage metadata before a job is marked downloadable. Download routes serve persisted bytes, with compatibility re-rendering only for old completed jobs that have no object pointer.
-- `/templates/:templateId/mapper` is an additive AcroForm visual mapper. It serves PDF preview, extracted-field overlays, and versioned/audited `pdfLayout` placement edits without replacing the AcroForm-driven export renderer.
+- `/templates/:templateId/mapper` is an additive AcroForm visual mapper. It serves PDF preview, page navigation, extracted-field overlays, drag/resize plus numeric placement editing, test-fill preview, and versioned/audited `pdfLayout` edits without replacing the AcroForm-driven export renderer.
 
 ## Incremental migration delta (Task 9)
 
