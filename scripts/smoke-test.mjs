@@ -11,6 +11,8 @@ const evidence = createEvidenceRecorder({
   command: 'npm run test:smoke'
 })
 
+let currentStep = 'startup'
+
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
 }
@@ -27,10 +29,47 @@ function runWorkerTick(ctx, extraEnv = {}) {
   })
 }
 
+async function captureExportDiagnostics(context, headers) {
+  const snapshot = {
+    step: currentStep
+  }
+  if (!context) return snapshot
+
+  try {
+    snapshot.serverStatus = context.serverStatus?.() || null
+  } catch (error) {
+    snapshot.serverStatusError = error?.message || String(error)
+  }
+
+  if (!headers) return snapshot
+
+  try {
+    snapshot.exports = await context.request('/api/exports?sort=updatedAt_desc', { headers })
+  } catch (error) {
+    snapshot.exportsError = error?.message || String(error)
+  }
+
+  try {
+    snapshot.queue = await context.request('/api/ops/exports/queue', { headers: context.opsHeaders() })
+  } catch (error) {
+    snapshot.queueError = error?.message || String(error)
+  }
+
+  try {
+    snapshot.diagnostics = await context.request('/api/ops/diagnostics', { headers: context.opsHeaders() })
+  } catch (error) {
+    snapshot.diagnosticsError = error?.message || String(error)
+  }
+
+  return snapshot
+}
+
 async function waitForExportCompletion(ctx, exportIds, { maxTicks = 30 } = {}) {
   const remaining = new Set(exportIds)
   for (let attempt = 0; attempt < maxTicks; attempt += 1) {
+    currentStep = `export processing tick ${attempt + 1}`
     runWorkerTick(ctx)
+    currentStep = `export completion polling ${attempt + 1}`
     const exportsList = await ctx.request('/api/exports?sort=updatedAt_desc', {
       headers: ctx.authHeaders()
     })
@@ -48,13 +87,16 @@ let context = null
 
 try {
   context = await createTestContext('smoke')
+  currentStep = 'health checks'
   await context.request('/health')
   const ready = await context.request('/ready')
   assert(ready.status === 'ready', 'Readiness endpoint did not report ready state.')
 
+  currentStep = 'login'
   await context.login()
   const headers = context.authHeaders()
 
+  currentStep = 'create prospect profile'
   const profile = await context.request('/api/profiles', {
     method: 'POST',
     headers,
@@ -67,6 +109,7 @@ try {
     })
   })
 
+  currentStep = 'auto-build PDF template'
   const sourcePdf = await createTemplateWorkflowPdf()
   const template = await context.request('/api/templates/auto-build', {
     method: 'POST',
@@ -81,18 +124,21 @@ try {
   assert(template.linkedFormTemplateId, 'Smoke PDF auto-build should create a linked form template.')
   assert(template.sourceArtifact?.key, 'Smoke PDF auto-build should persist the source artifact key.')
 
+  currentStep = 'publish generated template'
   const publishResult = await context.request(`/api/templates/${template.id}/publish`, {
     method: 'POST',
     headers,
     body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Smoke publish validation' })
   })
 
+  currentStep = 'load generated form template'
   const formTemplates = await context.request('/api/forms/templates', { headers })
   const generatedFormTemplate = formTemplates.find((entry) => entry.id === template.linkedFormTemplateId)
   assert(
     generatedFormTemplate?.generatedFromDocumentTemplateId === template.id,
     'Generated form template linkage missing.'
   )
+  currentStep = 'create submission from generated form'
   const submission = await context.request('/api/forms/submissions', {
     method: 'POST',
     headers,
@@ -117,6 +163,7 @@ try {
     { pdfField: 'retired', sourcePath: 'retired', transform: { type: 'checkbox' } }
   ])
   assertMappingsCoverPdfFields(smokeMappings, template.extractedFields || template.extraction?.fields || [])
+  currentStep = 'save template mappings'
   await context.request(`/api/templates/${template.id}/mappings`, {
     method: 'POST',
     headers,
@@ -125,6 +172,7 @@ try {
     })
   })
 
+  currentStep = 'queue export jobs'
   const exportJob = await context.request('/api/exports', {
     method: 'POST',
     headers,
@@ -148,7 +196,9 @@ try {
     })
   })
 
+  currentStep = 'wait for export completion'
   const completedExports = await waitForExportCompletion(context, [exportJob.id, xlsxJob.id, flakyJob.id])
+  currentStep = 'load export queue health'
   const exportsList = await context.request('/api/exports?sort=updatedAt_desc', { headers: context.authHeaders() })
   const queueHealth = await context.request('/api/ops/exports/queue', { headers: context.opsHeaders() })
 
@@ -197,12 +247,14 @@ try {
     (entry) => entry.id === trackedSmokeExport.id && entry.status === 'completed'
   )
   assert(Boolean(completedDownloadTarget), 'Completed smoke export should be available in export listing.')
+  currentStep = 'download completed PDF artifact'
   const download = await context.rawRequest(`/api/exports/${completedDownloadTarget.id}/download`, {
     headers: { Cookie: context.sessionCookie }
   })
   assert(download.status === 200, 'Completed smoke export should be downloadable.')
   const downloadType = download.headers.get('content-type') || ''
   assert(downloadType === 'application/pdf', 'Completed smoke export download should return PDF content type.')
+  currentStep = 'download completed XLSX artifact'
   const xlsxDownload = await context.rawRequest(`/api/exports/${trackedXlsxExport.id}/download`, {
     headers: { Cookie: context.sessionCookie }
   })
@@ -234,9 +286,13 @@ try {
   evidence.finalize({ status: 'passed', details: summary })
   console.log(JSON.stringify(summary, null, 2))
 } catch (error) {
-  evidence.finalize({ status: 'failed', error })
+  const diagnostics = await captureExportDiagnostics(context, context?.authHeaders?.())
+  const wrappedError = new Error(
+    `[smoke] step="${currentStep}" failed: ${error?.message || String(error)}\n${JSON.stringify(diagnostics, null, 2)}`
+  )
+  evidence.finalize({ status: 'failed', error: wrappedError, details: diagnostics })
   process.exitCode = 1
-  throw error
+  throw wrappedError
 } finally {
   await context?.shutdown?.()
 }

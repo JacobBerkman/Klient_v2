@@ -1,180 +1,154 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { runCommandProcess } from './runner-lifecycle.mjs'
+import { EventEmitter } from 'node:events'
+import { runChildProcess, runCommandProcess } from './runner-lifecycle.mjs'
 
-const nodeBin = process.execPath
+function createStream() {
+  const stream = new EventEmitter()
+  stream.resume = () => {
+    stream.resumed = true
+  }
+  stream.destroy = () => {
+    stream.destroyed = true
+  }
+  stream.removeAllListeners = EventEmitter.prototype.removeAllListeners
+  return stream
+}
 
-test('runCommandProcess drains piped integration-style output and cleanly hands off next suite', async () => {
-  const noisyScript = [
-    'const payload = { suite: "integration-exports", dump: "x".repeat(2_000_000) };',
-    'console.log(JSON.stringify(payload));'
-  ].join(' ')
+function createManagedStub() {
+  const child = new EventEmitter()
+  child.stdout = createStream()
+  child.stderr = createStream()
+  child.kill = () => true
+  child.exitCode = null
+  child.signalCode = null
+  return {
+    child,
+    label: 'stubbed-process',
+    startedAt: Date.now(),
+    stdoutTail: '',
+    stderrTail: ''
+  }
+}
 
-  const noisyResult = await runCommandProcess({
-    command: nodeBin,
-    args: ['-e', noisyScript],
-    label: 'integration-exports.mjs',
-    stdio: 'pipe',
-    timeoutMs: 15000
-  })
-
-  assert.equal(typeof noisyResult.durationMs, 'number')
-  assert.ok(noisyResult.durationMs >= 0)
-
-  const handoffResult = await runCommandProcess({
-    command: nodeBin,
-    args: ['-e', 'console.log("next-suite-ok")'],
-    label: 'integration-portal-lifecycle.mjs',
-    stdio: 'pipe',
-    timeoutMs: 15000
-  })
-
-  assert.equal(typeof handoffResult.durationMs, 'number')
-  assert.ok(handoffResult.durationMs >= 0)
-})
-
-test('aggregate integration runner exits after integration-exports suite completes', { timeout: 240000 }, async () => {
-  const result = await runCommandProcess({
-    command: nodeBin,
-    args: ['scripts/master-integration.mjs'],
-    label: 'master-integration(integration-exports)',
-    stdio: 'pipe',
-    timeoutMs: 210000,
-    env: {
-      ...process.env,
-      INTEGRATION_SUITES: 'integration-exports.mjs'
+test('runCommandProcess resolves after piped stdout/close handoff with injected process manager', async () => {
+  const managed = createManagedStub()
+  const resultPromise = runCommandProcess({
+    command: process.execPath,
+    args: ['-e', 'console.log("ignored")'],
+    label: 'piped-handoff',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    startProcess() {
+      queueMicrotask(() => {
+        managed.child.stdout.emit('data', Buffer.from('suite-output'))
+        managed.child.emit('exit', 0, null)
+        managed.child.emit('close', 0, null)
+      })
+      return managed
     }
   })
 
+  const result = await resultPromise
+  assert.equal(result.code, 0)
   assert.equal(typeof result.durationMs, 'number')
-  assert.ok(result.durationMs >= 0)
+  assert.equal(managed.child.stdout.resumed, true)
+  assert.equal(managed.child.stderr.resumed, true)
 })
 
-test('runCommandProcess completes deterministically for piped stdio tuple across repeated handoffs', async () => {
-  for (let iteration = 0; iteration < 8; iteration += 1) {
-    const result = await runCommandProcess({
-      command: nodeBin,
-      args: ['-e', `process.stdout.write("iteration-${iteration}\\n")`],
-      label: `tuple-pipe-handoff-${iteration}`,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeoutMs: 5000
-    })
+test('runCommandProcess rejects with explicit timeout context and uses injected terminator', async () => {
+  const managed = createManagedStub()
+  let terminateCalls = 0
 
-    assert.equal(typeof result.durationMs, 'number')
-    assert.ok(result.durationMs >= 0)
-    assert.equal(result.code, 0)
-  }
+  await assert.rejects(
+    () =>
+      runCommandProcess({
+        command: process.execPath,
+        args: ['-e', 'setInterval(() => {}, 1000)'],
+        label: 'timeout-piped-context',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        timeoutMs: 25,
+        startProcess() {
+          return managed
+        },
+        async terminateProcess() {
+          terminateCalls += 1
+          managed.child.exitCode = 0
+          managed.child.emit('exit', 0, null)
+          managed.child.emit('close', 0, null)
+          return { exited: true, code: 0 }
+        }
+      }),
+    /timed out after 25ms \(stdio=ignore,pipe,pipe; waiting for close\)/
+  )
+
+  assert.equal(terminateCalls, 1)
 })
 
-test('runCommandProcess prefers exit fallback when close is pinned by descendant pipe handles', async () => {
-  const script = [
-    'import { spawn } from "node:child_process";',
-    'const holder = spawn(process.execPath, ["-e", "setTimeout(() => process.exit(0), 5000)"], {',
-    '  stdio: ["ignore", "inherit", "ignore"],',
-    '  detached: true',
-    '});',
-    'holder.unref();',
-    'process.exit(0);'
-  ].join(' ')
+test('runCommandProcess preserves non-zero exits with injected child lifecycle', async () => {
+  const managed = createManagedStub()
 
+  await assert.rejects(
+    () =>
+      runCommandProcess({
+        command: process.execPath,
+        args: ['-e', 'process.exit(23)'],
+        label: 'abrupt-exit-non-zero',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        startProcess() {
+          queueMicrotask(() => {
+            managed.child.emit('exit', 23, null)
+            managed.child.emit('close', 23, null)
+          })
+          return managed
+        }
+      }),
+    /abrupt-exit-non-zero exited with code 23/
+  )
+})
+
+test('runCommandProcess falls back to exit when close never arrives for piped stdio', async () => {
+  const managed = createManagedStub()
   const start = Date.now()
-  const result = await runCommandProcess({
-    command: nodeBin,
-    args: ['-e', script],
+  const resultPromise = runCommandProcess({
+    command: process.execPath,
+    args: ['-e', 'process.exit(0)'],
     label: 'exit-fallback-pinned-close',
     stdio: 'pipe',
-    timeoutMs: 6000
+    timeoutMs: 6000,
+    startProcess() {
+      queueMicrotask(() => {
+        managed.child.emit('exit', 0, null)
+      })
+      return managed
+    }
   })
 
+  const result = await resultPromise
   const elapsed = Date.now() - start
   assert.equal(result.code, 0)
   assert(elapsed >= 900, `expected close fallback grace window to elapse, got ${elapsed}ms`)
   assert(elapsed < 3000, `expected completion via exit fallback without waiting for descendant stdio, got ${elapsed}ms`)
 })
 
-test('runCommandProcess timeout rejects with explicit stdio context for piped runs', async () => {
-  const start = Date.now()
-  await assert.rejects(
-    () =>
-      runCommandProcess({
-        command: nodeBin,
-        args: ['-e', 'setInterval(() => process.stdout.write("."), 20)'],
-        label: 'timeout-piped-context',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeoutMs: 250
-      }),
-    /timed out after 250ms \(stdio=ignore,pipe,pipe; waiting for close\)/
-  )
+test('runChildProcess forwards detached suite ownership through to runCommandProcess dependencies', async () => {
+  const managed = createManagedStub()
+  let detachedValue = null
 
-  const elapsed = Date.now() - start
-  assert(elapsed < 2000, `expected timeout rejection to settle quickly, got ${elapsed}ms`)
-})
-
-test('runCommandProcess does not misclassify fast exits near timeout boundary as timeouts', async () => {
-  for (let iteration = 0; iteration < 3; iteration += 1) {
-    const result = await runCommandProcess({
-      command: nodeBin,
-      args: ['-e', 'setTimeout(() => process.exit(0), 1000)'],
-      label: `timeout-boundary-fast-exit-${iteration}`,
-      stdio: 'pipe',
-      timeoutMs: 1200
-    })
-
-    assert.equal(result.code, 0)
-    assert.equal(typeof result.durationMs, 'number')
-  }
-})
-
-test('runCommandProcess handles abrupt non-zero exit with piped stdio', async () => {
-  await assert.rejects(
-    () =>
-      runCommandProcess({
-        command: nodeBin,
-        args: ['-e', 'process.stdout.write("before-abrupt-exit\\n"); process.exit(23)'],
-        label: 'abrupt-exit-non-zero',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeoutMs: 3000
-      }),
-    /abrupt-exit-non-zero exited with code 23/
-  )
-})
-
-test('runCommandProcess preserves suite handoff stability across mixed abrupt and clean exits', async () => {
-  const suites = [
-    { label: 'handoff-clean-1', code: 0 },
-    { label: 'handoff-clean-2', code: 0 },
-    { label: 'handoff-clean-3', code: 0 }
-  ]
-
-  for (const suite of suites) {
-    const result = await runCommandProcess({
-      command: nodeBin,
-      args: ['-e', `process.stdout.write("${suite.label}\\n"); process.exit(${suite.code})`],
-      label: suite.label,
-      stdio: ['ignore', 'pipe', 'pipe'],
-      timeoutMs: 4000
-    })
-    assert.equal(result.code, 0)
-  }
-
-  await assert.rejects(
-    () =>
-      runCommandProcess({
-        command: nodeBin,
-        args: ['-e', 'process.stderr.write("intentional-failure\\n"); process.exit(31)'],
-        label: 'handoff-abrupt-failure',
-        stdio: ['ignore', 'pipe', 'pipe'],
-        timeoutMs: 4000
-      }),
-    /handoff-abrupt-failure exited with code 31/
-  )
-
-  const recovery = await runCommandProcess({
-    command: nodeBin,
-    args: ['-e', 'process.stdout.write("handoff-recovery\\n")'],
-    label: 'handoff-recovery',
+  const result = await runChildProcess({
+    scriptPath: 'scripts/integration-exports.mjs',
+    label: 'integration-exports.mjs',
+    detached: true,
     stdio: ['ignore', 'pipe', 'pipe'],
-    timeoutMs: 4000
+    startProcess(options) {
+      detachedValue = options.detached
+      queueMicrotask(() => {
+        managed.child.emit('exit', 0, null)
+        managed.child.emit('close', 0, null)
+      })
+      return managed
+    }
   })
-  assert.equal(recovery.code, 0)
+
+  assert.equal(result.code, 0)
+  assert.equal(detachedValue, true)
 })

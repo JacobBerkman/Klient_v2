@@ -36,21 +36,21 @@ export function runExportWorkerTick({
 
   if (result.error) {
     throw new Error(
-      `${label} failed to execute: ${result.error.message}\nstdout:\n${outputTail(result.stdout)}\nstderr:\n${outputTail(
-        result.stderr
-      )}`
+      `${label} failed to execute (cwd=${cwd || process.cwd()}, timeoutMs=${timeoutMs}): ${result.error.message}\nstdout:\n${outputTail(
+        result.stdout
+      )}\nstderr:\n${outputTail(result.stderr)}`
     )
   }
   if (result.signal) {
     throw new Error(
-      `${label} terminated by signal ${result.signal}\nstdout:\n${outputTail(result.stdout)}\nstderr:\n${outputTail(
-        result.stderr
-      )}`
+      `${label} terminated by signal ${result.signal} (cwd=${cwd || process.cwd()}, timeoutMs=${timeoutMs})\nstdout:\n${outputTail(
+        result.stdout
+      )}\nstderr:\n${outputTail(result.stderr)}`
     )
   }
   if (result.status !== expectedStatus) {
     throw new Error(
-      `${label} exited with ${result.status}; expected ${expectedStatus}\nstdout:\n${outputTail(
+      `${label} exited with ${result.status}; expected ${expectedStatus} (cwd=${cwd || process.cwd()}, timeoutMs=${timeoutMs})\nstdout:\n${outputTail(
         result.stdout
       )}\nstderr:\n${outputTail(result.stderr)}`
     )

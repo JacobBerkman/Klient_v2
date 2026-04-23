@@ -33,6 +33,7 @@ export function startManagedProcess({
   stdio = ['ignore', 'pipe', 'pipe'],
   shell = false,
   detached = false,
+  spawnImpl = spawn,
   captureLimit = 16_000,
   onStdout,
   onStderr
@@ -40,7 +41,7 @@ export function startManagedProcess({
   const displayLabel = label || `${command} ${args.join(' ')}`.trim()
   let child
   try {
-    child = spawn(command, args, {
+    child = spawnImpl(command, args, {
       cwd,
       env: normalizeChildEnv(env),
       stdio,

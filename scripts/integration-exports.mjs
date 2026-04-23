@@ -4,12 +4,16 @@ import { assertMappingsCoverPdfFields, mergeMappingsByPdfField } from './mapping
 import { createTemplateWorkflowPdf, pdfBytesForJson } from './pdf-fixtures.mjs'
 
 const TERMINAL_EXPORT_STATUSES = new Set(['completed', 'failed', 'dead-letter'])
+let currentStep = 'startup'
+let activeContext = null
+let activeHeaders = null
 
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
 }
 
 function processQueueTick(context) {
+  currentStep = 'export worker tick'
   return runExportWorkerTick({
     cwd: context.testCwd,
     env: {
@@ -21,6 +25,7 @@ function processQueueTick(context) {
 }
 
 function crashAfterLeaseTick(context) {
+  currentStep = 'crash-after-lease worker tick'
   runExportWorkerTick({
     cwd: context.testCwd,
     env: {
@@ -31,6 +36,41 @@ function crashAfterLeaseTick(context) {
     label: 'crash-after-lease worker tick',
     expectedStatus: 92
   })
+}
+
+async function captureExportDiagnostics() {
+  const snapshot = { step: currentStep }
+  if (!activeContext) return snapshot
+
+  try {
+    snapshot.serverStatus = activeContext.serverStatus?.() || null
+  } catch (error) {
+    snapshot.serverStatusError = error?.message || String(error)
+  }
+
+  if (!activeHeaders) return snapshot
+
+  try {
+    snapshot.exports = await activeContext.request('/api/exports?sort=updatedAt_desc', { headers: activeHeaders })
+  } catch (error) {
+    snapshot.exportsError = error?.message || String(error)
+  }
+
+  try {
+    snapshot.queue = await activeContext.request('/api/ops/exports/queue', { headers: activeContext.opsHeaders() })
+  } catch (error) {
+    snapshot.queueError = error?.message || String(error)
+  }
+
+  try {
+    snapshot.diagnostics = await activeContext.request('/api/ops/diagnostics', {
+      headers: activeContext.opsHeaders()
+    })
+  } catch (error) {
+    snapshot.diagnosticsError = error?.message || String(error)
+  }
+
+  return snapshot
 }
 
 async function processQueued(context, times = 1) {
@@ -47,6 +87,7 @@ async function consumeResponse(response) {
 
 async function waitForExport(context, matcher, { maxTicks = 40 } = {}) {
   for (let attempt = 0; attempt < maxTicks; attempt += 1) {
+    currentStep = `poll export queue ${attempt + 1}`
     const exportsList = await context.request('/api/exports?sort=updatedAt_desc', {
       headers: context.authHeaders()
     })
@@ -74,11 +115,15 @@ async function waitForCompletedExport(context, exportIds, { maxTicks = 60 } = {}
 
 async function main() {
   const context = await createTestContext('exports')
+  activeContext = context
 
   try {
+    currentStep = 'login'
     await context.login()
     const headers = context.authHeaders()
+    activeHeaders = headers
 
+    currentStep = 'create client profile'
     const profile = await context.request('/api/profiles', {
       method: 'POST',
       headers,
@@ -89,6 +134,7 @@ async function main() {
         email: `export.client+${Date.now()}@example.com`
       })
     })
+    currentStep = 'auto-build PDF template'
     const sourcePdf = await createTemplateWorkflowPdf()
     const template = await context.request('/api/templates/auto-build', {
       method: 'POST',
@@ -105,6 +151,7 @@ async function main() {
       body: JSON.stringify({ versionBump: '1.0.0', changelog: 'Integration exports publish' })
     })
 
+    currentStep = 'create manual form template'
     const formTemplate = await context.request('/api/forms/templates', {
       method: 'POST',
       headers,
@@ -138,6 +185,7 @@ async function main() {
       })
     })
 
+    currentStep = 'save template mappings'
     const exportMappings = mergeMappingsByPdfField(template.mappings, [
       { pdfField: 'client_name', sourcePath: 'profile.firstName' },
       { pdfField: 'salary', sourcePath: 'salary', transform: { type: 'currency' } },
@@ -154,6 +202,7 @@ async function main() {
       })
     })
 
+    currentStep = 'queue export jobs'
     const completedJob = await context.request('/api/exports', {
       method: 'POST',
       headers,
@@ -220,6 +269,7 @@ async function main() {
       body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: 'pdf' })
     })
 
+    currentStep = 'simulate stalled lease recovery'
     crashAfterLeaseTick(context)
     await wait(550)
     const queueAfterCrash = await context.request('/api/ops/exports/queue', { headers: context.opsHeaders() })
@@ -228,10 +278,13 @@ async function main() {
       'Expected stalled job detection when worker crashes after lease acquisition.'
     )
 
+    currentStep = 'process queued exports'
     await processQueued(context, 24)
+    currentStep = 'wait for terminal export states'
     const completedSettled = await waitForCompletedExport(context, [completedJob.id, duplicateA.id, xlsxJob.id])
     const flakySettled = await waitForTerminalExport(context, flakyJob.id)
     const poisonSettled = await waitForTerminalExport(context, poisonJob.id)
+    currentStep = 'load export diagnostics'
     const exportsList = await context.request('/api/exports', {
       headers
     })
@@ -277,6 +330,7 @@ async function main() {
     const bulkRetryCandidate = exportsList.find((entry) => entry.id === bulkRetryJob.id)
     const retryCandidates = exportsList.filter((entry) => entry.status !== 'completed').slice(0, 3)
     const bulkRetryResults = []
+    currentStep = 'bulk retry failed exports'
     for (const candidate of retryCandidates) {
       const retried = await context.request(`/api/exports/${candidate.id}/retry`, {
         method: 'POST',
@@ -288,6 +342,7 @@ async function main() {
     const afterBulkRetry = await context.request(`/api/exports?status=queued&sort=updatedAt_desc`, {
       headers
     })
+    currentStep = 'process retried exports'
     await processQueued(context, 6)
     const afterRetryProcessing = await context.request('/api/exports?sort=updatedAt_desc', {
       headers
@@ -440,6 +495,7 @@ async function main() {
       (entry) => entry.id === (completedForAssertions?.id || completedJob.id)
     )
     if (completedAfterRetry?.status === 'completed') {
+      currentStep = 'download completed PDF export'
       const completedDownload = await context.rawRequest(`/api/exports/${completedAfterRetry.id}/download`, {
         headers: { Cookie: context.sessionCookie }
       })
@@ -461,6 +517,7 @@ async function main() {
       'Expected stalled leased job to be recoverable by subsequent worker ticks'
     )
     if (retriedProcessed?.status === 'completed') {
+      currentStep = 'download retried PDF export'
       const retriedDownload = await context.rawRequest(`/api/exports/${retriedProcessed.id}/download`, {
         headers: { Cookie: context.sessionCookie }
       })
@@ -519,6 +576,14 @@ async function main() {
 
 main().catch((error) => {
   process.exitCode = 1
-  console.error(`\n❌ integration-exports failed: ${error.message}`)
-  throw error
+  console.error(`\n❌ integration-exports failed during step "${currentStep}": ${error.message}`)
+  return captureExportDiagnostics().then((diagnostics) => {
+    throw new Error(
+      `[integration-exports] step="${currentStep}" failed: ${error?.message || String(error)}\n${JSON.stringify(
+        diagnostics,
+        null,
+        2
+      )}`
+    )
+  })
 })

@@ -16,7 +16,11 @@ export function runCommandProcess({
   timeoutMs = 0,
   cwd = process.cwd(),
   env = process.env,
-  shell = false
+  shell = false,
+  detached = false,
+  startProcess = startManagedProcess,
+  terminateProcess = terminateManagedProcess,
+  releaseStdio = releaseChildStdio
 }) {
   return new Promise((resolve, reject) => {
     const start = Date.now()
@@ -31,7 +35,7 @@ export function runCommandProcess({
       console.log(`   Invariant: ${invariant}`)
     }
 
-    const managed = startManagedProcess({ command, args, label: displayLabel, stdio, cwd, env, shell })
+    const managed = startProcess({ command, args, label: displayLabel, stdio, cwd, env, shell, detached })
     const child = managed.child
 
     const isPiped = (value) => value === 'pipe'
@@ -66,7 +70,7 @@ export function runCommandProcess({
         clearTimeout(closeFallbackId)
         closeFallbackId = null
       }
-      releaseChildStdio(managed)
+      releaseStdio(managed)
     }
 
     const settle = (resolver, value) => {
@@ -152,7 +156,7 @@ export function runCommandProcess({
           return
         }
         timeoutTriggered = true
-        void terminateManagedProcess(managed, { graceMs: 1500, killMs: 1500, label: displayLabel }).finally(() =>
+        void terminateProcess(managed, { graceMs: 1500, killMs: 1500, label: displayLabel }).finally(() =>
           finalizeCompletion('timeout', null, null)
         )
       }, timeoutMs)
@@ -176,6 +180,7 @@ export function runSuite(suite, index, total) {
     invariant: suite.invariant,
     index,
     total,
-    timeoutMs: suite.timeoutMs || 0
+    timeoutMs: suite.timeoutMs || 0,
+    detached: process.platform !== 'win32'
   })
 }

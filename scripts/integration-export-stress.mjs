@@ -1,11 +1,17 @@
 import { assert, createTestContext } from './test-harness.mjs'
 import { runExportWorkerTick } from './export-worker-tick.mjs'
 
+let currentStep = 'startup'
+let activeContext = null
+let activeHeaders = null
+
 function wait(ms) {
   return new Promise((resolveWait) => setTimeout(resolveWait, ms))
 }
 
 function runWorkerTick(context, envOverrides = {}) {
+  currentStep =
+    envOverrides.EXPORT_WORKER_CRASH_AFTER_LEASE === '1' ? 'crash-after-lease worker tick' : 'export worker tick'
   return runExportWorkerTick({
     cwd: context.testCwd,
     env: {
@@ -18,10 +24,38 @@ function runWorkerTick(context, envOverrides = {}) {
   })
 }
 
+async function captureExportDiagnostics() {
+  const snapshot = { step: currentStep }
+  if (!activeContext) return snapshot
+
+  try {
+    snapshot.serverStatus = activeContext.serverStatus?.() || null
+  } catch (error) {
+    snapshot.serverStatusError = error?.message || String(error)
+  }
+
+  if (!activeHeaders) return snapshot
+
+  try {
+    snapshot.exports = await activeContext.request('/api/exports?sort=updatedAt_desc', { headers: activeHeaders })
+  } catch (error) {
+    snapshot.exportsError = error?.message || String(error)
+  }
+
+  try {
+    snapshot.queue = await activeContext.request('/api/ops/exports/queue', { headers: activeContext.opsHeaders() })
+  } catch (error) {
+    snapshot.queueError = error?.message || String(error)
+  }
+
+  return snapshot
+}
+
 async function waitForExportStatus(context, headers, exportIds, terminalStatuses, maxTicks = 60) {
   const targetIds = new Set(exportIds)
   let latest = []
   for (let tick = 0; tick < maxTicks; tick += 1) {
+    currentStep = `poll export stress queue ${tick + 1}`
     runWorkerTick(context)
     latest = await context.request('/api/exports?sort=updatedAt_desc', { headers })
     const settled = latest.filter((entry) => targetIds.has(entry.id) && terminalStatuses.has(entry.status))
@@ -33,16 +67,26 @@ async function waitForExportStatus(context, headers, exportIds, terminalStatuses
 
 async function main() {
   const context = await createTestContext('export-stress-hardening')
+  activeContext = context
 
   try {
+    currentStep = 'login'
     await context.login()
     const headers = context.authHeaders()
+    activeHeaders = headers
 
+    currentStep = 'create profile'
     const profile = await context.request('/api/profiles', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ kind: 'client', firstName: 'Stress', lastName: 'Export', email: `stress+${Date.now()}@example.com` })
+      body: JSON.stringify({
+        kind: 'client',
+        firstName: 'Stress',
+        lastName: 'Export',
+        email: `stress+${Date.now()}@example.com`
+      })
     })
+    currentStep = 'auto-build template'
     const template = await context.request('/api/templates/auto-build', {
       method: 'POST',
       headers,
@@ -57,29 +101,48 @@ async function main() {
     const formTemplate = await context.request('/api/forms/templates', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ name: 'Stress Intake', sections: [{ title: 'Input', fields: [{ key: 'goal', label: 'Goal', type: 'text' }] }] })
+      body: JSON.stringify({
+        name: 'Stress Intake',
+        sections: [{ title: 'Input', fields: [{ key: 'goal', label: 'Goal', type: 'text' }] }]
+      })
     })
+    currentStep = 'create form submission'
     const submission = await context.request('/api/forms/submissions', {
       method: 'POST',
       headers,
-      body: JSON.stringify({ clientId: profile.id, templateId: formTemplate.id, status: 'submitted', data: { goal: 'Scale exports' } })
+      body: JSON.stringify({
+        clientId: profile.id,
+        templateId: formTemplate.id,
+        status: 'submitted',
+        data: { goal: 'Scale exports' }
+      })
     })
 
     // multiple simultaneous exports
+    currentStep = 'queue concurrent export jobs'
     const concurrent = []
     for (let index = 0; index < 12; index += 1) {
       const created = await context.request('/api/exports', {
         method: 'POST',
         headers,
-        body: JSON.stringify({ clientId: profile.id, submissionId: submission.id, templateId: template.id, type: index % 3 === 0 ? 'xlsx' : 'pdf' })
+        body: JSON.stringify({
+          clientId: profile.id,
+          submissionId: submission.id,
+          templateId: template.id,
+          type: index % 3 === 0 ? 'xlsx' : 'pdf'
+        })
       })
       concurrent.push(created.id)
     }
     const settledConcurrent = await waitForExportStatus(context, headers, concurrent, new Set(['completed']))
     assert(settledConcurrent.length === concurrent.length, 'All concurrent export jobs should complete.')
-    assert(settledConcurrent.every((entry) => entry.artifactReady === true), 'All completed concurrent exports should be artifactReady.')
+    assert(
+      settledConcurrent.every((entry) => entry.artifactReady === true),
+      'All completed concurrent exports should be artifactReady.'
+    )
 
     // retry after transient failure
+    currentStep = 'queue transient retry export'
     const transient = await context.request('/api/exports', {
       method: 'POST',
       headers,
@@ -94,9 +157,13 @@ async function main() {
     })
     const transientSettled = await waitForExportStatus(context, headers, [transient.id], new Set(['completed']))
     assert(transientSettled[0]?.status === 'completed', 'Transient failure export should complete after retry.')
-    assert(Number(transientSettled[0]?.attempts || 0) >= 1, 'Transient failure export should record at least one failed attempt.')
+    assert(
+      Number(transientSettled[0]?.attempts || 0) >= 1,
+      'Transient failure export should record at least one failed attempt.'
+    )
 
     // stuck job recovery (worker crashes after lease, then subsequent worker recovers)
+    currentStep = 'queue stuck export candidate'
     const stuckCandidate = await context.request('/api/exports', {
       method: 'POST',
       headers,
@@ -105,17 +172,30 @@ async function main() {
     runWorkerTick(context, { EXPORT_WORKER_CRASH_AFTER_LEASE: '1', EXPORT_WORKER_BATCH_SIZE: '1' })
     await wait(500)
 
+    currentStep = 'recover stuck export after worker crash'
     const recovered = await waitForExportStatus(context, headers, [stuckCandidate.id], new Set(['completed']))
     assert(recovered[0]?.status === 'completed', 'Stuck export should recover and complete on subsequent worker ticks.')
 
     const queueHealth = await context.request('/api/ops/exports/queue', { headers: context.opsHeaders() })
-    assert(Number(queueHealth?.queue?.stalled || 0) === 0, 'Queue stalled count should drain back to zero after recovery.')
+    assert(
+      Number(queueHealth?.queue?.stalled || 0) === 0,
+      'Queue stalled count should drain back to zero after recovery.'
+    )
   } finally {
     await context.shutdown()
   }
 }
 
 main().catch((error) => {
-  console.error(`❌ integration-export-stress failed: ${error.message}`)
   process.exitCode = 1
+  console.error(`❌ integration-export-stress failed during step "${currentStep}": ${error.message}`)
+  return captureExportDiagnostics().then((diagnostics) => {
+    throw new Error(
+      `[integration-export-stress] step="${currentStep}" failed: ${error?.message || String(error)}\n${JSON.stringify(
+        diagnostics,
+        null,
+        2
+      )}`
+    )
+  })
 })

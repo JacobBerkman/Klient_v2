@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -18,10 +19,18 @@ function wait(ms) {
 
 function isRetryableNetworkError(error) {
   const code = error?.cause?.code || error?.code
-  if (code === 'ECONNREFUSED' || code === 'ECONNRESET' || code === 'EPIPE') return true
-  if (error?.name === 'TimeoutError') return true
-  if (error?.cause?.name === 'TimeoutError') return true
-  return false
+  if (['ECONNREFUSED', 'ECONNRESET', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'].includes(code)) {
+    return true
+  }
+  if (error?.name === 'TimeoutError' || error?.name === 'AbortError') return true
+  if (error?.cause?.name === 'TimeoutError' || error?.cause?.name === 'AbortError') return true
+  const combinedMessage = `${error?.message || ''} ${error?.cause?.message || ''}`.toLowerCase()
+  return (
+    combinedMessage.includes('other side closed') ||
+    combinedMessage.includes('socket') ||
+    combinedMessage.includes('connection closed') ||
+    combinedMessage.includes('fetch failed')
+  )
 }
 
 async function fetchWithLifecycleRetry(
@@ -63,7 +72,7 @@ function isCsrfExemptPath(path) {
   ].includes(path)
 }
 
-function deterministicPort(name) {
+export function deterministicPort(name) {
   const base = Number.parseInt(process.env.TEST_PORT_BASE || '3300', 10)
   const modulo = Number.parseInt(process.env.TEST_PORT_RANGE || '300', 10)
   const seed = `${process.env.TEST_SEED || 'klient-seed'}:${name}`
@@ -72,22 +81,6 @@ function deterministicPort(name) {
     hash = (hash * 31 + seed.charCodeAt(index)) % 1_000_000
   }
   return base + (hash % modulo)
-}
-
-async function waitForServerUnavailable(baseUrl, { attempts = 20, delayMs = 50 } = {}) {
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      const response = await fetch(`${baseUrl}/ready`, { signal: AbortSignal.timeout(250) })
-      if (response.ok) {
-        await wait(delayMs)
-        continue
-      }
-    } catch {
-      return true
-    }
-    await wait(delayMs)
-  }
-  return false
 }
 
 function shouldDropAuthHeader(value) {
@@ -112,10 +105,120 @@ function parseAnyCookieFromHeader(rawHeader, cookieNames) {
   return ''
 }
 
+function parseReadyPayloadIdentity(payload) {
+  const pid = Number.parseInt(String(payload?.pid || ''), 10)
+  return {
+    instanceId: String(payload?.instanceId || ''),
+    pid: Number.isFinite(pid) ? pid : null,
+    bootedAt: payload?.bootedAt || null
+  }
+}
+
+function describeReadyIdentity(identity) {
+  if (!identity) return 'instanceId=<unknown> pid=<unknown>'
+  return `instanceId=${identity.instanceId || '<unknown>'} pid=${identity.pid ?? '<unknown>'}`
+}
+
+function readyIdentityMatches(expected, actual) {
+  if (!expected?.instanceId || !actual?.instanceId) return false
+  if (expected.instanceId !== actual.instanceId) return false
+  if (expected.pid != null && actual.pid != null && expected.pid !== actual.pid) return false
+  return true
+}
+
+async function readReadyIdentity(baseUrl, fetchImpl) {
+  try {
+    const response = await fetchImpl(
+      `${baseUrl}/ready`,
+      {},
+      {
+        retries: 0,
+        retryDelayMs: 0,
+        requestTimeoutMs: 500
+      }
+    )
+    const payload = await response.json().catch(() => null)
+    return {
+      ok: response.ok,
+      statusCode: response.status,
+      identity: parseReadyPayloadIdentity(payload),
+      payload
+    }
+  } catch {
+    return null
+  }
+}
+
+async function waitForServerUnavailable(baseUrl, fetchImpl, { attempts = 20, delayMs = 50 } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const readyState = await readReadyIdentity(baseUrl, fetchImpl)
+    if (!readyState?.ok) return true
+    await wait(delayMs)
+  }
+  return false
+}
+
+function formatServerExit(exitInfo) {
+  if (!exitInfo) return 'exit=<unknown>'
+  if (exitInfo.error) {
+    return `exitEvent=${exitInfo.event} error=${exitInfo.error.message}`
+  }
+  return `exitEvent=${exitInfo.event} code=${exitInfo.code ?? '<unknown>'} signal=${exitInfo.signal ?? '<none>'}`
+}
+
+function buildLifecycleErrorMessage({
+  name,
+  port,
+  testCwd,
+  server,
+  serverExitInfo,
+  message,
+  responderIdentity = null,
+  path = null
+}) {
+  const scope = [`suite=${name}`, `port=${port}`, `cwd=${testCwd}`]
+  if (path) scope.push(`path=${path}`)
+  const responder = responderIdentity ? `\nreadyResponder: ${describeReadyIdentity(responderIdentity)}` : ''
+  const exit = serverExitInfo ? `\nserverExit: ${formatServerExit(serverExitInfo)}` : ''
+  return `${describeProcessFailure(server, `${message} (${scope.join(', ')})`)}${exit}${responder}`
+}
+
 const SESSION_COOKIE_NAMES = ['klient-session', '__Host-klient-session']
 const CSRF_COOKIE_NAMES = ['klient-csrf', '__Host-klient-csrf']
 
-function createSessionClient(port) {
+function createSessionClient({
+  port,
+  baseUrl,
+  suiteName,
+  testCwd,
+  server,
+  expectedIdentity,
+  getServerExitInfo,
+  fetchImpl
+}) {
+  async function decorateTransportError(path, error) {
+    const serverExitInfo = getServerExitInfo()
+    const responder = await readReadyIdentity(baseUrl, fetchImpl)
+    const responderIdentity = responder?.identity || null
+    const reason = serverExitInfo
+      ? `Request transport failed after suite server exited: ${error?.message || 'Request failed'}`
+      : responder && responder.ok && !readyIdentityMatches(expectedIdentity, responderIdentity)
+        ? `Request transport failed against a foreign responder: ${error?.message || 'Request failed'}`
+        : `Request transport failed: ${error?.message || 'Request failed'}`
+    return new Error(
+      buildLifecycleErrorMessage({
+        name: suiteName,
+        port,
+        testCwd,
+        server,
+        serverExitInfo,
+        responderIdentity,
+        message: reason,
+        path
+      })
+    )
+  }
+
   return {
     csrfToken: '',
     csrfCookie: '',
@@ -124,9 +227,14 @@ function createSessionClient(port) {
       if (!this.sessionCookie) {
         throw new Error('Cannot bootstrap CSRF token without session cookie.')
       }
-      const csrfResponse = await fetchWithLifecycleRetry(`http://127.0.0.1:${port}/api/csrf`, {
-        headers: { Cookie: this.sessionCookie }
-      })
+      let csrfResponse
+      try {
+        csrfResponse = await fetchImpl(`${baseUrl}/api/csrf`, {
+          headers: { Cookie: this.sessionCookie }
+        })
+      } catch (error) {
+        throw await decorateTransportError('/api/csrf', error)
+      }
       const csrfData = await csrfResponse.json()
       if (!csrfResponse.ok || !csrfData.csrfToken) {
         throw new Error(`CSRF bootstrap failed: ${csrfData?.message || csrfData?.error?.message || 'unknown error'}`)
@@ -168,7 +276,12 @@ function createSessionClient(port) {
         }
       }
 
-      const response = await fetchWithLifecycleRetry(`http://127.0.0.1:${port}${path}`, { ...options, headers })
+      let response
+      try {
+        response = await fetchImpl(`${baseUrl}${path}`, { ...options, headers })
+      } catch (error) {
+        throw await decorateTransportError(path, error)
+      }
       let data
       try {
         data = await response.json()
@@ -204,7 +317,12 @@ function createSessionClient(port) {
           headers.Referer = headers.Referer || `http://127.0.0.1:${port}/`
         }
       }
-      const response = await fetchWithLifecycleRetry(`http://127.0.0.1:${port}${path}`, { ...options, headers })
+      let response
+      try {
+        response = await fetchImpl(`${baseUrl}${path}`, { ...options, headers })
+      } catch (error) {
+        throw await decorateTransportError(path, error)
+      }
       const data = await response.json()
       this.updateStateFromResponse(response)
       const acceptedStatuses = Array.isArray(expectedStatus)
@@ -223,11 +341,16 @@ function createSessionClient(port) {
       return { 'Content-Type': 'application/json' }
     },
     async login(email = 'admin@demo.test', password = 'ChangeMe123!') {
-      const response = await fetchWithLifecycleRetry(`http://127.0.0.1:${port}/api/login`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email, password })
-      })
+      let response
+      try {
+        response = await fetchImpl(`${baseUrl}/api/login`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        })
+      } catch (error) {
+        throw await decorateTransportError('/api/login', error)
+      }
       const data = await response.json()
       const sessionCookie = parseAnyCookieFromHeader(response.headers.get('set-cookie'), SESSION_COOKIE_NAMES)
       if (!response.ok || !sessionCookie) {
@@ -247,16 +370,33 @@ export function assert(condition, message) {
   }
 }
 
-export async function createTestContext(name) {
+export async function createTestContext(name, deps = {}) {
+  const {
+    startProcess = startManagedProcess,
+    terminateProcess = terminateManagedProcess,
+    fetchImpl = fetchWithLifecycleRetry,
+    mkdtempImpl = mkdtemp,
+    rmImpl = rm,
+    releaseStdio = releaseChildStdio,
+    waitImpl = wait,
+    waitForUnavailable = waitForServerUnavailable,
+    testContextId: providedTestContextId
+  } = deps
+
   const port = deterministicPort(name)
   const baseUrl = `http://127.0.0.1:${port}`
   const resetBehavior = process.env.TEST_RESET_BEHAVIOR || 'isolated'
   const testCwd =
-    resetBehavior === 'isolated' ? await mkdtemp(join(tmpdir(), `klient-${name}-`)) : resolve(process.cwd())
+    resetBehavior === 'isolated' ? await mkdtempImpl(join(tmpdir(), `klient-${name}-`)) : resolve(process.cwd())
 
   const opsToken = process.env.KLIENT_OPS_TOKEN || 'ops-token-abcdefghijklmnopqrstuvwxyz'
+  const testContextId =
+    providedTestContextId || `test-context-${name}-${process.pid}-${Date.now()}-${randomUUID().slice(0, 8)}`
   let bootError = ''
   let bootOutput = ''
+  let shutdownInvoked = false
+  let serverExitInfo = null
+
   const appendBootLog = (chunk) => {
     const text = chunk.toString()
     bootOutput += text
@@ -264,14 +404,15 @@ export async function createTestContext(name) {
       bootOutput = bootOutput.slice(-16_000)
     }
   }
+
   let server
   try {
-    server = startManagedProcess({
+    server = startProcess({
       command: process.execPath,
       args: [serverEntrypoint],
       label: `api-test-server:${name}`,
       cwd: testCwd,
-      detached: process.platform !== 'win32',
+      detached: false,
       env: {
         ...process.env,
         NODE_ENV: process.env.NODE_ENV || 'test',
@@ -279,7 +420,9 @@ export async function createTestContext(name) {
         HOST: '127.0.0.1',
         KLIENT_BASE_URL: baseUrl,
         E2E_BASE_URL: baseUrl,
-        KLIENT_OPS_TOKEN: opsToken
+        KLIENT_OPS_TOKEN: opsToken,
+        TEST_CONTEXT_ID: testContextId,
+        INSTANCE_ID: testContextId
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       onStdout: appendBootLog,
@@ -290,115 +433,200 @@ export async function createTestContext(name) {
     })
   } catch (error) {
     if (resetBehavior === 'isolated') {
-      await rm(testCwd, { recursive: true, force: true })
+      await rmImpl(testCwd, { recursive: true, force: true })
     }
     throw error
   }
 
-  let spawnError = null
+  const expectedIdentity = {
+    instanceId: testContextId,
+    pid: server?.child?.pid ?? null
+  }
+
+  const rememberExit = (event, code, signal, error) => {
+    serverExitInfo = {
+      event,
+      code: code ?? null,
+      signal: signal ?? null,
+      error: error || null,
+      observedAt: new Date().toISOString()
+    }
+  }
+
   server.child.once('error', (error) => {
-    spawnError = error
+    rememberExit('error', 1, null, error)
+  })
+  server.child.once('exit', (code, signal) => {
+    rememberExit('exit', code, signal, null)
+  })
+  server.child.once('close', (code, signal) => {
+    if (!serverExitInfo) rememberExit('close', code, signal, null)
   })
 
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    if (spawnError) break
+  const cleanupServerOnExit = () => {
+    if (shutdownInvoked) return
     try {
-      const response = await fetchWithLifecycleRetry(
-        `http://127.0.0.1:${port}/ready`,
-        {},
-        { retries: 1, retryDelayMs: 50 }
-      )
-      if (response.ok) {
-        const sessions = new Map()
-        const getSession = (name = 'default') => {
-          if (!sessions.has(name)) sessions.set(name, createSessionClient(port))
-          return sessions.get(name)
-        }
-
-        const context = {
-          port,
-          baseUrl,
-          testCwd,
-          opsToken,
-          session(name = 'default') {
-            return getSession(name)
-          },
-          request(path, options = {}) {
-            return getSession('default').request(path, options)
-          },
-          requestExpectError(path, options = {}, expectedStatus = 400) {
-            return getSession('default').requestExpectError(path, options, expectedStatus)
-          },
-          requestAs(sessionName, path, options = {}) {
-            return getSession(sessionName).request(path, options)
-          },
-          requestExpectErrorAs(sessionName, path, options = {}, expectedStatus = 400) {
-            return getSession(sessionName).requestExpectError(path, options, expectedStatus)
-          },
-          async rawRequest(path, options = {}, retryOptions) {
-            try {
-              return await fetchWithLifecycleRetry(`${baseUrl}${path}`, options, retryOptions)
-            } catch (error) {
-              throw new Error(`${path}: ${error?.message || 'Request failed'}`)
-            }
-          },
-          authHeaders(sessionName = 'default') {
-            return getSession(sessionName).authHeaders()
-          },
-          opsHeaders(extraHeaders = {}) {
-            return { Authorization: `Bearer ${opsToken}`, ...extraHeaders }
-          },
-          async login(email = 'admin@demo.test', password = 'ChangeMe123!', sessionName = 'default') {
-            return getSession(sessionName).login(email, password)
-          },
-          async shutdown() {
-            try {
-              await terminateManagedProcess(server, { label: `api-test-server:${name}` })
-              const closed = await waitForServerUnavailable(baseUrl)
-              if (!closed) {
-                throw new Error(`Server port ${port} still responds after shutdown for ${name}.`)
-              }
-            } finally {
-              releaseChildStdio(server)
-              if (resetBehavior === 'isolated') {
-                await rm(testCwd, { recursive: true, force: true })
-              }
-            }
-          }
-        }
-        Object.defineProperties(context, {
-          sessionCookie: {
-            get() {
-              return getSession('default').sessionCookie
-            }
-          },
-          csrfToken: {
-            get() {
-              return getSession('default').csrfToken
-            }
-          },
-          csrfCookie: {
-            get() {
-              return getSession('default').csrfCookie
-            }
-          }
-        })
-
-        return context
-      }
+      server?.child?.kill?.('SIGTERM')
     } catch {
-      // Wait for server startup.
+      // Best-effort shutdown for abrupt suite termination.
     }
-    await wait(100)
+  }
+  process.once('exit', cleanupServerOnExit)
+
+  const finalizeStartupFailure = async (message, responderIdentity = null) => {
+    shutdownInvoked = true
+    await terminateProcess(server, { label: `api-test-server:${name}` }).catch(() => {})
+    releaseStdio(server)
+    process.removeListener('exit', cleanupServerOnExit)
+    if (resetBehavior === 'isolated') {
+      await rmImpl(testCwd, { recursive: true, force: true })
+    }
+    throw new Error(
+      buildLifecycleErrorMessage({
+        name,
+        port,
+        testCwd,
+        server,
+        serverExitInfo,
+        responderIdentity,
+        message
+      })
+    )
   }
 
-  await terminateManagedProcess(server, { label: `api-test-server:${name}` }).catch(() => {})
-  releaseChildStdio(server)
-  if (resetBehavior === 'isolated') {
-    await rm(testCwd, { recursive: true, force: true })
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    if (serverExitInfo) {
+      await finalizeStartupFailure(`Server exited before startup completed for ${name}.`)
+    }
+    const readyState = await readReadyIdentity(baseUrl, fetchImpl)
+    if (readyState?.ok) {
+      if (!readyIdentityMatches(expectedIdentity, readyState.identity)) {
+        await finalizeStartupFailure(
+          `Foreign responder detected on deterministic test port before suite server ownership was verified for ${name}.`,
+          readyState.identity
+        )
+      }
+
+      const sessions = new Map()
+      const getSession = (sessionName = 'default') => {
+        if (!sessions.has(sessionName)) {
+          sessions.set(
+            sessionName,
+            createSessionClient({
+              port,
+              baseUrl,
+              suiteName: name,
+              testCwd,
+              server,
+              expectedIdentity,
+              getServerExitInfo: () => serverExitInfo,
+              fetchImpl
+            })
+          )
+        }
+        return sessions.get(sessionName)
+      }
+
+      const context = {
+        port,
+        baseUrl,
+        testCwd,
+        opsToken,
+        serverIdentity: expectedIdentity,
+        session(sessionName = 'default') {
+          return getSession(sessionName)
+        },
+        request(path, options = {}) {
+          return getSession('default').request(path, options)
+        },
+        requestExpectError(path, options = {}, expectedStatus = 400) {
+          return getSession('default').requestExpectError(path, options, expectedStatus)
+        },
+        requestAs(sessionName, path, options = {}) {
+          return getSession(sessionName).request(path, options)
+        },
+        requestExpectErrorAs(sessionName, path, options = {}, expectedStatus = 400) {
+          return getSession(sessionName).requestExpectError(path, options, expectedStatus)
+        },
+        async rawRequest(path, options = {}, retryOptions) {
+          try {
+            return await fetchImpl(`${baseUrl}${path}`, options, retryOptions)
+          } catch (error) {
+            const responder = await readReadyIdentity(baseUrl, fetchImpl)
+            throw new Error(
+              buildLifecycleErrorMessage({
+                name,
+                port,
+                testCwd,
+                server,
+                serverExitInfo,
+                responderIdentity: responder?.identity || null,
+                message: `Raw request transport failed: ${error?.message || 'Request failed'}`,
+                path
+              })
+            )
+          }
+        },
+        authHeaders(sessionName = 'default') {
+          return getSession(sessionName).authHeaders()
+        },
+        opsHeaders(extraHeaders = {}) {
+          return { Authorization: `Bearer ${opsToken}`, ...extraHeaders }
+        },
+        async login(email = 'admin@demo.test', password = 'ChangeMe123!', sessionName = 'default') {
+          return getSession(sessionName).login(email, password)
+        },
+        serverStatus() {
+          return {
+            name,
+            port,
+            testCwd,
+            expectedIdentity,
+            serverExitInfo,
+            bootOutput: server.stdoutTail || bootOutput,
+            bootError: server.stderrTail || bootError
+          }
+        },
+        async shutdown() {
+          if (shutdownInvoked) return
+          shutdownInvoked = true
+          process.removeListener('exit', cleanupServerOnExit)
+          try {
+            await terminateProcess(server, { label: `api-test-server:${name}` })
+            const closed = await waitForUnavailable(baseUrl, fetchImpl)
+            if (!closed) {
+              throw new Error(`Server port ${port} still responds after shutdown for ${name}.`)
+            }
+          } finally {
+            releaseStdio(server)
+            if (resetBehavior === 'isolated') {
+              await rmImpl(testCwd, { recursive: true, force: true })
+            }
+          }
+        }
+      }
+      Object.defineProperties(context, {
+        sessionCookie: {
+          get() {
+            return getSession('default').sessionCookie
+          }
+        },
+        csrfToken: {
+          get() {
+            return getSession('default').csrfToken
+          }
+        },
+        csrfCookie: {
+          get() {
+            return getSession('default').csrfCookie
+          }
+        }
+      })
+
+      return context
+    }
+    await waitImpl(100)
   }
-  const startupDetails = spawnError
-    ? describeProcessFailure(server, `Server failed to start for ${name}: ${spawnError.message}`)
-    : `Server failed to start for ${name}. ${bootError || bootOutput}`.trim()
-  throw new Error(startupDetails)
+
+  await finalizeStartupFailure(`Server failed to start for ${name}.`)
 }

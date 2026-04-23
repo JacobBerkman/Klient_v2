@@ -852,6 +852,8 @@ export function createHttpServer({ modules }) {
             status: 'ready',
             ready,
             service: runtime.serviceName,
+            instanceId: runtime.instanceId,
+            pid: process.pid,
             bootedAt,
             uptimeSeconds: Math.round(process.uptime()),
             checks,
