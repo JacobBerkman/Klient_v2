@@ -96,3 +96,28 @@ test('terminateManagedProcess stops non-detached children deterministically with
   assert.equal(result.exited, true)
   assert.equal(child.exitCode, 0)
 })
+
+test('terminateManagedProcess force-kills the Windows process tree after graceful exit when requested', async () => {
+  if (process.platform !== 'win32') return
+
+  const child = createChild({ pid: 5512, withStreams: false })
+  let forceKilledPid = null
+  const managed = {
+    child,
+    label: 'windows-tree-kill',
+    detached: false,
+    startedAt: Date.now(),
+    forceTreeKillOnWindows: true
+  }
+
+  const result = await terminateManagedProcess(managed, {
+    graceMs: 500,
+    killMs: 1000,
+    forceKillTreeImpl: async (pid) => {
+      forceKilledPid = pid
+    }
+  })
+
+  assert.equal(result.exited, true)
+  assert.equal(forceKilledPid, 5512)
+})

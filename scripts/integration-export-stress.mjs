@@ -1,21 +1,17 @@
 import { assert, createTestContext } from './test-harness.mjs'
-import { runExportWorkerTick } from './export-worker-tick.mjs'
+import { captureExportDiagnostics, logSuiteStep, runSuiteWorkerTick, wait } from './export-test-lifecycle.mjs'
 
 let currentStep = 'startup'
 let activeContext = null
 let activeHeaders = null
 
-function wait(ms) {
-  return new Promise((resolveWait) => setTimeout(resolveWait, ms))
-}
-
 function runWorkerTick(context, envOverrides = {}) {
   currentStep =
     envOverrides.EXPORT_WORKER_CRASH_AFTER_LEASE === '1' ? 'crash-after-lease worker tick' : 'export worker tick'
-  return runExportWorkerTick({
-    cwd: context.testCwd,
-    env: {
-      EXPORT_WORKER_POLL_MS: '25',
+  return runSuiteWorkerTick(context, {
+    suite: 'integration-export-stress',
+    step: currentStep,
+    envOverrides: {
       EXPORT_WORKER_LEASE_MS: '450',
       EXPORT_WORKER_BATCH_SIZE: '25',
       ...envOverrides
@@ -24,38 +20,12 @@ function runWorkerTick(context, envOverrides = {}) {
   })
 }
 
-async function captureExportDiagnostics() {
-  const snapshot = { step: currentStep }
-  if (!activeContext) return snapshot
-
-  try {
-    snapshot.serverStatus = activeContext.serverStatus?.() || null
-  } catch (error) {
-    snapshot.serverStatusError = error?.message || String(error)
-  }
-
-  if (!activeHeaders) return snapshot
-
-  try {
-    snapshot.exports = await activeContext.request('/api/exports?sort=updatedAt_desc', { headers: activeHeaders })
-  } catch (error) {
-    snapshot.exportsError = error?.message || String(error)
-  }
-
-  try {
-    snapshot.queue = await activeContext.request('/api/ops/exports/queue', { headers: activeContext.opsHeaders() })
-  } catch (error) {
-    snapshot.queueError = error?.message || String(error)
-  }
-
-  return snapshot
-}
-
 async function waitForExportStatus(context, headers, exportIds, terminalStatuses, maxTicks = 60) {
   const targetIds = new Set(exportIds)
   let latest = []
   for (let tick = 0; tick < maxTicks; tick += 1) {
     currentStep = `poll export stress queue ${tick + 1}`
+    logSuiteStep('integration-export-stress', currentStep)
     runWorkerTick(context)
     latest = await context.request('/api/exports?sort=updatedAt_desc', { headers })
     const settled = latest.filter((entry) => targetIds.has(entry.id) && terminalStatuses.has(entry.status))
@@ -71,11 +41,13 @@ async function main() {
 
   try {
     currentStep = 'login'
+    logSuiteStep('integration-export-stress', currentStep)
     await context.login()
     const headers = context.authHeaders()
     activeHeaders = headers
 
     currentStep = 'create profile'
+    logSuiteStep('integration-export-stress', currentStep)
     const profile = await context.request('/api/profiles', {
       method: 'POST',
       headers,
@@ -87,6 +59,7 @@ async function main() {
       })
     })
     currentStep = 'auto-build template'
+    logSuiteStep('integration-export-stress', currentStep)
     const template = await context.request('/api/templates/auto-build', {
       method: 'POST',
       headers,
@@ -107,6 +80,7 @@ async function main() {
       })
     })
     currentStep = 'create form submission'
+    logSuiteStep('integration-export-stress', currentStep)
     const submission = await context.request('/api/forms/submissions', {
       method: 'POST',
       headers,
@@ -120,6 +94,7 @@ async function main() {
 
     // multiple simultaneous exports
     currentStep = 'queue concurrent export jobs'
+    logSuiteStep('integration-export-stress', currentStep)
     const concurrent = []
     for (let index = 0; index < 12; index += 1) {
       const created = await context.request('/api/exports', {
@@ -143,6 +118,7 @@ async function main() {
 
     // retry after transient failure
     currentStep = 'queue transient retry export'
+    logSuiteStep('integration-export-stress', currentStep)
     const transient = await context.request('/api/exports', {
       method: 'POST',
       headers,
@@ -164,6 +140,7 @@ async function main() {
 
     // stuck job recovery (worker crashes after lease, then subsequent worker recovers)
     currentStep = 'queue stuck export candidate'
+    logSuiteStep('integration-export-stress', currentStep)
     const stuckCandidate = await context.request('/api/exports', {
       method: 'POST',
       headers,
@@ -173,6 +150,7 @@ async function main() {
     await wait(500)
 
     currentStep = 'recover stuck export after worker crash'
+    logSuiteStep('integration-export-stress', currentStep)
     const recovered = await waitForExportStatus(context, headers, [stuckCandidate.id], new Set(['completed']))
     assert(recovered[0]?.status === 'completed', 'Stuck export should recover and complete on subsequent worker ticks.')
 
@@ -189,7 +167,12 @@ async function main() {
 main().catch((error) => {
   process.exitCode = 1
   console.error(`❌ integration-export-stress failed during step "${currentStep}": ${error.message}`)
-  return captureExportDiagnostics().then((diagnostics) => {
+  return captureExportDiagnostics({
+    suite: 'integration-export-stress',
+    currentStep,
+    context: activeContext,
+    headers: activeHeaders
+  }).then((diagnostics) => {
     throw new Error(
       `[integration-export-stress] step="${currentStep}" failed: ${error?.message || String(error)}\n${JSON.stringify(
         diagnostics,

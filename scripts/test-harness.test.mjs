@@ -139,3 +139,36 @@ test('context request errors include server exit diagnostics after startup', asy
 
   await context.shutdown()
 })
+
+test('portOwnershipSnapshot reports expected ready responder ownership after startup', async () => {
+  const managed = createFakeManagedProcess(6104)
+  const context = await createTestContext('audit', {
+    testContextId: 'test-context-audit-expected',
+    startProcess: () => managed,
+    terminateProcess: async () => ({ exited: true }),
+    fetchImpl: async (url) => {
+      if (String(url).endsWith('/ready')) {
+        return makeJsonResponse({
+          status: 'ready',
+          instanceId: 'test-context-audit-expected',
+          pid: 6104,
+          bootedAt: '2026-04-23T00:00:00.000Z'
+        })
+      }
+      throw new Error(`unexpected url ${url}`)
+    },
+    mkdtempImpl: async () => 'C:\\fake-suite',
+    rmImpl: async () => {},
+    releaseStdio: () => {},
+    waitImpl: async () => {},
+    waitForUnavailable: async () => true
+  })
+
+  const snapshot = await context.portOwnershipSnapshot()
+  assert.equal(snapshot.ready, true)
+  assert.equal(snapshot.matchesExpected, true)
+  assert.equal(snapshot.responder?.instanceId, 'test-context-audit-expected')
+  assert.equal(snapshot.responder?.pid, 6104)
+
+  await context.shutdown()
+})

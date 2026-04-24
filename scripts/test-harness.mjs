@@ -587,6 +587,20 @@ export async function createTestContext(name, deps = {}) {
             bootError: server.stderrTail || bootError
           }
         },
+        async portOwnershipSnapshot() {
+          const responder = await readReadyIdentity(baseUrl, fetchImpl)
+          return {
+            name,
+            port,
+            baseUrl,
+            expectedIdentity,
+            responder: responder?.identity || null,
+            responderStatusCode: responder?.statusCode ?? null,
+            ready: responder?.ok === true,
+            matchesExpected:
+              responder?.ok === true && readyIdentityMatches(expectedIdentity, responder?.identity || null)
+          }
+        },
         async shutdown() {
           if (shutdownInvoked) return
           shutdownInvoked = true

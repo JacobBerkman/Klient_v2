@@ -1,6 +1,12 @@
 import { assert, createTestContext } from './test-harness.mjs'
 import { createEvidenceRecorder } from './release-evidence.mjs'
-import { runExportWorkerTick } from './export-worker-tick.mjs'
+import {
+  captureExportDiagnostics,
+  logSuiteStep,
+  runSuiteWorkerTick,
+  wait,
+  waitForExportIds
+} from './export-test-lifecycle.mjs'
 import { assertMappingsCoverPdfFields, mergeMappingsByPdfField } from './mapping-fixtures.mjs'
 import { createTemplateWorkflowPdf, pdfBytesForJson } from './pdf-fixtures.mjs'
 
@@ -13,74 +19,24 @@ const evidence = createEvidenceRecorder({
 
 let currentStep = 'startup'
 
-function wait(ms) {
-  return new Promise((resolveWait) => setTimeout(resolveWait, ms))
-}
-
 function runWorkerTick(ctx, extraEnv = {}) {
-  return runExportWorkerTick({
-    cwd: ctx.testCwd,
-    env: {
-      EXPORT_WORKER_POLL_MS: '25',
-      EXPORT_WORKER_LEASE_MS: '5000',
-      EXPORT_WORKER_BATCH_SIZE: '10',
-      ...extraEnv
-    }
+  return runSuiteWorkerTick(ctx, {
+    suite: 'smoke',
+    step: currentStep,
+    envOverrides: extraEnv
   })
 }
 
-async function captureExportDiagnostics(context, headers) {
-  const snapshot = {
-    step: currentStep
-  }
-  if (!context) return snapshot
-
-  try {
-    snapshot.serverStatus = context.serverStatus?.() || null
-  } catch (error) {
-    snapshot.serverStatusError = error?.message || String(error)
-  }
-
-  if (!headers) return snapshot
-
-  try {
-    snapshot.exports = await context.request('/api/exports?sort=updatedAt_desc', { headers })
-  } catch (error) {
-    snapshot.exportsError = error?.message || String(error)
-  }
-
-  try {
-    snapshot.queue = await context.request('/api/ops/exports/queue', { headers: context.opsHeaders() })
-  } catch (error) {
-    snapshot.queueError = error?.message || String(error)
-  }
-
-  try {
-    snapshot.diagnostics = await context.request('/api/ops/diagnostics', { headers: context.opsHeaders() })
-  } catch (error) {
-    snapshot.diagnosticsError = error?.message || String(error)
-  }
-
-  return snapshot
-}
-
 async function waitForExportCompletion(ctx, exportIds, { maxTicks = 30 } = {}) {
-  const remaining = new Set(exportIds)
-  for (let attempt = 0; attempt < maxTicks; attempt += 1) {
-    currentStep = `export processing tick ${attempt + 1}`
-    runWorkerTick(ctx)
-    currentStep = `export completion polling ${attempt + 1}`
-    const exportsList = await ctx.request('/api/exports?sort=updatedAt_desc', {
-      headers: ctx.authHeaders()
-    })
-    for (const entry of exportsList) {
-      if (!remaining.has(entry.id)) continue
-      if (entry.status === 'completed') remaining.delete(entry.id)
-    }
-    if (remaining.size === 0) return exportsList.filter((entry) => exportIds.includes(entry.id))
-    await wait(125)
-  }
-  return []
+  return waitForExportIds(ctx, {
+    suite: 'smoke',
+    headers: ctx.authHeaders(),
+    exportIds,
+    currentStepPrefix: 'export completion polling',
+    runWorkerTick: () => runWorkerTick(ctx),
+    terminalStatuses: ['completed'],
+    maxTicks
+  })
 }
 
 let context = null
@@ -88,15 +44,18 @@ let context = null
 try {
   context = await createTestContext('smoke')
   currentStep = 'health checks'
+  logSuiteStep('smoke', currentStep)
   await context.request('/health')
   const ready = await context.request('/ready')
   assert(ready.status === 'ready', 'Readiness endpoint did not report ready state.')
 
   currentStep = 'login'
+  logSuiteStep('smoke', currentStep)
   await context.login()
   const headers = context.authHeaders()
 
   currentStep = 'create prospect profile'
+  logSuiteStep('smoke', currentStep)
   const profile = await context.request('/api/profiles', {
     method: 'POST',
     headers,
@@ -110,6 +69,7 @@ try {
   })
 
   currentStep = 'auto-build PDF template'
+  logSuiteStep('smoke', currentStep)
   const sourcePdf = await createTemplateWorkflowPdf()
   const template = await context.request('/api/templates/auto-build', {
     method: 'POST',
@@ -125,6 +85,7 @@ try {
   assert(template.sourceArtifact?.key, 'Smoke PDF auto-build should persist the source artifact key.')
 
   currentStep = 'publish generated template'
+  logSuiteStep('smoke', currentStep)
   const publishResult = await context.request(`/api/templates/${template.id}/publish`, {
     method: 'POST',
     headers,
@@ -132,6 +93,7 @@ try {
   })
 
   currentStep = 'load generated form template'
+  logSuiteStep('smoke', currentStep)
   const formTemplates = await context.request('/api/forms/templates', { headers })
   const generatedFormTemplate = formTemplates.find((entry) => entry.id === template.linkedFormTemplateId)
   assert(
@@ -139,6 +101,7 @@ try {
     'Generated form template linkage missing.'
   )
   currentStep = 'create submission from generated form'
+  logSuiteStep('smoke', currentStep)
   const submission = await context.request('/api/forms/submissions', {
     method: 'POST',
     headers,
@@ -164,6 +127,7 @@ try {
   ])
   assertMappingsCoverPdfFields(smokeMappings, template.extractedFields || template.extraction?.fields || [])
   currentStep = 'save template mappings'
+  logSuiteStep('smoke', currentStep)
   await context.request(`/api/templates/${template.id}/mappings`, {
     method: 'POST',
     headers,
@@ -173,6 +137,7 @@ try {
   })
 
   currentStep = 'queue export jobs'
+  logSuiteStep('smoke', currentStep)
   const exportJob = await context.request('/api/exports', {
     method: 'POST',
     headers,
@@ -197,8 +162,10 @@ try {
   })
 
   currentStep = 'wait for export completion'
+  logSuiteStep('smoke', currentStep)
   const completedExports = await waitForExportCompletion(context, [exportJob.id, xlsxJob.id, flakyJob.id])
   currentStep = 'load export queue health'
+  logSuiteStep('smoke', currentStep)
   const exportsList = await context.request('/api/exports?sort=updatedAt_desc', { headers: context.authHeaders() })
   const queueHealth = await context.request('/api/ops/exports/queue', { headers: context.opsHeaders() })
 
@@ -248,6 +215,7 @@ try {
   )
   assert(Boolean(completedDownloadTarget), 'Completed smoke export should be available in export listing.')
   currentStep = 'download completed PDF artifact'
+  logSuiteStep('smoke', currentStep, { exportId: completedDownloadTarget.id })
   const download = await context.rawRequest(`/api/exports/${completedDownloadTarget.id}/download`, {
     headers: { Cookie: context.sessionCookie }
   })
@@ -255,6 +223,7 @@ try {
   const downloadType = download.headers.get('content-type') || ''
   assert(downloadType === 'application/pdf', 'Completed smoke export download should return PDF content type.')
   currentStep = 'download completed XLSX artifact'
+  logSuiteStep('smoke', currentStep, { exportId: trackedXlsxExport.id })
   const xlsxDownload = await context.rawRequest(`/api/exports/${trackedXlsxExport.id}/download`, {
     headers: { Cookie: context.sessionCookie }
   })
@@ -286,7 +255,12 @@ try {
   evidence.finalize({ status: 'passed', details: summary })
   console.log(JSON.stringify(summary, null, 2))
 } catch (error) {
-  const diagnostics = await captureExportDiagnostics(context, context?.authHeaders?.())
+  const diagnostics = await captureExportDiagnostics({
+    suite: 'smoke',
+    currentStep,
+    context,
+    headers: context?.authHeaders?.()
+  })
   const wrappedError = new Error(
     `[smoke] step="${currentStep}" failed: ${error?.message || String(error)}\n${JSON.stringify(diagnostics, null, 2)}`
   )

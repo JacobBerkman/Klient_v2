@@ -1,6 +1,6 @@
 import { assert, createTestContext } from './test-harness.mjs'
 import { createEvidenceRecorder } from './release-evidence.mjs'
-import { runExportWorkerTick } from './export-worker-tick.mjs'
+import { logSuiteStep, runSuiteWorkerTick, waitForExportIds } from './export-test-lifecycle.mjs'
 
 const evidence = createEvidenceRecorder({
   gate: 'release-flow',
@@ -9,18 +9,10 @@ const evidence = createEvidenceRecorder({
   command: 'npm run test:release-flow'
 })
 
-function wait(ms) {
-  return new Promise((resolveWait) => setTimeout(resolveWait, ms))
-}
-
 function runWorkerTick(context) {
-  runExportWorkerTick({
-    cwd: context.testCwd,
-    env: {
-      EXPORT_WORKER_POLL_MS: '25',
-      EXPORT_WORKER_LEASE_MS: '5000',
-      EXPORT_WORKER_BATCH_SIZE: '10'
-    }
+  runSuiteWorkerTick(context, {
+    suite: 'release-flow',
+    step: 'export worker tick'
   })
 }
 
@@ -28,6 +20,7 @@ const steps = []
 
 async function runStep(name, fn) {
   const startedAt = Date.now()
+  logSuiteStep('release-flow', name)
   try {
     const details = await fn()
     steps.push({ name, status: 'passed', durationMs: Date.now() - startedAt, details: details || null })
@@ -141,7 +134,10 @@ async function main() {
       assert(Boolean(household?.id), 'Expected household id.')
 
       const profileAfterLink = await context.request(`/api/profiles/${activeProfile.id}`, { headers: advisorHeaders })
-      assert(profileAfterLink?.profile?.householdId === household.id, 'Expected profile household link to be persisted.')
+      assert(
+        profileAfterLink?.profile?.householdId === household.id,
+        'Expected profile household link to be persisted.'
+      )
 
       return { householdId: household.id, primaryClientId: activeProfile.id }
     })
@@ -204,23 +200,22 @@ async function main() {
     })
 
     await runStep('verify export artifact is ready and retrievable', async () => {
-      let settled = null
-      const startedPollingAt = Date.now()
-      const timeoutMs = Number.parseInt(process.env.RELEASE_FLOW_EXPORT_TIMEOUT_MS || '15000', 10)
-      for (let attempt = 0; Date.now() - startedPollingAt < timeoutMs; attempt += 1) {
-        runWorkerTick(context)
-        const list = await context.request('/api/exports?sort=updatedAt_desc', { headers: advisorHeaders })
-        settled = list.find((entry) => entry.id === exportJob.exportJobId) || null
-        if (settled?.status === 'completed') break
-        if (['failed', 'dead-letter'].includes(String(settled?.status || ''))) {
-          throw new Error(`Export entered terminal failure state (${settled.status}): ${settled?.failureReason || 'unknown'}`)
-        }
-        await wait(100)
-      }
+      const maxTicks = Number.parseInt(process.env.RELEASE_FLOW_EXPORT_MAX_TICKS || '60', 10)
+      const list = await waitForExportIds(context, {
+        suite: 'release-flow',
+        headers: advisorHeaders,
+        exportIds: [exportJob.exportJobId],
+        currentStepPrefix: 'release-flow export polling',
+        runWorkerTick: () => runWorkerTick(context),
+        terminalStatuses: ['completed', 'failed', 'dead-letter'],
+        maxTicks,
+        pollDelayMs: 100
+      })
+      const settled = list.find((entry) => entry.id === exportJob.exportJobId) || null
 
       assert(
         settled?.status === 'completed',
-        `Expected export job to reach completed status before timeout (${timeoutMs}ms). Last status=${String(settled?.status || 'unknown')}`
+        `Expected export job to reach completed status before timeout (${maxTicks} ticks). Last status=${String(settled?.status || 'unknown')}`
       )
       assert(settled?.artifactAvailable === true, 'Expected completed export to report artifactAvailable=true.')
       assert(settled?.artifactReady === true, 'Expected completed export to report artifactReady=true.')

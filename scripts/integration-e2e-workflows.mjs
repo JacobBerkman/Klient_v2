@@ -1,6 +1,6 @@
 import { createEvidenceRecorder } from './release-evidence.mjs'
 import { assert, createTestContext } from './test-harness.mjs'
-import { runExportWorkerTick } from './export-worker-tick.mjs'
+import { logSuiteStep, runSuiteWorkerTick, waitForExportIds } from './export-test-lifecycle.mjs'
 
 const evidence = createEvidenceRecorder({
   gate: 'e2e',
@@ -11,18 +11,10 @@ const evidence = createEvidenceRecorder({
 
 const context = await createTestContext('e2e-workflows')
 
-function wait(ms) {
-  return new Promise((resolveWait) => setTimeout(resolveWait, ms))
-}
-
 function runWorkerTick() {
-  runExportWorkerTick({
-    cwd: context.testCwd,
-    env: {
-      EXPORT_WORKER_POLL_MS: '25',
-      EXPORT_WORKER_LEASE_MS: '5000',
-      EXPORT_WORKER_BATCH_SIZE: '10'
-    }
+  runSuiteWorkerTick(context, {
+    suite: 'integration-e2e-workflows',
+    step: 'export worker tick'
   })
 }
 
@@ -102,7 +94,9 @@ try {
       required: false
     })
   })
-  const schemaSnapshot = await context.requestAs('advisor', '/api/profiles/custom-fields/schema', { headers: advisorHeaders })
+  const schemaSnapshot = await context.requestAs('advisor', '/api/profiles/custom-fields/schema', {
+    headers: advisorHeaders
+  })
   const createdKeys = new Set((schemaSnapshot.fields || []).map((field) => field.key))
   assert(createdKeys.has('client_note'), 'Text custom field should be created.')
   assert(createdKeys.has('estimated_assets'), 'Number custom field should be created.')
@@ -134,13 +128,22 @@ try {
   assert(profile.extensions?.values?.vip_client === true, 'Boolean custom field should persist.')
 
   const profileDetail = await context.requestAs('advisor', `/api/profiles/${profile.id}`, { headers: advisorHeaders })
-  assert(profileDetail.profile?.extensions?.values?.client_note === profile.extensions?.values?.client_note, 'Profile detail should preserve custom field text parity.')
+  assert(
+    profileDetail.profile?.extensions?.values?.client_note === profile.extensions?.values?.client_note,
+    'Profile detail should preserve custom field text parity.'
+  )
   assert(
     profileDetail.profile?.extensions?.values?.estimated_assets === profile.extensions?.values?.estimated_assets,
     'Profile detail should preserve custom field number parity.'
   )
-  assert(profileDetail.profile?.extensions?.values?.onboard_date === profile.extensions?.values?.onboard_date, 'Profile detail should preserve custom field date parity.')
-  assert(profileDetail.profile?.extensions?.values?.vip_client === profile.extensions?.values?.vip_client, 'Profile detail should preserve custom field boolean parity.')
+  assert(
+    profileDetail.profile?.extensions?.values?.onboard_date === profile.extensions?.values?.onboard_date,
+    'Profile detail should preserve custom field date parity.'
+  )
+  assert(
+    profileDetail.profile?.extensions?.values?.vip_client === profile.extensions?.values?.vip_client,
+    'Profile detail should preserve custom field boolean parity.'
+  )
   const updatedProfile = await context.requestAs('advisor', `/api/profiles/${profile.id}`, {
     method: 'PATCH',
     headers: advisorHeaders,
@@ -279,15 +282,21 @@ try {
     })
   })
 
-  let exportCompleted = null
-  for (let attempt = 0; attempt < 40; attempt += 1) {
-    runWorkerTick()
-    const exportList = await context.requestAs('advisor', '/api/exports?sort=updatedAt_desc', { headers: advisorHeaders })
-    exportCompleted = exportList.find((entry) => entry.id === exportJob.id) || null
-    if (exportCompleted?.status === 'completed') break
-    await wait(125)
-  }
-  assert(exportCompleted?.status === 'completed', 'Release-blocking e2e export should complete through worker lifecycle.')
+  logSuiteStep('integration-e2e-workflows', 'queue export')
+  const exportList = await waitForExportIds(context, {
+    suite: 'integration-e2e-workflows',
+    headers: advisorHeaders,
+    exportIds: [exportJob.id],
+    currentStepPrefix: 'poll export completion',
+    runWorkerTick,
+    terminalStatuses: ['completed', 'failed', 'dead-letter'],
+    maxTicks: 40
+  })
+  const exportCompleted = exportList.find((entry) => entry.id === exportJob.id) || null
+  assert(
+    exportCompleted?.status === 'completed',
+    'Release-blocking e2e export should complete through worker lifecycle.'
+  )
   assert(exportCompleted?.artifactAvailable === true, 'Completed export should report artifact availability metadata.')
 
   const portalLink = await context.requestAs('advisor', '/api/portal-links', {

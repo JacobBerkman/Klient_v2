@@ -1,7 +1,17 @@
+import { computeIntegrationTimeoutBudget, integrationSuiteDefinitions } from './master-integration.mjs'
 import { runCommandProcess } from './runner-lifecycle.mjs'
 
 const suites = ['integration-templates.mjs', 'integration-exports.mjs']
-const timeoutMs = Number.parseInt(process.env.INTEGRATION_HANDOFF_TIMEOUT_MS || '240000', 10)
+const timeoutMs = Number.parseInt(
+  process.env.INTEGRATION_HANDOFF_TIMEOUT_MS || String(computeIntegrationTimeoutBudget(suites, { overheadMs: 60_000 })),
+  10
+)
+
+for (const script of suites) {
+  if (!integrationSuiteDefinitions[script]) {
+    throw new Error(`Missing suite definition for aggregate handoff: ${script}`)
+  }
+}
 
 try {
   await runCommandProcess({
@@ -14,7 +24,9 @@ try {
       ...process.env,
       INTEGRATION_SUITES: suites.join(',')
     },
-    stdio: 'inherit',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    mirrorOutput: true,
+    forceTreeKillOnWindows: true,
     timeoutMs
   })
 } catch (error) {

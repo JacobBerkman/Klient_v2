@@ -1,8 +1,10 @@
 import { access } from 'node:fs/promises'
+import { resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { createEvidenceRecorder } from './release-evidence.mjs'
 import { runSuite } from './runner-lifecycle.mjs'
 
-const integrationSuiteDefinitions = {
+export const integrationSuiteDefinitions = Object.freeze({
   'integration-tenancy.mjs': {
     invariant: 'Tenant isolation blocks cross-tenant read/write access and cross-tenant audit visibility.',
     timeoutMs: 120_000
@@ -52,9 +54,9 @@ const integrationSuiteDefinitions = {
     invariant: 'Required canonical audit events and payload fields are emitted for sensitive actions.',
     timeoutMs: 120_000
   }
-}
+})
 
-const INTEGRATION_SUITE_ORDER = Object.freeze([
+export const INTEGRATION_SUITE_ORDER = Object.freeze([
   'integration-tenancy.mjs',
   'integration-rbac.mjs',
   'integration-rbac-matrix.mjs',
@@ -79,10 +81,12 @@ function buildOrderedSuites(order, definitions) {
   )
 }
 
-function assertSuiteOrderInvariant(suites, expectedOrder) {
+export function assertSuiteOrderInvariant(suites, expectedOrder) {
   const observed = suites.map((suite) => suite.script)
   if (observed.length !== expectedOrder.length) {
-    throw new Error(`integration suite order length drifted. expected=${expectedOrder.length} actual=${observed.length}`)
+    throw new Error(
+      `integration suite order length drifted. expected=${expectedOrder.length} actual=${observed.length}`
+    )
   }
   for (let index = 0; index < expectedOrder.length; index += 1) {
     if (observed[index] !== expectedOrder[index]) {
@@ -93,18 +97,10 @@ function assertSuiteOrderInvariant(suites, expectedOrder) {
   }
 }
 
-const integrationSuites = buildOrderedSuites(INTEGRATION_SUITE_ORDER, integrationSuiteDefinitions)
+export const integrationSuites = buildOrderedSuites(INTEGRATION_SUITE_ORDER, integrationSuiteDefinitions)
 assertSuiteOrderInvariant(integrationSuites, INTEGRATION_SUITE_ORDER)
 
-const evidence = createEvidenceRecorder({
-  gate: 'integration',
-  defaultFile: 'integration-summary.json',
-  envVarName: 'RELEASE_EVIDENCE_INTEGRATION_FILE',
-  command: 'npm run test:integration'
-})
-
-function resolveSuitesFromEnv() {
-  const rawFilter = process.env.INTEGRATION_SUITES
+export function resolveSuites(rawFilter = process.env.INTEGRATION_SUITES) {
   if (!rawFilter) return integrationSuites
 
   const requestedScripts = rawFilter
@@ -121,39 +117,64 @@ function resolveSuitesFromEnv() {
   return selected
 }
 
+export function computeIntegrationTimeoutBudget(
+  scripts,
+  { overheadMs = Number.parseInt(process.env.INTEGRATION_TIMEOUT_OVERHEAD_MS || '60000', 10) } = {}
+) {
+  const suiteBudgetMs = (Array.isArray(scripts) ? scripts : [])
+    .map((script) => Number(integrationSuiteDefinitions?.[script]?.timeoutMs || 0))
+    .reduce((sum, timeoutMs) => sum + timeoutMs, 0)
+  return suiteBudgetMs + overheadMs
+}
+
 async function ensureScriptExists(script) {
   await access(new URL(`./${script}`, import.meta.url))
 }
 
 async function main() {
-  const suitesToRun = resolveSuitesFromEnv()
-  console.log('Starting integration suite in deterministic order with explicit invariant coverage.')
-
-  for (const suite of suitesToRun) {
-    await ensureScriptExists(suite.script)
-  }
-
-  const executed = []
-
-  for (let index = 0; index < suitesToRun.length; index += 1) {
-    const suite = suitesToRun[index]
-    const result = await runSuite(suite, index, suitesToRun.length)
-    executed.push({ script: suite.script, durationMs: result.durationMs })
-  }
-
-  const totalDurationMs = executed.reduce((sum, run) => sum + run.durationMs, 0)
-  evidence.finalize({
-    status: 'passed',
-    details: { totalDurationMs, executed }
+  const evidence = createEvidenceRecorder({
+    gate: 'integration',
+    defaultFile: 'integration-summary.json',
+    envVarName: 'RELEASE_EVIDENCE_INTEGRATION_FILE',
+    command: 'npm run test:integration'
   })
-  console.log('\n✅ All integration scripts passed.')
-  console.log(`Executed ${executed.length} suites in ${totalDurationMs}ms.`)
+  try {
+    const suitesToRun = resolveSuites()
+    console.log('Starting integration suite in deterministic order with explicit invariant coverage.')
 
-  process.exitCode = 0
+    for (const suite of suitesToRun) {
+      await ensureScriptExists(suite.script)
+    }
+
+    const executed = []
+
+    for (let index = 0; index < suitesToRun.length; index += 1) {
+      const suite = suitesToRun[index]
+      const result = await runSuite(suite, index, suitesToRun.length)
+      executed.push({ script: suite.script, durationMs: result.durationMs })
+    }
+
+    const totalDurationMs = executed.reduce((sum, run) => sum + run.durationMs, 0)
+    evidence.finalize({
+      status: 'passed',
+      details: { totalDurationMs, executed }
+    })
+    console.log('\n✅ All integration scripts passed.')
+    console.log(`Executed ${executed.length} suites in ${totalDurationMs}ms.`)
+
+    process.exitCode = 0
+  } catch (error) {
+    evidence.finalize({ status: 'failed', error })
+    throw error
+  }
 }
 
-main().catch((error) => {
-  evidence.finalize({ status: 'failed', error })
-  console.error(`\n❌ Integration suite failed: ${error.message}`)
-  process.exitCode = 1
-})
+const isDirectExecution =
+  typeof process.argv[1] === 'string' && resolve(process.argv[1]) === fileURLToPath(import.meta.url)
+
+if (isDirectExecution) {
+  main().catch((error) => {
+    console.error(`\n❌ Integration suite failed: ${error.message}`)
+    process.exitCode = 1
+  })
+}

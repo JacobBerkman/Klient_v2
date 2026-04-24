@@ -33,6 +33,7 @@ export function startManagedProcess({
   stdio = ['ignore', 'pipe', 'pipe'],
   shell = false,
   detached = false,
+  forceTreeKillOnWindows = false,
   spawnImpl = spawn,
   captureLimit = 16_000,
   onStdout,
@@ -60,6 +61,7 @@ export function startManagedProcess({
     command,
     args,
     detached,
+    forceTreeKillOnWindows,
     startedAt: Date.now(),
     stdoutTail: '',
     stderrTail: ''
@@ -137,7 +139,7 @@ function killChild(processRef, signal) {
   return child.kill(signal)
 }
 
-async function forceKillWindowsTree(pid) {
+async function taskkillWindowsTree(pid) {
   if (process.platform !== 'win32' || !Number.isInteger(pid)) return
   const taskkill = startManagedProcess({
     command: 'taskkill',
@@ -151,17 +153,29 @@ async function forceKillWindowsTree(pid) {
 
 export async function terminateManagedProcess(
   processRef,
-  { gracefulSignal = 'SIGTERM', graceMs = 3000, killMs = 2000, label = processRef?.label || 'child process' } = {}
+  {
+    gracefulSignal = 'SIGTERM',
+    graceMs = 3000,
+    killMs = 2000,
+    label = processRef?.label || 'child process',
+    forceTreeKillOnWindows = processRef?.forceTreeKillOnWindows ?? false,
+    forceKillTreeImpl = taskkillWindowsTree
+  } = {}
 ) {
   const child = processRef?.child || processRef
   if (!child || child.exitCode !== null || child.signalCode !== null) return { exited: true }
 
   killChild(processRef, gracefulSignal)
   const graceful = await waitForManagedExit(child, graceMs)
-  if (graceful.exited) return graceful
+  if (graceful.exited) {
+    if (process.platform === 'win32' && forceTreeKillOnWindows) {
+      await forceKillTreeImpl(child.pid)
+    }
+    return graceful
+  }
 
   if (process.platform === 'win32') {
-    await forceKillWindowsTree(child.pid)
+    await forceKillTreeImpl(child.pid)
   } else {
     killChild(processRef, 'SIGKILL')
   }

@@ -18,6 +18,8 @@ export function runCommandProcess({
   env = process.env,
   shell = false,
   detached = false,
+  mirrorOutput = false,
+  forceTreeKillOnWindows = false,
   startProcess = startManagedProcess,
   terminateProcess = terminateManagedProcess,
   releaseStdio = releaseChildStdio
@@ -35,7 +37,19 @@ export function runCommandProcess({
       console.log(`   Invariant: ${invariant}`)
     }
 
-    const managed = startProcess({ command, args, label: displayLabel, stdio, cwd, env, shell, detached })
+    const managed = startProcess({
+      command,
+      args,
+      label: displayLabel,
+      stdio,
+      cwd,
+      env,
+      shell,
+      detached,
+      forceTreeKillOnWindows,
+      onStdout: mirrorOutput ? (chunk) => process.stdout.write(chunk) : undefined,
+      onStderr: mirrorOutput ? (chunk) => process.stderr.write(chunk) : undefined
+    })
     const child = managed.child
 
     const isPiped = (value) => value === 'pipe'
@@ -103,11 +117,27 @@ export function runCommandProcess({
         return
       }
       if (signal) {
-        settle(reject, new Error(`${displayLabel} terminated by signal ${signal} after ${durationMs}ms (${eventName})`))
+        settle(
+          reject,
+          new Error(
+            describeProcessFailure(
+              managed,
+              `${displayLabel} terminated by signal ${signal} after ${durationMs}ms (${eventName})`
+            )
+          )
+        )
         return
       }
       if (code !== 0) {
-        settle(reject, new Error(`${displayLabel} exited with code ${code} after ${durationMs}ms (${eventName})`))
+        settle(
+          reject,
+          new Error(
+            describeProcessFailure(
+              managed,
+              `${displayLabel} exited with code ${code} after ${durationMs}ms (${eventName})`
+            )
+          )
+        )
         return
       }
 
@@ -156,9 +186,12 @@ export function runCommandProcess({
           return
         }
         timeoutTriggered = true
-        void terminateProcess(managed, { graceMs: 1500, killMs: 1500, label: displayLabel }).finally(() =>
-          finalizeCompletion('timeout', null, null)
-        )
+        void terminateProcess(managed, {
+          graceMs: 1500,
+          killMs: 1500,
+          label: displayLabel,
+          forceTreeKillOnWindows
+        }).finally(() => finalizeCompletion('timeout', null, null))
       }, timeoutMs)
       timeoutId.unref()
     }
@@ -181,6 +214,9 @@ export function runSuite(suite, index, total) {
     index,
     total,
     timeoutMs: suite.timeoutMs || 0,
-    detached: process.platform !== 'win32'
+    detached: process.platform !== 'win32',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    mirrorOutput: true,
+    forceTreeKillOnWindows: true
   })
 }
