@@ -80,6 +80,23 @@ export interface PipelineStage {
   [key: string]: unknown
 }
 
+export interface PipelineStageRecord {
+  id: string
+  firmId: string
+  key: string
+  label: string
+  color?: string | null
+  isActive: boolean
+  order: number
+  createdAt?: string
+  updatedAt?: string
+  deactivatedAt?: string | null
+}
+
+export interface PipelineStagesPayload {
+  stages: PipelineStageRecord[]
+}
+
 export interface BoardColumn {
   stage: string
   label: string
@@ -94,6 +111,15 @@ export interface BoardPayload {
   columns: BoardColumn[]
   stages: PipelineStage[]
   stageMetadata: PipelineStage[]
+  conflict?: {
+    code?: string
+    message?: string
+  } | null
+}
+
+export interface BoardMovePayload {
+  moved: Profile
+  board: BoardPayload
   conflict?: {
     code?: string
     message?: string

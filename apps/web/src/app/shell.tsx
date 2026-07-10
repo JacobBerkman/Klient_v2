@@ -30,6 +30,7 @@ const backofficeNav: NavItem[] = [
   { label: 'Field Schema', to: '/profiles', search: '?panel=schema', roles: ['admin', 'advisor', 'readonly'] },
   { label: 'Analytics', to: '/analytics', roles: ['admin', 'advisor', 'readonly'] },
   { label: 'Audit', to: '/audit', roles: ['admin', 'advisor', 'readonly'] },
+  { label: 'Stages', to: '/admin/stages', roles: ['admin', 'advisor'], badge: 'Admin' },
   { label: 'Ops', to: '/admin/ops', roles: ['admin'], badge: 'Admin' }
 ]
 
