@@ -452,6 +452,15 @@ function deepClone(value) {
   return JSON.parse(JSON.stringify(value))
 }
 
+function normalizeSectionIdentifier(value, fallback = 'section') {
+  const normalized = String(value || fallback)
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9_-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return normalized || fallback
+}
+
 const TEMPLATE_STATES = new Set(['draft', 'review', 'published', 'deprecated'])
 
 function normalizeTemplateState(value, fallback = 'draft') {
@@ -1225,6 +1234,21 @@ export function createStore({
   function consumePortalLinkUse(link) {
     link.usedCount = Number(link.usedCount || 0) + 1
     link.lastUsedAt = now()
+  }
+
+  function findPortalLink(token) {
+    const link = state.portalLinks.find((entry) => entry.token === token)
+    if (!link) throw new Error('Portal link not found.')
+    return link
+  }
+
+  function findDraftForScope({ draftId, firmId, clientId }) {
+    const submission = state.formSubmissions.find(
+      (entry) =>
+        entry.id === draftId && entry.firmId === firmId && entry.clientId === clientId && entry.status === 'draft'
+    )
+    if (!submission) throw new Error('Draft submission not found.')
+    return submission
   }
 
   function normalizeMalwareScan(scan = {}) {

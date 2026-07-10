@@ -1945,6 +1945,35 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
+      const portalDraftSectionsMatch = pathname.match(/^\/api\/portal\/[^/]+\/drafts\/([^/]+)\/sections$/)
+      if (portalDraftSectionsMatch && req.method === 'GET') {
+        const { token } = requirePortalSession()
+        const result = modules.forms.listPortalDraftSectionStates(token, decodeURIComponent(portalDraftSectionsMatch[1]))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      const portalDraftSectionMatch = pathname.match(/^\/api\/portal\/[^/]+\/drafts\/([^/]+)\/sections\/([^/]+)$/)
+      if (portalDraftSectionMatch && req.method === 'GET') {
+        const { token } = requirePortalSession()
+        const result = modules.forms.getPortalDraftSectionState(
+          token,
+          decodeURIComponent(portalDraftSectionMatch[1]),
+          decodeURIComponent(portalDraftSectionMatch[2])
+        )
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (portalDraftSectionMatch && req.method === 'PUT') {
+        const { token } = requirePortalSession()
+        const result = modules.forms.savePortalDraftSectionState(
+          token,
+          decodeURIComponent(portalDraftSectionMatch[1]),
+          decodeURIComponent(portalDraftSectionMatch[2]),
+          await parseBody(req)
+        )
+        finalizeLog(result.ok ? 200 : 409)
+        return replyJson(result.ok ? 200 : 409, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/portal/') && pathname.endsWith('/uploads/presign') && req.method === 'POST') {
         const { token } = requirePortalSession()
         const result = await modules.forms.createPortalUploadPresign(token, await parseBody(req))
@@ -1956,6 +1985,10 @@ export function createHttpServer({ modules }) {
         const result = modules.forms.portalUpload(token, await parseBody(req))
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api' || pathname.startsWith('/api/')) {
+        finalizeLog(404)
+        return replyJson(404, { message: 'Not found.' }, { 'X-Request-Id': requestId })
       }
       finalizeLog(200, { static: true })
       return await serveStatic(pathname, res, requestId)
