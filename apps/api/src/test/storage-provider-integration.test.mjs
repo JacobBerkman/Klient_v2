@@ -146,7 +146,7 @@ async function runContractSuite(name, buildProvider) {
     })
     assert.equal(saved.object.bucket, 'test-docs')
 
-    const exportJob = store.state.exportJobs.find((entry) => entry.firmId === firmId)
+    const exportJob = store.listExports(admin).find((entry) => entry.firmId === firmId)
     const download = await store.createExportDownloadUrl(admin, exportJob.id)
     assert.equal(download.method, 'GET')
 
