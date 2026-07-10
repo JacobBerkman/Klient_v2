@@ -2,11 +2,16 @@ import { createHash, randomUUID } from 'node:crypto'
 import { runtime } from './runtime.mjs'
 import {
   applyExportJobLifecycleUpdate,
+  deleteSession,
   getExportJob,
   listExportQueueJobs,
+  listSessionsFromTable,
   loadState,
   processExportQueueTickAsync,
-  saveState
+  replaceSessions,
+  saveState,
+  touchSession,
+  upsertSession
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
@@ -1167,6 +1172,43 @@ export function createStore({
         session.idleExpiresAt || new Date(new Date(lastActivityAt).getTime() + SESSION_IDLE_TIMEOUT_MS).toISOString()
     }
   })
+  // Dual-write reconciliation: migration 002 backfilled the sessions table
+  // with raw blob values, while the normalization above may have filled in
+  // defaults. Rewrite the table once at startup so table rows and the
+  // in-memory sessions array start out identical.
+  replaceSessions(state.sessions)
+
+  // Env flag SESSION_DUAL_WRITE_VERIFY=1: after each session mutation,
+  // compare the sessions table against state.sessions and fail loudly on
+  // divergence. Used by tests and available as a canary in real deployments.
+  function verifySessionDualWrite(operation, affectedToken = null) {
+    if (process.env.SESSION_DUAL_WRITE_VERIFY !== '1') return
+    const tableSessions = listSessionsFromTable()
+    const tableByToken = new Map(tableSessions.map((row) => [row.token, row]))
+    const stateTokens = new Set(state.sessions.map((entry) => entry.token))
+    const missingInTable = [...stateTokens].filter((token) => !tableByToken.has(token))
+    const extraInTable = tableSessions.map((row) => row.token).filter((token) => !stateTokens.has(token))
+    const fieldMismatches = []
+    if (affectedToken && stateTokens.has(affectedToken)) {
+      const memorySession = state.sessions.find((entry) => entry.token === affectedToken)
+      const tableRow = tableByToken.get(affectedToken) || {}
+      for (const field of ['userId', 'firmId', 'createdAt', 'lastActivityAt', 'expiresAt', 'idleExpiresAt']) {
+        if ((memorySession[field] ?? null) !== (tableRow[field] ?? null)) {
+          fieldMismatches.push(`${field}: state=${memorySession[field] ?? null} table=${tableRow[field] ?? null}`)
+        }
+      }
+    }
+    if (missingInTable.length || extraInTable.length || fieldMismatches.length) {
+      const message = `Session dual-write divergence after ${operation}: ${JSON.stringify({
+        affectedToken,
+        missingInTable,
+        extraInTable,
+        fieldMismatches
+      })}`
+      console.error(message)
+      throw new Error(message)
+    }
+  }
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
     return {
@@ -1588,7 +1630,7 @@ export function createStore({
     const token = randomUUID()
     const createdAt = now()
     const lastActivityAt = createdAt
-    state.sessions.push({
+    const session = {
       token,
       userId: user.id,
       firmId: user.firmId,
@@ -1596,8 +1638,11 @@ export function createStore({
       lastActivityAt,
       expiresAt: new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString(),
       idleExpiresAt: new Date(Date.now() + SESSION_IDLE_TIMEOUT_MS).toISOString()
-    })
+    }
+    state.sessions.push(session)
+    upsertSession(session)
     persist()
+    verifySessionDualWrite('createSession', token)
     return { token, user: publicUser(user) }
   }
 
@@ -1607,12 +1652,14 @@ export function createStore({
     state.sessions = state.sessions.filter((entry) => entry.token !== session.token)
     const removed = state.sessions.length !== previousLength
     if (removed) {
+      deleteSession(session.token)
       onSessionInvalidated({
         token: session.token,
         userId: session.userId,
         firmId: session.firmId,
         reason
       })
+      verifySessionDualWrite('invalidateSession')
     }
     return removed
   }
@@ -1629,6 +1676,7 @@ export function createStore({
         continue
       }
       changed = true
+      deleteSession(entry.token)
       onSessionInvalidated({
         token: entry.token,
         userId: entry.userId,
@@ -1639,6 +1687,7 @@ export function createStore({
     if (changed) {
       state.sessions = activeSessions
       persist()
+      verifySessionDualWrite('pruneExpiredSessions')
     }
   }
 
@@ -1661,7 +1710,17 @@ export function createStore({
     if (!user) throw new Error('Authentication required.')
     session.lastActivityAt = now()
     session.idleExpiresAt = new Date(Date.now() + SESSION_IDLE_TIMEOUT_MS).toISOString()
-    persist()
+    // Activity touches happen on EVERY authenticated request and used to call
+    // persist(), serializing the entire state blob and rebuilding ~10 derived
+    // tables per GET. A single-row UPDATE on the sessions table replaces that.
+    // The in-memory session object (updated above) keeps reads current; the
+    // blob's copy of lastActivityAt/idleExpiresAt catches up on the next real
+    // mutation's persist() — acceptable staleness for activity timestamps only.
+    touchSession(session.token, {
+      lastActivityAt: session.lastActivityAt,
+      idleExpiresAt: session.idleExpiresAt
+    })
+    verifySessionDualWrite('touchSession', session.token)
     return publicUser(user)
   }
 
@@ -1711,8 +1770,18 @@ export function createStore({
     return profile
   }
 
+  // Table-side mirror for session removals performed inside auth providers
+  // (e.g. password reset revoking every session for a user). The provider
+  // mutates state.sessions itself; this keeps the sessions table in step.
+  function deleteSessionRecords(tokens = []) {
+    for (const token of tokens) {
+      deleteSession(token)
+    }
+    verifySessionDualWrite('deleteSessionRecords')
+  }
+
   function createAuthProvider() {
-    const common = { state, persist, createSession, addAudit }
+    const common = { state, persist, createSession, addAudit, deleteSessionRecords }
     if (runtime.authProvider === 'local') return createLocalAuthProvider(common)
     if (runtime.authProvider === 'oidc') return createOidcAuthProvider(common)
     if (runtime.authProvider === 'saml') return createSamlAuthProvider(common)

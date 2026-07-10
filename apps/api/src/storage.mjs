@@ -117,6 +117,106 @@ export function deleteExpiredCsrfTokens(cutoffIso = new Date().toISOString()) {
   db.prepare('DELETE FROM csrf_tokens WHERE expires_at <= ?').run(cutoffIso)
 }
 
+// --- Session repository (dual-write phase) ---------------------------------
+// Sessions are the highest-write-volume entity: every authenticated request
+// touches lastActivityAt/idleExpiresAt. These helpers give session mutations
+// a targeted relational home so the request path never rewrites the full
+// app_state blob. Reads still come from the in-memory state for now.
+
+const SESSION_COLUMNS = `
+  token,
+  user_id AS userId,
+  firm_id AS firmId,
+  created_at AS createdAt,
+  last_activity_at AS lastActivityAt,
+  expires_at AS expiresAt,
+  idle_expires_at AS idleExpiresAt
+`
+
+export function upsertSession(session) {
+  db.prepare(
+    `
+    INSERT INTO sessions (token, user_id, firm_id, created_at, last_activity_at, expires_at, idle_expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(token) DO UPDATE SET
+      user_id = excluded.user_id,
+      firm_id = excluded.firm_id,
+      created_at = excluded.created_at,
+      last_activity_at = excluded.last_activity_at,
+      expires_at = excluded.expires_at,
+      idle_expires_at = excluded.idle_expires_at
+  `
+  ).run(
+    session.token,
+    session.userId ?? null,
+    session.firmId ?? null,
+    session.createdAt ?? null,
+    session.lastActivityAt ?? null,
+    session.expiresAt ?? null,
+    session.idleExpiresAt ?? null
+  )
+}
+
+// Single-row activity touch: the whole point of the sessions table. Replaces
+// the per-request full-state persist() that used to serialize the entire blob.
+export function touchSession(token, { lastActivityAt, idleExpiresAt } = {}) {
+  const result = db
+    .prepare('UPDATE sessions SET last_activity_at = ?, idle_expires_at = ? WHERE token = ?')
+    .run(lastActivityAt ?? null, idleExpiresAt ?? null, token)
+  return result.changes > 0
+}
+
+export function deleteSession(token) {
+  const result = db.prepare('DELETE FROM sessions WHERE token = ?').run(token)
+  return result.changes > 0
+}
+
+// Returns the deleted tokens so callers can fire per-session cleanup
+// (CSRF token invalidation, session-invalidated callbacks) for each one.
+export function deleteExpiredSessions(nowIsoCutoff = nowIso()) {
+  const expired = db
+    .prepare(
+      `
+      SELECT token FROM sessions
+      WHERE expires_at IS NULL OR expires_at <= ?
+        OR idle_expires_at IS NULL OR idle_expires_at <= ?
+    `
+    )
+    .all(nowIsoCutoff, nowIsoCutoff)
+    .map((row) => row.token)
+  if (expired.length) {
+    const placeholders = expired.map(() => '?').join(', ')
+    db.prepare(`DELETE FROM sessions WHERE token IN (${placeholders})`).run(...expired)
+  }
+  return expired
+}
+
+export function listSessionsFromTable() {
+  return db.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions ORDER BY created_at ASC`).all()
+}
+
+export function getSessionByToken(token) {
+  return db.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE token = ?`).get(token) || null
+}
+
+// Startup reconciliation: after the store normalizes the blob's sessions
+// (filling defaults for legacy records), rewrite the table once so the two
+// copies start out identical.
+export function replaceSessions(sessions = []) {
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.exec('DELETE FROM sessions')
+    for (const session of sessions) {
+      if (!session?.token) continue
+      upsertSession(session)
+    }
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
 export function listExportQueueJobs() {
   const rows = db
     .prepare(

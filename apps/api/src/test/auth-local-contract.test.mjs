@@ -147,8 +147,11 @@ test('firm stage configuration is initialized and backfilled for legacy payloads
 
   const storeModuleUrl =
     pathToFileURL(resolve(previousCwd, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
-  const storageModuleUrl =
-    pathToFileURL(resolve(previousCwd, 'apps/api/src/storage.mjs')).href + `?t=${Date.now()}-${Math.random()}`
+  // Deliberately NOT cache-busted: store.mjs's internal `./storage.mjs` import
+  // resolves without a query string, so this returns the same module instance
+  // (and therefore the same database) the store writes through. A cache-busted
+  // import here would open a fresh, empty database in this test's temp dir.
+  const storageModuleUrl = pathToFileURL(resolve(previousCwd, 'apps/api/src/storage.mjs')).href
   const storeModule = await import(storeModuleUrl)
   const storageModule = await import(storageModuleUrl)
   const firstStore = storeModule.createStore()
