@@ -3,7 +3,10 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } f
 import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 
-import { DB_PATH } from '../apps/api/src/storage.mjs'
+// Intentionally NOT imported from apps/api/src/storage.mjs: importing that
+// module opens a live WAL connection to the database we are about to replace.
+// This mirrors storage.mjs's DB_PATH definition.
+const DB_PATH = resolve(process.cwd(), 'data', 'app.db')
 
 function failUsage(message = '') {
   if (message) {
@@ -98,6 +101,10 @@ const evidenceLabel = options.evidenceLabel || executionMode
 
 try {
   mkdirSync(dirname(resolvedTarget), { recursive: true })
+  // Remove stale WAL/SHM sidecar files so the restored database cannot be
+  // polluted by journal contents left over from the pre-restore database.
+  rmSync(`${resolvedTarget}-wal`, { force: true })
+  rmSync(`${resolvedTarget}-shm`, { force: true })
   copyFileSync(resolvedSource, resolvedTarget)
 
   const sourceStat = statSync(resolvedSource)
