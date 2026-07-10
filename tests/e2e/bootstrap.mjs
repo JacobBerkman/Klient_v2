@@ -1,4 +1,22 @@
-import { expect, test as base } from '@playwright/test'
+import { expect, request as playwrightApiRequest, test as base } from '@playwright/test'
+
+function apiBaseUrl() {
+  return process.env.KLIENT_BASE_URL || process.env.E2E_BASE_URL || `http://127.0.0.1:${process.env.PORT || '3000'}`
+}
+
+// API seeding/polling must NOT share the browser context cookie jar: server responses
+// to out-of-band API sessions rotate the shared `klient-session`/`klient-csrf` cookies
+// and break CSRF validation for the signed-in UI session (cookie token id no longer
+// matches the SPA's in-memory header token). Each helper call therefore runs in a
+// short-lived isolated APIRequestContext and manages cookies explicitly via headers.
+async function withIsolatedApiContext(run) {
+  const context = await playwrightApiRequest.newContext({ baseURL: apiBaseUrl() })
+  try {
+    return await run(context)
+  } finally {
+    await context.dispose()
+  }
+}
 
 function sanitizeToken(value) {
   return String(value || '')
@@ -78,18 +96,23 @@ export async function registerAdminViaApi(page, seededRunId, label = 'admin') {
   const adminId = createDeterministicId(seededRunId, label)
   const email = `${adminId}@e2e.test`
   const password = 'StrongPass123!'
-  const response = await page.request.post('/api/register', {
-    data: {
-      firmName: `E2E Firm ${adminId}`,
-      firstName: 'E2E',
-      lastName: 'Admin',
-      email,
-      password
+  const { ok, body, setCookie } = await withIsolatedApiContext(async (context) => {
+    const response = await context.post('/api/register', {
+      data: {
+        firmName: `E2E Firm ${adminId}`,
+        firstName: 'E2E',
+        lastName: 'Admin',
+        email,
+        password
+      }
+    })
+    return {
+      ok: response.ok(),
+      body: await response.json(),
+      setCookie: response.headers()['set-cookie'] || ''
     }
   })
-  expect(response.ok()).toBeTruthy()
-  const body = await response.json()
-  const setCookie = response.headers()['set-cookie'] || ''
+  expect(ok).toBeTruthy()
   const sessionMatch = setCookie.match(/(?:klient-session|__Host-klient-session)=([^;,\s]+)/)
   const csrfCookieMatch = setCookie.match(/(?:klient-csrf|__Host-klient-csrf)=([^;,\s]+)/)
   const sessionCookie = [
@@ -106,9 +129,7 @@ export function deterministicEmail(seededRunId, label) {
 }
 
 export function csrfHeaders(csrfToken, sessionCookie = '') {
-  const baseUrl =
-    process.env.KLIENT_BASE_URL || process.env.E2E_BASE_URL || `http://127.0.0.1:${process.env.PORT || '3000'}`
-  const originUrl = new URL(baseUrl)
+  const originUrl = new URL(apiBaseUrl())
 
   return {
     ...(sessionCookie ? { cookie: sessionCookie } : {}),
@@ -141,16 +162,18 @@ function applyAuthCookies(auth, setCookieHeader) {
 }
 
 export async function apiFromPage(page, method, path, data = undefined, auth = {}) {
-  const response = await page.request.fetch(path, {
-    method,
-    headers: csrfHeaders(auth.csrfToken, auth.sessionCookie),
-    ...(data !== undefined ? { data } : {})
+  return withIsolatedApiContext(async (context) => {
+    const response = await context.fetch(path, {
+      method,
+      headers: { ...csrfHeaders(auth.csrfToken, auth.sessionCookie), ...(auth.headers || {}) },
+      ...(data !== undefined ? { data } : {})
+    })
+    applyAuthCookies(auth, response.headers()['set-cookie'] || '')
+    auth.csrfToken = response.headers()['x-csrf-token'] || auth.csrfToken || ''
+    const contentType = response.headers()['content-type'] || ''
+    const body = contentType.includes('application/json') ? await response.json() : await response.text()
+    return { ok: response.ok(), status: response.status(), body }
   })
-  applyAuthCookies(auth, response.headers()['set-cookie'] || '')
-  auth.csrfToken = response.headers()['x-csrf-token'] || auth.csrfToken || ''
-  const contentType = response.headers()['content-type'] || ''
-  const body = contentType.includes('application/json') ? await response.json() : await response.text()
-  return { ok: response.ok(), status: response.status(), body }
 }
 
 export async function inviteAndAcceptAdvisor(page, seededRunId, label = 'advisor') {

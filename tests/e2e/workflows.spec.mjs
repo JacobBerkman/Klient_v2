@@ -1,5 +1,6 @@
 import {
   apiFromPage,
+  csrfHeaders,
   deterministicEmail,
   registerAdminViaApi,
   signInFromUi,
@@ -76,7 +77,7 @@ test('@release-blocking routed template detail supports preview and publish cont
 
   await page.goto(`/templates/${documentTemplate.id}`)
 
-  await expect(page.getByRole('heading', { name: documentTemplate.name })).toBeVisible()
+  await expect(page.getByRole('heading', { name: documentTemplate.name, level: 2 })).toBeVisible()
   await expect(page.getByText('Template editor')).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Mappings' })).toBeVisible()
   await page.getByRole('combobox', { name: 'Client' }).selectOption(client.id)
@@ -199,13 +200,13 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   expect(generatedForm?.generatedFromDocumentTemplateId).toBe(documentTemplate.id)
 
   await page.goto(`/templates/${documentTemplate.id}`)
-  await expect(page.getByRole('heading', { name: documentTemplate.name })).toBeVisible()
+  await expect(page.getByRole('heading', { name: documentTemplate.name, level: 2 })).toBeVisible()
   await expect(page.getByText('source pdf persisted')).toBeVisible()
-  await expect(page.getByText('ready')).toBeVisible()
+  await expect(page.getByText('ready', { exact: true }).first()).toBeVisible()
   await expect(page.getByText(`Source document ID: ${documentTemplate.id}`)).toBeVisible()
 
   await page.getByRole('link', { name: 'Open visual mapper' }).click()
-  await expect(page.getByRole('heading', { name: documentTemplate.name })).toBeVisible()
+  await expect(page.getByRole('heading', { name: documentTemplate.name, level: 2 })).toBeVisible()
   await expect(page.getByText('source pdf available')).toBeVisible()
   await expect(page.getByText('mapping complete')).toBeVisible()
   await expect(page.getByText('layout saved')).toBeVisible()
@@ -227,7 +228,7 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   await expect(page.getByText('unsaved layout changes')).toBeVisible()
   await page.getByRole('button', { name: 'Save PDF layout' }).click()
   await expect(page.getByText('PDF layout saved.')).toBeVisible()
-  await expect(page.getByText('layout saved')).toBeVisible()
+  await expect(page.getByText('layout saved', { exact: true })).toBeVisible()
   const previewPromise = page.waitForEvent('popup')
   await page.getByRole('button', { name: 'Generate test-fill preview' }).click()
   const previewPage = await previewPromise
@@ -243,7 +244,7 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   await page.goto(`/forms?templateId=${generatedForm.id}`)
   await page.getByLabel('Client').selectOption(client.id)
   await page.getByLabel('Template').selectOption(generatedForm.id)
-  await page.getByLabel('Status').selectOption('submitted')
+  await page.getByLabel('Initial state').selectOption('submitted')
   await page.getByRole('button', { name: 'Create submission' }).click()
   await expect(page.getByText('Submission created.')).toBeVisible()
 
@@ -272,9 +273,15 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   await page.getByRole('button', { name: 'Queue export' }).click()
   await expect(page.getByText('XLSX export queued.')).toBeVisible()
 
+  // /api/ops/* is token-only whenever ops tokens are configured (the test harness always
+  // configures one), so this poll must authenticate with the harness ops bearer token.
+  const opsAuth = {
+    ...auth,
+    headers: { authorization: `Bearer ${process.env.KLIENT_OPS_TOKEN || 'ops-token-abcdefghijklmnopqrstuvwxyz'}` }
+  }
   await expect
     .poll(async () => {
-      const response = await apiFromPage(page, 'GET', '/api/ops/exports/queue', undefined, auth)
+      const response = await apiFromPage(page, 'GET', '/api/ops/exports/queue', undefined, opsAuth)
       return response.body?.queue?.workerMode
     })
     .toBe('companion')
@@ -299,12 +306,16 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   expect(completedPdf?.output?.artifact?.renderer).toBe('pdf-lib-acroform')
   expect(completedXlsx?.output?.artifact?.renderer).toBe('structured-xlsx')
 
-  const pdfDownload = await page.request.get(`/api/exports/${completedPdf.id}/download`)
+  const pdfDownload = await page.request.get(`/api/exports/${completedPdf.id}/download`, {
+    headers: csrfHeaders(auth.csrfToken, auth.sessionCookie)
+  })
   expect(pdfDownload.status()).toBe(200)
   expect(pdfDownload.headers()['content-type']).toBe('application/pdf')
   expect(pdfDownload.headers()['content-disposition']).toContain('.pdf')
 
-  const xlsxDownload = await page.request.get(`/api/exports/${completedXlsx.id}/download`)
+  const xlsxDownload = await page.request.get(`/api/exports/${completedXlsx.id}/download`, {
+    headers: csrfHeaders(auth.csrfToken, auth.sessionCookie)
+  })
   expect(xlsxDownload.status()).toBe(200)
   expect(xlsxDownload.headers()['content-type']).toBe(
     'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
@@ -317,10 +328,10 @@ test('routed app resolves direct deep links without falling back to legacy shell
   await signInFromUi(page, email, password)
 
   await page.goto('/admin/ops')
-  await expect(page.getByRole('heading', { name: 'Ops' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Ops', exact: true })).toBeVisible()
   await expect(page.locator('#login-form')).toHaveCount(0)
 
   await waitForAppReady(page, '/portal')
-  await expect(page.getByRole('heading', { name: 'Portal' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Portal', exact: true })).toBeVisible()
   await expect(page.locator('#portal-upload-form')).toHaveCount(0)
 })

@@ -288,7 +288,9 @@ export function Component() {
               </div>
               <div className="pdf-preview-shell">
                 <canvas ref={canvasRef} className="pdf-preview-canvas" />
-                {visibleFields.map(({ field, index }) => (
+                {/* Overlays are only meaningful (and draggable) once the rendered viewport is known. */}
+                {viewport &&
+                  visibleFields.map(({ field, index }) => (
                   <div
                     key={`${field.fieldName}-${index}`}
                     data-testid={`pdf-field-overlay-${field.fieldName}`}

@@ -87,6 +87,15 @@ const registerFormEl = document.querySelector('#register-form')
 const loginFormEl = document.querySelector('#login-form')
 
 const MUTATING_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE'])
+// These endpoints are CSRF-exempt server-side and are used before a session exists,
+// so they must not trigger the authenticated /api/csrf bootstrap.
+const CSRF_EXEMPT_API_PATHS = new Set([
+  '/api/login',
+  '/api/register',
+  '/api/invites/accept',
+  '/api/password-resets',
+  '/api/password-resets/confirm'
+])
 let csrfToken = ''
 const stageConfigState = {
   fetched: false,
@@ -926,7 +935,10 @@ function formatDateTime(value) {
 
 async function request(path, options = {}) {
   const method = (options.method || 'GET').toUpperCase()
-  if (MUTATING_METHODS.has(method) && path.startsWith('/api/') && !csrfToken) {
+  const requestPath = path.split('?')[0]
+  const needsCsrf =
+    MUTATING_METHODS.has(method) && requestPath.startsWith('/api/') && !CSRF_EXEMPT_API_PATHS.has(requestPath)
+  if (needsCsrf && !csrfToken) {
     const boot = await fetch(routes.csrf(), { credentials: 'same-origin' })
     const data = await boot.json()
     if (!boot.ok) throw new Error(data.message || 'CSRF bootstrap failed')
@@ -938,10 +950,12 @@ async function request(path, options = {}) {
     credentials: 'same-origin',
     headers: {
       ...(options.body ? { 'Content-Type': 'application/json' } : {}),
-      ...(MUTATING_METHODS.has(method) && path.startsWith('/api/') ? { 'X-CSRF-Token': csrfToken } : {}),
+      ...(needsCsrf ? { 'X-CSRF-Token': csrfToken } : {}),
       ...(options.headers || {})
     }
   })
+  const rotatedCsrfToken = response.headers.get('x-csrf-token')
+  if (rotatedCsrfToken) csrfToken = rotatedCsrfToken
   const data = await response.json()
   if (!response.ok) {
     const error = new Error(data?.error?.message || data?.message || 'Request failed')
@@ -949,6 +963,9 @@ async function request(path, options = {}) {
     error.status = response.status
     error.code = data?.error?.code || data?.code || ''
     throw error
+  }
+  if (data && typeof data === 'object' && typeof data.csrfToken === 'string' && data.csrfToken) {
+    csrfToken = data.csrfToken
   }
   return data
 }
@@ -6590,7 +6607,7 @@ async function hydrateSession() {
 
 async function finishAuth(session, message) {
   state.user = session.user
-  setAuthStatus(JSON.stringify(session.user, null, 2))
+  setAuthStatus(`${message}\n${JSON.stringify(session.user, null, 2)}`)
   state.view = session.user.role === 'client' ? 'forms' : 'dashboard'
   updateRoleVisibility()
   await refreshSelects()

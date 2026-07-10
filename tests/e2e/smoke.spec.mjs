@@ -1,5 +1,6 @@
 import {
   apiFromPage,
+  csrfHeaders,
   deterministicEmail,
   registerAdminViaApi,
   signInFromUi,
@@ -40,27 +41,27 @@ test('@release-blocking routed navigation reaches every advertised backoffice ro
   await expect(page.getByRole('search', { name: 'Pipeline filters' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Profiles', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Profiles' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Profiles', exact: true })).toBeVisible()
   await expect(page.getByRole('group', { name: 'Profiles panel' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Households', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Households' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Households', exact: true })).toBeVisible()
   await expect(page.getByText('Keep relationships organized')).toBeVisible()
 
   await page.getByRole('link', { name: 'Forms', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Forms' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Forms', exact: true })).toBeVisible()
   await expect(page.getByText('Collect, review, and collaborate from one route')).toBeVisible()
 
   await page.getByRole('link', { name: 'Templates', exact: true }).click()
   await expect(page.getByRole('heading', { name: 'Templates', level: 2 })).toBeVisible()
-  await expect(page.getByText('Template library')).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Template library', level: 2 })).toBeVisible()
 
   await page.getByRole('link', { name: 'Exports', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Exports' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Exports', exact: true })).toBeVisible()
   await expect(page.getByText('Queue, monitor, retry, and download deliverables')).toBeVisible()
 
   await page.getByRole('link', { name: 'Analytics', exact: true }).click()
-  await expect(page.getByRole('heading', { name: 'Analytics' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Analytics', exact: true })).toBeVisible()
   await expect(page.getByRole('search', { name: 'Analytics filters' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Audit', exact: true }).click()
@@ -68,7 +69,7 @@ test('@release-blocking routed navigation reaches every advertised backoffice ro
   await expect(page.getByRole('search', { name: 'Audit search' })).toBeVisible()
 
   await page.getByRole('link', { name: 'Ops' }).click()
-  await expect(page.getByRole('heading', { name: 'Ops' })).toBeVisible()
+  await expect(page.getByRole('heading', { name: 'Ops', exact: true })).toBeVisible()
   await expect(page.getByText('Release and runtime signals in one place')).toBeVisible()
 })
 
@@ -131,7 +132,7 @@ test('@release-blocking profile and submission detail routes open as shareable U
   await expect(page.getByText('Editable details')).toBeVisible()
 
   await page.goto(`/forms/submissions/${submission.id}`)
-  await expect(page.getByRole('heading', { name: new RegExp(template.name) })).toBeVisible()
+  await expect(page.getByRole('heading', { name: new RegExp(template.name), level: 2 })).toBeVisible()
   await expect(page.getByRole('heading', { name: 'Collaborators' })).toBeVisible()
 })
 
@@ -207,7 +208,9 @@ test('@release-blocking stage movement and export download work in the routed pr
   await page.getByTestId('create-export-submit').click()
   await expect(page.getByText('Export queued.')).toBeVisible()
 
-  await expect(page.getByText('Queued, waiting for worker').first()).toBeVisible()
+  // The companion worker can complete the job faster than the UI refreshes, so assert
+  // the queued row itself (status-agnostic) instead of a transient queue-state label.
+  await expect(page.getByRole('cell', { name: `Export Template ${seededRunId}` }).first()).toBeVisible()
   await expect
     .poll(
       async () => {
@@ -224,7 +227,11 @@ test('@release-blocking stage movement and export download work in the routed pr
   await expect(downloadLink).toBeVisible({ timeout: 15_000 })
   const downloadHref = await downloadLink.getAttribute('href')
   expect(downloadHref).toBeTruthy()
-  const downloadResponse = await page.request.get(downloadHref)
+  // page.request does not send the UI session's Secure __Host- cookies over http,
+  // so authenticate the download explicitly with the seeded admin session.
+  const downloadResponse = await page.request.get(downloadHref, {
+    headers: csrfHeaders(auth.csrfToken, auth.sessionCookie)
+  })
   expect(downloadResponse.ok()).toBeTruthy()
   expect(downloadResponse.headers()['content-disposition'] || '').toContain('attachment')
 })

@@ -1,4 +1,4 @@
-import { api, routes } from '../lib/client'
+import { api, ApiError, routes } from '../lib/client'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { DiagnosticsPayload, ExportRuntimePayload, HealthPayload } from '../lib/types'
@@ -22,10 +22,22 @@ export const handle = {
 }
 
 interface OpsPageData {
-  diagnostics: DiagnosticsPayload
-  exportRuntime: ExportRuntimePayload
+  diagnostics: DiagnosticsPayload | null
+  exportRuntime: ExportRuntimePayload | null
   ready: HealthPayload
   health: HealthPayload
+}
+
+// When ops bearer tokens are configured (required in production), /api/ops/* endpoints
+// are token-only and reject session callers with 401. The admin route must still render
+// readiness/health signals instead of collapsing into a page-level error.
+async function tolerateTokenGated<T>(promise: Promise<T>): Promise<T | null> {
+  try {
+    return await promise
+  } catch (error) {
+    if (error instanceof ApiError && (error.status === 401 || error.status === 403)) return null
+    throw error
+  }
 }
 
 export function Component() {
@@ -34,8 +46,8 @@ export function Component() {
 
   const { data, error, loading } = useAsync<OpsPageData>(async () => {
     const [diagnostics, exportRuntime, ready, health] = await Promise.all([
-      api.get<DiagnosticsPayload>(routes.diagnostics()),
-      api.get<ExportRuntimePayload>(routes.exportRuntime()),
+      tolerateTokenGated(api.get<DiagnosticsPayload>(routes.diagnostics())),
+      tolerateTokenGated(api.get<ExportRuntimePayload>(routes.exportRuntime())),
       api.get<HealthPayload>(routes.ready()),
       api.get<HealthPayload>(routes.health())
     ])
@@ -74,12 +86,12 @@ export function Component() {
         <MetricCard label="Health" value={String(data.health.status || 'unknown')} hint="Service liveness" />
         <MetricCard
           label="Queue stalled"
-          value={String(data.exportRuntime.workerStatus?.stalled || 0)}
+          value={data.exportRuntime ? String(data.exportRuntime.workerStatus?.stalled || 0) : 'Token-gated'}
           hint="Export worker stall count"
         />
         <MetricCard
           label="Recent failures"
-          value={data.exportRuntime.recentFailures?.length || 0}
+          value={data.exportRuntime ? data.exportRuntime.recentFailures?.length || 0 : 'Token-gated'}
           hint="Latest export runtime failures"
         />
       </StatGroup>
@@ -114,10 +126,17 @@ export function Component() {
           title="Export runtime"
           subtitle="Queue status, leases, and failures surface directly on the admin route."
         >
-          <div className="compact-stack">
-            <pre className="json-block">{JSON.stringify(data.exportRuntime.workerStatus || {}, null, 2)}</pre>
-            <pre className="json-block">{JSON.stringify(data.exportRuntime.queueStatus || {}, null, 2)}</pre>
-          </div>
+          {data.exportRuntime ? (
+            <div className="compact-stack">
+              <pre className="json-block">{JSON.stringify(data.exportRuntime.workerStatus || {}, null, 2)}</pre>
+              <pre className="json-block">{JSON.stringify(data.exportRuntime.queueStatus || {}, null, 2)}</pre>
+            </div>
+          ) : (
+            <EmptyState
+              title="Ops token required."
+              detail="Export runtime detail uses KLIENT_OPS_TOKEN bearer auth when ops tokens are configured."
+            />
+          )}
         </PageSection>
       </div>
 
@@ -126,7 +145,14 @@ export function Component() {
           title="Diagnostics"
           subtitle="Security and storage diagnostics stay on the current backend contract."
         >
-          <pre className="json-block">{JSON.stringify(data.diagnostics.data || {}, null, 2)}</pre>
+          {data.diagnostics ? (
+            <pre className="json-block">{JSON.stringify(data.diagnostics.data || {}, null, 2)}</pre>
+          ) : (
+            <EmptyState
+              title="Ops token required."
+              detail="Deep diagnostics use KLIENT_OPS_TOKEN bearer auth when ops tokens are configured."
+            />
+          )}
         </PageSection>
 
         <PageSection title="Release links" subtitle="Launch-readiness endpoints remain easy to access from one place.">
