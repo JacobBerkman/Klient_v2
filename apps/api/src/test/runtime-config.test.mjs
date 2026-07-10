@@ -79,7 +79,7 @@ test('runtime diagnostics fail clearly in production when ops token auth is expe
   });
   const diagnostics = validateRuntimeConfig();
   assert.equal(diagnostics.ok, false);
-  assert.match(diagnostics.issues.join(' '), /KLIENT_OPS_TOKEN must be set in production/);
+  assert.match(diagnostics.issues.join(' '), /At least one ops token must be set in production/);
 });
 
 test('runtime diagnostics reject short ops token when configured', async () => {
@@ -91,5 +91,5 @@ test('runtime diagnostics reject short ops token when configured', async () => {
   });
   const diagnostics = validateRuntimeConfig();
   assert.equal(diagnostics.ok, false);
-  assert.match(diagnostics.issues.join(' '), /KLIENT_OPS_TOKEN should be at least 24 characters/);
+  assert.match(diagnostics.issues.join(' '), /Ops tokens should be at least 24 characters/);
 });
