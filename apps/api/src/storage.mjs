@@ -409,15 +409,25 @@ export function loadState(seedFactory) {
 }
 
 export function saveState(state) {
-  db.prepare(
+  // The blob upsert, derived query tables, and materialized analytics must
+  // commit together: a failure partway through (e.g. mid replaceRows) would
+  // otherwise leave the blob and the relational projections out of sync.
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    db.prepare(
+      `
+      INSERT INTO app_state (id, payload, updated_at)
+      VALUES (1, ?, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
     `
-    INSERT INTO app_state (id, payload, updated_at)
-    VALUES (1, ?, datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
-  `
-  ).run(JSON.stringify(state))
-  syncQueryTables(state)
-  syncAnalyticsMaterialized(state)
+    ).run(JSON.stringify(state))
+    syncQueryTables(state)
+    syncAnalyticsMaterialized(state)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
 }
 
 export function backupState(targetPath = resolve(process.cwd(), 'data', `backup-${Date.now()}.db`)) {
