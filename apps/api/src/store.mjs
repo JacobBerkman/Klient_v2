@@ -81,6 +81,16 @@ const PERMISSIONS = {
   client: ['portal:read', 'client:write'],
   anonymous: []
 }
+const STAGE_KEY_PATTERN = /^[a-z0-9]+(?:_[a-z0-9]+)*$/
+
+function defaultStageLabel(key) {
+  return String(key || '')
+    .split('_')
+    .filter(Boolean)
+    .map((segment) => `${segment[0]?.toUpperCase() || ''}${segment.slice(1)}`)
+    .join(' ')
+}
+
 const DEFAULT_PIPELINE_STAGES = [
   { id: 'discovery', label: 'Discovery', order: 1, active: true },
   { id: 'gather_oi', label: 'Gather OI', order: 2, active: true },
@@ -1448,9 +1458,52 @@ export function createStore({
       .join(' ')
   }
 
+  function firmPipelineStageRecords(firmId) {
+    return (state.pipelineStages || [])
+      .filter((entry) => entry.firmId === firmId)
+      .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0) || String(a.key).localeCompare(String(b.key)))
+  }
+
+  function ensureFirmPipelineStageRecords(firmId) {
+    state.pipelineStages ||= []
+    if (state.pipelineStages.some((entry) => entry.firmId === firmId)) return
+    const createdAt = now()
+    const seeded = getFirmPipelineStageDefinitions(firmId)
+      .filter((definition) => !definition.legacy)
+      .map((definition, index) => ({
+        id: randomUUID(),
+        firmId,
+        key: definition.id,
+        label: definition.label,
+        color: null,
+        isActive: definition.active !== false,
+        order: index + 1,
+        createdAt,
+        updatedAt: createdAt,
+        deactivatedAt: null
+      }))
+    if (seeded.length) {
+      state.pipelineStages.push(...seeded)
+      persist()
+    }
+  }
+
+  function listFirmPipelineStages(firmId) {
+    ensureFirmPipelineStageRecords(firmId)
+    return firmPipelineStageRecords(firmId)
+  }
+
   function getFirmPipelineStageDefinitions(firmId) {
     const firm = state.firms.find((entry) => entry.id === firmId) || null
+    const stageRecords = firmPipelineStageRecords(firmId)
     const configured =
+      (stageRecords.length > 0 &&
+        stageRecords.map((entry) => ({
+          id: entry.key,
+          label: entry.label,
+          order: entry.order,
+          active: entry.isActive !== false
+        }))) ||
       (Array.isArray(firm?.pipelineStages) && firm.pipelineStages) ||
       (Array.isArray(firm?.pipeline?.stages) && firm.pipeline.stages) ||
       (Array.isArray(firm?.config?.pipeline?.stages) && firm.config.pipeline.stages) ||
@@ -2199,6 +2252,7 @@ export function createStore({
     updatePipelineStageMetadata(firmContext, stageId, patch) {
       const context = requireFirmContext(firmContext, { method: 'store.updatePipelineStageMetadata' })
       requirePermission(context.user || context, 'pipeline:write')
+      ensureFirmPipelineStageRecords(context.firmId)
       const stage = validateTenantEntityOwnership(
         context,
         state.pipelineStages.find((entry) => entry.id === stageId),
@@ -2216,6 +2270,7 @@ export function createStore({
     deactivatePipelineStage(firmContext, stageId) {
       const context = requireFirmContext(firmContext, { method: 'store.deactivatePipelineStage' })
       requirePermission(context.user || context, 'pipeline:write')
+      ensureFirmPipelineStageRecords(context.firmId)
       const stage = validateTenantEntityOwnership(
         context,
         state.pipelineStages.find((entry) => entry.id === stageId),

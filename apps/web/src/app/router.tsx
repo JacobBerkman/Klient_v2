@@ -48,6 +48,7 @@ export const router = createBrowserRouter([
       { path: '/exports', lazy: () => import('../pages/ExportsPage') },
       { path: '/analytics', lazy: () => import('../pages/AnalyticsPage') },
       { path: '/audit', lazy: () => import('../pages/AuditPage') },
+      { path: '/admin/stages', lazy: () => import('../pages/AdminStagesPage') },
       { path: '/admin/ops', lazy: () => import('../pages/OpsPage') }
     ]
   },

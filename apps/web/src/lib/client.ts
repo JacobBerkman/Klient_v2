@@ -1,3 +1,5 @@
+import type { BoardMovePayload, PipelineStageRecord, PipelineStagesPayload } from './types'
+
 type QueryValue = string | number | boolean | null | undefined
 
 function trimTrailingSlash(value: string) {
@@ -35,6 +37,10 @@ export const routes = {
   dashboard: () => '/api/dashboard',
   board: () => '/api/board',
   pipelineStages: () => '/api/pipeline/stages',
+  pipelineStage: (stageId: string) => joinPath('/api/pipeline/stages', stageId),
+  pipelineStageDeactivate: (stageId: string) => joinPath('/api/pipeline/stages', stageId, 'deactivate'),
+  pipelineStagesReorder: () => '/api/pipeline/stages/reorder',
+  pipelineReorder: () => '/api/pipeline/reorder',
   profiles: (query: Record<string, QueryValue> = {}) => withQuery('/api/profiles', query),
   profileDetail: (profileId: string) => joinPath('/api/profiles', profileId),
   profileStage: (profileId: string) => joinPath('/api/profiles', profileId, 'stage'),
@@ -197,6 +203,13 @@ class ApiClient {
       return body as T
     }
 
+    // Mutating requests consume the single-use CSRF token server-side, and error
+    // responses do not reissue one. Drop the stale token so the next mutation
+    // re-bootstraps from /api/csrf instead of failing as a replay.
+    if (mutating && !options.skipCsrf && !nextToken) {
+      this.clearCsrfToken()
+    }
+
     const errorBody = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
     throw new ApiError(
       String(
@@ -290,3 +303,19 @@ class ApiClient {
 }
 
 export const api = new ApiClient()
+
+export const pipelineApi = {
+  listStages: () => api.get<PipelineStagesPayload>(routes.pipelineStages()),
+  createStage: (input: { key: string; label?: string; color?: string | null }) =>
+    api.post<PipelineStageRecord>(routes.pipelineStages(), input),
+  updateStageMetadata: (stageId: string, patch: { label?: string; color?: string | null }) =>
+    api.patch<PipelineStageRecord>(routes.pipelineStage(stageId), patch),
+  deactivateStage: (stageId: string) => api.post<PipelineStageRecord>(routes.pipelineStageDeactivate(stageId)),
+  reorderStages: (stageIds: string[]) => api.patch<PipelineStagesPayload>(routes.pipelineStagesReorder(), { stageIds }),
+  moveCard: (input: {
+    profileId: string
+    toStage: string
+    beforeProfileId?: string | null
+    expectedBoardVersion?: number | null
+  }) => api.patch<BoardMovePayload>(routes.pipelineReorder(), input)
+}

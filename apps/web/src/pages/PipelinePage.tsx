@@ -1,6 +1,6 @@
-import { startTransition, useDeferredValue, useState } from 'react'
+import { startTransition, useDeferredValue, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, routes } from '../lib/client'
+import { api, ApiError, pipelineApi, routes } from '../lib/client'
 import { formatDateTime, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
@@ -30,6 +30,28 @@ interface PipelineData {
   clients: Profile[]
 }
 
+/**
+ * Applies a stage move to the board locally so the card lands in its target
+ * column before the server responds. Returns null when the card or target
+ * column is not on the board (caller falls back to a refetch).
+ */
+function applyOptimisticMove(board: BoardPayload, profileId: string, stage: string): BoardPayload | null {
+  let movedCard: Profile | null = null
+  const withoutCard = board.columns.map((column) => {
+    const card = column.cards.find((entry) => entry.id === profileId)
+    if (!card) return column
+    movedCard = { ...card, stage }
+    return { ...column, cards: column.cards.filter((entry) => entry.id !== profileId) }
+  })
+  if (!movedCard || !withoutCard.some((column) => column.stage === stage)) return null
+  return {
+    ...board,
+    columns: withoutCard.map((column) =>
+      column.stage === stage ? { ...column, cards: [...column.cards, movedCard as Profile] } : column
+    )
+  }
+}
+
 export function Component() {
   const { user } = useAuth()
   const [refreshKey, setRefreshKey] = useState(0)
@@ -40,6 +62,11 @@ export function Component() {
   const [dropStage, setDropStage] = useState('')
   const deferredSearch = useDeferredValue(search)
 
+  // Local board copy so moves render optimistically; reconciled from the server
+  // payload after every successful move and re-synced on each refetch.
+  const [board, setBoard] = useState<BoardPayload | null>(null)
+  const moveTokenRef = useRef(0)
+
   const { data, error, loading } = useAsync<PipelineData>(async () => {
     const [board, clients] = await Promise.all([
       api.get<BoardPayload>(routes.board()),
@@ -48,14 +75,34 @@ export function Component() {
     return { board, clients }
   }, [refreshKey])
 
+  useEffect(() => {
+    if (data) setBoard(data.board)
+  }, [data])
+
   async function moveProfile(profileId: string, stage: string) {
-    if (!hasGuard(user, 'canMovePipeline')) return
+    if (!hasGuard(user, 'canMovePipeline') || !board) return
+    const snapshot = board
+    const optimisticBoard = applyOptimisticMove(board, profileId, stage)
+    if (!optimisticBoard) return
+    const moveToken = ++moveTokenRef.current
+    setBoard(optimisticBoard)
     setMoveMessage('Moving stage...')
     try {
-      await api.patch(routes.profileStage(profileId), { stage })
+      const result = await pipelineApi.moveCard({
+        profileId,
+        toStage: stage,
+        expectedBoardVersion: snapshot.boardVersion ?? null
+      })
+      if (moveTokenRef.current !== moveToken) return
+      setBoard(result.board)
       setMoveMessage(`Moved to ${stage}.`)
-      setRefreshKey((value) => value + 1)
     } catch (moveError) {
+      if (moveTokenRef.current === moveToken) setBoard(snapshot)
+      if (moveError instanceof ApiError && moveError.code === 'PIPELINE_ORDER_CONFLICT') {
+        setMoveMessage('Board changed in another session. Reloaded the latest board.')
+        setRefreshKey((value) => value + 1)
+        return
+      }
       setMoveMessage(moveError instanceof Error ? moveError.message : 'Stage move failed.')
     }
   }
@@ -64,7 +111,8 @@ export function Component() {
   if (error || !data) return <ErrorState title="Pipeline failed to load." detail={error?.message} />
 
   const searchValue = deferredSearch.trim().toLowerCase()
-  const filteredColumns = data.board.columns.map((column) => ({
+  const activeBoard = board ?? data.board
+  const filteredColumns = activeBoard.columns.map((column) => ({
     ...column,
     cards: column.cards.filter((card) => {
       if (!searchValue) return true
@@ -142,7 +190,10 @@ export function Component() {
                 <div className="kanban-column-header">
                   <div className="row-between">
                     <strong>{column.label}</strong>
-                    <Badge tone={column.cards.length ? 'info' : 'neutral'}>{column.cards.length}</Badge>
+                    <span className="actions-row">
+                      {column.active === false ? <Badge tone="warning">Inactive</Badge> : null}
+                      <Badge tone={column.cards.length ? 'info' : 'neutral'}>{column.cards.length}</Badge>
+                    </span>
                   </div>
                   <p className="muted compact">Drop cards here or use each card stage selector.</p>
                 </div>
@@ -170,14 +221,16 @@ export function Component() {
                       {hasGuard(user, 'canMovePipeline') ? (
                         <select
                           aria-label={`Move ${profileName(card)} stage`}
-                          defaultValue={card.stage || column.stage}
+                          value={card.stage || column.stage}
                           onChange={(event) => void moveProfile(card.id, event.target.value)}
                         >
-                          {data.board.stages.map((stage) => (
-                            <option key={stage.id} value={stage.id}>
-                              {stage.label}
-                            </option>
-                          ))}
+                          {activeBoard.stages
+                            .filter((stage) => stage.active || stage.id === (card.stage || column.stage))
+                            .map((stage) => (
+                              <option key={stage.id} value={stage.id} disabled={!stage.active}>
+                                {stage.label}
+                              </option>
+                            ))}
                         </select>
                       ) : null}
                     </div>
