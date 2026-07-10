@@ -56,7 +56,7 @@ export function evaluateRuntimeRequiredEnvPresence(env = process.env) {
   const nodeEnv = readNonEmpty(env, 'NODE_ENV', 'development').toLowerCase()
 
   const authRequired = {
-    local: ['ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS'],
+    local: [],
     oidc: ['OIDC_ISSUER_URL', 'OIDC_CLIENT_ID', 'OIDC_CLIENT_SECRET', 'OIDC_REDIRECT_URI'],
     saml: ['SAML_ENTRY_POINT', 'SAML_ISSUER', 'SAML_CERT']
   }
@@ -69,12 +69,7 @@ export function evaluateRuntimeRequiredEnvPresence(env = process.env) {
     s3: ['STORAGE_ENDPOINT', 'STORAGE_REGION', 'STORAGE_ACCESS_KEY_ID', 'STORAGE_SECRET_ACCESS_KEY']
   }
 
-  const authMissing = authRequired[authProvider].filter((name) => {
-    if (name === 'ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS') {
-      return String(readNonEmpty(env, name, 'false')).toLowerCase() !== 'true'
-    }
-    return !hasValue(env, name)
-  })
+  const authMissing = authRequired[authProvider].filter((name) => !hasValue(env, name))
 
   const opsPresence = {
     active: hasValue(env, 'KLIENT_OPS_TOKEN_ACTIVE'),
@@ -113,7 +108,7 @@ export function evaluateRuntimeRequiredEnvPresence(env = process.env) {
       ready: authReady,
       guidance:
         authProvider === 'local'
-          ? 'AUTH_PROVIDER=local in production requires ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true with incident approval and expiry.'
+          ? 'AUTH_PROVIDER=local is fully supported in production; no additional auth variables are required.'
           : `AUTH_PROVIDER=${authProvider} selected; provide all required ${authProvider.toUpperCase()} integration variables before release.`
     },
     opsTokens: {

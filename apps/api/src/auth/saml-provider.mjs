@@ -1,3 +1,4 @@
+// Claims-mapper stub for future SAML support; this is not an implemented interactive login path.
 import { randomUUID } from 'node:crypto'
 
 function nowIso() {

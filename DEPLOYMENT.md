@@ -20,7 +20,7 @@ Copy `.env.example` to `.env` and set the runtime-required production variables.
 ```bash
 NODE_ENV=production
 APP_SECRET=replace-with-a-long-random-secret
-AUTH_PROVIDER=oidc
+AUTH_PROVIDER=local
 KLIENT_OPS_TOKEN_ACTIVE=replace-with-24-plus-char-ops-token-active
 PII_KEY_PROVIDER=env
 PII_ACTIVE_KEY_ID=app-key-v1
@@ -32,10 +32,9 @@ PII_KEYRING={"app-key-v1":"plain:replace-with-32-byte-base64-or-hex-key"}
 | Variable                                                                                        | Required when                                                         | Runtime enforcement                                                                                                                            |
 | ----------------------------------------------------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
 | `APP_SECRET`                                                                                    | always in production                                                  | must be explicitly set and meet minimum strength requirements.                                                                                 |
-| `AUTH_PROVIDER`                                                                                 | always in production                                                  | must be explicitly set; `local` requires `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true`, otherwise startup is blocked.                          |
-| `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS`                                                        | only for approved incidents where `AUTH_PROVIDER=local` in production | break-glass override to temporarily permit local auth in production; emits runtime warning and should be removed immediately after mitigation. |
-| `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI`                  | `AUTH_PROVIDER=oidc`                                                  | all required; issuer + redirect must be HTTPS; client secret must be >= 16 chars.                                                              |
-| `SAML_ENTRY_POINT`, `SAML_ISSUER`, `SAML_CERT`                                                  | `AUTH_PROVIDER=saml`                                                  | all required; entry point must be HTTPS; cert must contain a PEM certificate block.                                                            |
+| `AUTH_PROVIDER`                                                                                 | always in production                                                  | must be explicitly set (`local`, `oidc`, or `saml`); `local` is fully supported; `oidc`/`saml` are config-validated but not yet implemented.   |
+| `OIDC_ISSUER_URL`, `OIDC_CLIENT_ID`, `OIDC_CLIENT_SECRET`, `OIDC_REDIRECT_URI`                  | `AUTH_PROVIDER=oidc`                                                  | all required; issuer + redirect must be HTTPS; client secret must be >= 16 chars. (not yet implemented; do not select for production)          |
+| `SAML_ENTRY_POINT`, `SAML_ISSUER`, `SAML_CERT`                                                  | `AUTH_PROVIDER=saml`                                                  | all required; entry point must be HTTPS; cert must contain a PEM certificate block. (not yet implemented; do not select for production)        |
 | `PII_KEY_PROVIDER`                                                                              | always in production                                                  | provider selector (`env` or `kms`).                                                                                                            |
 | `PII_ACTIVE_KEY_ID`, `PII_KEYRING`                                                              | `PII_KEY_PROVIDER=env`                                                | both required; `PII_KEYRING` must be a JSON object and include `PII_ACTIVE_KEY_ID`.                                                            |
 | `PII_KMS_KEYRING` + (`PII_KMS_ACTIVE_KEY_ID` or `PII_ACTIVE_KEY_ID`)                            | `PII_KEY_PROVIDER=kms`                                                | keyring required and must be a JSON object; active key id required.                                                                            |
@@ -68,6 +67,7 @@ Required behavior and validation:
 - Sessions expire after 8 hours.
 - User-session auth is cookie-only. Production/HTTPS emits `__Host-klient-session` and `__Host-klient-csrf`; local HTTP development emits unprefixed `klient-session` and `klient-csrf` so dev browsers persist cookies without weakening production cookie policy.
 - Failed login attempts are rate limited per email over a 15-minute window.
+- Operational policy for `AUTH_PROVIDER=local` in production: all staff users should enroll TOTP MFA (already built into local auth) as an operational requirement for SEC/SIPC compliance.
 
 ## Demo mode vs production
 
@@ -147,7 +147,7 @@ Before approving GO/NO-GO, complete and archive the standardized handoff package
 `docs/release-handoff-template.md`.
 When completing Section 2 of that package, explicitly record:
 
-- selected `AUTH_PROVIDER` path (`oidc`/`saml` required for normal production GO, `local` only with recorded break-glass approval) and companion key presence checks,
+- selected `AUTH_PROVIDER` path (`local` is the supported production mode; `oidc`/`saml` are not yet implemented) and companion key presence checks,
 - selected `PII_KEY_PROVIDER` path (`env` or `kms`) and companion key presence checks,
 - selected ops token path (`KLIENT_OPS_TOKEN_ACTIVE`, `KLIENT_OPS_TOKEN_PREVIOUS`, `KLIENT_OPS_TOKENS`, or legacy `KLIENT_OPS_TOKEN`) and rotation/remove timing,
 - and immutable release identity values (release ID, commit/tag, image digest, environment).

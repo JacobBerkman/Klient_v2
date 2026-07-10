@@ -110,6 +110,9 @@ function providerRuntimeDiagnostics(authProvider, { strict = false } = {}) {
 
     const allowedAlgs = readList('OIDC_ALLOWED_ALGS')
     if (allowedAlgs.length === 0) warnings.push('OIDC_ALLOWED_ALGS is unset; provider defaults will be used.')
+    warnings.push(
+      'AUTH_PROVIDER=oidc configuration is validated but the oidc protocol implementation is not yet available; interactive logins will not succeed.'
+    )
     return { issues, warnings }
   }
 
@@ -132,6 +135,9 @@ function providerRuntimeDiagnostics(authProvider, { strict = false } = {}) {
     if (!Number.isFinite(clockSkewSeconds) || clockSkewSeconds < 0) {
       issues.push('SAML_CLOCK_SKEW_SECONDS must be a non-negative number when provided.')
     }
+    warnings.push(
+      'AUTH_PROVIDER=saml configuration is validated but the saml protocol implementation is not yet available; interactive logins will not succeed.'
+    )
     return { issues, warnings }
   }
 
@@ -171,7 +177,6 @@ const enableTestCsrfBypass = readBoolean('ENABLE_TEST_CSRF_BYPASS', false)
 const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
 const authProviderRaw = readNonEmptyString('AUTH_PROVIDER')
 const authProvider = readAuthProviderFromEnv({ ...process.env, AUTH_PROVIDER: authProviderRaw || undefined })
-const allowProductionLocalAuthBreakglass = readBoolean('ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS', false)
 const piiKeyProvider = readPiiKeyProviderFromEnv(process.env)
 const klientOpsTokens = readOpsTokenSet()
 const klientOpsToken = klientOpsTokens[0]?.token || ''
@@ -299,18 +304,6 @@ export function validateRuntimeConfig() {
       'AUTH_PROVIDER must be explicitly set in production (local, oidc, or saml); implicit local fallback is blocked.'
     )
   }
-  if (runtime.nodeEnv === 'production' && runtime.authProvider === 'local') {
-    if (!allowProductionLocalAuthBreakglass) {
-      issues.push(
-        'AUTH_PROVIDER=local is blocked in production. Set AUTH_PROVIDER=oidc or AUTH_PROVIDER=saml, or temporarily set ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true with recorded approval.'
-      )
-    } else {
-      warnings.push(
-        'BREAK-GLASS ACTIVE: ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true permits AUTH_PROVIDER=local in production. Ensure approval is recorded and remove override immediately after incident mitigation.'
-      )
-    }
-  }
-
   if (runtime.piiKeyProvider === 'kms') {
     if (!process.env.PII_KMS_KEYRING) {
       if (runtime.nodeEnv === 'production') issues.push('KMS PII key provider requires PII_KMS_KEYRING.')

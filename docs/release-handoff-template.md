@@ -33,7 +33,6 @@ Do not add secret values in this handoff; record presence and secret/version ref
 |---|---|---|
 | `APP_SECRET` | `<Y/N>` | `<how validated>` |
 | `AUTH_PROVIDER` | `<Y/N>` | `<oidc|saml|local>` |
-| `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS` (only if `AUTH_PROVIDER=local`) | `<Y/N/N/A>` | `<approval + expiry details>` |
 | `NODE_ENV` | `<Y/N>` | `<expected value>` |
 | `PORT` | `<Y/N>` | `<expected value>` |
 | `HOST` | `<Y/N>` | `<expected value>` |
@@ -55,9 +54,7 @@ Record explicit auth mode verification for production GO.
 
 | Check | Result | Evidence path / notes |
 |---|---|---|
-| Production provider mode is federated (`oidc` or `saml`) | `<PASS/FAIL>` | `<value + evidence source>` |
-| If `AUTH_PROVIDER=local`, break-glass was explicitly approved | `<PASS/FAIL/N/A>` | `<ticket/incident + approvers>` |
-| If break-glass used, `ALLOW_PRODUCTION_LOCAL_AUTH_BREAKGLASS=true` confirmed and expiry/removal plan recorded | `<PASS/FAIL/N/A>` | `<planned removal date/time>` |
+| Production `AUTH_PROVIDER` recorded (`local` supported; `oidc`/`saml` not yet implemented) | `<PASS/FAIL>` | `<value + evidence source>` |
 
 ## 2b) Startup fail-fast verification (production)
 Confirm that startup fails before bind/listen when runtime config is invalid, and records clear issues.
