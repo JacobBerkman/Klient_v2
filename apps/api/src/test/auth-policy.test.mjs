@@ -3,9 +3,9 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 
-const repoRoot = resolve(new URL('../../../../', import.meta.url).pathname)
+const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url))
 
 async function loadStoreWithIsolatedState() {
   const previousCwd = process.cwd()

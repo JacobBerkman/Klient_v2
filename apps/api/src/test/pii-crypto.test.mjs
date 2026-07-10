@@ -3,10 +3,10 @@ import assert from 'node:assert/strict'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createCipheriv, createHash, randomBytes } from 'node:crypto'
 
-const repoRoot = resolve(new URL('../../../../', import.meta.url).pathname)
+const repoRoot = fileURLToPath(new URL('../../../../', import.meta.url))
 
 function encryptLegacy(value, keySeed) {
   const key = createHash('sha256').update(keySeed).digest()
