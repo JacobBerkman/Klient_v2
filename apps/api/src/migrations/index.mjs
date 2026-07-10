@@ -1,9 +1,10 @@
 import baseline from './001-baseline.mjs'
+import sessionsTable from './002-sessions.mjs'
 
 // Ordered list of schema migrations. Each entry is { version, name, up(db) }.
 // Versions must be positive, unique, ascending integers; the applied version
 // is tracked via PRAGMA user_version.
-export const migrations = [baseline]
+export const migrations = [baseline, sessionsTable]
 
 function assertMigrationList(list) {
   let previousVersion = 0

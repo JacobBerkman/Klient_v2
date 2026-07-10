@@ -99,7 +99,7 @@ function pruneByAge(records, maxAgeMs, dateField = 'createdAt') {
   return records.filter((entry) => Date.now() - new Date(entry[dateField]).getTime() <= maxAgeMs)
 }
 
-export function createLocalAuthProvider({ state, persist, createSession, addAudit }) {
+export function createLocalAuthProvider({ state, persist, createSession, addAudit, deleteSessionRecords = () => {} }) {
 
   function clearLoginAttempts(email) {
     const normalizedEmail = normalizeEmail(email)
@@ -247,7 +247,11 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
     const existing = state.sessions || []
     const remaining = existing.filter((entry) => entry.userId !== userId)
     const revokedCount = existing.length - remaining.length
-    if (revokedCount > 0) state.sessions = remaining
+    if (revokedCount > 0) {
+      state.sessions = remaining
+      // Mirror the removals to the relational sessions table (dual-write).
+      deleteSessionRecords(existing.filter((entry) => entry.userId === userId).map((entry) => entry.token))
+    }
     return revokedCount
   }
 
