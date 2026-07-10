@@ -1,3 +1,21 @@
 node_modules/
 .npm-cache/
-data/app.db
+
+# Local environment (contains secrets) — never commit
+.env
+.env.local
+.env.*.local
+
+# Runtime data: SQLite DB, WAL files, local object storage, backups
+data/*
+!data/.gitkeep
+
+# Transient per-run gate evidence (finalized release bundles in
+# artifacts/release-evidence/<release-id>/ are committed intentionally)
+artifacts/release-evidence/*.json
+artifacts/release-evidence/*.txt
+artifacts/main-parity.json
+
+# Test output
+playwright-report/
+test-results/

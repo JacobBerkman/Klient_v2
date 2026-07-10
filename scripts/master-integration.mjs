@@ -71,12 +71,21 @@ export const INTEGRATION_SUITE_ORDER = Object.freeze([
   'integration-audit.mjs'
 ])
 
+// Slower local machines (or gate runs sharing the host with other work) can
+// scale every per-suite timeout without changing the CI-canonical budgets.
+export function resolveIntegrationTimeoutScale(rawScale = process.env.INTEGRATION_TIMEOUT_SCALE) {
+  const scale = Number.parseFloat(rawScale || '1')
+  if (!Number.isFinite(scale) || scale < 1) return 1
+  return Math.min(scale, 10)
+}
+
 function buildOrderedSuites(order, definitions) {
+  const timeoutScale = resolveIntegrationTimeoutScale()
   return Object.freeze(
     order.map((script) => {
       const suite = definitions[script]
       if (!suite) throw new Error(`Missing integration suite definition: ${script}`)
-      return Object.freeze({ script, ...suite })
+      return Object.freeze({ script, ...suite, timeoutMs: Math.round(suite.timeoutMs * timeoutScale) })
     })
   )
 }
@@ -121,8 +130,9 @@ export function computeIntegrationTimeoutBudget(
   scripts,
   { overheadMs = Number.parseInt(process.env.INTEGRATION_TIMEOUT_OVERHEAD_MS || '60000', 10) } = {}
 ) {
+  const timeoutScale = resolveIntegrationTimeoutScale()
   const suiteBudgetMs = (Array.isArray(scripts) ? scripts : [])
-    .map((script) => Number(integrationSuiteDefinitions?.[script]?.timeoutMs || 0))
+    .map((script) => Math.round(Number(integrationSuiteDefinitions?.[script]?.timeoutMs || 0) * timeoutScale))
     .reduce((sum, timeoutMs) => sum + timeoutMs, 0)
   return suiteBudgetMs + overheadMs
 }

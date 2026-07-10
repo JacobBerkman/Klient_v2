@@ -139,7 +139,15 @@ const rootDir = process.cwd()
 const offenders = []
 for (const file of listTrackedFiles(rootDir)) {
   const absolute = resolve(rootDir, file)
-  const contents = readFileSync(absolute, 'utf8')
+  let contents
+  try {
+    contents = readFileSync(absolute, 'utf8')
+  } catch (error) {
+    // git ls-files includes tracked files deleted from the working tree
+    // (e.g. transient gate evidence removed by clearStaleEvidenceFiles).
+    if (error?.code === 'ENOENT') continue
+    throw error
+  }
   if (!MARKER_PATTERN.test(contents)) continue
 
   const lines = contents.split(/\r?\n/)
