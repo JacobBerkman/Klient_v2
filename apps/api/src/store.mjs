@@ -1,6 +1,13 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { runtime } from './runtime.mjs'
-import { loadState, processExportQueueTickAsync, saveState } from './storage.mjs'
+import {
+  applyExportJobLifecycleUpdate,
+  getExportJob,
+  listExportQueueJobs,
+  loadState,
+  processExportQueueTickAsync,
+  saveState
+} from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
 import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
@@ -1281,16 +1288,23 @@ export function createStore({
       }
     }
 
-    for (const job of state.exportJobs) {
+    // export_jobs is the sole source of truth for the queue: read jobs from
+    // the table and apply lifecycle transitions as targeted row updates
+    // instead of mutating an in-memory mirror.
+    for (const job of listExportQueueJobs()) {
       const object = job.output?.object
       if (!object?.bucket || !object?.key) continue
       const ageDays = daysBetween(job.updatedAt || job.createdAt, nowMs)
       if (ageDays >= policy.export_artifact.purgeAfterDays) {
         await objectStorage.deleteObject(object).catch(() => null)
-        job.status = job.status === 'completed' ? 'purged' : job.status
-        job.output = { ...job.output, purgedAt: now() }
+        applyExportJobLifecycleUpdate(job.id, {
+          status: job.status === 'completed' ? 'purged' : job.status,
+          output: { ...job.output, purgedAt: now() }
+        })
       } else if (ageDays >= policy.export_artifact.archiveAfterDays && !job.output.archivedAt) {
-        job.output = { ...job.output, archivedAt: now() }
+        applyExportJobLifecycleUpdate(job.id, {
+          output: { ...job.output, archivedAt: now() }
+        })
       }
     }
 
@@ -1734,7 +1748,7 @@ export function createStore({
           clients: clients.length,
           households: state.households.filter((household) => household.firmId === user.firmId).length,
           forms: state.formSubmissions.filter((submission) => submission.firmId === user.firmId).length,
-          exports: state.exportJobs.filter((job) => job.firmId === user.firmId).length
+          exports: listExportQueueJobs().filter((job) => job.firmId === user.firmId).length
         },
         recentProfiles: profiles.slice(-5).reverse(),
         recentAuditEvents: state.auditEvents
@@ -4417,8 +4431,8 @@ export function createStore({
         }
       })
 
-      const exportJobs = state.exportJobs.filter((entry) => {
-        if (entry.firmId !== user.firmId) return false
+      const firmExportJobs = listExportQueueJobs().filter((entry) => entry.firmId === user.firmId)
+      const exportJobs = firmExportJobs.filter((entry) => {
         const created = toIsoDate(entry.createdAt)
         if (startDate && created && created < startDate) return false
         if (endDate && created && created > endDate) return false
@@ -4470,7 +4484,7 @@ export function createStore({
         exportUsage: { byAdvisor: exportUsageByAdvisor, byFirm: exportUsageByFirm },
         profileCount: firmProfiles.length,
         householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
-        exportCount: state.exportJobs.filter((entry) => entry.firmId === user.firmId).length,
+        exportCount: firmExportJobs.length,
         templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form')
           .length,
         avgProspectStageAgeDays: Number(
@@ -4516,13 +4530,9 @@ export function createStore({
     async createExportDownloadUrl(user, exportId) {
       const firmContext = requireFirmContext(user, { method: 'store.createExportDownloadUrl' })
       requirePermission(user, 'exports:write')
-      const job = validateTenantEntityOwnership(
-        firmContext,
-        state.exportJobs.find((entry) => entry.id === exportId),
-        {
-          entityName: 'Export'
-        }
-      )
+      const job = validateTenantEntityOwnership(firmContext, getExportJob(exportId), {
+        entityName: 'Export'
+      })
       const object = job.output?.object
       if (!object) throw new Error('Export output object not available.')
       return objectStorage.createPresignedDownloadUrl({ ...object, expiresInSeconds: 900 })
@@ -4532,7 +4542,7 @@ export function createStore({
       await applyLifecyclePolicies()
       return {
         uploads: state.documentUploads.filter((entry) => entry.firmId === user.firmId),
-        exports: state.exportJobs.filter((entry) => entry.firmId === user.firmId),
+        exports: listExportQueueJobs().filter((entry) => entry.firmId === user.firmId),
         retention: objectStorage.retentionPolicies
       }
     },

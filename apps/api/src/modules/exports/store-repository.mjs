@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import {
   enqueueExportJob,
+  getExportJob,
   listExportQueueJobs,
   processExportQueueTickAsync,
   readExportWorkerStatus,
@@ -233,7 +234,7 @@ export function createStoreExportsRepository({
 
   return {
     list(user, options = {}) {
-      state.exportJobs = listExportQueueJobs()
+      const jobs = listExportQueueJobs()
       const status = String(options.status || '')
         .trim()
         .toLowerCase()
@@ -242,7 +243,7 @@ export function createStoreExportsRepository({
       const toDate = parseIsoDate(options.toDate)
       const sort = String(options.sort || 'createdAt_desc').trim()
 
-      const filtered = state.exportJobs
+      const filtered = jobs
         .filter((entry) => entry.firmId === user.firmId)
         .filter((entry) => !status || String(entry.status || '').toLowerCase() === status)
         .filter((entry) => !profileId || entry.clientId === profileId)
@@ -285,25 +286,18 @@ export function createStoreExportsRepository({
           type: queued.type
         }
       })
-      state.exportJobs = state.exportJobs.filter((entry) => entry.id !== queued.id)
-      state.exportJobs.push(queued)
       persist()
       return queued
     },
     retry(user, exportId) {
       const firmContext = createFirmContext(user, { method: 'exports.retry' })
-      const existing = validateEntityOwnership(
-        firmContext,
-        state.exportJobs.find((entry) => entry.id === exportId),
-        {
-          entityName: 'Export'
-        }
-      )
+      const existing = validateEntityOwnership(firmContext, getExportJob(exportId), {
+        entityName: 'Export'
+      })
 
       const updated = requeueExportJob(exportId)
       if (!updated) throw new Error('Export not found.')
 
-      state.exportJobs = state.exportJobs.map((entry) => (entry.id === exportId ? updated : entry))
       addAuditEvent(user, {
         entityType: 'export_job',
         entityId: exportId,
@@ -364,8 +358,6 @@ export function createStoreExportsRepository({
         if (updated) retried.push(updated.id)
       }
 
-      state.exportJobs = listExportQueueJobs()
-      persist()
       return { dryRun: false, limit, includeDeadLetter, retriedCount: retried.length, ids: retried }
     },
     async processQueued() {
@@ -422,13 +414,9 @@ export function createStoreExportsRepository({
     },
     async getDownload(user, exportId) {
       const firmContext = createFirmContext(user, { method: 'exports.download' })
-      const job = validateEntityOwnership(
-        firmContext,
-        state.exportJobs.find((entry) => entry.id === exportId),
-        {
-          entityName: 'Export'
-        }
-      )
+      const job = validateEntityOwnership(firmContext, getExportJob(exportId), {
+        entityName: 'Export'
+      })
       if (job.status !== 'completed') throw new Error('Export is not completed yet.')
 
       if (job.output?.object?.bucket && job.output?.object?.key) {

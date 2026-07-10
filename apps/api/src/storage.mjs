@@ -48,12 +48,6 @@ function replaceRows(tableName, rows, mapper) {
   }
 }
 
-function readStatePayload() {
-  const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get()
-  if (!row?.payload) return null
-  return JSON.parse(row.payload)
-}
-
 export function upsertCsrfToken(record) {
   db.prepare(
     `
@@ -164,19 +158,6 @@ export function listExportQueueJobs() {
       idempotencyKey: row.idempotencyKey || null
     }
   })
-}
-
-function syncStateExportsFromQueue() {
-  const state = readStatePayload()
-  if (!state) return
-  state.exportJobs = listExportQueueJobs()
-  db.prepare(
-    `
-    INSERT INTO app_state (id, payload, updated_at)
-    VALUES (1, ?, datetime('now'))
-    ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
-  `
-  ).run(JSON.stringify(state))
 }
 
 function ensureQueueSeededFromState(state) {
@@ -396,19 +377,38 @@ export function loadState(seedFactory) {
   const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get()
   if (row?.payload) {
     const state = JSON.parse(row.payload)
+    // Legacy blobs mirrored the export queue in state.exportJobs. The
+    // export_jobs table is now the sole source of truth: seed it once from
+    // the blob (old databases with an empty table), then strip the mirror
+    // from the blob so it never gets written back.
     ensureQueueSeededFromState(state)
-    syncStateExportsFromQueue()
-    return readStatePayload()
+    if (Array.isArray(state.exportJobs) && state.exportJobs.length > 0) {
+      state.exportJobs = []
+      db.prepare(
+        `
+        INSERT INTO app_state (id, payload, updated_at)
+        VALUES (1, ?, datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
+      `
+      ).run(JSON.stringify(state))
+    }
+    state.exportJobs = []
+    return state
   }
 
   const state = seedFactory()
   saveState(state)
   ensureQueueSeededFromState(state)
-  syncStateExportsFromQueue()
-  return readStatePayload()
+  state.exportJobs = []
+  return state
 }
 
 export function saveState(state) {
+  // export_jobs is the sole source of truth for the export queue: the blob
+  // keeps an empty exportJobs array purely for shape compatibility, so a
+  // stale in-memory mirror can never clobber queue writes from the separate
+  // export-worker process.
+  const payload = JSON.stringify({ ...state, exportJobs: [] })
   // The blob upsert, derived query tables, and materialized analytics must
   // commit together: a failure partway through (e.g. mid replaceRows) would
   // otherwise leave the blob and the relational projections out of sync.
@@ -420,7 +420,7 @@ export function saveState(state) {
       VALUES (1, ?, datetime('now'))
       ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
     `
-    ).run(JSON.stringify(state))
+    ).run(payload)
     syncQueryTables(state)
     syncAnalyticsMaterialized(state)
     db.exec('COMMIT')
@@ -499,7 +499,6 @@ export function enqueueExportJob(job) {
     createdAt,
     idempotencyKey
   )
-  syncStateExportsFromQueue()
   return payload
 }
 
@@ -532,12 +531,31 @@ export function requeueExportJob(jobId) {
     WHERE id = ?
   `
   ).run(timestamp, timestamp, JSON.stringify(payload), jobId)
-  syncStateExportsFromQueue()
   return getExportJob(jobId)
 }
 
 export function getExportJob(jobId) {
   return listExportQueueJobs().find((job) => job.id === jobId) || null
+}
+
+// Targeted lifecycle update for completed-job artifacts (archive/purge).
+// Deliberately leaves updated_at untouched: retention aging is computed from
+// updatedAt/createdAt, and bumping it on archive would reset the purge clock.
+export function applyExportJobLifecycleUpdate(jobId, { status, output } = {}) {
+  const existing = db.prepare('SELECT status, payload FROM export_jobs WHERE id = ?').get(jobId)
+  if (!existing) return null
+  const existingPayload = existing.payload ? JSON.parse(existing.payload) : {}
+  const nextStatus = status || existing.status
+  const nextOutput = output === undefined ? existingPayload.output || null : output
+  const nextPayload = { ...existingPayload, status: nextStatus, output: nextOutput }
+  db.prepare(
+    `
+    UPDATE export_jobs
+    SET status = ?, output_payload = ?, payload = ?
+    WHERE id = ?
+  `
+  ).run(nextStatus, JSON.stringify(nextOutput), JSON.stringify(nextPayload), jobId)
+  return getExportJob(jobId)
 }
 
 export function leaseExportJobs({ workerId = 'worker', limit = 5, leaseMs = 30_000 } = {}) {
@@ -581,7 +599,6 @@ export function leaseExportJobs({ workerId = 'worker', limit = 5, leaseMs = 30_0
     ).run(workerId, leaseUntil, nowText, ...ids)
 
     db.exec('COMMIT')
-    syncStateExportsFromQueue()
     return ids.map((id) => getExportJob(id)).filter(Boolean)
   } catch (error) {
     db.exec('ROLLBACK')
@@ -615,7 +632,6 @@ export function markExportJobCompleted(jobId, output) {
     WHERE id = ?
   `
   ).run(JSON.stringify(output || null), timestamp, timestamp, JSON.stringify(payload), jobId)
-  syncStateExportsFromQueue()
   return getExportJob(jobId)
 }
 
@@ -765,7 +781,6 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
     ).run(attempts, normalizedError, timestamp, timestamp, JSON.stringify(payload), jobId)
   }
 
-  syncStateExportsFromQueue()
   return getExportJob(jobId)
 }
 
