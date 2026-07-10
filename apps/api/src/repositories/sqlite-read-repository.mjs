@@ -1,7 +1,8 @@
 import { DatabaseSync } from 'node:sqlite'
-import { DB_PATH } from '../storage.mjs'
+import { DB_PATH, applyConnectionPragmas } from '../storage.mjs'
 
 const db = new DatabaseSync(DB_PATH)
+applyConnectionPragmas(db)
 
 function parsePayloadRows(rows) {
   return rows.map((row) => JSON.parse(row.payload))

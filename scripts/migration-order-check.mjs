@@ -2,7 +2,9 @@ import { spawn } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { fileURLToPath } from 'node:url'
+import { LATEST_SCHEMA_VERSION, runMigrations } from '../apps/api/src/migrations/index.mjs'
 import { createEvidenceRecorder } from './release-evidence.mjs'
 
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
@@ -51,9 +53,11 @@ const evidence = createEvidenceRecorder({
 })
 
 const tempRoot = await mkdtemp(join(tmpdir(), 'klient-migration-check-'))
+let closeStorage = null
 try {
   process.chdir(tempRoot)
-  const { loadState, saveState } = await import('../apps/api/src/storage.mjs')
+  const { loadState, saveState, closeDatabase } = await import('../apps/api/src/storage.mjs')
+  closeStorage = closeDatabase
 
   const seededState = loadState(() => ({}))
   seededState.formTemplates = [{ id: 'form-legacy-1', firmId: 'firm-default', name: 'Legacy Form', sections: [] }]
@@ -95,6 +99,22 @@ try {
     throw new Error('Template aggregate data missing after migration flow.')
   }
 
+  // Versioned schema migration runner: PRAGMA user_version must have advanced
+  // to the latest known version, and re-running the runner must be a no-op.
+  const versionDb = new DatabaseSync(join(tempRoot, 'data', 'app.db'))
+  try {
+    const userVersion = Number(versionDb.prepare('PRAGMA user_version').get()?.user_version || 0)
+    if (userVersion !== LATEST_SCHEMA_VERSION) {
+      throw new Error(`PRAGMA user_version is ${userVersion}; expected latest schema version ${LATEST_SCHEMA_VERSION}.`)
+    }
+    const rerun = runMigrations(versionDb)
+    if (rerun.applied.length !== 0 || rerun.currentVersion !== LATEST_SCHEMA_VERSION) {
+      throw new Error('Versioned schema migration runner is not a no-op on re-run.')
+    }
+  } finally {
+    versionDb.close()
+  }
+
   const summary = {
     ok: true,
     checks: {
@@ -113,5 +133,13 @@ try {
   evidence.finalize({ status: 'failed', error })
   throw error
 } finally {
+  // Release the SQLite handle and leave the temp root before deleting it; on
+  // Windows an open database file or a cwd inside the tree fails with EBUSY.
+  try {
+    closeStorage?.()
+  } catch {
+    // Connection may already be closed; cleanup should still proceed.
+  }
+  process.chdir(repoRoot)
   await rm(tempRoot, { recursive: true, force: true })
 }
