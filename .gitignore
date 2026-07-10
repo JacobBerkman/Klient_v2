@@ -19,3 +19,6 @@ artifacts/main-parity.json
 # Test output
 playwright-report/
 test-results/
+
+# TypeScript incremental build cache
+apps/web/*.tsbuildinfo
