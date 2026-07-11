@@ -44,6 +44,8 @@ Kinetic Klient is now consolidated onto **one real runtime architecture**:
 - the canonical routed React/Vite advisor and portal UI in `apps/web/src`, built to `apps/web/dist`
 - `apps/web/public` is legacy-only and remains reachable only through `/legacy` and `/legacy/portal` until retirement
 
+`apps/web/dist` is generated build output and is not committed to git: run `npm run web:build` after a fresh clone before serving the app with plain Node (Docker and CI build it themselves). Until it is built, the backend serves the legacy shell from `apps/web/public`.
+
 The older duplicate Fastify/TypeScript backend path and related workspace scaffolding have been removed so the repository now has one real startup path.
 
 ## Product capabilities

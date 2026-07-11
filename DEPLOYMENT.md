@@ -13,6 +13,8 @@ This deployment remains a single-process **Node + SQLite + static web** architec
 - the backend serves `apps/web/dist` first for product routes including `/portal`,
 - and `apps/web/public` is legacy-only, retained explicitly at `/legacy` and `/legacy/portal` until retirement.
 
+`apps/web/dist` is generated build output and is **not committed to git** (it is gitignored). On a fresh clone, run `npm run web:build` before serving the app directly with Node; until you do, the backend falls back to the legacy shell in `apps/web/public`. Docker image builds and the CI/`validate:master` gates build `apps/web/dist` themselves, so no pre-built assets are ever required from the repository.
+
 ## Environment contract
 
 Copy `.env.example` to `.env` and set the runtime-required production variables.
@@ -190,6 +192,31 @@ The Dockerfile builds the React app during image creation and copies the generat
   - `/app/tmp` for app-scoped temporary files
 - `docker-compose.yml` enables this policy via `read_only: true`, two `tmpfs` mounts (`/tmp`, `/app/tmp`), and a bind/volume mount for `/app/data`.
 
+## Optional TLS via Caddy
+
+The compose file ships an optional `caddy` reverse-proxy service behind the `tls` compose profile. Without the profile, nothing changes: the app serves plain HTTP on port 3000 exactly as before. With the profile, Caddy terminates HTTPS on ports 443 (and redirects HTTP on 80) and proxies to the app service:
+
+```bash
+docker compose --env-file .env --profile tls up --build -d
+```
+
+The proxy configuration lives in `deploy/Caddyfile` and is mounted read-only into the container; certificate material persists in the `caddy_data`/`caddy_config` named volumes across restarts.
+
+### LAN / local pilot (no public domain): Caddy internal CA
+
+The default `deploy/Caddyfile` uses the `tls internal` directive, so Caddy issues certificates from its own local certificate authority — no internet access or public DNS required. Clients on the LAN must trust that local root CA once:
+
+1. Export the root certificate from the running container:
+   ```bash
+   docker compose --profile tls cp caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-local-root.crt
+   ```
+2. Install `caddy-local-root.crt` on each client machine: Windows — `certmgr.msc`, import into "Trusted Root Certification Authorities"; macOS — Keychain Access, System keychain, set to "Always Trust"; Firefox manages its own store — import under Settings → Privacy & Security → Certificates.
+3. Point the hostname used in the Caddyfile (default `klient.local`) at the Docker host via internal DNS or each client's hosts file.
+
+### Future: public domain (automatic Let's Encrypt)
+
+When the deployment gets a public DNS name and ports 80/443 are reachable from the internet, switch `deploy/Caddyfile` to the commented public-domain variant (a site block for the real domain, without `tls internal`). Caddy then obtains and renews publicly trusted certificates from Let's Encrypt automatically, and clients need no manual CA trust step.
+
 ## Health and readiness
 
 Use:
@@ -301,6 +328,16 @@ RESTORE_BACKUP_PATH=data/backup-<timestamp>.db \
 ## Rollback playbook
 
 Rollback is mandatory if health checks degrade, smoke fails, or security regressions are observed.
+
+### Rollback compatibility
+
+The database now runs in WAL journal mode with a versioned schema (`PRAGMA user_version` 4+). Rolling back to a pre-WAL release is **not supported** without restoring from a backup taken by that older release: old backup scripts copy `data/app.db` alone, without the `-wal` file, and can silently miss committed data that still lives in the WAL.
+
+Safe rollback procedure across the WAL boundary:
+
+1. Stop the app (API and export worker).
+2. Take a backup with the **current** release's backup script (`node scripts/backup-db.mjs`) — it uses `VACUUM INTO`, which produces a single self-contained database file with no WAL sidecar.
+3. Restore that backup with the **old** release's restore script, then start the old release.
 
 ### Explicit rollback SLO/SLA triggers
 
