@@ -4,32 +4,49 @@ import {
   applyExportJobLifecycleUpdate,
   countAuditEvents as countAuditEventsInTable,
   countFormSubmissionsByFirm,
+  countPipelineStageRecordRows,
+  countProspectRowsInStage,
   deleteExpiredSessions,
   deleteExpiredUploadIntents,
   deleteFormSubmission,
   deleteSession,
   deleteSessionsByUser,
   deleteUploadIntent,
+  ensureBoardVersionRow,
+  findClientProfileRowByEmail,
   findPortalDraftSubmission,
   getDraftSectionState,
   getExportJob,
   getFormSubmissionById,
+  getPipelineStageRecordRow,
+  getProfileRow,
   getSessionByToken,
   getUploadIntent,
+  incrementBoardVersionGuarded,
   insertAuditEvent,
+  insertStageChange,
   insertUploadIntent,
   listAuditEvents,
   listDraftSectionStates,
   listExportQueueJobs,
   listFormSubmissionsByClient,
   listFormSubmissionsByFirm,
+  listPipelineStageRecordRows,
+  listProfileRows,
+  listProspectRowsByStage,
+  listProspectStageIds,
+  listStageChangeRowsByClient,
+  listStageChangeRowsByFirm,
   loadState,
   processExportQueueTickAsync,
+  runInTransaction,
   saveDraftSectionStateGuarded,
   saveState,
   touchSession,
   updateFormSubmissionGuarded,
   upsertFormSubmission,
+  upsertPipelineStageRecord,
+  upsertProfileRow,
   upsertSession
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
@@ -822,27 +839,9 @@ function migrateTemplateSystems(state) {
     .map(documentTemplateAdapter)
 }
 
-function migrateProspectOrdering(state) {
-  const profiles = Array.isArray(state?.profiles) ? state.profiles : []
-  const byFirmStage = new Map()
-  for (const profile of profiles) {
-    if (profile?.kind !== 'prospect') continue
-    const stage = profile.stage || 'discovery'
-    const key = `${profile.firmId}:${stage}`
-    if (!byFirmStage.has(key)) byFirmStage.set(key, [])
-    byFirmStage.get(key).push(profile)
-  }
-  for (const cards of byFirmStage.values()) {
-    cards.sort((a, b) => {
-      const indexDiff = profileOrderIndex(a) - profileOrderIndex(b)
-      if (indexDiff !== 0) return indexDiff
-      const updatedDiff = parseIso(a.updatedAt || a.createdAt) - parseIso(b.updatedAt || b.createdAt)
-      if (updatedDiff !== 0) return updatedDiff
-      return String(a.id || '').localeCompare(String(b.id || ''))
-    })
-    cards.forEach((card, index) => assignProspectOrderIndex(card, index + 1))
-  }
-}
+// migrateProspectOrdering (contiguous per-stage orderIndex backfill) and the
+// profile-record normalization pass were ported into migration 006: profiles
+// are relational rows now, so boot-time blob fixups no longer apply to them.
 
 function migrateFirmStageConfig(state) {
   state.firms = (state.firms || []).map((firm) => ({
@@ -1183,10 +1182,8 @@ export function createStore({
   const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
   migrateFirmStageConfig(state)
-  state.profiles = (state.profiles || []).map(normalizeProfileRecord)
   saveState(state)
   state.pipelineStagesByFirm ||= {}
-  state.pipelineStages ||= []
   // Sessions live exclusively in the sessions table: migration 002 backfilled
   // (and normalized) legacy blob sessions, migration 003 cleared the blob, and
   // loadState always returns an empty sessions array. All session reads and
@@ -1196,6 +1193,13 @@ export function createStore({
   // live exclusively in their relational tables (migration 005): loadState
   // seeds/clears the blob mirrors, saveState serializes empty arrays for the
   // three keys, and every read/write below goes through the storage helpers.
+  //
+  // Profiles, stage changes, board versions, and pipeline stage records live
+  // exclusively in their relational tables (migration 006): profile-record
+  // normalization and prospect-ordering fixups were ported into the
+  // migration, every read/write below goes through the storage helpers, and
+  // executePipelineTransaction wraps board mutations in a real SQL
+  // transaction.
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
     return {
@@ -1391,14 +1395,10 @@ export function createStore({
     now
   })
 
+  // board_versions is the source of truth; reading lazily creates the row at
+  // version 1, exactly like the old in-memory map defaulted missing firms.
   function getBoardVersion(firmId) {
-    if (!state.boardVersions || typeof state.boardVersions !== 'object') {
-      state.boardVersions = {}
-    }
-    if (!state.boardVersions[firmId]) {
-      state.boardVersions[firmId] = 1
-    }
-    return state.boardVersions[firmId]
+    return ensureBoardVersionRow(firmId)
   }
 
   function getFirmRecord(firmId) {
@@ -1429,10 +1429,20 @@ export function createStore({
     return getActiveFirmStages(firmId)[0] || 'discovery'
   }
 
+  // Guarded UPDATE ... WHERE version = current: the relational concurrency
+  // primitive for board mutations. Inside a pipeline transaction the guard
+  // cannot lose (same connection, BEGIN IMMEDIATE), but a null result still
+  // maps onto the standard 409 contract for safety.
   function bumpBoardVersion(firmId) {
     const current = getBoardVersion(firmId)
-    state.boardVersions[firmId] = current + 1
-    return state.boardVersions[firmId]
+    const next = incrementBoardVersionGuarded(firmId, current)
+    if (next === null) {
+      throw pipelineConflict('Board version mismatch.', {
+        expectedBoardVersion: Number(current),
+        actualBoardVersion: Number(getBoardVersion(firmId))
+      })
+    }
+    return next
   }
 
   function sanitizeStageId(value) {
@@ -1449,14 +1459,11 @@ export function createStore({
   }
 
   function firmPipelineStageRecords(firmId) {
-    return (state.pipelineStages || [])
-      .filter((entry) => entry.firmId === firmId)
-      .sort((a, b) => (Number(a.order) || 0) - (Number(b.order) || 0) || String(a.key).localeCompare(String(b.key)))
+    return listPipelineStageRecordRows(firmId)
   }
 
   function ensureFirmPipelineStageRecords(firmId) {
-    state.pipelineStages ||= []
-    if (state.pipelineStages.some((entry) => entry.firmId === firmId)) return
+    if (countPipelineStageRecordRows(firmId) > 0) return
     const createdAt = now()
     const seeded = getFirmPipelineStageDefinitions(firmId)
       .filter((definition) => !definition.legacy)
@@ -1472,9 +1479,8 @@ export function createStore({
         updatedAt: createdAt,
         deactivatedAt: null
       }))
-    if (seeded.length) {
-      state.pipelineStages.push(...seeded)
-      persist()
+    for (const record of seeded) {
+      upsertPipelineStageRecord(record)
     }
   }
 
@@ -1516,9 +1522,8 @@ export function createStore({
     const normalized = [...byId.values()].sort((a, b) => a.order - b.order || a.id.localeCompare(b.id))
     const knownIds = new Set(normalized.map((stage) => stage.id))
     const legacyIds = new Set(
-      state.profiles
-        .filter((profile) => profile.firmId === firmId && profile.kind === 'prospect' && sanitizeStageId(profile.stage))
-        .map((profile) => sanitizeStageId(profile.stage))
+      listProspectStageIds(firmId)
+        .map((stageId) => sanitizeStageId(stageId))
         .filter((stageId) => stageId && !knownIds.has(stageId))
     )
     const legacyStages = [...legacyIds]
@@ -1557,22 +1562,16 @@ export function createStore({
     return stageId
   }
 
+  // Rows come back from SQL already in board order, but the in-memory sort is
+  // reapplied so tie-breaking stays byte-identical to the old in-memory path.
   function listProspectsByStage(firmId, stage, excludedProfileId = null) {
-    return state.profiles
-      .filter(
-        (profile) =>
-          profile.firmId === firmId &&
-          profile.kind === 'prospect' &&
-          profile.stage === stage &&
-          profile.id !== excludedProfileId
-      )
-      .sort((a, b) => {
-        const indexDiff = profileOrderIndex(a) - profileOrderIndex(b)
-        if (indexDiff !== 0) return indexDiff
-        const updatedDiff = parseIso(a.updatedAt || a.createdAt || 0) - parseIso(b.updatedAt || b.createdAt || 0)
-        if (updatedDiff !== 0) return updatedDiff
-        return a.id.localeCompare(b.id)
-      })
+    return listProspectRowsByStage(firmId, stage, excludedProfileId).sort((a, b) => {
+      const indexDiff = profileOrderIndex(a) - profileOrderIndex(b)
+      if (indexDiff !== 0) return indexDiff
+      const updatedDiff = parseIso(a.updatedAt || a.createdAt || 0) - parseIso(b.updatedAt || b.createdAt || 0)
+      if (updatedDiff !== 0) return updatedDiff
+      return a.id.localeCompare(b.id)
+    })
   }
 
   function compactStageIndices(firmId, stage) {
@@ -1582,6 +1581,7 @@ export function createStore({
       const nextIndex = index + 1
       if (profileOrderIndex(card) !== nextIndex) {
         assignProspectOrderIndex(card, nextIndex)
+        upsertProfileRow(card)
         changed = true
       }
     })
@@ -1650,34 +1650,30 @@ export function createStore({
   }
 
   // Audit events recorded while a pipeline transaction is in flight are
-  // buffered here instead of being inserted immediately: audit_events is an
-  // append-only table with no rollback hook, so buffered events land only
-  // after the mutator AND persist() succeed. A failure on either path
-  // discards the buffer — failed transactions never leak audit rows.
+  // buffered and inserted just before commit, INSIDE the same SQL
+  // transaction: a failure anywhere (mutator, persist, audit insert) rolls
+  // the whole unit back — profile rows, stage changes, board version, blob,
+  // and audit rows together. Failed transactions never leak audit rows.
   let pipelineAuditBuffer = null
 
+  // Real BEGIN IMMEDIATE transaction (via the storage-layer runInTransaction
+  // helper). Profiles/stageChanges/boardVersions are relational rows now, so
+  // rollback is SQL rollback — the old in-memory snapshot/restore is gone.
   function executePipelineTransaction(mutator) {
-    const snapshot = {
-      profiles: state.profiles.map((profile) => ({ ...profile })),
-      stageChangesLength: state.stageChanges.length,
-      boardVersions: { ...(state.boardVersions || {}) }
-    }
     pipelineAuditBuffer = []
     try {
-      const result = mutator()
-      persist()
-      const buffered = pipelineAuditBuffer
+      return runInTransaction(() => {
+        const result = mutator()
+        persist()
+        const buffered = pipelineAuditBuffer
+        pipelineAuditBuffer = null
+        for (const event of buffered) {
+          insertAuditEvent(event)
+        }
+        return result
+      })
+    } finally {
       pipelineAuditBuffer = null
-      for (const event of buffered) {
-        insertAuditEvent(event)
-      }
-      return result
-    } catch (error) {
-      pipelineAuditBuffer = null
-      state.profiles = snapshot.profiles
-      state.stageChanges = state.stageChanges.slice(0, snapshot.stageChangesLength)
-      state.boardVersions = snapshot.boardVersions
-      throw error
     }
   }
 
@@ -1810,13 +1806,7 @@ export function createStore({
     requirePermission(user, 'portal:read')
     const userEmail = String(user?.email || '').toLowerCase()
     if (!userEmail) throw new Error('Client profile not found.')
-    const profile = state.profiles.find(
-      (entry) =>
-        entry.firmId === user.firmId &&
-        entry.kind === 'client' &&
-        entry.email &&
-        entry.email.toLowerCase() === userEmail
-    )
+    const profile = findClientProfileRowByEmail(user.firmId, userEmail)
     if (!profile) throw new Error('Client profile not found.')
     return profile
   }
@@ -1849,7 +1839,9 @@ export function createStore({
     requireUser,
     getDashboard(user) {
       requirePermission(user, 'dashboard:read')
-      const profiles = state.profiles.filter((profile) => profile.firmId === user.firmId)
+      // Insertion-order table read: recentProfiles keeps showing the last
+      // five created profiles, exactly like the old in-memory array slice.
+      const profiles = listProfileRows({ firmId: user.firmId })
       const prospects = profiles.filter((profile) => profile.kind === 'prospect')
       const clients = profiles.filter((profile) => profile.kind === 'client')
       return {
@@ -1870,8 +1862,7 @@ export function createStore({
     listProfiles(user, kind, search = '') {
       requirePermission(user, 'profiles:read')
       const q = String(search || '').toLowerCase()
-      return state.profiles
-        .filter((profile) => profile.firmId === user.firmId)
+      return listProfileRows({ firmId: user.firmId })
         .filter((profile) => !kind || profile.kind === kind)
         .filter(
           (profile) => !q || `${profile.firstName} ${profile.lastName} ${profile.email || ''}`.toLowerCase().includes(q)
@@ -1887,13 +1878,9 @@ export function createStore({
     getProfileDetail(user, profileId) {
       const firmContext = requireFirmContext(user, { method: 'store.getProfileDetail' })
       requirePermission(user, 'profiles:read')
-      const profile = validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === profileId),
-        {
-          entityName: 'Profile'
-        }
-      )
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
       const household = profile.householdId
         ? state.households.find((entry) => entry.id === profile.householdId && entry.firmId === user.firmId)
         : null
@@ -1901,9 +1888,7 @@ export function createStore({
         ? state.householdMembers.filter((entry) => entry.householdId === household.id && entry.firmId === user.firmId)
         : []
       const submissions = listFormSubmissionsByClient(user.firmId, profile.id)
-      const stageHistory = state.stageChanges.filter(
-        (entry) => entry.clientId === profile.id && entry.firmId === user.firmId
-      )
+      const stageHistory = listStageChangeRowsByClient(user.firmId, profile.id)
       const notes = state.notes
         .filter((entry) => entry.profileId === profile.id && entry.firmId === user.firmId)
         .slice()
@@ -1918,10 +1903,7 @@ export function createStore({
         input.kind === 'prospect'
           ? assertActiveStageForFirm(user.firmId, input.stage || getDefaultProspectStage(user.firmId), 'stage')
           : null
-      const inStage = state.profiles.filter(
-        (profile) =>
-          profile.firmId === user.firmId && profile.kind === 'prospect' && profile.stage === nextProspectStage
-      ).length
+      const inStage = nextProspectStage ? countProspectRowsInStage(user.firmId, nextProspectStage) : 0
       const profile = {
         pii: {
           maskingPolicy: 'role_based',
@@ -1957,9 +1939,9 @@ export function createStore({
         createdAt,
         updatedAt: createdAt
       }
-      state.profiles.push(profile)
+      upsertProfileRow(profile)
       if (profile.stage) {
-        state.stageChanges.push({
+        insertStageChange({
           id: randomUUID(),
           firmId: user.firmId,
           clientId: profile.id,
@@ -1980,11 +1962,9 @@ export function createStore({
         patch.stageOrderIndex = null
         patch.orderIndex = null
       }
-      const profile = validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === profileId),
-        { entityName: 'Profile' }
-      )
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
       const nextKind = patch.kind || profile.kind
       if (nextKind === 'prospect' && !patch.stage && 'kind' in patch) {
         patch.stage = getDefaultProspectStage(user.firmId)
@@ -2029,6 +2009,7 @@ export function createStore({
       }
       if ('customProfile' in nextPatch) delete nextPatch.customProfile
       Object.assign(profile, nextPatch, { updatedAt: now() })
+      upsertProfileRow(profile)
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) })
       persist()
       return profile
@@ -2227,7 +2208,7 @@ export function createStore({
         updatedAt: createdAt,
         deactivatedAt: null
       }
-      state.pipelineStages.push(stage)
+      upsertPipelineStageRecord(stage)
       addAudit(context.firmId, context.userId, 'pipeline', stage.id, 'pipeline.stage_config_created', {
         key: stage.key,
         label: stage.label
@@ -2239,14 +2220,13 @@ export function createStore({
       const context = requireFirmContext(firmContext, { method: 'store.updatePipelineStageMetadata' })
       requirePermission(context.user || context, 'pipeline:write')
       ensureFirmPipelineStageRecords(context.firmId)
-      const stage = validateTenantEntityOwnership(
-        context,
-        state.pipelineStages.find((entry) => entry.id === stageId),
-        { entityName: 'Pipeline stage' }
-      )
+      const stage = validateTenantEntityOwnership(context, getPipelineStageRecordRow(stageId), {
+        entityName: 'Pipeline stage'
+      })
       if (patch?.label !== undefined) stage.label = String(patch.label || '').trim() || defaultStageLabel(stage.key)
       if (patch?.color !== undefined) stage.color = patch.color ? String(patch.color).trim() : null
       stage.updatedAt = now()
+      upsertPipelineStageRecord(stage)
       addAudit(context.firmId, context.userId, 'pipeline', stage.id, 'pipeline.stage_config_updated', {
         fields: Object.keys(patch || {})
       })
@@ -2257,14 +2237,13 @@ export function createStore({
       const context = requireFirmContext(firmContext, { method: 'store.deactivatePipelineStage' })
       requirePermission(context.user || context, 'pipeline:write')
       ensureFirmPipelineStageRecords(context.firmId)
-      const stage = validateTenantEntityOwnership(
-        context,
-        state.pipelineStages.find((entry) => entry.id === stageId),
-        { entityName: 'Pipeline stage' }
-      )
+      const stage = validateTenantEntityOwnership(context, getPipelineStageRecordRow(stageId), {
+        entityName: 'Pipeline stage'
+      })
       stage.isActive = false
       stage.deactivatedAt = now()
       stage.updatedAt = stage.deactivatedAt
+      upsertPipelineStageRecord(stage)
       addAudit(context.firmId, context.userId, 'pipeline', stage.id, 'pipeline.stage_config_deactivated', {
         key: stage.key
       })
@@ -2287,6 +2266,7 @@ export function createStore({
         const stage = stages.find((entry) => entry.id === id)
         stage.order = index + 1
         stage.updatedAt = now()
+        upsertPipelineStageRecord(stage)
       })
       addAudit(context.firmId, context.userId, 'pipeline', context.firmId, 'pipeline.stage_config_reordered', {
         stageIds
@@ -2315,11 +2295,9 @@ export function createStore({
 
       try {
         return executePipelineTransaction(() => {
-          const profile = validateTenantEntityOwnership(
-            firmContext,
-            state.profiles.find((entry) => entry.id === profileId),
-            { entityName: 'Profile' }
-          )
+          const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+            entityName: 'Profile'
+          })
 
           const currentVersion = Number(profile.pipelineVersion || 1)
           if (expectedVersion !== null && Number(expectedVersion) !== currentVersion) {
@@ -2364,6 +2342,7 @@ export function createStore({
           destinationCards.splice(insertIndex, 0, profile)
           destinationCards.forEach((card, index) => {
             assignProspectOrderIndex(card, index + 1)
+            upsertProfileRow(card)
           })
 
           if (previousStage && previousStage !== destinationStage) {
@@ -2384,7 +2363,7 @@ export function createStore({
             )
           }
           bumpBoardVersion(user.firmId)
-          state.stageChanges.push({
+          insertStageChange({
             id: randomUUID(),
             firmId: user.firmId,
             clientId: profile.id,
@@ -2451,18 +2430,14 @@ export function createStore({
     },
     listStageHistory(user, profileId) {
       requirePermission(user, 'pipeline:read')
-      return state.stageChanges.filter((entry) => entry.firmId === user.firmId && entry.clientId === profileId)
+      return listStageChangeRowsByClient(user.firmId, profileId)
     },
     createHousehold(user, input) {
       const firmContext = requireFirmContext(user, { method: 'store.createHousehold' })
       requirePermission(user, 'households:write')
-      validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === input.primaryClientId),
-        {
-          entityName: 'Profile'
-        }
-      )
+      validateTenantEntityOwnership(firmContext, getProfileRow(input.primaryClientId), {
+        entityName: 'Profile'
+      })
       const household = {
         id: randomUUID(),
         firmId: user.firmId,
@@ -2478,8 +2453,14 @@ export function createStore({
         firmId: user.firmId,
         createdAt: household.createdAt
       })
-      const profile = state.profiles.find((entry) => entry.id === input.primaryClientId && entry.firmId === user.firmId)
-      if (profile) profile.householdId = household.id
+      // Mixed write (expected in this phase): households stay blob-resident,
+      // the profile's household linkage is a targeted row update, and the
+      // persist() below flushes the household side of the mutation.
+      const profile = getProfileRow(input.primaryClientId, { firmId: user.firmId })
+      if (profile) {
+        profile.householdId = household.id
+        upsertProfileRow(profile)
+      }
       addAudit(user.firmId, user.id, 'household', household.id, 'household.created', { name: household.name })
       persist()
       return household
@@ -2492,17 +2473,16 @@ export function createStore({
         state.households.find((entry) => entry.id === householdId),
         { entityName: 'Household' }
       )
-      validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === input.clientId),
-        {
-          entityName: 'Profile'
-        }
-      )
+      validateTenantEntityOwnership(firmContext, getProfileRow(input.clientId), {
+        entityName: 'Profile'
+      })
       const member = { householdId, clientId: input.clientId, role: input.role, firmId: user.firmId, createdAt: now() }
       state.householdMembers.push(member)
-      const profile = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId)
-      if (profile) profile.householdId = householdId
+      const profile = getProfileRow(input.clientId, { firmId: user.firmId })
+      if (profile) {
+        profile.householdId = householdId
+        upsertProfileRow(profile)
+      }
       addAudit(user.firmId, user.id, 'household', householdId, 'household.member_added', input)
       persist()
       return member
@@ -2529,13 +2509,9 @@ export function createStore({
     addNote(user, profileId, body) {
       const firmContext = requireFirmContext(user, { method: 'store.addNote' })
       requirePermission(user, 'profiles:write')
-      validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === profileId),
-        {
-          entityName: 'Profile'
-        }
-      )
+      validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
       const note = {
         id: randomUUID(),
         firmId: user.firmId,
@@ -3333,13 +3309,9 @@ export function createStore({
       )
       const clientId = String(input.clientId || '').trim()
       const submissionId = String(input.submissionId || '').trim()
-      const profile = validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === clientId),
-        {
-          entityName: 'Profile'
-        }
-      )
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(clientId), {
+        entityName: 'Profile'
+      })
       const submission = validateTenantEntityOwnership(firmContext, getFormSubmissionById(submissionId), {
         entityName: 'Submission'
       })
@@ -3439,11 +3411,9 @@ export function createStore({
       const preflightClientId = String(input.clientId || '').trim()
       const preflightSubmissionId = String(input.submissionId || '').trim()
       if (preflightClientId && preflightSubmissionId) {
-        const profile = validateTenantEntityOwnership(
-          firmContext,
-          state.profiles.find((entry) => entry.id === preflightClientId),
-          { entityName: 'Profile' }
-        )
+        const profile = validateTenantEntityOwnership(firmContext, getProfileRow(preflightClientId), {
+          entityName: 'Profile'
+        })
         const submission = validateTenantEntityOwnership(firmContext, getFormSubmissionById(preflightSubmissionId), {
           entityName: 'Submission'
         })
@@ -3775,17 +3745,9 @@ export function createStore({
         createdAt: now()
       }
       state.users.push(user)
-      if (
-        user.role === 'client' &&
-        !state.profiles.some(
-          (entry) =>
-            entry.firmId === user.firmId &&
-            entry.kind === 'client' &&
-            String(entry.email || '').toLowerCase() === String(user.email || '').toLowerCase()
-        )
-      ) {
+      if (user.role === 'client' && !findClientProfileRowByEmail(user.firmId, String(user.email || '').toLowerCase())) {
         const createdAt = now()
-        state.profiles.push(
+        upsertProfileRow(
           normalizeProfileRecord({
             id: randomUUID(),
             firmId: user.firmId,
@@ -3852,21 +3814,20 @@ export function createStore({
           entityName: 'Household'
         }
       )
-      validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === clientId),
-        {
-          entityName: 'Profile'
-        }
-      )
+      validateTenantEntityOwnership(firmContext, getProfileRow(clientId), {
+        entityName: 'Profile'
+      })
       const beforeCount = state.householdMembers.filter(
         (entry) => entry.householdId === householdId && entry.firmId === user.firmId
       ).length
       state.householdMembers = state.householdMembers.filter(
         (entry) => !(entry.householdId === householdId && entry.clientId === clientId && entry.firmId === user.firmId)
       )
-      const profile = state.profiles.find((entry) => entry.id === clientId && entry.firmId === user.firmId)
-      if (profile) profile.householdId = null
+      const profile = getProfileRow(clientId, { firmId: user.firmId })
+      if (profile) {
+        profile.householdId = null
+        upsertProfileRow(profile)
+      }
       addAudit(user.firmId, user.id, 'household', householdId, 'household.split', {
         before: { memberCount: beforeCount, clientId },
         after: {
@@ -3881,20 +3842,12 @@ export function createStore({
     linkSpouse(user, primaryClientId, spouseClientId) {
       const firmContext = requireFirmContext(user, { method: 'store.linkSpouse' })
       requirePermission(user, 'households:write')
-      const primary = validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === primaryClientId),
-        {
-          entityName: 'Profile'
-        }
-      )
-      const spouse = validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === spouseClientId),
-        {
-          entityName: 'Profile'
-        }
-      )
+      const primary = validateTenantEntityOwnership(firmContext, getProfileRow(primaryClientId), {
+        entityName: 'Profile'
+      })
+      const spouse = validateTenantEntityOwnership(firmContext, getProfileRow(spouseClientId), {
+        entityName: 'Profile'
+      })
       primary.spouseClientId = spouse.id
       spouse.spouseClientId = primary.id
       let householdId = primary.householdId
@@ -3903,8 +3856,14 @@ export function createStore({
           name: `${primary.lastName} Household`,
           primaryClientId: primary.id
         }).id
+        // createHousehold wrote the primary's household linkage to its row;
+        // keep this detached object in sync so the final upsert (and the
+        // returned payload) carry it too.
+        primary.householdId = householdId
       }
       spouse.householdId = householdId
+      upsertProfileRow(primary)
+      upsertProfileRow(spouse)
       state.householdMembers.push({
         householdId,
         clientId: spouse.id,
@@ -4146,13 +4105,9 @@ export function createStore({
     createPortalLink(user, profileId, options = {}) {
       const firmContext = requireFirmContext(user, { method: 'store.createPortalLink' })
       requirePermission(user, 'portal:manage')
-      validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === profileId),
-        {
-          entityName: 'Profile'
-        }
-      )
+      validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
       const createdAt = now()
       const expiresAt =
         options.expiresAt || new Date(Date.now() + Number(options.expiresInHours || 24) * 3600 * 1000).toISOString()
@@ -4207,7 +4162,7 @@ export function createStore({
     getPortalData(token) {
       const link = resolvePortalLinkByToken(token)
       const firm = state.firms.find((entry) => entry.id === link.firmId) || null
-      const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId)
+      const profile = getProfileRow(link.profileId, { firmId: link.firmId })
       const submissions = listFormSubmissionsByClient(link.firmId, link.profileId)
         .filter(
           (entry) =>
@@ -4396,7 +4351,7 @@ export function createStore({
         return value && stageConfig.stageIdSet.has(value) ? value : LEGACY_STAGE_BUCKET
       }
 
-      const firmProfiles = state.profiles.filter((entry) => entry.firmId === user.firmId)
+      const firmProfiles = listProfileRows({ firmId: user.firmId })
       const prospects = firmProfiles.filter((entry) => {
         if (entry.kind !== 'prospect') return false
         const created = toIsoDate(entry.createdAt)
@@ -4421,10 +4376,8 @@ export function createStore({
       const firstStage = stageCounts[stageConfig.startStage] || 0
       const lastStage = stageCounts[stageConfig.endStage] || 0
 
-      const stageEvents = state.stageChanges
-        .filter((entry) => entry.firmId === user.firmId)
-        .slice()
-        .sort((a, b) => parseIso(a.changedAt) - parseIso(b.changedAt))
+      const firmStageChanges = listStageChangeRowsByFirm(user.firmId)
+      const stageEvents = firmStageChanges.slice().sort((a, b) => parseIso(a.changedAt) - parseIso(b.changedAt))
       const stageEntryTimes = new Map()
       const stageAging = {}
       stageEvents.forEach((event) => {
@@ -4522,9 +4475,7 @@ export function createStore({
         const notesCount = state.notes.filter(
           (entry) => entry.firmId === user.firmId && entry.createdByUserId === advisor.id
         ).length
-        const stageMoves = state.stageChanges.filter(
-          (entry) => entry.firmId === user.firmId && entry.changedByUserId === advisor.id
-        ).length
+        const stageMoves = firmStageChanges.filter((entry) => entry.changedByUserId === advisor.id).length
         const submissions = firmSubmissions.filter((entry) => entry.createdByUserId === advisor.id).length
         return {
           advisorUserId: advisor.id,
@@ -4655,13 +4606,9 @@ export function createStore({
     getMaskedSensitiveData(user, profileId, request = {}) {
       const firmContext = requireFirmContext(user, { method: 'store.getMaskedSensitiveData' })
       requirePermission(user, 'profiles:read')
-      const profile = validateTenantEntityOwnership(
-        firmContext,
-        state.profiles.find((entry) => entry.id === profileId),
-        {
-          entityName: 'Profile'
-        }
-      )
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
       const ssn = decryptSensitiveValue(profile.pii?.ssnEncrypted || profile.pii?.ssnCiphertext)
       const taxId = decryptSensitiveValue(profile.pii?.taxIdEncrypted || profile.pii?.taxIdCiphertext)
       const requestedUnmask = request.unmask === true
@@ -4750,8 +4697,10 @@ export function createStore({
     },
     reencryptSensitiveData({ firmId, actorUserId }) {
       let rotatedProfiles = 0
-      for (const profile of state.profiles) {
-        if (firmId && profile.firmId !== firmId) continue
+      // Table iteration: profiles are relational rows; each rotated profile
+      // is written back as a targeted upsert with its envelopes replaced and
+      // everything else byte-identical.
+      for (const profile of listProfileRows({ firmId: firmId || null })) {
         const pii = profile.pii || {}
         const fields = ['ssnEncrypted', 'taxIdEncrypted', 'dobEncrypted']
         let changed = false
@@ -4768,6 +4717,7 @@ export function createStore({
         if (changed) {
           profile.pii = pii
           profile.updatedAt = now()
+          upsertProfileRow(profile)
           rotatedProfiles += 1
         }
       }
@@ -4790,6 +4740,11 @@ export function createStore({
       return true
     },
     _internal: { piiCrypto: piiService, keyProvider },
+    // Test-only: profiles live in the relational table, so tests that used to
+    // mutate store.state.profiles in place write through this hook instead.
+    __upsertProfileForTest(profile) {
+      return upsertProfileRow(profile)
+    },
     __setPipelineStagesForTest(firmId, stages = []) {
       state.pipelineStagesByFirm ||= {}
       state.pipelineStagesByFirm[firmId] = normalizeStageConfiguration(stages).map(({ order, ...stage }) => ({

@@ -70,7 +70,8 @@ function buildInMemoryS3Fetch() {
 }
 
 function bootstrapClientUser(store, firmId) {
-  const profile = store.state.profiles.find((entry) => entry.firmId === firmId && entry.kind === 'client')
+  // profiles table is the source of truth: read through the store API.
+  const profile = store.listProfiles({ id: 'bootstrap-reader', role: 'admin', firmId }, 'client')[0]
   const clientUser = {
     id: randomUUID(),
     firmId,

@@ -198,7 +198,8 @@ test('store: failed pipeline transaction does not leak audit rows', async () => 
 
   const session = store.login({ email: 'admin@demo.test', password: 'ChangeMe123!' })
   const user = store.requireUser(session.token)
-  const prospect = store.state.profiles.find((entry) => entry.firmId === user.firmId && entry.kind === 'prospect')
+  // profiles table is the source of truth: read through the store API.
+  const prospect = store.listProfiles(user, 'prospect')[0]
   assert.ok(prospect)
   const targetStage = prospect.stage === 'analysis' ? 'discovery' : 'analysis'
 

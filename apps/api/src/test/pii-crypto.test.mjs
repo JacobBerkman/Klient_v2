@@ -47,12 +47,15 @@ test('envelope crypto preserves backward compatibility for legacy ciphertext', a
   await withStoreEnv((store) => {
     const session = store.login({ email: 'admin@demo.test', password: 'ChangeMe123!' })
     const user = store.requireUser(session.token)
-    const profile = store.state.profiles.find((entry) => entry.firmId === user.firmId && entry.kind === 'client')
+    // profiles table is the source of truth: read through the store API and
+    // write the legacy ciphertext back through the row-upsert test hook.
+    const profile = store.listProfiles(user, 'client')[0]
     profile.pii = {
       maskingPolicy: 'role_based',
       ssnCiphertext: encryptLegacy('123-45-6789', 'test-secret-for-pii'),
       taxIdCiphertext: encryptLegacy('12-3456789', 'test-secret-for-pii')
     }
+    store.__upsertProfileForTest(profile)
 
     const sensitive = store.getMaskedSensitiveData(user, profile.id, {
       purpose: 'profile_view',
@@ -81,7 +84,7 @@ test('key rotation re-encrypts pii fields to active key id', async () => {
     rotatedStore._internal.piiCrypto.keyProvider.activeKeyId = 'key-v2'
     const result = rotatedStore.reencryptSensitiveData({ firmId: user.firmId, actorUserId: user.id })
     assert.ok(result.rotatedProfiles >= 1)
-    const updated = rotatedStore.state.profiles.find((entry) => entry.id === created.id)
+    const updated = rotatedStore.listProfiles(user, 'client').find((entry) => entry.id === created.id)
     assert.equal(updated.pii.ssnEncrypted.keyId, 'key-v2')
     assert.equal(updated.pii.taxIdEncrypted.keyId, 'key-v2')
   })
@@ -91,7 +94,7 @@ test('unauthorized unmask reads are denied and audited', async () => {
   await withStoreEnv((store) => {
     const session = store.login({ email: 'admin@demo.test', password: 'ChangeMe123!' })
     const user = store.requireUser(session.token)
-    const profile = store.state.profiles.find((entry) => entry.firmId === user.firmId && entry.kind === 'client')
+    const profile = store.listProfiles(user, 'client')[0]
 
     assert.throws(
       () =>
@@ -174,7 +177,7 @@ test('unmask reads require approved reason code, justification, and explicit pri
   await withStoreEnv((store) => {
     const session = store.login({ email: 'admin@demo.test', password: 'ChangeMe123!' })
     const user = store.requireUser(session.token)
-    const profile = store.state.profiles.find((entry) => entry.firmId === user.firmId && entry.kind === 'client')
+    const profile = store.listProfiles(user, 'client')[0]
 
     assert.throws(
       () =>
