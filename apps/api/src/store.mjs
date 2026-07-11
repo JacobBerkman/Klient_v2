@@ -3,18 +3,33 @@ import { runtime } from './runtime.mjs'
 import {
   applyExportJobLifecycleUpdate,
   countAuditEvents as countAuditEventsInTable,
+  countFormSubmissionsByFirm,
   deleteExpiredSessions,
+  deleteExpiredUploadIntents,
+  deleteFormSubmission,
   deleteSession,
   deleteSessionsByUser,
+  deleteUploadIntent,
+  findPortalDraftSubmission,
+  getDraftSectionState,
   getExportJob,
+  getFormSubmissionById,
   getSessionByToken,
+  getUploadIntent,
   insertAuditEvent,
+  insertUploadIntent,
   listAuditEvents,
+  listDraftSectionStates,
   listExportQueueJobs,
+  listFormSubmissionsByClient,
+  listFormSubmissionsByFirm,
   loadState,
   processExportQueueTickAsync,
+  saveDraftSectionStateGuarded,
   saveState,
   touchSession,
+  updateFormSubmissionGuarded,
+  upsertFormSubmission,
   upsertSession
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
@@ -1171,13 +1186,16 @@ export function createStore({
   state.profiles = (state.profiles || []).map(normalizeProfileRecord)
   saveState(state)
   state.pipelineStagesByFirm ||= {}
-  state.pendingUploadIntents ||= []
-  state.draftStepStates ||= []
   state.pipelineStages ||= []
   // Sessions live exclusively in the sessions table: migration 002 backfilled
   // (and normalized) legacy blob sessions, migration 003 cleared the blob, and
   // loadState always returns an empty sessions array. All session reads and
   // writes below go through the storage helpers.
+  //
+  // Form submissions, portal draft section states, and pending upload intents
+  // live exclusively in their relational tables (migration 005): loadState
+  // seeds/clears the blob mirrors, saveState serializes empty arrays for the
+  // three keys, and every read/write below goes through the storage helpers.
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
     return {
@@ -1210,7 +1228,9 @@ export function createStore({
       createdAt: now(),
       expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
     }
-    state.pendingUploadIntents.push(intent)
+    // pending_upload_intents is the source of truth: targeted row insert
+    // instead of pushing onto a blob-backed array.
+    insertUploadIntent(intent)
     return intent
   }
 
@@ -1261,11 +1281,18 @@ export function createStore({
   }
 
   function findDraftForScope({ draftId, firmId, clientId }) {
-    const submission = state.formSubmissions.find(
-      (entry) =>
-        entry.id === draftId && entry.firmId === firmId && entry.clientId === clientId && entry.status === 'draft'
-    )
-    if (!submission) throw new Error('Draft submission not found.')
+    const submission = getFormSubmissionById(draftId, { firmId })
+    if (!submission || submission.clientId !== clientId || submission.status !== 'draft') {
+      throw new Error('Draft submission not found.')
+    }
+    return submission
+  }
+
+  // Draft submissions for the advisor lock/collaborator flows: firm-scoped by
+  // id with the same status filter the old in-memory find applied.
+  function findDraftSubmission(submissionId, firmId) {
+    const submission = getFormSubmissionById(submissionId, { firmId })
+    if (!submission || submission.status !== 'draft') return null
     return submission
   }
 
@@ -1318,6 +1345,10 @@ export function createStore({
         })
       }
     }
+
+    // Stale presign intents that were never consumed: targeted delete on the
+    // pending_upload_intents table (source of truth) once their expiry lapses.
+    deleteExpiredUploadIntents(now())
 
     persist()
   }
@@ -1828,7 +1859,7 @@ export function createStore({
           prospects: prospects.length,
           clients: clients.length,
           households: state.households.filter((household) => household.firmId === user.firmId).length,
-          forms: state.formSubmissions.filter((submission) => submission.firmId === user.firmId).length,
+          forms: countFormSubmissionsByFirm(user.firmId),
           exports: listExportQueueJobs().filter((job) => job.firmId === user.firmId).length
         },
         recentProfiles: profiles.slice(-5).reverse(),
@@ -1869,9 +1900,7 @@ export function createStore({
       const householdMembers = household
         ? state.householdMembers.filter((entry) => entry.householdId === household.id && entry.firmId === user.firmId)
         : []
-      const submissions = state.formSubmissions.filter(
-        (entry) => entry.clientId === profile.id && entry.firmId === user.firmId
-      )
+      const submissions = listFormSubmissionsByClient(user.firmId, profile.id)
       const stageHistory = state.stageChanges.filter(
         (entry) => entry.clientId === profile.id && entry.firmId === user.firmId
       )
@@ -2652,8 +2681,7 @@ export function createStore({
       requirePermission(user, 'forms:read')
       const actorUserId = resolveUserId(user)
       const currentTime = Date.now()
-      return state.formSubmissions
-        .filter((entry) => entry.firmId === user.firmId)
+      return listFormSubmissionsByFirm(user.firmId)
         .filter((entry) => {
           if (entry.status !== 'draft') return true
           const collaborators = normalizeDraftCollaborators(entry)
@@ -2672,10 +2700,9 @@ export function createStore({
     },
     getClientWorkspace(user) {
       const profile = requireClientProfile(user)
-      const submissions = state.formSubmissions
-        .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
-        .slice()
-        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
+      const submissions = listFormSubmissionsByClient(user.firmId, profile.id).sort(
+        (a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
+      )
       const templatesFromAggregates = state.templateAggregates
         .filter((entry) => entry.firmId === user.firmId && entry.kind === 'form')
         .map((entry) => ({
@@ -2720,7 +2747,7 @@ export function createStore({
         createdAt: now(),
         updatedAt: now()
       }
-      state.formSubmissions.push(submission)
+      upsertFormSubmission(submission)
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'client.form_submission.created', {
         templateId: input.templateId,
         status
@@ -2751,9 +2778,7 @@ export function createStore({
     submitClientUpload(user, input) {
       requirePermission(user, 'client:write')
       const profile = requireClientProfile(user)
-      const intent = input.uploadId
-        ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === user.firmId)
-        : null
+      const intent = input.uploadId ? getUploadIntent(input.uploadId, user.firmId) : null
       const object = normalizeObjectMetadata(
         input.object || intent?.object || {},
         input.retentionClass || 'uploaded_document'
@@ -2774,7 +2799,7 @@ export function createStore({
         createdAt: now(),
         updatedAt: now()
       }
-      state.pendingUploadIntents = state.pendingUploadIntents.filter((entry) => entry.id !== input.uploadId)
+      if (input.uploadId) deleteUploadIntent(input.uploadId)
       state.documentUploads.push(upload)
       addAudit(user.firmId, user.id, 'document_upload', upload.id, 'client.document_upload.created', {
         category: upload.category,
@@ -2814,7 +2839,7 @@ export function createStore({
         lock: null,
         collaborators: status === 'draft' ? normalizeDraftCollaborators(input, actorUserId) : []
       }
-      state.formSubmissions.push(submission)
+      upsertFormSubmission(submission)
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.created', {
         templateId: input.templateId,
         clientId: input.clientId
@@ -2825,10 +2850,9 @@ export function createStore({
     acquireDraftLock(user, submissionId, input = {}) {
       requirePermission(user, 'forms:write')
       const actorUserId = resolveUserId(user)
-      const submission = state.formSubmissions.find(
-        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
-      )
+      const submission = findDraftSubmission(submissionId, user.firmId)
       if (!submission) throw new Error('Draft submission not found.')
+      const previousLeaseId = submission.lock?.leaseId || ''
       submission.collaborators = normalizeDraftCollaborators(submission)
       const permission = submission.collaborators.find((entry) => entry.userId === actorUserId)?.permission || null
       if (permission !== 'write') throw new Error('Draft collaborator access denied: write permission is required.')
@@ -2857,6 +2881,20 @@ export function createStore({
       }
       submission.lock = lock
       submission.updatedAt = now()
+      // Row-level optimistic guard: the write only lands if the stored lease
+      // is still the one evaluated above. A concurrent acquisition surfaces
+      // as the same lock-conflict contract the in-memory path returned.
+      if (!updateFormSubmissionGuarded(submission, { expectedLockLeaseId: previousLeaseId })) {
+        const latest = findDraftSubmission(submissionId, user.firmId)
+        if (!latest) throw new Error('Draft submission not found.')
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft is currently locked by another advisor.',
+          lock: latest.lock,
+          revisionId: latest.revisionId || 1
+        }
+      }
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.lock_acquired', {
         leaseMs,
         force
@@ -2867,9 +2905,7 @@ export function createStore({
     releaseDraftLock(user, submissionId, leaseId = '') {
       requirePermission(user, 'forms:write')
       const actorUserId = resolveUserId(user)
-      const submission = state.formSubmissions.find(
-        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
-      )
+      const submission = findDraftSubmission(submissionId, user.firmId)
       if (!submission) throw new Error('Draft submission not found.')
       const existing = submission.lock
       if (!existing) return { ok: true, released: false }
@@ -2878,6 +2914,11 @@ export function createStore({
       }
       submission.lock = null
       submission.updatedAt = now()
+      // Guarded on the lease that was just validated: if another writer swaps
+      // the lock between read and write, this refuses to clobber their lease.
+      if (!updateFormSubmissionGuarded(submission, { expectedLockLeaseId: existing.leaseId || '' })) {
+        throw new Error('Cannot release lock held by another advisor.')
+      }
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.lock_released', {})
       persist()
       return { ok: true, released: true }
@@ -2885,9 +2926,7 @@ export function createStore({
     reviseDraftSubmission(user, submissionId, input = {}) {
       requirePermission(user, 'forms:write')
       const actorUserId = resolveUserId(user)
-      const submission = state.formSubmissions.find(
-        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
-      )
+      const submission = findDraftSubmission(submissionId, user.firmId)
       if (!submission) throw new Error('Draft submission not found.')
       submission.collaborators = normalizeDraftCollaborators(submission)
       const permission = submission.collaborators.find((entry) => entry.userId === actorUserId)?.permission || null
@@ -2943,6 +2982,30 @@ export function createStore({
           expiresAt: new Date(Date.now() + Number(lock.leaseMs || 30_000)).toISOString()
         }
       }
+      // Real optimistic concurrency: UPDATE ... WHERE revisionId = expected
+      // AND lock lease unchanged. A concurrent revision loses the race here
+      // and receives the same revision-conflict contract as the stale-read
+      // path above.
+      if (
+        !updateFormSubmissionGuarded(submission, {
+          expectedRevisionId: currentRevision,
+          expectedLockLeaseId: lock.leaseId || ''
+        })
+      ) {
+        const latest = getFormSubmissionById(submissionId, { firmId: user.firmId })
+        return {
+          ok: false,
+          conflict: true,
+          reason: 'Draft has changed since your last load.',
+          mergePrompt: {
+            type: 'revision_conflict',
+            localRevisionId: expectedRevision,
+            serverRevisionId: Number(latest?.revisionId || 1),
+            suggestion: 'Show merge preview and choose keep-local, keep-server, or manual merge.'
+          },
+          serverDraft: latest
+        }
+      }
       addAudit(user.firmId, user.id, 'form_submission', submission.id, 'form_submission.draft_revised', {
         revisionId: submission.revisionId,
         submitted: submission.status === 'submitted'
@@ -2953,9 +3016,7 @@ export function createStore({
     listDraftCollaborators(user, submissionId) {
       requirePermission(user, 'forms:read')
       const actorUserId = resolveUserId(user)
-      const submission = state.formSubmissions.find(
-        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
-      )
+      const submission = findDraftSubmission(submissionId, user.firmId)
       if (!submission) throw new Error('Draft submission not found.')
       submission.collaborators = normalizeDraftCollaborators(submission)
       if (!submission.collaborators.some((entry) => entry.userId === actorUserId))
@@ -2965,9 +3026,7 @@ export function createStore({
     addDraftCollaborator(user, submissionId, input = {}) {
       requirePermission(user, 'forms:write')
       const actorUserId = resolveUserId(user)
-      const submission = state.formSubmissions.find(
-        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
-      )
+      const submission = findDraftSubmission(submissionId, user.firmId)
       if (!submission) throw new Error('Draft submission not found.')
       const userId = String(input.userId || '').trim()
       if (!userId) throw new Error('Collaborator userId is required.')
@@ -2983,6 +3042,7 @@ export function createStore({
         submission.createdByUserId
       )
       submission.updatedAt = now()
+      upsertFormSubmission(submission)
       addAudit(user.firmId, actorUserId, 'form_submission', submission.id, 'form_submission.collaborator_added', {
         collaboratorUserId: userId,
         permission
@@ -2992,9 +3052,7 @@ export function createStore({
     },
     removeDraftCollaborator(user, submissionId, collaboratorUserId) {
       requirePermission(user, 'forms:write')
-      const submission = state.formSubmissions.find(
-        (entry) => entry.id === submissionId && entry.firmId === user.firmId && entry.status === 'draft'
-      )
+      const submission = findDraftSubmission(submissionId, user.firmId)
       if (!submission) throw new Error('Draft submission not found.')
       submission.collaborators = normalizeDraftCollaborators(submission)
       const targetUserId = String(collaboratorUserId || '').trim()
@@ -3006,6 +3064,7 @@ export function createStore({
       submission.collaborators = submission.collaborators.filter((entry) => entry.userId !== targetUserId)
       submission.collaborators = normalizeDraftCollaborators(submission, submission.createdByUserId)
       submission.updatedAt = now()
+      upsertFormSubmission(submission)
       addAudit(
         user.firmId,
         resolveUserId(user),
@@ -3281,11 +3340,9 @@ export function createStore({
           entityName: 'Profile'
         }
       )
-      const submission = validateTenantEntityOwnership(
-        firmContext,
-        state.formSubmissions.find((entry) => entry.id === submissionId),
-        { entityName: 'Submission' }
-      )
+      const submission = validateTenantEntityOwnership(firmContext, getFormSubmissionById(submissionId), {
+        entityName: 'Submission'
+      })
       const resolved = resolveExportData({
         mappings: template.mappings || [],
         profile,
@@ -3387,11 +3444,9 @@ export function createStore({
           state.profiles.find((entry) => entry.id === preflightClientId),
           { entityName: 'Profile' }
         )
-        const submission = validateTenantEntityOwnership(
-          firmContext,
-          state.formSubmissions.find((entry) => entry.id === preflightSubmissionId),
-          { entityName: 'Submission' }
-        )
+        const submission = validateTenantEntityOwnership(firmContext, getFormSubmissionById(preflightSubmissionId), {
+          entityName: 'Submission'
+        })
         const preflight = resolveExportData({
           mappings: template.mappings || [],
           profile,
@@ -3874,27 +3929,22 @@ export function createStore({
       if (!patch || typeof patch !== 'object' || Array.isArray(patch)) {
         throw new Error('Submission patch must be an object.')
       }
-      const submission = validateTenantEntityOwnership(
-        firmContext,
-        state.formSubmissions.find((entry) => entry.id === submissionId),
-        { entityName: 'Submission' }
-      )
+      const submission = validateTenantEntityOwnership(firmContext, getFormSubmissionById(submissionId), {
+        entityName: 'Submission'
+      })
       const nextUpdatedAt = patch?.updatedAt || now()
       Object.assign(submission, patch, { updatedAt: nextUpdatedAt })
+      upsertFormSubmission(submission)
       persist()
       return submission
     },
     deleteSubmission(user, submissionId) {
       const firmContext = requireFirmContext(user, { method: 'store.deleteSubmission' })
       requirePermission(user, 'forms:write')
-      const existing = validateTenantEntityOwnership(
-        firmContext,
-        state.formSubmissions.find((entry) => entry.id === submissionId),
-        { entityName: 'Submission' }
-      )
-      state.formSubmissions = state.formSubmissions.filter(
-        (entry) => !(entry.id === submissionId && entry.firmId === user.firmId)
-      )
+      const existing = validateTenantEntityOwnership(firmContext, getFormSubmissionById(submissionId), {
+        entityName: 'Submission'
+      })
+      deleteFormSubmission(submissionId, user.firmId)
       addAudit(user.firmId, user.id, 'form_submission', submissionId, 'form_submission.deleted', {
         templateId: existing.templateId,
         clientId: existing.clientId
@@ -4158,8 +4208,7 @@ export function createStore({
       const link = resolvePortalLinkByToken(token)
       const firm = state.firms.find((entry) => entry.id === link.firmId) || null
       const profile = state.profiles.find((entry) => entry.id === link.profileId && entry.firmId === link.firmId)
-      const submissions = state.formSubmissions
-        .filter((entry) => entry.clientId === link.profileId && entry.firmId === link.firmId)
+      const submissions = listFormSubmissionsByClient(link.firmId, link.profileId)
         .filter(
           (entry) =>
             !Array.isArray(link.scope?.templateIds) ||
@@ -4208,18 +4257,13 @@ export function createStore({
       if (templateId !== 'portal') assertPortalTemplateScope(link, templateId)
       const status = input.status === 'draft' ? 'draft' : 'submitted'
       if (status === 'draft') {
-        const existingDraft = state.formSubmissions.find(
-          (entry) =>
-            entry.firmId === link.firmId &&
-            entry.clientId === link.profileId &&
-            entry.templateId === templateId &&
-            entry.status === 'draft' &&
-            entry.source === 'portal'
-        )
+        const existingDraft = findPortalDraftSubmission(link.firmId, link.profileId, templateId)
         if (existingDraft) {
+          // Draft saves are the hottest portal write: a targeted single-row
+          // update instead of a full blob rewrite (no other state changed).
           existingDraft.data = input.data && typeof input.data === 'object' ? input.data : {}
           existingDraft.updatedAt = now()
-          persist()
+          upsertFormSubmission(existingDraft)
           return existingDraft
         }
       }
@@ -4236,7 +4280,9 @@ export function createStore({
         source: 'portal'
       }
       consumePortalLinkUse(link)
-      state.formSubmissions.push(submission)
+      upsertFormSubmission(submission)
+      // persist() still runs: consumePortalLinkUse mutated the blob-backed
+      // portal link (usedCount/lastUsedAt).
       persist()
       return submission
     },
@@ -4244,58 +4290,36 @@ export function createStore({
       const link = findPortalLink(token)
       findDraftForScope({ draftId, firmId: link.firmId, clientId: link.profileId })
       const normalizedSectionId = normalizeSectionIdentifier(sectionId)
-      const entry = state.draftStepStates.find(
-        (item) =>
-          item.firmId === link.firmId &&
-          item.clientId === link.profileId &&
-          item.draftId === draftId &&
-          item.sectionId === normalizedSectionId
-      )
-      if (!entry) return null
-      return deepClone(entry)
+      return getDraftSectionState(link.firmId, link.profileId, draftId, normalizedSectionId)
     },
     listPortalDraftSectionStates(token, draftId) {
       const link = findPortalLink(token)
       findDraftForScope({ draftId, firmId: link.firmId, clientId: link.profileId })
-      return state.draftStepStates
-        .filter((item) => item.firmId === link.firmId && item.clientId === link.profileId && item.draftId === draftId)
-        .map((item) => deepClone(item))
+      return listDraftSectionStates(link.firmId, link.profileId, draftId)
     },
     savePortalDraftSectionState(token, draftId, sectionId, input = {}) {
       const link = findPortalLink(token)
       findDraftForScope({ draftId, firmId: link.firmId, clientId: link.profileId })
       const normalizedSectionId = normalizeSectionIdentifier(sectionId)
-      const expectedVersion = Number(input.expectedVersion || 0)
-      const nowIso = now()
-      const existing = state.draftStepStates.find(
-        (item) =>
-          item.firmId === link.firmId &&
-          item.clientId === link.profileId &&
-          item.draftId === draftId &&
-          item.sectionId === normalizedSectionId
-      )
-      const currentVersion = Number(existing?.version || 0)
-      if (expectedVersion !== currentVersion) {
-        return {
-          ok: false,
-          conflict: true,
-          reason: 'Section draft state is stale.',
-          state: existing ? deepClone(existing) : null
-        }
-      }
-      const next = {
+      // Optimistic versioning now lives in SQL: expectedVersion 0 races an
+      // INSERT OR IGNORE, anything else races UPDATE ... WHERE version = ?.
+      // Either way a losing writer gets the exact legacy contract back:
+      // { ok: false, conflict: true, reason, state: <latest server state> }.
+      // No persist(): section states live only in draft_step_states, so a
+      // save is a single-row write instead of a full blob rewrite.
+      const result = saveDraftSectionStateGuarded({
         firmId: link.firmId,
         clientId: link.profileId,
         draftId,
         sectionId: normalizedSectionId,
-        version: currentVersion + 1,
-        data: input.data && typeof input.data === 'object' ? deepClone(input.data) : {},
-        updatedAt: nowIso
+        expectedVersion: Number(input.expectedVersion || 0),
+        data: input.data && typeof input.data === 'object' ? input.data : {},
+        updatedAt: now()
+      })
+      if (!result.ok) {
+        return { ok: false, conflict: true, reason: 'Section draft state is stale.', state: result.state }
       }
-      if (existing) Object.assign(existing, next)
-      else state.draftStepStates.push(next)
-      persist()
-      return { ok: true, state: deepClone(next) }
+      return { ok: true, state: result.state }
     },
     async createPortalUploadPresign(token, input) {
       const link = resolvePortalLinkByToken(token)
@@ -4319,9 +4343,7 @@ export function createStore({
     },
     portalUpload(token, input) {
       const link = resolvePortalLinkByToken(token)
-      const intent = input.uploadId
-        ? state.pendingUploadIntents.find((entry) => entry.id === input.uploadId && entry.firmId === link.firmId)
-        : null
+      const intent = input.uploadId ? getUploadIntent(input.uploadId, link.firmId) : null
       const uploadCategory = input.category || intent?.category || 'general'
       assertPortalUploadScope(link, uploadCategory)
       const object = normalizeObjectMetadata(
@@ -4345,7 +4367,7 @@ export function createStore({
         updatedAt: now()
       }
       consumePortalLinkUse(link)
-      state.pendingUploadIntents = state.pendingUploadIntents.filter((entry) => entry.id !== input.uploadId)
+      if (input.uploadId) deleteUploadIntent(input.uploadId)
       state.documentUploads.push(upload)
       persist()
       return upload
@@ -4446,8 +4468,8 @@ export function createStore({
       templateIds.forEach((templateId) => {
         formsByTemplate[templateId] = { templateId, drafts: 0, submitted: 0, completionRate: 0 }
       })
-      const relevantSubmissions = state.formSubmissions
-        .filter((entry) => entry.firmId === user.firmId)
+      const firmSubmissions = listFormSubmissionsByFirm(user.firmId)
+      const relevantSubmissions = firmSubmissions
         .filter((entry) => {
           const created = toIsoDate(entry.createdAt)
           if (startDate && created && created < startDate) return false
@@ -4503,9 +4525,7 @@ export function createStore({
         const stageMoves = state.stageChanges.filter(
           (entry) => entry.firmId === user.firmId && entry.changedByUserId === advisor.id
         ).length
-        const submissions = state.formSubmissions.filter(
-          (entry) => entry.firmId === user.firmId && entry.createdByUserId === advisor.id
-        ).length
+        const submissions = firmSubmissions.filter((entry) => entry.createdByUserId === advisor.id).length
         return {
           advisorUserId: advisor.id,
           advisorName: `${advisor.firstName} ${advisor.lastName}`,

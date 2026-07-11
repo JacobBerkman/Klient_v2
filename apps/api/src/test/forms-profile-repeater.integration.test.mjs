@@ -16,14 +16,31 @@ function close(server) {
   return new Promise((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())))
 }
 
+// Session auth is cookie-based (bearer compatibility was removed): the
+// session token rides the klient-session cookie and every mutating request
+// bootstraps a fresh CSRF token via GET /api/csrf, mirroring the browser flow.
+function sessionTokenFrom(response) {
+  const setCookie = response.headers.get('set-cookie') || ''
+  const match = setCookie.match(/(?:__Host-)?klient-session=([^;,\s]+)/)
+  return match ? match[1] : ''
+}
+
 async function jsonRequest(baseUrl, path, { token = '', method = 'GET', body } = {}) {
+  const cookie = token ? `__Host-klient-session=${token}` : ''
+  const headers = {
+    ...(cookie ? { cookie } : {}),
+    ...(body ? { 'content-type': 'application/json' } : {})
+  }
+  if (cookie && !['GET', 'HEAD', 'OPTIONS'].includes(method.toUpperCase())) {
+    const bootstrap = await fetch(`${baseUrl}/api/csrf`, { headers: { cookie } })
+    const csrf = await bootstrap.json()
+    headers['x-csrf-token'] = csrf.csrfToken
+    headers.origin = baseUrl
+    headers.referer = `${baseUrl}/`
+  }
   const response = await fetch(`${baseUrl}${path}`, {
     method,
-    headers: {
-      'x-klient-auth-mode': 'bearer',
-      ...(token ? { authorization: `Bearer ${token}` } : {}),
-      ...(body ? { 'content-type': 'application/json' } : {})
-    },
+    headers,
     ...(body ? { body: JSON.stringify(body) } : {})
   })
   const payload = await response.json()
@@ -54,7 +71,7 @@ test('profile form flow edits repeater items via targeted endpoints and records 
       }
     })
     assert.equal(register.response.status, 201)
-    const token = register.payload.token
+    const token = sessionTokenFrom(register.response)
 
     const createdProfile = await jsonRequest(baseUrl, '/api/profiles', {
       token,
@@ -242,7 +259,7 @@ test('draft conflict guard enforces lease recovery + revision checks and repeate
       }
     })
     assert.equal(register.response.status, 201)
-    const token = register.payload.token
+    const token = sessionTokenFrom(register.response)
 
     const createdProfile = await jsonRequest(baseUrl, '/api/profiles', {
       token,
