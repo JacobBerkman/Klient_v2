@@ -4,6 +4,7 @@ import {
   findLatestFormSubmissionForExport,
   getExportJob,
   getFormSubmissionById,
+  getProfileRow,
   listExportQueueJobs,
   processExportQueueTickAsync,
   readExportWorkerStatus,
@@ -266,7 +267,8 @@ export function createStoreExportsRepository({
       if (!template) throw new Error('Template not found.')
 
       const firm = state.firms.find((entry) => entry.id === user.firmId) || null
-      const client = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId) || null
+      // profiles is the relational source of truth: firm-scoped row read.
+      const client = input.clientId ? getProfileRow(input.clientId, { firmId: user.firmId }) : null
       const submission = resolveSubmission(user.firmId, String(input.submissionId || '').trim(), input.clientId)
       const renderContext = createRenderContext({ firm, template, client, submission })
 

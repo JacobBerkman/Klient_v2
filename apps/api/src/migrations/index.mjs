@@ -3,6 +3,7 @@ import sessionsTable from './002-sessions.mjs'
 import retireBlobSessions from './003-retire-blob-sessions.mjs'
 import auditEventsSourceOfTruth from './004-audit-events-source-of-truth.mjs'
 import submissionEntitiesSourceOfTruth from './005-submission-entities.mjs'
+import boardEntitiesSourceOfTruth from './006-board-entities.mjs'
 
 // Ordered list of schema migrations. Each entry is { version, name, up(db) }.
 // Versions must be positive, unique, ascending integers; the applied version
@@ -12,7 +13,8 @@ export const migrations = [
   sessionsTable,
   retireBlobSessions,
   auditEventsSourceOfTruth,
-  submissionEntitiesSourceOfTruth
+  submissionEntitiesSourceOfTruth,
+  boardEntitiesSourceOfTruth
 ]
 
 function assertMigrationList(list) {

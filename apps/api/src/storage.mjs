@@ -40,6 +40,32 @@ function nowIso() {
   return new Date().toISOString()
 }
 
+// --- Transaction helper -------------------------------------------------------
+// Single shared BEGIN IMMEDIATE wrapper. SQLite does not support nested
+// transactions, so nested runInTransaction calls join the outer transaction:
+// only the outermost frame issues BEGIN/COMMIT/ROLLBACK. This is what lets
+// executePipelineTransaction wrap persist() (whose saveState also runs inside
+// runInTransaction) in one atomic unit.
+let inTransaction = false
+
+export function runInTransaction(fn) {
+  if (inTransaction) {
+    return fn()
+  }
+  db.exec('BEGIN IMMEDIATE')
+  inTransaction = true
+  try {
+    const result = fn()
+    db.exec('COMMIT')
+    inTransaction = false
+    return result
+  } catch (error) {
+    inTransaction = false
+    db.exec('ROLLBACK')
+    throw error
+  }
+}
+
 function replaceRows(tableName, rows, mapper) {
   db.exec(`DELETE FROM ${tableName}`)
   for (const row of rows) {
@@ -304,31 +330,10 @@ function ensureQueueSeededFromState(state) {
 function syncQueryTables(state) {
   replaceRows('firms', state.firms || [], (firm) => [firm.id, firm.name, firm.slug, JSON.stringify(firm)])
   replaceRows('users', state.users || [], (user) => [user.id, user.firmId, user.email, user.role, JSON.stringify(user)])
-  replaceRows('profiles', state.profiles || [], (profile) => [
-    profile.id,
-    profile.firmId,
-    profile.kind,
-    profile.firstName,
-    profile.lastName,
-    profile.email || null,
-    profile.phone || null,
-    profile.status || null,
-    profile.stage || null,
-    profile.stageOrderIndex || null,
-    profile.orderIndex ?? profile.stageOrderIndex ?? null,
-    profile.source?.cityOrLocation || null,
-    profile.source?.venue || null,
-    profile.source?.occurredOn || null,
-    profile.householdId || null,
-    profile.spouseClientId || null,
-    Number(profile.financialSummary?.investableAssets || 0),
-    Number(profile.financialSummary?.annualIncome || 0),
-    Number(profile.financialSummary?.totalAssets || 0),
-    Number(profile.financialSummary?.totalLiabilities || 0),
-    Number(profile.financialSummary?.netWorth || 0),
-    JSON.stringify(profile.extensions || {}),
-    JSON.stringify(profile)
-  ])
+  // profiles is deliberately absent: since migration 006 the profiles table
+  // is the source of truth, written by upsertProfileRow — never a destructive
+  // resync from blob state. Same for stage_changes, board_versions, and
+  // pipeline_stage_records.
   replaceRows('households', state.households || [], (household) => [
     household.id,
     household.firmId,
@@ -769,6 +774,373 @@ function ensureSubmissionEntitiesSeededFromState(state) {
   }
 }
 
+// --- Profile repository (source of truth) ------------------------------------
+// The canonical profile object — including the envelope-encrypted
+// pii.{ssnEncrypted,taxIdEncrypted,dobEncrypted} objects, which are stored
+// verbatim inside the payload JSON — lives in the payload column. Promoted
+// columns (tenancy, kind, stage, ordering, contact, financial summary) exist
+// for keying, firm scoping, and the query paths SqliteReadRepository serves.
+// Reads return JSON.parse(payload) so the object shape is exactly what the
+// store wrote; the blob serializes profiles: [] purely for shape compat.
+
+const PROFILE_UPSERT_SQL = `
+  INSERT INTO profiles (
+    id, firm_id, kind, first_name, last_name, email, phone, profile_status, stage,
+    stage_order_index, order_index, source_city, source_venue, source_occurred_on,
+    household_id, spouse_client_id, investable_assets, annual_income, total_assets,
+    total_liabilities, net_worth, extensions_payload, payload
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    firm_id = excluded.firm_id,
+    kind = excluded.kind,
+    first_name = excluded.first_name,
+    last_name = excluded.last_name,
+    email = excluded.email,
+    phone = excluded.phone,
+    profile_status = excluded.profile_status,
+    stage = excluded.stage,
+    stage_order_index = excluded.stage_order_index,
+    order_index = excluded.order_index,
+    source_city = excluded.source_city,
+    source_venue = excluded.source_venue,
+    source_occurred_on = excluded.source_occurred_on,
+    household_id = excluded.household_id,
+    spouse_client_id = excluded.spouse_client_id,
+    investable_assets = excluded.investable_assets,
+    annual_income = excluded.annual_income,
+    total_assets = excluded.total_assets,
+    total_liabilities = excluded.total_liabilities,
+    net_worth = excluded.net_worth,
+    extensions_payload = excluded.extensions_payload,
+    payload = excluded.payload
+`
+
+function profileParams(profile) {
+  return [
+    profile.id,
+    profile.firmId ?? 'unknown',
+    profile.kind ?? 'prospect',
+    profile.firstName ?? '',
+    profile.lastName ?? '',
+    profile.email || null,
+    profile.phone || null,
+    profile.status || null,
+    profile.stage || null,
+    profile.stageOrderIndex || null,
+    profile.orderIndex ?? profile.stageOrderIndex ?? null,
+    profile.source?.cityOrLocation || null,
+    profile.source?.venue || null,
+    profile.source?.occurredOn || null,
+    profile.householdId || null,
+    profile.spouseClientId || null,
+    Number(profile.financialSummary?.investableAssets || 0),
+    Number(profile.financialSummary?.annualIncome || 0),
+    Number(profile.financialSummary?.totalAssets || 0),
+    Number(profile.financialSummary?.totalLiabilities || 0),
+    Number(profile.financialSummary?.netWorth || 0),
+    JSON.stringify(profile.extensions || {}),
+    JSON.stringify(profile)
+  ]
+}
+
+export function upsertProfileRow(profile) {
+  db.prepare(PROFILE_UPSERT_SQL).run(...profileParams(profile))
+  return profile
+}
+
+// Unscoped by default: tenancy validation happens in the store via
+// validateEntityOwnership so that a cross-firm id surfaces the same
+// "Profile not found." tenancy error the in-memory find produced (instead of
+// silently behaving like a missing row).
+export function getProfileRow(profileId, { firmId = null } = {}) {
+  const row = firmId
+    ? db.prepare('SELECT payload FROM profiles WHERE id = ? AND firm_id = ?').get(profileId, firmId)
+    : db.prepare('SELECT payload FROM profiles WHERE id = ?').get(profileId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+export function deleteProfileRow(profileId, firmId) {
+  const result = db.prepare('DELETE FROM profiles WHERE id = ? AND firm_id = ?').run(profileId, firmId)
+  return result.changes > 0
+}
+
+// Insertion order (rowid ASC — the upsert is ON CONFLICT DO UPDATE, which
+// preserves rowid) mirrors the old state.profiles push order that dashboard
+// "recent profiles" and the store's own sort-then-filter readers relied on.
+export function listProfileRows({ firmId = null } = {}) {
+  const rows = firmId
+    ? db.prepare('SELECT payload FROM profiles WHERE firm_id = ? ORDER BY rowid ASC').all(firmId)
+    : db.prepare('SELECT payload FROM profiles ORDER BY rowid ASC').all()
+  return rows.map((row) => JSON.parse(row.payload))
+}
+
+// Board column read: prospects of one stage, ordered exactly like the old
+// in-memory listProspectsByStage (orderIndex with non-positive treated as
+// +infinity, then updatedAt/createdAt recency, then id).
+export function listProspectRowsByStage(firmId, stage, excludedProfileId = null) {
+  return db
+    .prepare(
+      `
+      SELECT payload FROM profiles
+      WHERE firm_id = ? AND kind = 'prospect' AND stage = ? AND (? IS NULL OR id != ?)
+      ORDER BY
+        CASE
+          WHEN COALESCE(order_index, stage_order_index) > 0 THEN COALESCE(order_index, stage_order_index)
+          ELSE 9007199254740991
+        END,
+        COALESCE(json_extract(payload, '$.updatedAt'), json_extract(payload, '$.createdAt'), '') ,
+        id
+    `
+    )
+    .all(firmId, stage, excludedProfileId, excludedProfileId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function countProspectRowsInStage(firmId, stage) {
+  return (
+    db
+      .prepare("SELECT COUNT(*) AS count FROM profiles WHERE firm_id = ? AND kind = 'prospect' AND stage = ?")
+      .get(firmId, stage)?.count || 0
+  )
+}
+
+// Distinct stage ids carried by prospects of a firm — feeds the legacy-stage
+// bucket computation in getFirmPipelineStageDefinitions.
+export function listProspectStageIds(firmId) {
+  return db
+    .prepare(
+      "SELECT DISTINCT stage FROM profiles WHERE firm_id = ? AND kind = 'prospect' AND stage IS NOT NULL AND TRIM(stage) != ''"
+    )
+    .all(firmId)
+    .map((row) => String(row.stage).trim())
+}
+
+// First client profile whose email matches (case-insensitive), in insertion
+// order — mirrors the old state.profiles.find for portal client resolution.
+export function findClientProfileRowByEmail(firmId, email) {
+  const normalized = String(email || '').toLowerCase()
+  if (!normalized) return null
+  const row = db
+    .prepare(
+      `
+      SELECT payload FROM profiles
+      WHERE firm_id = ? AND kind = 'client' AND email IS NOT NULL AND lower(email) = ?
+      ORDER BY rowid ASC
+      LIMIT 1
+    `
+    )
+    .get(firmId, normalized)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// --- Stage change repository (append-only) ------------------------------------
+
+export function insertStageChange(change) {
+  if (!change || typeof change !== 'object') return false
+  const result = db
+    .prepare(
+      `
+      INSERT OR IGNORE INTO stage_changes (
+        id, firm_id, client_id, from_stage, to_stage, changed_by_user_id, changed_at, payload
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `
+    )
+    .run(
+      change.id || randomUUID(),
+      change.firmId ?? 'unknown',
+      change.clientId ?? null,
+      change.fromStage ?? null,
+      change.toStage ?? null,
+      change.changedByUserId ?? null,
+      change.changedAt ?? null,
+      JSON.stringify(change)
+    )
+  return result.changes > 0
+}
+
+// rowid ASC mirrors the old in-memory push order.
+export function listStageChangeRowsByFirm(firmId) {
+  return db
+    .prepare('SELECT payload FROM stage_changes WHERE firm_id = ? ORDER BY rowid ASC')
+    .all(firmId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function listStageChangeRowsByClient(firmId, clientId) {
+  return db
+    .prepare('SELECT payload FROM stage_changes WHERE firm_id = ? AND client_id = ? ORDER BY rowid ASC')
+    .all(firmId, clientId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+// --- Board version repository (optimistic-concurrency primitive) ---------------
+// One row per firm; reading through ensureBoardVersionRow lazily creates the
+// row at version 1 (the old getBoardVersion defaulted missing firms to 1).
+
+export function ensureBoardVersionRow(firmId) {
+  db.prepare('INSERT OR IGNORE INTO board_versions (firm_id, version) VALUES (?, 1)').run(firmId)
+  return Number(db.prepare('SELECT version FROM board_versions WHERE firm_id = ?').get(firmId)?.version || 1)
+}
+
+export function setBoardVersionRow(firmId, version) {
+  db.prepare(
+    `
+    INSERT INTO board_versions (firm_id, version) VALUES (?, ?)
+    ON CONFLICT(firm_id) DO UPDATE SET version = excluded.version
+  `
+  ).run(firmId, Number(version) > 0 ? Math.trunc(Number(version)) : 1)
+}
+
+// Guarded increment: UPDATE ... WHERE version = expected. Returns the new
+// version on success, or null when another writer already moved the board —
+// the caller surfaces the standard PIPELINE_ORDER_CONFLICT contract.
+export function incrementBoardVersionGuarded(firmId, expectedVersion) {
+  const expected = Number(expectedVersion)
+  const result = db
+    .prepare('UPDATE board_versions SET version = version + 1 WHERE firm_id = ? AND version = ?')
+    .run(firmId, expected)
+  if (result.changes === 0) return null
+  return expected + 1
+}
+
+// --- Pipeline stage record repository (source of truth) ------------------------
+// Stage config rows are fully column-mapped (no payload column): the record
+// shape is small, flat, and versionless.
+
+function rowToStageRecord(row) {
+  if (!row) return null
+  return {
+    id: row.id,
+    firmId: row.firmId,
+    key: row.key,
+    label: row.label ?? null,
+    color: row.color ?? null,
+    isActive: Number(row.isActive) !== 0,
+    order: row.sortOrder == null ? null : Number(row.sortOrder),
+    createdAt: row.createdAt ?? null,
+    updatedAt: row.updatedAt ?? null,
+    deactivatedAt: row.deactivatedAt ?? null
+  }
+}
+
+const STAGE_RECORD_COLUMNS = `
+  id,
+  firm_id AS firmId,
+  key,
+  label,
+  color,
+  is_active AS isActive,
+  sort_order AS sortOrder,
+  created_at AS createdAt,
+  updated_at AS updatedAt,
+  deactivated_at AS deactivatedAt
+`
+
+export function upsertPipelineStageRecord(record) {
+  db.prepare(
+    `
+    INSERT INTO pipeline_stage_records (
+      id, firm_id, key, label, color, is_active, sort_order, created_at, updated_at, deactivated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      firm_id = excluded.firm_id,
+      key = excluded.key,
+      label = excluded.label,
+      color = excluded.color,
+      is_active = excluded.is_active,
+      sort_order = excluded.sort_order,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at,
+      deactivated_at = excluded.deactivated_at
+  `
+  ).run(
+    record.id,
+    record.firmId,
+    record.key,
+    record.label ?? null,
+    record.color ?? null,
+    record.isActive === false ? 0 : 1,
+    Number.isFinite(Number(record.order)) ? Number(record.order) : null,
+    record.createdAt ?? null,
+    record.updatedAt ?? null,
+    record.deactivatedAt ?? null
+  )
+  return record
+}
+
+// Same ordering the old in-memory bridge used: sort_order then key.
+export function listPipelineStageRecordRows(firmId) {
+  return db
+    .prepare(
+      `SELECT ${STAGE_RECORD_COLUMNS} FROM pipeline_stage_records WHERE firm_id = ? ORDER BY COALESCE(sort_order, 0) ASC, key ASC`
+    )
+    .all(firmId)
+    .map(rowToStageRecord)
+}
+
+export function getPipelineStageRecordRow(stageId) {
+  const row = db.prepare(`SELECT ${STAGE_RECORD_COLUMNS} FROM pipeline_stage_records WHERE id = ?`).get(stageId)
+  return rowToStageRecord(row)
+}
+
+export function countPipelineStageRecordRows(firmId) {
+  return db.prepare('SELECT COUNT(*) AS count FROM pipeline_stage_records WHERE firm_id = ?').get(firmId)?.count || 0
+}
+
+// Blob-to-table seeding for freshly seeded states (whose demo profiles and
+// stage changes exist only in memory) and any legacy blob that predates
+// migration 006. Keyed INSERT OR IGNORE / OR-IGNORE-style guards keep it
+// idempotent against the migration backfill.
+function ensureBoardEntitiesSeededFromState(state) {
+  const insertProfile = db.prepare(`
+    INSERT OR IGNORE INTO profiles (
+      id, firm_id, kind, first_name, last_name, email, phone, profile_status, stage,
+      stage_order_index, order_index, source_city, source_venue, source_occurred_on,
+      household_id, spouse_client_id, investable_assets, annual_income, total_assets,
+      total_liabilities, net_worth, extensions_payload, payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const profile of state.profiles || []) {
+    if (!profile || typeof profile !== 'object' || !profile.id) continue
+    insertProfile.run(...profileParams(profile))
+  }
+  for (const change of state.stageChanges || []) {
+    insertStageChange(change)
+  }
+  const boardVersions =
+    state.boardVersions && typeof state.boardVersions === 'object' && !Array.isArray(state.boardVersions)
+      ? state.boardVersions
+      : {}
+  const insertBoardVersion = db.prepare('INSERT OR IGNORE INTO board_versions (firm_id, version) VALUES (?, ?)')
+  for (const [firmId, version] of Object.entries(boardVersions)) {
+    if (!firmId) continue
+    const numeric = Number(version)
+    insertBoardVersion.run(firmId, Number.isFinite(numeric) && numeric > 0 ? Math.trunc(numeric) : 1)
+  }
+  const insertStageRecord = db.prepare(`
+    INSERT OR IGNORE INTO pipeline_stage_records (
+      id, firm_id, key, label, color, is_active, sort_order, created_at, updated_at, deactivated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const record of state.pipelineStages || []) {
+    if (!record || typeof record !== 'object' || !record.firmId) continue
+    const key = String(record.key || record.id || '').trim()
+    if (!key) continue
+    insertStageRecord.run(
+      record.id || randomUUID(),
+      record.firmId,
+      key,
+      record.label ?? null,
+      record.color ?? null,
+      record.isActive === false ? 0 : 1,
+      Number.isFinite(Number(record.order)) ? Number(record.order) : null,
+      record.createdAt ?? null,
+      record.updatedAt ?? null,
+      record.deactivatedAt ?? null
+    )
+  }
+}
+
 function syncAnalyticsMaterialized(state) {
   db.exec('DELETE FROM analytics_materialized')
   const firms = state.firms || []
@@ -783,20 +1155,32 @@ function syncAnalyticsMaterialized(state) {
       advisorProductivity: {}
     })
   )
-  ;(state.profiles || []).forEach((profile) => {
-    const summary = byFirm.get(profile.firmId)
-    if (!summary || profile.kind !== 'prospect') return
-    const stage = profile.stage || 'unassigned'
-    summary.funnel[stage] = (summary.funnel[stage] || 0) + 1
-    const ageDays = Math.max(
-      0,
-      (Date.now() - new Date(profile.updatedAt || profile.createdAt || nowIso()).getTime()) / 86_400_000
-    )
-    const age = summary.stageAgingDays[stage] || { count: 0, sumDays: 0 }
-    age.count += 1
-    age.sumDays += ageDays
-    summary.stageAgingDays[stage] = age
-  })
+  // profiles is the relational source of truth (the blob serializes an empty
+  // array), so the funnel/aging aggregates read the table.
+  db.prepare(
+    `
+    SELECT firm_id AS firmId, stage,
+      json_extract(payload, '$.updatedAt') AS updatedAt,
+      json_extract(payload, '$.createdAt') AS createdAt
+    FROM profiles
+    WHERE kind = 'prospect'
+  `
+  )
+    .all()
+    .forEach((profile) => {
+      const summary = byFirm.get(profile.firmId)
+      if (!summary) return
+      const stage = profile.stage || 'unassigned'
+      summary.funnel[stage] = (summary.funnel[stage] || 0) + 1
+      const ageDays = Math.max(
+        0,
+        (Date.now() - new Date(profile.updatedAt || profile.createdAt || nowIso()).getTime()) / 86_400_000
+      )
+      const age = summary.stageAgingDays[stage] || { count: 0, sumDays: 0 }
+      age.count += 1
+      age.sumDays += ageDays
+      summary.stageAgingDays[stage] = age
+    })
   // form_submissions is the relational source of truth (the blob serializes
   // an empty array), so completion rates aggregate over the table.
   db.prepare('SELECT firm_id AS firmId, template_id AS templateId, status FROM form_submissions')
@@ -827,21 +1211,24 @@ function syncAnalyticsMaterialized(state) {
     bucket.notesAuthored += 1
     summary.advisorProductivity[key] = bucket
   })
-  ;(state.stageChanges || []).forEach((change) => {
-    const actor = usersById.get(change.changedByUserId)
-    if (!actor) return
-    const summary = byFirm.get(change.firmId)
-    if (!summary) return
-    const key = actor.id
-    const bucket = summary.advisorProductivity[key] || {
-      advisorUserId: key,
-      advisorName: `${actor.firstName} ${actor.lastName}`,
-      notesAuthored: 0,
-      stageMoves: 0
-    }
-    bucket.stageMoves += 1
-    summary.advisorProductivity[key] = bucket
-  })
+  // stage_changes is the relational source of truth for stage-move counts.
+  db.prepare('SELECT firm_id AS firmId, changed_by_user_id AS changedByUserId FROM stage_changes')
+    .all()
+    .forEach((change) => {
+      const actor = usersById.get(change.changedByUserId)
+      if (!actor) return
+      const summary = byFirm.get(change.firmId)
+      if (!summary) return
+      const key = actor.id
+      const bucket = summary.advisorProductivity[key] || {
+        advisorUserId: key,
+        advisorName: `${actor.firstName} ${actor.lastName}`,
+        notesAuthored: 0,
+        stageMoves: 0
+      }
+      bucket.stageMoves += 1
+      summary.advisorProductivity[key] = bucket
+    })
 
   const insert = db.prepare(`
     INSERT INTO analytics_materialized (firm_id, payload, updated_at)
@@ -876,32 +1263,51 @@ export function closeDatabase() {
   db.close()
 }
 
+function stripRelationalMirrors(state) {
+  state.exportJobs = []
+  state.auditEvents = []
+  state.formSubmissions = []
+  state.draftStepStates = []
+  state.pendingUploadIntents = []
+  state.profiles = []
+  state.stageChanges = []
+  state.boardVersions = {}
+  state.pipelineStagesByFirm = {}
+  state.pipelineStages = []
+}
+
 export function loadState(seedFactory) {
   const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get()
   if (row?.payload) {
     const state = JSON.parse(row.payload)
     // Legacy blobs mirrored the export queue in state.exportJobs, the audit
-    // trail in state.auditEvents, and the draft-churn entities in
-    // state.formSubmissions/draftStepStates/pendingUploadIntents. The
-    // relational tables are now the sole sources of truth: seed them once
-    // from the blob (old databases whose tables predate the cutover), then
-    // strip the mirrors from the blob so they never get written back.
+    // trail in state.auditEvents, the draft-churn entities in
+    // state.formSubmissions/draftStepStates/pendingUploadIntents, and the
+    // board entities in state.profiles/stageChanges/boardVersions/
+    // pipelineStages. The relational tables are now the sole sources of
+    // truth: seed them once from the blob (old databases whose tables
+    // predate the cutover), then strip the mirrors from the blob so they
+    // never get written back.
     ensureQueueSeededFromState(state)
     ensureAuditSeededFromState(state)
     ensureSubmissionEntitiesSeededFromState(state)
-    const hadBlobMirrors = [
-      state.exportJobs,
-      state.auditEvents,
-      state.formSubmissions,
-      state.draftStepStates,
-      state.pendingUploadIntents
-    ].some((entries) => Array.isArray(entries) && entries.length > 0)
+    ensureBoardEntitiesSeededFromState(state)
+    const hadBlobMirrors =
+      [
+        state.exportJobs,
+        state.auditEvents,
+        state.formSubmissions,
+        state.draftStepStates,
+        state.pendingUploadIntents,
+        state.profiles,
+        state.stageChanges,
+        state.pipelineStages
+      ].some((entries) => Array.isArray(entries) && entries.length > 0) ||
+      [state.boardVersions, state.pipelineStagesByFirm].some(
+        (entries) => entries && typeof entries === 'object' && Object.keys(entries).length > 0
+      )
     if (hadBlobMirrors) {
-      state.exportJobs = []
-      state.auditEvents = []
-      state.formSubmissions = []
-      state.draftStepStates = []
-      state.pendingUploadIntents = []
+      stripRelationalMirrors(state)
       db.prepare(
         `
         INSERT INTO app_state (id, payload, updated_at)
@@ -910,11 +1316,7 @@ export function loadState(seedFactory) {
       `
       ).run(JSON.stringify(state))
     }
-    state.exportJobs = []
-    state.auditEvents = []
-    state.formSubmissions = []
-    state.draftStepStates = []
-    state.pendingUploadIntents = []
+    stripRelationalMirrors(state)
     // Sessions live exclusively in the sessions table (migrations 002/003
     // backfilled and cleared the blob). Keep the array shape for consumers
     // but never surface stale blob sessions.
@@ -927,19 +1329,17 @@ export function loadState(seedFactory) {
   ensureQueueSeededFromState(state)
   ensureAuditSeededFromState(state)
   ensureSubmissionEntitiesSeededFromState(state)
-  state.exportJobs = []
-  state.auditEvents = []
-  state.formSubmissions = []
-  state.draftStepStates = []
-  state.pendingUploadIntents = []
+  ensureBoardEntitiesSeededFromState(state)
+  stripRelationalMirrors(state)
   state.sessions = []
   return state
 }
 
 export function saveState(state) {
   // export_jobs, sessions, audit_events, form_submissions, draft_step_states,
-  // and pending_upload_intents are relational sources of truth: the blob
-  // keeps empty arrays for them purely for shape compatibility, so a stale
+  // pending_upload_intents, profiles, stage_changes, board_versions, and
+  // pipeline_stage_records are relational sources of truth: the blob keeps
+  // empty arrays/maps for them purely for shape compatibility, so a stale
   // in-memory mirror can never clobber targeted relational writes.
   const payload = JSON.stringify({
     ...state,
@@ -948,13 +1348,19 @@ export function saveState(state) {
     auditEvents: [],
     formSubmissions: [],
     draftStepStates: [],
-    pendingUploadIntents: []
+    pendingUploadIntents: [],
+    profiles: [],
+    stageChanges: [],
+    boardVersions: {},
+    pipelineStagesByFirm: {},
+    pipelineStages: []
   })
   // The blob upsert, derived query tables, and materialized analytics must
   // commit together: a failure partway through (e.g. mid replaceRows) would
   // otherwise leave the blob and the relational projections out of sync.
-  db.exec('BEGIN IMMEDIATE')
-  try {
+  // runInTransaction joins any outer transaction (e.g. a pipeline board
+  // transaction), so a persist() inside one commits/rolls back with it.
+  runInTransaction(() => {
     db.prepare(
       `
       INSERT INTO app_state (id, payload, updated_at)
@@ -964,11 +1370,7 @@ export function saveState(state) {
     ).run(payload)
     syncQueryTables(state)
     syncAnalyticsMaterialized(state)
-    db.exec('COMMIT')
-  } catch (error) {
-    db.exec('ROLLBACK')
-    throw error
-  }
+  })
 }
 
 export function backupState(targetPath = resolve(process.cwd(), 'data', `backup-${Date.now()}.db`)) {
@@ -1086,13 +1488,9 @@ export function getExportJob(jobId) {
 // worker write (completion/failure payload rewrite) cannot interleave between
 // the read and the write and get clobbered by a stale merged payload.
 export function applyExportJobLifecycleUpdate(jobId, { status, output } = {}) {
-  db.exec('BEGIN IMMEDIATE')
-  try {
+  const found = runInTransaction(() => {
     const existing = db.prepare('SELECT status, payload FROM export_jobs WHERE id = ?').get(jobId)
-    if (!existing) {
-      db.exec('COMMIT')
-      return null
-    }
+    if (!existing) return false
     const existingPayload = existing.payload ? JSON.parse(existing.payload) : {}
     const nextStatus = status || existing.status
     const nextOutput = output === undefined ? existingPayload.output || null : output
@@ -1104,11 +1502,9 @@ export function applyExportJobLifecycleUpdate(jobId, { status, output } = {}) {
       WHERE id = ?
     `
     ).run(nextStatus, JSON.stringify(nextOutput), JSON.stringify(nextPayload), jobId)
-    db.exec('COMMIT')
-  } catch (error) {
-    db.exec('ROLLBACK')
-    throw error
-  }
+    return true
+  })
+  if (!found) return null
   return getExportJob(jobId)
 }
 
@@ -1117,8 +1513,7 @@ export function leaseExportJobs({ workerId = 'worker', limit = 5, leaseMs = 30_0
   const nowText = new Date(nowMs).toISOString()
   const leaseUntil = new Date(nowMs + leaseMs).toISOString()
 
-  db.exec('BEGIN IMMEDIATE')
-  try {
+  const ids = runInTransaction(() => {
     const candidates = db
       .prepare(
         `
@@ -1137,27 +1532,20 @@ export function leaseExportJobs({ workerId = 'worker', limit = 5, leaseMs = 30_0
       )
       .all(nowText, nowText, limit)
 
-    const ids = candidates.map((row) => row.id)
-    if (!ids.length) {
-      db.exec('COMMIT')
-      return []
-    }
+    const candidateIds = candidates.map((row) => row.id)
+    if (!candidateIds.length) return []
 
-    const placeholders = ids.map(() => '?').join(',')
+    const placeholders = candidateIds.map(() => '?').join(',')
     db.prepare(
       `
       UPDATE export_jobs
       SET status = 'running', leased_by = ?, lease_expires_at = ?, updated_at = ?
       WHERE id IN (${placeholders})
     `
-    ).run(workerId, leaseUntil, nowText, ...ids)
-
-    db.exec('COMMIT')
-    return ids.map((id) => getExportJob(id)).filter(Boolean)
-  } catch (error) {
-    db.exec('ROLLBACK')
-    throw error
-  }
+    ).run(workerId, leaseUntil, nowText, ...candidateIds)
+    return candidateIds
+  })
+  return ids.map((id) => getExportJob(id)).filter(Boolean)
 }
 
 export function markExportJobCompleted(jobId, output) {

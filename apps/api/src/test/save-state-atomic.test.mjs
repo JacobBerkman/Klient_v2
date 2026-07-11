@@ -32,16 +32,10 @@ function buildGoodState() {
         lastName: 'Admin'
       }
     ],
-    profiles: [
-      {
-        id: 'profile-1',
-        firmId: 'firm-1',
-        kind: 'prospect',
-        firstName: 'Pat',
-        lastName: 'Prospect',
-        stage: 'discovery'
-      }
-    ],
+    // profiles is deliberately absent from the derived-table sync since
+    // migration 006 (relational source of truth); rows are written via
+    // upsertProfileRow below instead.
+    profiles: [],
     households: [],
     formTemplates: [],
     documentTemplates: [],
@@ -58,6 +52,16 @@ test('saveState is atomic: a failure mid-sync rolls back the blob and derived ta
   try {
     const goodState = buildGoodState()
     storage.saveState(goodState)
+    // profiles table is a source of truth written via targeted upserts, not
+    // by saveState — seed one row to prove the failed save leaves it alone.
+    storage.upsertProfileRow({
+      id: 'profile-1',
+      firmId: 'firm-1',
+      kind: 'prospect',
+      firstName: 'Pat',
+      lastName: 'Prospect',
+      stage: 'discovery'
+    })
 
     // Corrupt state: firms.name has a NOT NULL constraint, so syncQueryTables
     // throws AFTER the app_state blob upsert has already executed inside the
@@ -66,8 +70,7 @@ test('saveState is atomic: a failure mid-sync rolls back the blob and derived ta
     const corruptState = {
       ...goodState,
       marker: 'post-failure',
-      firms: [{ id: 'firm-broken', name: null, slug: 'broken-firm' }],
-      profiles: []
+      firms: [{ id: 'firm-broken', name: null, slug: 'broken-firm' }]
     }
     assert.throws(() => storage.saveState(corruptState))
 
@@ -90,7 +93,7 @@ test('saveState is atomic: a failure mid-sync rolls back the blob and derived ta
         .prepare('SELECT id FROM profiles ORDER BY id')
         .all()
         .map((row) => row.id)
-      assert.deepEqual(profileRows, ['profile-1'])
+      assert.deepEqual(profileRows, ['profile-1'], 'saveState must never clobber the relational profiles table')
 
       const analyticsRows = inspect
         .prepare('SELECT firm_id FROM analytics_materialized ORDER BY firm_id')
@@ -124,7 +127,9 @@ test('saveState commits blob, query tables, and analytics together on success', 
       const blob = JSON.parse(inspect.prepare('SELECT payload FROM app_state WHERE id = 1').get().payload)
       assert.equal(blob.marker, 'pre-failure')
       assert.equal(inspect.prepare('SELECT COUNT(*) AS count FROM firms').get().count, 1)
-      assert.equal(inspect.prepare('SELECT COUNT(*) AS count FROM profiles').get().count, 1)
+      // profiles is no longer projected by saveState: the table stays empty
+      // until a targeted upsert writes a row.
+      assert.equal(inspect.prepare('SELECT COUNT(*) AS count FROM profiles').get().count, 0)
       assert.equal(inspect.prepare('SELECT COUNT(*) AS count FROM analytics_materialized').get().count, 1)
     } finally {
       inspect.close()

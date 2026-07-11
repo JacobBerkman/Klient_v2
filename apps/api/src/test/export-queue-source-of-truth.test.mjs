@@ -109,10 +109,11 @@ test('export queue mutations never touch app_state and state mutations survive c
       'queue mutations must not bump the app_state timestamp'
     )
 
-    // API-style state mutation interleaved with the queue writes above: the
-    // profile must survive (no lost update) and never drag a queue mirror
-    // back into the blob.
-    state.profiles.push({
+    // API-style profile mutation interleaved with the queue writes above:
+    // profiles are relational rows now, so the write is a targeted upsert
+    // that must survive (no lost update) and never drag a queue mirror —
+    // or a profiles mirror — back into the blob.
+    storage.upsertProfileRow({
       id: 'profile-new',
       firmId: 'firm-1',
       kind: 'prospect',
@@ -123,12 +124,13 @@ test('export queue mutations never touch app_state and state mutations survive c
     storage.saveState(state)
     storage.markExportJobCompleted(failer.id, { fileName: 'second.json' })
 
-    const finalBlob = JSON.parse(readBlob(storage.DB_PATH).payload)
     assert.deepEqual(
-      finalBlob.profiles.map((profile) => profile.id),
+      storage.listProfileRows({ firmId: 'firm-1' }).map((profile) => profile.id),
       ['profile-new'],
-      'API state mutation must survive concurrent queue writes'
+      'profile row mutation must survive concurrent queue writes'
     )
+    const finalBlob = JSON.parse(readBlob(storage.DB_PATH).payload)
+    assert.deepEqual(finalBlob.profiles, [], 'blob must never contain a populated profiles mirror')
     assert.deepEqual(finalBlob.exportJobs, [], 'blob must never contain a populated exportJobs mirror')
 
     // Export listing still reflects the queue accurately from the table.

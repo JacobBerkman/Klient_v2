@@ -1,6 +1,6 @@
 import { runtime } from '../apps/api/src/runtime.mjs'
 import { createKeyProvider, PiiCryptoService } from '../apps/api/src/pii-crypto.mjs'
-import { loadState, saveState } from '../apps/api/src/storage.mjs'
+import { listProfileRows, upsertProfileRow } from '../apps/api/src/storage.mjs'
 
 const keyProvider = createKeyProvider(runtime)
 const piiCrypto = new PiiCryptoService({ keyProvider })
@@ -15,13 +15,13 @@ const legacyFieldMap = {
   taxIdCiphertext: 'taxIdEncrypted'
 }
 
-const state = loadState(() => ({}))
+// profiles is a relational source of truth (migration 006): iterate the
+// table rows and write rotated profiles back as targeted upserts instead of
+// rewriting the app_state blob.
 let rotatedProfiles = 0
 let rotatedFields = 0
 
-for (const profile of state.profiles || []) {
-  if (firmId && profile.firmId !== firmId) continue
-
+for (const profile of listProfileRows({ firmId })) {
   const pii = profile.pii || {}
   let profileChanged = false
 
@@ -48,14 +48,13 @@ for (const profile of state.profiles || []) {
   if (profileChanged) {
     profile.pii = pii
     profile.updatedAt = new Date().toISOString()
+    upsertProfileRow(profile)
     rotatedProfiles += 1
   }
 }
 
-saveState(state)
-
 function validateRotation() {
-  const targetProfiles = (state.profiles || []).filter((entry) => !firmId || entry.firmId === firmId)
+  const targetProfiles = listProfileRows({ firmId })
   let profilesChecked = 0
   const legacyCiphertextCount = { ssnCiphertext: 0, taxIdCiphertext: 0 }
   const keyMismatches = []
