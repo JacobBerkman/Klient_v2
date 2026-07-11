@@ -39,6 +39,32 @@ export function auditActor(event: AuditEvent) {
   return event.actor?.userId || 'system'
 }
 
+export function formatCount(value: unknown) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return '0'
+  return parsed.toLocaleString()
+}
+
+export function formatPercent(value: unknown, digits = 0) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return '0%'
+  return `${(parsed * 100).toFixed(digits)}%`
+}
+
+export function formatDays(value: unknown) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return '0 days'
+  const rounded = Number(parsed.toFixed(1))
+  return `${rounded.toLocaleString()} ${rounded === 1 ? 'day' : 'days'}`
+}
+
+export function formatHours(value: unknown) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed)) return '0 hours'
+  const rounded = Number(parsed.toFixed(1))
+  return `${rounded.toLocaleString()} ${rounded === 1 ? 'hour' : 'hours'}`
+}
+
 export function humanizeKey(value: string) {
   return value
     .replace(/([a-z])([A-Z])/g, '$1 $2')
