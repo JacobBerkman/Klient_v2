@@ -56,6 +56,9 @@ export function createLocalFilesystemStorageProvider({ rootDir }) {
   return {
     type: 'local',
     baseDir,
+    // Local presigned URLs are API-relative one-time tokens, not URLs a browser can
+    // fetch on its own, so downloads must keep streaming through the API process.
+    capabilities: { httpPresignedDownload: false },
     async putObject(input) {
       try {
         const object = normalizeStorageObjectDescriptor(input, { requireBody: true })

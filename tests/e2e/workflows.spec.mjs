@@ -306,6 +306,9 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   expect(completedPdf?.output?.artifact?.renderer).toBe('pdf-lib-acroform')
   expect(completedXlsx?.output?.artifact?.renderer).toBe('structured-xlsx')
 
+  // Explicit auth headers: page.request bypasses the secureCookieHeaderRouting fixture
+  // and will not attach the UI session's Secure __Host- cookies to plain http:// URLs
+  // (see the download assertion in smoke.spec.mjs for the verified details).
   const pdfDownload = await page.request.get(`/api/exports/${completedPdf.id}/download`, {
     headers: csrfHeaders(auth.csrfToken, auth.sessionCookie)
   })

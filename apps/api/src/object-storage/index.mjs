@@ -2,7 +2,12 @@ import { mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 
 import { runtime } from '../runtime.mjs'
-import { assertStorageProvider } from './provider-interface.mjs'
+import {
+  assertStorageProvider,
+  providerSupportsHttpPresignedDownload,
+  STORAGE_PROVIDER_ERROR_CODE,
+  StorageProviderError
+} from './provider-interface.mjs'
 import { createLocalFilesystemStorageProvider } from './local-provider.mjs'
 import { createS3CompatibleStorageProvider } from './s3-provider.mjs'
 
@@ -50,6 +55,18 @@ export function createObjectStorage({ provider, bucketDocuments, bucketExports, 
     },
     async createPresignedDownloadUrl(input) {
       return resolvedProvider.createPresignedDownloadUrl(input)
+    },
+    supportsHttpPresignedDownload() {
+      return providerSupportsHttpPresignedDownload(resolvedProvider)
+    },
+    async statObject(input) {
+      if (typeof resolvedProvider.statObject !== 'function') {
+        throw new StorageProviderError('Storage provider does not implement statObject().', {
+          code: STORAGE_PROVIDER_ERROR_CODE.INVALID_ARGUMENT,
+          operation: 'statObject'
+        })
+      }
+      return resolvedProvider.statObject(input)
     },
     async deleteObject(input) {
       return resolvedProvider.deleteObject(input)

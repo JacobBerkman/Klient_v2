@@ -160,6 +160,7 @@ export function createS3CompatibleStorageProvider({
   return {
     type: 's3',
     endpoint: endpointUrl.toString(),
+    capabilities: { httpPresignedDownload: true },
     async putObject(input) {
       try {
         const object = normalizeStorageObjectDescriptor(input, { requireBody: true })
@@ -224,14 +225,39 @@ export function createS3CompatibleStorageProvider({
     async createPresignedDownloadUrl(input) {
       try {
         const object = normalizeStorageObjectDescriptor(input)
+        const query = {
+          ...(object.responseContentDisposition
+            ? { 'response-content-disposition': String(object.responseContentDisposition) }
+            : {}),
+          ...(object.responseContentType ? { 'response-content-type': String(object.responseContentType) } : {})
+        }
         return signPresigned({
           method: 'GET',
           bucket: object.bucket,
           key: object.key,
-          expiresInSeconds: object.expiresInSeconds || 900
+          expiresInSeconds: object.expiresInSeconds || 900,
+          query
         })
       } catch (error) {
         throw wrapStorageError(error, { provider: 's3', operation: 'createPresignedDownloadUrl' })
+      }
+    },
+    async statObject(input) {
+      try {
+        const object = normalizeStorageObjectDescriptor(input)
+        const presigned = signPresigned({ method: 'HEAD', bucket: object.bucket, key: object.key })
+        const response = await requestSignedUrl(presigned, undefined, 'statObject')
+        const metadata = readS3MetadataHeaders(response.headers)
+        const lastModified = response.headers.get('last-modified')
+        return {
+          sizeBytes: Number(response.headers.get('content-length') || 0),
+          etag: response.headers.get('etag'),
+          checksum: metadata.checksum || null,
+          contentType: response.headers.get('content-type') || object.contentType,
+          updatedAt: lastModified ? new Date(lastModified).toISOString() : null
+        }
+      } catch (error) {
+        throw wrapStorageError(error, { provider: 's3', operation: 'statObject' })
       }
     },
     async deleteObject(input) {

@@ -227,8 +227,12 @@ test('@release-blocking stage movement and export download work in the routed pr
   await expect(downloadLink).toBeVisible({ timeout: 15_000 })
   const downloadHref = await downloadLink.getAttribute('href')
   expect(downloadHref).toBeTruthy()
-  // page.request does not send the UI session's Secure __Host- cookies over http,
-  // so authenticate the download explicitly with the seeded admin session.
+  // The secureCookieHeaderRouting fixture stamps x-forwarded-proto: https on browser
+  // /api/** requests, so even this NODE_ENV=test server issues the UI session's cookies
+  // as Secure __Host- variants. page.request bypasses page.route (no https rewrite) and
+  // will not attach Secure cookies to a plain http:// URL, so it arrives unauthenticated
+  // (verified: page.request GET /api/session returns 401). Authenticate the download
+  // explicitly with the seeded admin session headers instead.
   const downloadResponse = await page.request.get(downloadHref, {
     headers: csrfHeaders(auth.csrfToken, auth.sessionCookie)
   })
