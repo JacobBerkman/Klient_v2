@@ -1,0 +1,46 @@
+# Caddy reverse-proxy configuration for the optional TLS profile.
+#
+# Enabled with: docker compose --profile tls up --build -d
+# The plain-HTTP deployment (no profile) does not use this file at all.
+#
+# Default: LAN / local pilot with Caddy's internal CA
+# ---------------------------------------------------
+# `tls internal` makes Caddy mint certificates from its own local CA instead
+# of contacting Let's Encrypt. That is the right mode for a pilot with no
+# public domain: TLS on the wire, no external dependencies.
+#
+# Clients must trust the local root CA once. Export it from the container:
+#
+#   docker compose --profile tls cp \
+#     caddy:/data/caddy/pki/authorities/local/root.crt ./caddy-local-root.crt
+#
+# then install `caddy-local-root.crt` into each client's trust store
+# (Windows: certmgr "Trusted Root Certification Authorities"; macOS: Keychain
+# Access > System > always trust; Firefox: Settings > Certificates > Import).
+#
+# Replace `klient.local` with the hostname clients will use (add it to DNS or
+# each client's hosts file, pointing at the Docker host). To also answer on
+# the Docker host's LAN IP, add it to the site address list, e.g.:
+#   klient.local, 192.168.1.50 {
+
+klient.local {
+	tls internal
+	reverse_proxy kinetic-klient:3000
+}
+
+# Future: public domain with automatic Let's Encrypt
+# ---------------------------------------------------
+# When the firm has a public DNS name pointing at this host and ports 80/443
+# are reachable from the internet, delete the blocks above and use this
+# instead. Caddy then provisions and renews publicly trusted certificates
+# automatically — no client-side CA installation needed.
+#
+# klient.example-firm.com {
+# 	reverse_proxy kinetic-klient:3000
+# }
+#
+# Optionally set an ACME contact address in a global options block:
+#
+# {
+# 	email ops@example-firm.com
+# }

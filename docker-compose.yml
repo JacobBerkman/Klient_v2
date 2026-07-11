@@ -125,3 +125,29 @@ services:
       kinetic-klient:
         condition: service_started
     restart: unless-stopped
+
+  # Optional TLS termination. Disabled by default; enable with:
+  #   docker compose --profile tls up --build -d
+  # The app service keeps serving plain HTTP on :3000 either way; Caddy
+  # reverse-proxies HTTPS (and redirects HTTP) to it. See deploy/Caddyfile
+  # and DEPLOYMENT.md ("Optional TLS via Caddy") for local-CA vs public-domain
+  # certificate modes.
+  caddy:
+    image: caddy:2.10
+    profiles: ['tls']
+    ports:
+      - '80:80'
+      - '443:443'
+      - '443:443/udp'
+    volumes:
+      - ./deploy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      kinetic-klient:
+        condition: service_started
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:
