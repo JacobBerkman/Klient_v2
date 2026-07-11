@@ -1082,20 +1082,33 @@ export function getExportJob(jobId) {
 // Targeted lifecycle update for completed-job artifacts (archive/purge).
 // Deliberately leaves updated_at untouched: retention aging is computed from
 // updatedAt/createdAt, and bumping it on archive would reset the purge clock.
+// The SELECT-then-UPDATE runs inside BEGIN IMMEDIATE so a concurrent export
+// worker write (completion/failure payload rewrite) cannot interleave between
+// the read and the write and get clobbered by a stale merged payload.
 export function applyExportJobLifecycleUpdate(jobId, { status, output } = {}) {
-  const existing = db.prepare('SELECT status, payload FROM export_jobs WHERE id = ?').get(jobId)
-  if (!existing) return null
-  const existingPayload = existing.payload ? JSON.parse(existing.payload) : {}
-  const nextStatus = status || existing.status
-  const nextOutput = output === undefined ? existingPayload.output || null : output
-  const nextPayload = { ...existingPayload, status: nextStatus, output: nextOutput }
-  db.prepare(
+  db.exec('BEGIN IMMEDIATE')
+  try {
+    const existing = db.prepare('SELECT status, payload FROM export_jobs WHERE id = ?').get(jobId)
+    if (!existing) {
+      db.exec('COMMIT')
+      return null
+    }
+    const existingPayload = existing.payload ? JSON.parse(existing.payload) : {}
+    const nextStatus = status || existing.status
+    const nextOutput = output === undefined ? existingPayload.output || null : output
+    const nextPayload = { ...existingPayload, status: nextStatus, output: nextOutput }
+    db.prepare(
+      `
+      UPDATE export_jobs
+      SET status = ?, output_payload = ?, payload = ?
+      WHERE id = ?
     `
-    UPDATE export_jobs
-    SET status = ?, output_payload = ?, payload = ?
-    WHERE id = ?
-  `
-  ).run(nextStatus, JSON.stringify(nextOutput), JSON.stringify(nextPayload), jobId)
+    ).run(nextStatus, JSON.stringify(nextOutput), JSON.stringify(nextPayload), jobId)
+    db.exec('COMMIT')
+  } catch (error) {
+    db.exec('ROLLBACK')
+    throw error
+  }
   return getExportJob(jobId)
 }
 
