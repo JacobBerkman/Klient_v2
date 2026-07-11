@@ -54,3 +54,32 @@ test('exports getDownload denies role without guard and never reaches repository
   )
   assert.equal(repoCalled, false)
 })
+
+test('exports getDownload passes presigned redirect payloads through only after the guard runs', async () => {
+  const calls = []
+  const policy = {
+    requireGuard(user, guard) {
+      calls.push(`policy:${user.id}:${guard}`)
+    }
+  }
+  const redirectPayload = {
+    redirectUrl: 'https://minio.local/exports/firm-tenant-1/statement.pdf?X-Amz-Signature=abc',
+    expiresAt: '2026-07-10T00:05:00.000Z',
+    fileName: 'statement.pdf',
+    contentType: 'application/pdf',
+    checksum: 'sum-1'
+  }
+  const exportsRepository = {
+    getDownload(firmContext, exportId) {
+      calls.push(`repo:${firmContext.firmId}:${exportId}`)
+      return redirectPayload
+    }
+  }
+  const service = createExportsService({ exportsRepository, policy, store: { state: { auditEvents: [] } } })
+
+  const artifact = await service.getDownload({ id: 'u-export-2', firmId: 'firm-tenant-1', role: 'advisor' }, 'exp-s3')
+  assert.deepEqual(artifact, redirectPayload)
+  assert.equal(artifact.body, undefined)
+  // Guard must run before the repository can mint a presigned URL.
+  assert.deepEqual(calls, ['policy:u-export-2:canReadExports', 'repo:firm-tenant-1:exp-s3'])
+})

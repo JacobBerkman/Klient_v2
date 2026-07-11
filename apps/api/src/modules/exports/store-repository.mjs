@@ -11,6 +11,17 @@ import { renderExportArtifact, renderExportArtifactPayload } from '../../export-
 import { resolveExportData, computeMappingVersionHash } from '../../export-data-resolution.mjs'
 import { createFirmContext, validateEntityOwnership } from '../shared/tenancy.mjs'
 
+const PRESIGNED_DOWNLOAD_TTL_SECONDS = 300
+
+// Mirrors the download route's Content-Disposition sanitization in server.mjs so the
+// filename baked into a presigned response-content-disposition matches streamed downloads.
+function sanitizeDownloadFileName(value = 'export') {
+  const cleaned = String(value || 'export')
+    .replace(/[^a-zA-Z0-9._-]+/g, '_')
+    .replace(/^_+|_+$/g, '')
+  return cleaned || 'export'
+}
+
 function latestTemplateVersion(template) {
   const latest =
     Array.isArray(template?.versions) && template.versions.length > 0
@@ -420,6 +431,35 @@ export function createStoreExportsRepository({
       if (job.status !== 'completed') throw new Error('Export is not completed yet.')
 
       if (job.output?.object?.bucket && job.output?.object?.key) {
+        // Authorization (session + firm scoping) has already been enforced above; only
+        // then may a presigned URL be issued for providers that support direct HTTP
+        // downloads (S3/MinIO). Local storage keeps streaming through the API process.
+        if (
+          typeof objectStorage.supportsHttpPresignedDownload === 'function' &&
+          objectStorage.supportsHttpPresignedDownload()
+        ) {
+          try {
+            // Older completed jobs recorded object metadata before artifact bytes were
+            // persisted; verify the object exists so those still fall back below.
+            await objectStorage.statObject(job.output.object)
+            const fileName = sanitizeDownloadFileName(job.output.fileName || `${job.id}.bin`)
+            const presigned = await objectStorage.createPresignedDownloadUrl({
+              ...job.output.object,
+              expiresInSeconds: PRESIGNED_DOWNLOAD_TTL_SECONDS,
+              responseContentDisposition: `attachment; filename="${fileName}"`,
+              ...(job.output.object.contentType ? { responseContentType: job.output.object.contentType } : {})
+            })
+            return {
+              redirectUrl: presigned.url,
+              expiresAt: presigned.expiresAt,
+              fileName: job.output.fileName,
+              contentType: job.output.object.contentType || null,
+              checksum: job.output.object.checksum || null
+            }
+          } catch {
+            // Presign path unavailable (e.g. object missing); fall back to streaming.
+          }
+        }
         try {
           const stored = await objectStorage.getObject(job.output.object)
           return {

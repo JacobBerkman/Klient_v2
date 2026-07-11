@@ -144,6 +144,16 @@ type RequestOptions = RequestInit & {
   skipCsrf?: boolean
 }
 
+// The server rejects a stale CSRF token pre-handler with 403 CSRF_VALIDATION_FAILED
+// (see validateCsrf in apps/api/src/server.mjs); the mutation never executed, so one
+// transparent token refresh + retry is safe and heals the multi-tab stale-token case.
+function isCsrfRejection(status: number, body: unknown) {
+  if (status !== 403 || !body || typeof body !== 'object') return false
+  const error = (body as Record<string, unknown>).error
+  if (!error || typeof error !== 'object') return false
+  return (error as Record<string, unknown>).code === 'CSRF_VALIDATION_FAILED'
+}
+
 class ApiClient {
   private csrfToken = ''
 
@@ -167,6 +177,10 @@ class ApiClient {
   }
 
   async request<T>(path: string, options: RequestOptions = {}) {
+    return this.performRequest<T>(path, options, false)
+  }
+
+  private async performRequest<T>(path: string, options: RequestOptions, hasRetriedCsrf: boolean): Promise<T> {
     const method = String(options.method || 'GET').toUpperCase()
     const mutating = ['POST', 'PUT', 'PATCH', 'DELETE'].includes(method) && path.startsWith('/api/')
     if (mutating && !options.skipCsrf) {
@@ -210,6 +224,14 @@ class ApiClient {
       this.clearCsrfToken()
     }
 
+    // Multi-tab staleness: another tab's mutation rotated the CSRF cookie/token pair,
+    // so this tab's in-memory token was rejected before the handler ran. Refresh the
+    // token and retry exactly once; every other error surfaces unchanged.
+    if (mutating && !options.skipCsrf && !hasRetriedCsrf && isCsrfRejection(response.status, body)) {
+      this.clearCsrfToken()
+      return this.performRequest<T>(path, options, true)
+    }
+
     const errorBody = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
     throw new ApiError(
       String(
@@ -249,6 +271,15 @@ class ApiClient {
   }
 
   async postBlob(path: string, payload?: unknown, options: RequestOptions = {}) {
+    return this.performPostBlob(path, payload, options, false)
+  }
+
+  private async performPostBlob(
+    path: string,
+    payload: unknown,
+    options: RequestOptions,
+    hasRetriedCsrf: boolean
+  ): Promise<{ blob: Blob; headers: Headers }> {
     if (path.startsWith('/api/') && !options.skipCsrf) await this.ensureCsrf()
     const headers = new Headers(options.headers || {})
     if (payload !== undefined && !headers.has('Content-Type')) headers.set('Content-Type', 'application/json')
@@ -263,9 +294,23 @@ class ApiClient {
     const nextToken = response.headers.get('x-csrf-token')
     if (nextToken) this.setCsrfToken(nextToken)
     if (!response.ok) {
-      const message = response.headers.get('content-type')?.includes('application/json')
-        ? ((await response.json()) as { message?: string })?.message
-        : await response.text()
+      const errorBody = response.headers.get('content-type')?.includes('application/json')
+        ? ((await response.json()) as unknown)
+        : ((await response.text()) as unknown)
+      if (!nextToken) this.clearCsrfToken()
+      // Same pre-handler CSRF rejection recovery as performRequest: retry exactly once.
+      if (
+        path.startsWith('/api/') &&
+        !options.skipCsrf &&
+        !hasRetriedCsrf &&
+        isCsrfRejection(response.status, errorBody)
+      ) {
+        return this.performPostBlob(path, payload, options, true)
+      }
+      const message =
+        errorBody && typeof errorBody === 'object'
+          ? String((errorBody as { message?: string }).message || '')
+          : String(errorBody || '')
       throw new ApiError(message || response.statusText || 'Request failed.', {
         status: response.status,
         requestId: response.headers.get('x-request-id')

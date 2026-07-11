@@ -1862,8 +1862,22 @@ export function createHttpServer({ modules }) {
           userId: user.id,
           firmId: user.firmId,
           exportId: id,
-          contentType: artifact?.contentType || null
+          contentType: artifact?.contentType || null,
+          delivery: artifact?.redirectUrl ? 'presigned-redirect' : 'stream'
         })
+        if (artifact?.redirectUrl) {
+          // Authorization above already gated this request; hand the browser a
+          // short-lived presigned URL (Content-Disposition travels inside the
+          // signed response-content-disposition query parameter).
+          res.writeHead(302, {
+            ...baseHeaders(),
+            'X-Request-Id': requestId,
+            Location: artifact.redirectUrl,
+            'Cache-Control': 'private, no-store'
+          })
+          finalizeLog(302)
+          return res.end()
+        }
         const fileName = sanitizeDownloadFilename(artifact.fileName || `${id}.bin`)
         res.writeHead(200, {
           ...baseHeaders(),

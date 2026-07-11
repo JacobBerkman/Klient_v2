@@ -29,22 +29,28 @@ function createDeterministicId(seededRunId, label) {
   return `${seededRunId}-${sanitizeToken(label)}`
 }
 
+// Secondary pages/tabs opened inside a test (context.newPage()) must apply the same
+// header rewriting as the default page fixture so both tabs share one secure cookie jar.
+export async function applySecureCookieHeaderRouting(page) {
+  await page.route('**/api/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    const headers = {
+      ...request.headers(),
+      'x-forwarded-proto': 'https'
+    }
+    if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method().toUpperCase())) {
+      headers.origin = `https://${url.host}`
+      headers.referer = `https://${url.host}/`
+    }
+    await route.continue({ headers })
+  })
+}
+
 export const test = base.extend({
   secureCookieHeaderRouting: [
     async ({ page }, use) => {
-      await page.route('**/api/**', async (route) => {
-        const request = route.request()
-        const url = new URL(request.url())
-        const headers = {
-          ...request.headers(),
-          'x-forwarded-proto': 'https'
-        }
-        if (['POST', 'PUT', 'PATCH', 'DELETE'].includes(request.method().toUpperCase())) {
-          headers.origin = `https://${url.host}`
-          headers.referer = `https://${url.host}/`
-        }
-        await route.continue({ headers })
-      })
+      await applySecureCookieHeaderRouting(page)
       await use()
     },
     { auto: true }

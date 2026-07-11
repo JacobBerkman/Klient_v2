@@ -10,6 +10,8 @@ import { createObjectStorage } from '../object-storage/index.mjs'
 import { createLocalFilesystemStorageProvider } from '../object-storage/local-provider.mjs'
 import { createS3CompatibleStorageProvider } from '../object-storage/s3-provider.mjs'
 import { STORAGE_PROVIDER_ERROR_CODE, StorageProviderError, assertStorageProvider } from '../object-storage/provider-interface.mjs'
+import { createStoreExportsRepository } from '../modules/exports/store-repository.mjs'
+import { enqueueExportJob, markExportJobCompleted } from '../storage.mjs'
 
 function buildInMemoryS3Fetch() {
   const objects = new Map()
@@ -42,6 +44,20 @@ function buildInMemoryS3Fetch() {
         responseHeaders.set(`x-amz-meta-${name}`, headerValue)
       })
       return new Response(value.body, { status: 200, headers: responseHeaders })
+    }
+
+    if (options.method === 'HEAD') {
+      const value = objects.get(key)
+      if (!value) return new Response(null, { status: 404 })
+      const responseHeaders = new Headers({
+        etag: value.etag,
+        'content-type': value.contentType,
+        'content-length': String(value.body.length)
+      })
+      Object.entries(value.metadata).forEach(([name, headerValue]) => {
+        responseHeaders.set(`x-amz-meta-${name}`, headerValue)
+      })
+      return new Response(null, { status: 200, headers: responseHeaders })
     }
 
     if (options.method === 'DELETE') {
@@ -173,3 +189,137 @@ await runContractSuite('s3', async () =>
     fetchImpl: buildInMemoryS3Fetch()
   })
 )
+
+const downloadRetentionPolicies = {
+  export_artifact: { ttlDays: 14, archiveAfterDays: 1, purgeAfterDays: 2 },
+  uploaded_document: { ttlDays: 30, archiveAfterDays: 1, purgeAfterDays: 2 }
+}
+
+function buildExportsRepository(objectStorage) {
+  return createStoreExportsRepository({
+    state: { firms: [], users: [], profiles: [], templateAggregates: [], formSubmissions: [] },
+    persist: () => {},
+    addAuditEvent: () => {},
+    objectStorage
+  })
+}
+
+async function seedCompletedExportJob({ objectStorage, firmId, fileName, withBytes = true }) {
+  const jobId = `export-download-${randomUUID()}`
+  const key = `${firmId}/exports/${fileName}`
+  if (withBytes) {
+    await objectStorage.putObject({
+      bucket: 'test-exports',
+      key,
+      body: Buffer.from('export-artifact-bytes'),
+      contentType: 'application/pdf',
+      retentionClass: 'export_artifact'
+    })
+  }
+  enqueueExportJob({ id: jobId, firmId, clientId: null, type: 'pdf' })
+  markExportJobCompleted(jobId, {
+    fileName,
+    object: { bucket: 'test-exports', key, contentType: 'application/pdf', checksum: 'seeded-checksum' }
+  })
+  return { jobId, key }
+}
+
+await test('S3-mode export download returns a presigned redirect with tenant scoping enforced', async () => {
+  const objectStorage = createObjectStorage({
+    provider: createS3CompatibleStorageProvider({
+      endpoint: 'https://example-s3.local',
+      region: 'us-east-1',
+      accessKeyId: 'test-key',
+      secretAccessKey: 'test-secret',
+      fetchImpl: buildInMemoryS3Fetch()
+    }),
+    bucketDocuments: 'test-docs',
+    bucketExports: 'test-exports',
+    retentionPolicies: downloadRetentionPolicies
+  })
+  assert.equal(objectStorage.supportsHttpPresignedDownload(), true)
+
+  const repository = buildExportsRepository(objectStorage)
+  const firmId = `firm-presign-${randomUUID()}`
+  const { jobId } = await seedCompletedExportJob({ objectStorage, firmId, fileName: 'statement.pdf' })
+
+  const download = await repository.getDownload({ id: 'user-owner', firmId, role: 'admin' }, jobId)
+  assert.ok(download.redirectUrl, 'S3 mode must return a presigned redirect URL')
+  assert.equal(download.body, undefined, 'S3 mode must not stream bytes through the API')
+  assert.equal(download.fileName, 'statement.pdf')
+  assert.ok(download.expiresAt)
+
+  const presignedUrl = new URL(download.redirectUrl)
+  assert.equal(presignedUrl.origin, 'https://example-s3.local')
+  assert.ok(presignedUrl.searchParams.get('X-Amz-Signature'))
+  assert.equal(
+    presignedUrl.searchParams.get('response-content-disposition'),
+    'attachment; filename="statement.pdf"'
+  )
+  assert.equal(presignedUrl.searchParams.get('response-content-type'), 'application/pdf')
+
+  // Unauthorized access: a user from another firm is rejected before any URL is issued.
+  await assert.rejects(
+    () => repository.getDownload({ id: 'intruder', firmId: `firm-other-${randomUUID()}`, role: 'admin' }, jobId),
+    /Export not found/
+  )
+})
+
+await test('S3-mode export download falls back to re-render when artifact bytes were never persisted', async () => {
+  const objectStorage = createObjectStorage({
+    provider: createS3CompatibleStorageProvider({
+      endpoint: 'https://example-s3.local',
+      region: 'us-east-1',
+      accessKeyId: 'test-key',
+      secretAccessKey: 'test-secret',
+      fetchImpl: buildInMemoryS3Fetch()
+    }),
+    bucketDocuments: 'test-docs',
+    bucketExports: 'test-exports',
+    retentionPolicies: downloadRetentionPolicies
+  })
+  const repository = buildExportsRepository(objectStorage)
+  const firmId = `firm-legacy-${randomUUID()}`
+  const { jobId } = await seedCompletedExportJob({
+    objectStorage,
+    firmId,
+    fileName: 'legacy.pdf',
+    withBytes: false
+  })
+
+  const download = await repository.getDownload({ id: 'user-owner', firmId, role: 'admin' }, jobId)
+  assert.equal(download.redirectUrl, undefined, 'missing objects must not be handed out as presigned URLs')
+  assert.ok(Buffer.isBuffer(download.body), 'legacy jobs must fall back to a re-rendered artifact')
+  assert.ok(download.body.length > 0)
+})
+
+await test('local-mode export download still streams bytes with tenant scoping enforced', async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'klient-storage-download-local-'))
+  try {
+    const objectStorage = createObjectStorage({
+      provider: createLocalFilesystemStorageProvider({ rootDir }),
+      bucketDocuments: 'test-docs',
+      bucketExports: 'test-exports',
+      retentionPolicies: downloadRetentionPolicies
+    })
+    assert.equal(objectStorage.supportsHttpPresignedDownload(), false)
+
+    const repository = buildExportsRepository(objectStorage)
+    const firmId = `firm-local-${randomUUID()}`
+    const { jobId } = await seedCompletedExportJob({ objectStorage, firmId, fileName: 'statement.pdf' })
+
+    const download = await repository.getDownload({ id: 'user-owner', firmId, role: 'admin' }, jobId)
+    assert.equal(download.redirectUrl, undefined, 'local mode must keep streaming through the API')
+    assert.ok(Buffer.isBuffer(download.body))
+    assert.equal(download.body.toString('utf8'), 'export-artifact-bytes')
+    assert.equal(download.fileName, 'statement.pdf')
+    assert.equal(download.contentType, 'application/pdf')
+
+    await assert.rejects(
+      () => repository.getDownload({ id: 'intruder', firmId: `firm-other-${randomUUID()}`, role: 'admin' }, jobId),
+      /Export not found/
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})

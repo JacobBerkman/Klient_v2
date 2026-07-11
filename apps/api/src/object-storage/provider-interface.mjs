@@ -88,13 +88,26 @@ export function wrapStorageError(error, fallback = {}) {
 }
 
 /**
+ * @typedef {Object} StorageProviderCapabilities
+ * @property {boolean} [httpPresignedDownload] True when createPresignedDownloadUrl returns an absolute URL a
+ *   browser can fetch directly over HTTP (S3/MinIO). The local filesystem provider issues API-relative token
+ *   URLs that are not independently fetchable, so it leaves this false and callers must stream bytes instead.
+ */
+
+/**
  * @typedef {Object} StorageProvider
+ * @property {StorageProviderCapabilities} [capabilities]
  * @property {(object: StorageObjectDescriptor & { body: Buffer | Uint8Array | string }) => Promise<{ etag?: string | null, checksum?: string | null, contentType?: string | null, retentionClass?: string | null, metadata?: Record<string,string> }>} putObject
  * @property {(object: StorageObjectDescriptor) => Promise<{ body: Buffer, etag?: string | null, checksum?: string | null, contentType?: string | null, retentionClass?: string | null, metadata?: Record<string,string> }>} getObject
  * @property {(object: StorageObjectDescriptor & { expiresInSeconds?: number }) => Promise<PresignedRequest>} createPresignedUploadUrl
- * @property {(object: StorageObjectDescriptor & { expiresInSeconds?: number }) => Promise<PresignedRequest>} createPresignedDownloadUrl
+ * @property {(object: StorageObjectDescriptor & { expiresInSeconds?: number, responseContentDisposition?: string, responseContentType?: string }) => Promise<PresignedRequest>} createPresignedDownloadUrl
  * @property {(object: StorageObjectDescriptor) => Promise<void>} deleteObject
+ * @property {(object: StorageObjectDescriptor) => Promise<{ sizeBytes: number, etag?: string | null, checksum?: string | null, contentType?: string | null, updatedAt?: string | null }>} [statObject]
  */
+
+export function providerSupportsHttpPresignedDownload(provider) {
+  return provider?.capabilities?.httpPresignedDownload === true
+}
 
 export function assertStorageProvider(provider) {
   const methods = ['putObject', 'getObject', 'createPresignedUploadUrl', 'createPresignedDownloadUrl', 'deleteObject']
