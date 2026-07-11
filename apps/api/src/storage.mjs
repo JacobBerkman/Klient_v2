@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -362,13 +363,63 @@ function syncQueryTables(state) {
     note.createdAt,
     JSON.stringify(note)
   ])
-  replaceRows('audit_events', state.auditEvents || [], (event) => [
-    event.id,
-    event.firmId,
-    event.action,
-    event.timestamp || event.occurredAt,
-    JSON.stringify(event)
-  ])
+  // audit_events is deliberately absent: it is an append-only source of truth
+  // written by insertAuditEvent, never a destructive resync from blob state.
+}
+
+// --- Audit repository (append-only source of truth) --------------------------
+// Canonical audit events are inserted directly into audit_events; the blob
+// serializes auditEvents: [] purely for shape compatibility. The full
+// canonical event lives in the payload JSON column; id/firm_id/action/
+// occurred_at are promoted for keying, tenancy scoping, and ordering.
+
+export function insertAuditEvent(event) {
+  if (!event || typeof event !== 'object') return false
+  const result = db
+    .prepare(
+      `
+      INSERT OR IGNORE INTO audit_events (id, firm_id, action, occurred_at, payload)
+      VALUES (?, ?, ?, ?, ?)
+    `
+    )
+    .run(
+      event.id || randomUUID(),
+      // firm_id is NOT NULL; system-level events (no firm attribution) are
+      // bucketed under 'system' and never match a real firm's scoped reads.
+      event.firmId ?? 'system',
+      event.action || 'unknown',
+      event.timestamp || event.occurredAt || nowIso(),
+      JSON.stringify(event)
+    )
+  return result.changes > 0
+}
+
+// Firm-scoped, newest-first. rowid DESC breaks same-timestamp ties in reverse
+// insertion order, matching the old in-memory push+reverse read exactly.
+export function listAuditEvents(firmId, { limit = 0 } = {}) {
+  const baseSql = `
+    SELECT payload FROM audit_events
+    WHERE firm_id = ?
+    ORDER BY occurred_at DESC, rowid DESC
+  `
+  const rows =
+    Number(limit) > 0
+      ? db.prepare(`${baseSql} LIMIT ?`).all(firmId, Number(limit))
+      : db.prepare(baseSql).all(firmId)
+  return rows.map((row) => JSON.parse(row.payload))
+}
+
+export function countAuditEvents() {
+  return db.prepare('SELECT COUNT(*) AS count FROM audit_events').get()?.count || 0
+}
+
+// Blob-to-table audit seeding: id-keyed INSERT OR IGNORE, so it is idempotent
+// against the migration 004 backfill and safe to run on the freshly seeded
+// state (whose seed audit events exist only in memory).
+function ensureAuditSeededFromState(state) {
+  for (const event of state.auditEvents || []) {
+    insertAuditEvent(event)
+  }
 }
 
 function syncAnalyticsMaterialized(state) {
@@ -478,13 +529,18 @@ export function loadState(seedFactory) {
   const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get()
   if (row?.payload) {
     const state = JSON.parse(row.payload)
-    // Legacy blobs mirrored the export queue in state.exportJobs. The
-    // export_jobs table is now the sole source of truth: seed it once from
-    // the blob (old databases with an empty table), then strip the mirror
-    // from the blob so it never gets written back.
+    // Legacy blobs mirrored the export queue in state.exportJobs and the
+    // audit trail in state.auditEvents. The export_jobs and audit_events
+    // tables are now the sole sources of truth: seed them once from the blob
+    // (old databases whose tables predate the cutover), then strip the
+    // mirrors from the blob so they never get written back.
     ensureQueueSeededFromState(state)
-    if (Array.isArray(state.exportJobs) && state.exportJobs.length > 0) {
+    ensureAuditSeededFromState(state)
+    const hadExportJobs = Array.isArray(state.exportJobs) && state.exportJobs.length > 0
+    const hadAuditEvents = Array.isArray(state.auditEvents) && state.auditEvents.length > 0
+    if (hadExportJobs || hadAuditEvents) {
       state.exportJobs = []
+      state.auditEvents = []
       db.prepare(
         `
         INSERT INTO app_state (id, payload, updated_at)
@@ -494,6 +550,7 @@ export function loadState(seedFactory) {
       ).run(JSON.stringify(state))
     }
     state.exportJobs = []
+    state.auditEvents = []
     // Sessions live exclusively in the sessions table (migrations 002/003
     // backfilled and cleared the blob). Keep the array shape for consumers
     // but never surface stale blob sessions.
@@ -504,17 +561,18 @@ export function loadState(seedFactory) {
   const state = seedFactory()
   saveState(state)
   ensureQueueSeededFromState(state)
+  ensureAuditSeededFromState(state)
   state.exportJobs = []
+  state.auditEvents = []
   state.sessions = []
   return state
 }
 
 export function saveState(state) {
-  // export_jobs is the sole source of truth for the export queue, and the
-  // sessions table is the sole source of truth for sessions: the blob keeps
-  // empty exportJobs/sessions arrays purely for shape compatibility, so a
+  // export_jobs, sessions, and audit_events are relational sources of truth:
+  // the blob keeps empty arrays for them purely for shape compatibility, so a
   // stale in-memory mirror can never clobber targeted relational writes.
-  const payload = JSON.stringify({ ...state, exportJobs: [], sessions: [] })
+  const payload = JSON.stringify({ ...state, exportJobs: [], sessions: [], auditEvents: [] })
   // The blob upsert, derived query tables, and materialized analytics must
   // commit together: a failure partway through (e.g. mid replaceRows) would
   // otherwise leave the blob and the relational projections out of sync.

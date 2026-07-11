@@ -2,11 +2,14 @@ import { createHash, randomUUID } from 'node:crypto'
 import { runtime } from './runtime.mjs'
 import {
   applyExportJobLifecycleUpdate,
+  countAuditEvents as countAuditEventsInTable,
   deleteExpiredSessions,
   deleteSession,
   deleteSessionsByUser,
   getExportJob,
   getSessionByToken,
+  insertAuditEvent,
+  listAuditEvents,
   listExportQueueJobs,
   loadState,
   processExportQueueTickAsync,
@@ -1615,21 +1618,33 @@ export function createStore({
     }
   }
 
+  // Audit events recorded while a pipeline transaction is in flight are
+  // buffered here instead of being inserted immediately: audit_events is an
+  // append-only table with no rollback hook, so buffered events land only
+  // after the mutator AND persist() succeed. A failure on either path
+  // discards the buffer — failed transactions never leak audit rows.
+  let pipelineAuditBuffer = null
+
   function executePipelineTransaction(mutator) {
     const snapshot = {
       profiles: state.profiles.map((profile) => ({ ...profile })),
       stageChangesLength: state.stageChanges.length,
-      auditEventsLength: state.auditEvents.length,
       boardVersions: { ...(state.boardVersions || {}) }
     }
+    pipelineAuditBuffer = []
     try {
       const result = mutator()
       persist()
+      const buffered = pipelineAuditBuffer
+      pipelineAuditBuffer = null
+      for (const event of buffered) {
+        insertAuditEvent(event)
+      }
       return result
     } catch (error) {
+      pipelineAuditBuffer = null
       state.profiles = snapshot.profiles
       state.stageChanges = state.stageChanges.slice(0, snapshot.stageChangesLength)
-      state.auditEvents = state.auditEvents.slice(0, snapshot.auditEventsLength)
       state.boardVersions = snapshot.boardVersions
       throw error
     }
@@ -1743,7 +1758,18 @@ export function createStore({
       ip: options.ip || null,
       timestamp: now()
     })
-    state.auditEvents.push(event)
+    // audit_events is the append-only source of truth: insert the canonical
+    // event directly instead of pushing onto a blob-backed array. Inside a
+    // pipeline transaction the event is buffered and inserted only after the
+    // transaction succeeds (see executePipelineTransaction).
+    if (pipelineAuditBuffer) {
+      pipelineAuditBuffer.push(event)
+      return
+    }
+    insertAuditEvent(event)
+    // persist() still runs by default: many callers mutate other blob-backed
+    // state (users, invites, profiles) right before recording the audit event
+    // and rely on this to flush it.
     if (options.persist !== false) {
       persist()
     }
@@ -1806,10 +1832,8 @@ export function createStore({
           exports: listExportQueueJobs().filter((job) => job.firmId === user.firmId).length
         },
         recentProfiles: profiles.slice(-5).reverse(),
-        recentAuditEvents: state.auditEvents
-          .filter((event) => event.firmId === user.firmId)
-          .slice(-10)
-          .reverse()
+        // Firm-scoped SQL read: audit_events is the source of truth.
+        recentAuditEvents: listAuditEvents(user.firmId, { limit: 10 })
       }
     },
     listProfiles(user, kind, search = '') {
@@ -3594,10 +3618,15 @@ export function createStore({
     },
     listAudit(user) {
       requirePermission(user, 'audit:read')
-      return state.auditEvents
-        .filter((entry) => entry.firmId === user.firmId)
-        .slice()
-        .reverse()
+      // Firm-scoped SQL read, newest first — audit_events is the source of
+      // truth and the blob no longer carries audit events at all.
+      return listAuditEvents(user.firmId)
+    },
+    // Total number of recorded audit events (all firms). Used by
+    // runAuditedMutation's "every mutation records an audit event" guard now
+    // that there is no in-memory auditEvents array to measure.
+    countAuditEvents() {
+      return countAuditEventsInTable()
     },
     logout(token) {
       const session = getSessionByToken(token)
