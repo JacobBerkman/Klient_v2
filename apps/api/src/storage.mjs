@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { copyFileSync, existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -117,11 +118,12 @@ export function deleteExpiredCsrfTokens(cutoffIso = new Date().toISOString()) {
   db.prepare('DELETE FROM csrf_tokens WHERE expires_at <= ?').run(cutoffIso)
 }
 
-// --- Session repository (dual-write phase) ---------------------------------
+// --- Session repository (sole source of truth) ------------------------------
 // Sessions are the highest-write-volume entity: every authenticated request
-// touches lastActivityAt/idleExpiresAt. These helpers give session mutations
-// a targeted relational home so the request path never rewrites the full
-// app_state blob. Reads still come from the in-memory state for now.
+// touches lastActivityAt/idleExpiresAt. The sessions table is the only home
+// for session records: reads and writes both go through these helpers, and
+// the app_state blob serializes an empty sessions array purely for shape
+// compatibility.
 
 const SESSION_COLUMNS = `
   token,
@@ -171,24 +173,42 @@ export function deleteSession(token) {
   return result.changes > 0
 }
 
-// Returns the deleted tokens so callers can fire per-session cleanup
-// (CSRF token invalidation, session-invalidated callbacks) for each one.
+// Returns the deleted session rows (token, userId, firmId, expiry columns) so
+// callers can fire per-session cleanup (CSRF token invalidation,
+// session-invalidated callbacks) with the same payload the in-memory prune
+// used to provide, including enough data to distinguish idle vs absolute
+// expiry.
 export function deleteExpiredSessions(nowIsoCutoff = nowIso()) {
   const expired = db
     .prepare(
       `
-      SELECT token FROM sessions
+      SELECT ${SESSION_COLUMNS} FROM sessions
       WHERE expires_at IS NULL OR expires_at <= ?
         OR idle_expires_at IS NULL OR idle_expires_at <= ?
     `
     )
     .all(nowIsoCutoff, nowIsoCutoff)
-    .map((row) => row.token)
   if (expired.length) {
     const placeholders = expired.map(() => '?').join(', ')
-    db.prepare(`DELETE FROM sessions WHERE token IN (${placeholders})`).run(...expired)
+    db.prepare(`DELETE FROM sessions WHERE token IN (${placeholders})`).run(...expired.map((row) => row.token))
   }
   return expired
+}
+
+// Bulk revocation for a single user (password reset). Returns the deleted
+// tokens; deliberately does NOT fire per-session callbacks — that matches the
+// pre-table behavior where auth providers revoked sessions without invoking
+// onSessionInvalidated.
+export function deleteSessionsByUser(userId) {
+  const tokens = db
+    .prepare('SELECT token FROM sessions WHERE user_id = ?')
+    .all(userId)
+    .map((row) => row.token)
+  if (tokens.length) {
+    const placeholders = tokens.map(() => '?').join(', ')
+    db.prepare(`DELETE FROM sessions WHERE token IN (${placeholders})`).run(...tokens)
+  }
+  return tokens
 }
 
 export function listSessionsFromTable() {
@@ -197,24 +217,6 @@ export function listSessionsFromTable() {
 
 export function getSessionByToken(token) {
   return db.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE token = ?`).get(token) || null
-}
-
-// Startup reconciliation: after the store normalizes the blob's sessions
-// (filling defaults for legacy records), rewrite the table once so the two
-// copies start out identical.
-export function replaceSessions(sessions = []) {
-  db.exec('BEGIN IMMEDIATE')
-  try {
-    db.exec('DELETE FROM sessions')
-    for (const session of sessions) {
-      if (!session?.token) continue
-      upsertSession(session)
-    }
-    db.exec('COMMIT')
-  } catch (error) {
-    db.exec('ROLLBACK')
-    throw error
-  }
 }
 
 export function listExportQueueJobs() {
@@ -361,13 +363,63 @@ function syncQueryTables(state) {
     note.createdAt,
     JSON.stringify(note)
   ])
-  replaceRows('audit_events', state.auditEvents || [], (event) => [
-    event.id,
-    event.firmId,
-    event.action,
-    event.timestamp || event.occurredAt,
-    JSON.stringify(event)
-  ])
+  // audit_events is deliberately absent: it is an append-only source of truth
+  // written by insertAuditEvent, never a destructive resync from blob state.
+}
+
+// --- Audit repository (append-only source of truth) --------------------------
+// Canonical audit events are inserted directly into audit_events; the blob
+// serializes auditEvents: [] purely for shape compatibility. The full
+// canonical event lives in the payload JSON column; id/firm_id/action/
+// occurred_at are promoted for keying, tenancy scoping, and ordering.
+
+export function insertAuditEvent(event) {
+  if (!event || typeof event !== 'object') return false
+  const result = db
+    .prepare(
+      `
+      INSERT OR IGNORE INTO audit_events (id, firm_id, action, occurred_at, payload)
+      VALUES (?, ?, ?, ?, ?)
+    `
+    )
+    .run(
+      event.id || randomUUID(),
+      // firm_id is NOT NULL; system-level events (no firm attribution) are
+      // bucketed under 'system' and never match a real firm's scoped reads.
+      event.firmId ?? 'system',
+      event.action || 'unknown',
+      event.timestamp || event.occurredAt || nowIso(),
+      JSON.stringify(event)
+    )
+  return result.changes > 0
+}
+
+// Firm-scoped, newest-first. rowid DESC breaks same-timestamp ties in reverse
+// insertion order, matching the old in-memory push+reverse read exactly.
+export function listAuditEvents(firmId, { limit = 0 } = {}) {
+  const baseSql = `
+    SELECT payload FROM audit_events
+    WHERE firm_id = ?
+    ORDER BY occurred_at DESC, rowid DESC
+  `
+  const rows =
+    Number(limit) > 0
+      ? db.prepare(`${baseSql} LIMIT ?`).all(firmId, Number(limit))
+      : db.prepare(baseSql).all(firmId)
+  return rows.map((row) => JSON.parse(row.payload))
+}
+
+export function countAuditEvents() {
+  return db.prepare('SELECT COUNT(*) AS count FROM audit_events').get()?.count || 0
+}
+
+// Blob-to-table audit seeding: id-keyed INSERT OR IGNORE, so it is idempotent
+// against the migration 004 backfill and safe to run on the freshly seeded
+// state (whose seed audit events exist only in memory).
+function ensureAuditSeededFromState(state) {
+  for (const event of state.auditEvents || []) {
+    insertAuditEvent(event)
+  }
 }
 
 function syncAnalyticsMaterialized(state) {
@@ -477,13 +529,18 @@ export function loadState(seedFactory) {
   const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get()
   if (row?.payload) {
     const state = JSON.parse(row.payload)
-    // Legacy blobs mirrored the export queue in state.exportJobs. The
-    // export_jobs table is now the sole source of truth: seed it once from
-    // the blob (old databases with an empty table), then strip the mirror
-    // from the blob so it never gets written back.
+    // Legacy blobs mirrored the export queue in state.exportJobs and the
+    // audit trail in state.auditEvents. The export_jobs and audit_events
+    // tables are now the sole sources of truth: seed them once from the blob
+    // (old databases whose tables predate the cutover), then strip the
+    // mirrors from the blob so they never get written back.
     ensureQueueSeededFromState(state)
-    if (Array.isArray(state.exportJobs) && state.exportJobs.length > 0) {
+    ensureAuditSeededFromState(state)
+    const hadExportJobs = Array.isArray(state.exportJobs) && state.exportJobs.length > 0
+    const hadAuditEvents = Array.isArray(state.auditEvents) && state.auditEvents.length > 0
+    if (hadExportJobs || hadAuditEvents) {
       state.exportJobs = []
+      state.auditEvents = []
       db.prepare(
         `
         INSERT INTO app_state (id, payload, updated_at)
@@ -493,22 +550,29 @@ export function loadState(seedFactory) {
       ).run(JSON.stringify(state))
     }
     state.exportJobs = []
+    state.auditEvents = []
+    // Sessions live exclusively in the sessions table (migrations 002/003
+    // backfilled and cleared the blob). Keep the array shape for consumers
+    // but never surface stale blob sessions.
+    state.sessions = []
     return state
   }
 
   const state = seedFactory()
   saveState(state)
   ensureQueueSeededFromState(state)
+  ensureAuditSeededFromState(state)
   state.exportJobs = []
+  state.auditEvents = []
+  state.sessions = []
   return state
 }
 
 export function saveState(state) {
-  // export_jobs is the sole source of truth for the export queue: the blob
-  // keeps an empty exportJobs array purely for shape compatibility, so a
-  // stale in-memory mirror can never clobber queue writes from the separate
-  // export-worker process.
-  const payload = JSON.stringify({ ...state, exportJobs: [] })
+  // export_jobs, sessions, and audit_events are relational sources of truth:
+  // the blob keeps empty arrays for them purely for shape compatibility, so a
+  // stale in-memory mirror can never clobber targeted relational writes.
+  const payload = JSON.stringify({ ...state, exportJobs: [], sessions: [], auditEvents: [] })
   // The blob upsert, derived query tables, and materialized analytics must
   // commit together: a failure partway through (e.g. mid replaceRows) would
   // otherwise leave the blob and the relational projections out of sync.

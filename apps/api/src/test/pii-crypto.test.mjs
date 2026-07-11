@@ -104,7 +104,8 @@ test('unauthorized unmask reads are denied and audited', async () => {
         }),
       /denied/
     )
-    const denyEvent = store.state.auditEvents.find((entry) => entry.action === 'sensitive.read_denied')
+    // audit_events table is the source of truth: read through listAudit.
+    const denyEvent = store.listAudit(user).find((entry) => entry.action === 'sensitive.read_denied')
     assert.ok(denyEvent)
     const denyMeta = denyEvent.metadata || denyEvent.after || {}
     assert.equal(denyMeta.requestedUnmask, true)
@@ -145,9 +146,9 @@ test('authorized unmask reads return clear values and emit audit events', async 
     assert.equal(response.ssn, '999-88-7777')
     assert.equal(response.taxId, '11-2223333')
 
-    const auditEvent = store.state.auditEvents.find(
-      (entry) => entry.action === 'sensitive.read' && entry.entityId === created.id
-    )
+    const auditEvent = store
+      .listAudit(user)
+      .find((entry) => entry.action === 'sensitive.read' && entry.entityId === created.id)
     assert.ok(auditEvent)
     const auditMeta = auditEvent.metadata || auditEvent.after || {}
     assert.equal(auditMeta.grantedUnmask, true)
@@ -220,9 +221,9 @@ test('unmask reads require approved reason code, justification, and explicit pri
       /explicit privileged policy acknowledgement/
     )
 
-    const deniedEvents = store.state.auditEvents.filter(
-      (entry) => entry.action === 'sensitive.read_denied' && entry.entityId === profile.id
-    )
+    const deniedEvents = store
+      .listAudit(user)
+      .filter((entry) => entry.action === 'sensitive.read_denied' && entry.entityId === profile.id)
     assert.ok(deniedEvents.length >= 4)
     deniedEvents.forEach((entry) => {
       const denialMeta = entry.metadata || entry.after || {}

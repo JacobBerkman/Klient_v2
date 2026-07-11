@@ -119,7 +119,9 @@ test('draft collaboration regression enforces role + collaborator boundaries for
     return true
   })
 
-  const auditActions = store.state.auditEvents
+  // audit_events table is the source of truth: read through listAudit.
+  const auditActions = store
+    .listAudit(admin)
     .filter((entry) => entry.entityType === 'form_submission' && entry.entityId === draft.id)
     .map((entry) => entry.action)
   assert.ok(auditActions.includes('form_submission.collaborator_added'))

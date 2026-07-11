@@ -2,13 +2,17 @@ import { createHash, randomUUID } from 'node:crypto'
 import { runtime } from './runtime.mjs'
 import {
   applyExportJobLifecycleUpdate,
+  countAuditEvents as countAuditEventsInTable,
+  deleteExpiredSessions,
   deleteSession,
+  deleteSessionsByUser,
   getExportJob,
+  getSessionByToken,
+  insertAuditEvent,
+  listAuditEvents,
   listExportQueueJobs,
-  listSessionsFromTable,
   loadState,
   processExportQueueTickAsync,
-  replaceSessions,
   saveState,
   touchSession,
   upsertSession
@@ -1170,55 +1174,10 @@ export function createStore({
   state.pendingUploadIntents ||= []
   state.draftStepStates ||= []
   state.pipelineStages ||= []
-  state.sessions = (state.sessions || []).map((session) => {
-    const createdAt = session.createdAt || now()
-    const lastActivityAt = session.lastActivityAt || createdAt
-    return {
-      ...session,
-      createdAt,
-      lastActivityAt,
-      expiresAt: session.expiresAt || new Date(new Date(createdAt).getTime() + SESSION_MAX_AGE_MS).toISOString(),
-      idleExpiresAt:
-        session.idleExpiresAt || new Date(new Date(lastActivityAt).getTime() + SESSION_IDLE_TIMEOUT_MS).toISOString()
-    }
-  })
-  // Dual-write reconciliation: migration 002 backfilled the sessions table
-  // with raw blob values, while the normalization above may have filled in
-  // defaults. Rewrite the table once at startup so table rows and the
-  // in-memory sessions array start out identical.
-  replaceSessions(state.sessions)
-
-  // Env flag SESSION_DUAL_WRITE_VERIFY=1: after each session mutation,
-  // compare the sessions table against state.sessions and fail loudly on
-  // divergence. Used by tests and available as a canary in real deployments.
-  function verifySessionDualWrite(operation, affectedToken = null) {
-    if (process.env.SESSION_DUAL_WRITE_VERIFY !== '1') return
-    const tableSessions = listSessionsFromTable()
-    const tableByToken = new Map(tableSessions.map((row) => [row.token, row]))
-    const stateTokens = new Set(state.sessions.map((entry) => entry.token))
-    const missingInTable = [...stateTokens].filter((token) => !tableByToken.has(token))
-    const extraInTable = tableSessions.map((row) => row.token).filter((token) => !stateTokens.has(token))
-    const fieldMismatches = []
-    if (affectedToken && stateTokens.has(affectedToken)) {
-      const memorySession = state.sessions.find((entry) => entry.token === affectedToken)
-      const tableRow = tableByToken.get(affectedToken) || {}
-      for (const field of ['userId', 'firmId', 'createdAt', 'lastActivityAt', 'expiresAt', 'idleExpiresAt']) {
-        if ((memorySession[field] ?? null) !== (tableRow[field] ?? null)) {
-          fieldMismatches.push(`${field}: state=${memorySession[field] ?? null} table=${tableRow[field] ?? null}`)
-        }
-      }
-    }
-    if (missingInTable.length || extraInTable.length || fieldMismatches.length) {
-      const message = `Session dual-write divergence after ${operation}: ${JSON.stringify({
-        affectedToken,
-        missingInTable,
-        extraInTable,
-        fieldMismatches
-      })}`
-      console.error(message)
-      throw new Error(message)
-    }
-  }
+  // Sessions live exclusively in the sessions table: migration 002 backfilled
+  // (and normalized) legacy blob sessions, migration 003 cleared the blob, and
+  // loadState always returns an empty sessions array. All session reads and
+  // writes below go through the storage helpers.
 
   function normalizeObjectMetadata(metadata = {}, defaultRetentionClass = 'uploaded_document') {
     return {
@@ -1659,21 +1618,33 @@ export function createStore({
     }
   }
 
+  // Audit events recorded while a pipeline transaction is in flight are
+  // buffered here instead of being inserted immediately: audit_events is an
+  // append-only table with no rollback hook, so buffered events land only
+  // after the mutator AND persist() succeed. A failure on either path
+  // discards the buffer — failed transactions never leak audit rows.
+  let pipelineAuditBuffer = null
+
   function executePipelineTransaction(mutator) {
     const snapshot = {
       profiles: state.profiles.map((profile) => ({ ...profile })),
       stageChangesLength: state.stageChanges.length,
-      auditEventsLength: state.auditEvents.length,
       boardVersions: { ...(state.boardVersions || {}) }
     }
+    pipelineAuditBuffer = []
     try {
       const result = mutator()
       persist()
+      const buffered = pipelineAuditBuffer
+      pipelineAuditBuffer = null
+      for (const event of buffered) {
+        insertAuditEvent(event)
+      }
       return result
     } catch (error) {
+      pipelineAuditBuffer = null
       state.profiles = snapshot.profiles
       state.stageChanges = state.stageChanges.slice(0, snapshot.stageChangesLength)
-      state.auditEvents = state.auditEvents.slice(0, snapshot.auditEventsLength)
       state.boardVersions = snapshot.boardVersions
       throw error
     }
@@ -1692,55 +1663,42 @@ export function createStore({
       expiresAt: new Date(Date.now() + SESSION_MAX_AGE_MS).toISOString(),
       idleExpiresAt: new Date(Date.now() + SESSION_IDLE_TIMEOUT_MS).toISOString()
     }
-    state.sessions.push(session)
     upsertSession(session)
     persist()
-    verifySessionDualWrite('createSession', token)
     return { token, user: publicUser(user) }
   }
 
   function invalidateSession(session, reason = 'unknown') {
     if (!session?.token) return false
-    const previousLength = state.sessions.length
-    state.sessions = state.sessions.filter((entry) => entry.token !== session.token)
-    const removed = state.sessions.length !== previousLength
+    const removed = deleteSession(session.token)
     if (removed) {
-      deleteSession(session.token)
       onSessionInvalidated({
         token: session.token,
         userId: session.userId,
         firmId: session.firmId,
         reason
       })
-      verifySessionDualWrite('invalidateSession')
     }
     return removed
   }
 
+  // Deletes every expired session row and fires the per-session invalidation
+  // callback (CSRF cleanup) for each. A session expires either absolutely
+  // (expiresAt passed) or by idling out (idleExpiresAt passed) — the reason
+  // computation mirrors the old in-memory check exactly: a session that is
+  // still absolutely valid can only have idled out. No persist(): sessions no
+  // longer live in the blob, so a prune touches only the sessions table.
   function pruneExpiredSessions() {
     const nowMs = Date.now()
-    const activeSessions = []
-    let changed = false
-    for (const entry of state.sessions) {
+    const expired = deleteExpiredSessions(new Date(nowMs).toISOString())
+    for (const entry of expired) {
       const absoluteValid = new Date(entry.expiresAt).getTime() > nowMs
-      const idleValid = new Date(entry.idleExpiresAt || 0).getTime() > nowMs
-      if (absoluteValid && idleValid) {
-        activeSessions.push(entry)
-        continue
-      }
-      changed = true
-      deleteSession(entry.token)
       onSessionInvalidated({
         token: entry.token,
         userId: entry.userId,
         firmId: entry.firmId,
         reason: absoluteValid ? 'idle_timeout' : 'max_age_expired'
       })
-    }
-    if (changed) {
-      state.sessions = activeSessions
-      persist()
-      verifySessionDualWrite('pruneExpiredSessions')
     }
   }
 
@@ -1756,30 +1714,28 @@ export function createStore({
   }
 
   function requireUser(token) {
+    // Prune first so an expired-but-still-present row can never authenticate:
+    // any session row that survives the prune is both absolutely valid and
+    // idle-valid at this instant.
     pruneExpiredSessions()
-    const session = state.sessions.find((entry) => entry.token === token)
+    const session = getSessionByToken(token)
     if (!session) throw new Error('Authentication required.')
     const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId)
     if (!user) throw new Error('Authentication required.')
-    session.lastActivityAt = now()
-    session.idleExpiresAt = new Date(Date.now() + SESSION_IDLE_TIMEOUT_MS).toISOString()
     // Activity touches happen on EVERY authenticated request and used to call
     // persist(), serializing the entire state blob and rebuilding ~10 derived
-    // tables per GET. A single-row UPDATE on the sessions table replaces that.
-    // The in-memory session object (updated above) keeps reads current; the
-    // blob's copy of lastActivityAt/idleExpiresAt catches up on the next real
-    // mutation's persist() — acceptable staleness for activity timestamps only.
+    // tables per GET. A single-row UPDATE on the sessions table replaces that;
+    // the blob does not carry sessions at all anymore.
     touchSession(session.token, {
-      lastActivityAt: session.lastActivityAt,
-      idleExpiresAt: session.idleExpiresAt
+      lastActivityAt: now(),
+      idleExpiresAt: new Date(Date.now() + SESSION_IDLE_TIMEOUT_MS).toISOString()
     })
-    verifySessionDualWrite('touchSession', session.token)
     return publicUser(user)
   }
 
   function rotateSession(token, reason = 'privilege_transition') {
     pruneExpiredSessions()
-    const session = state.sessions.find((entry) => entry.token === token)
+    const session = getSessionByToken(token)
     if (!session) throw new Error('Authentication required.')
     const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId)
     if (!user) throw new Error('Authentication required.')
@@ -1802,7 +1758,18 @@ export function createStore({
       ip: options.ip || null,
       timestamp: now()
     })
-    state.auditEvents.push(event)
+    // audit_events is the append-only source of truth: insert the canonical
+    // event directly instead of pushing onto a blob-backed array. Inside a
+    // pipeline transaction the event is buffered and inserted only after the
+    // transaction succeeds (see executePipelineTransaction).
+    if (pipelineAuditBuffer) {
+      pipelineAuditBuffer.push(event)
+      return
+    }
+    insertAuditEvent(event)
+    // persist() still runs by default: many callers mutate other blob-backed
+    // state (users, invites, profiles) right before recording the audit event
+    // and rely on this to flush it.
     if (options.persist !== false) {
       persist()
     }
@@ -1823,18 +1790,10 @@ export function createStore({
     return profile
   }
 
-  // Table-side mirror for session removals performed inside auth providers
-  // (e.g. password reset revoking every session for a user). The provider
-  // mutates state.sessions itself; this keeps the sessions table in step.
-  function deleteSessionRecords(tokens = []) {
-    for (const token of tokens) {
-      deleteSession(token)
-    }
-    verifySessionDualWrite('deleteSessionRecords')
-  }
-
   function createAuthProvider() {
-    const common = { state, persist, createSession, addAudit, deleteSessionRecords }
+    // deleteSessionsByUser: bulk revocation for password reset — the sessions
+    // table is the only place sessions live, so providers revoke through it.
+    const common = { state, persist, createSession, addAudit, deleteSessionsByUser }
     if (runtime.authProvider === 'local') return createLocalAuthProvider(common)
     if (runtime.authProvider === 'oidc') return createOidcAuthProvider(common)
     if (runtime.authProvider === 'saml') return createSamlAuthProvider(common)
@@ -1873,10 +1832,8 @@ export function createStore({
           exports: listExportQueueJobs().filter((job) => job.firmId === user.firmId).length
         },
         recentProfiles: profiles.slice(-5).reverse(),
-        recentAuditEvents: state.auditEvents
-          .filter((event) => event.firmId === user.firmId)
-          .slice(-10)
-          .reverse()
+        // Firm-scoped SQL read: audit_events is the source of truth.
+        recentAuditEvents: listAuditEvents(user.firmId, { limit: 10 })
       }
     },
     listProfiles(user, kind, search = '') {
@@ -3661,13 +3618,18 @@ export function createStore({
     },
     listAudit(user) {
       requirePermission(user, 'audit:read')
-      return state.auditEvents
-        .filter((entry) => entry.firmId === user.firmId)
-        .slice()
-        .reverse()
+      // Firm-scoped SQL read, newest first — audit_events is the source of
+      // truth and the blob no longer carries audit events at all.
+      return listAuditEvents(user.firmId)
+    },
+    // Total number of recorded audit events (all firms). Used by
+    // runAuditedMutation's "every mutation records an audit event" guard now
+    // that there is no in-memory auditEvents array to measure.
+    countAuditEvents() {
+      return countAuditEventsInTable()
     },
     logout(token) {
-      const session = state.sessions.find((entry) => entry.token === token)
+      const session = getSessionByToken(token)
       invalidateSession(session, 'logout')
       if (session) {
         addAudit(session.firmId, session.userId, 'user', session.userId, 'auth.logout', {
