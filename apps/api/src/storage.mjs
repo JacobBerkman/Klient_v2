@@ -422,6 +422,353 @@ function ensureAuditSeededFromState(state) {
   }
 }
 
+// --- Form submission repository (source of truth) ----------------------------
+// The canonical submission object (data, draft lock, collaborators, revision)
+// lives in the payload JSON column; id/firm_id/client_id/template_id/status/
+// source/created_by_user_id and the timestamps are promoted for keying,
+// tenancy scoping, and filtered queries. Reads return JSON.parse(payload) so
+// the object shape is exactly what the store wrote — the blob serializes
+// formSubmissions: [] purely for shape compatibility.
+//
+// Ordering: rowid ASC mirrors the old in-memory push order, so list readers
+// that used to iterate state.formSubmissions see the same sequence.
+
+const SUBMISSION_UPSERT_SQL = `
+  INSERT INTO form_submissions (
+    id, firm_id, client_id, template_id, status, source, created_by_user_id, created_at, updated_at, payload
+  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    firm_id = excluded.firm_id,
+    client_id = excluded.client_id,
+    template_id = excluded.template_id,
+    status = excluded.status,
+    source = excluded.source,
+    created_by_user_id = excluded.created_by_user_id,
+    created_at = excluded.created_at,
+    updated_at = excluded.updated_at,
+    payload = excluded.payload
+`
+
+function submissionParams(submission) {
+  return [
+    submission.id,
+    submission.firmId ?? 'unknown',
+    submission.clientId ?? null,
+    submission.templateId ?? null,
+    submission.status ?? null,
+    submission.source ?? null,
+    submission.createdByUserId ?? null,
+    submission.createdAt ?? null,
+    submission.updatedAt ?? submission.createdAt ?? null,
+    JSON.stringify(submission)
+  ]
+}
+
+export function upsertFormSubmission(submission) {
+  db.prepare(SUBMISSION_UPSERT_SQL).run(...submissionParams(submission))
+  return submission
+}
+
+// Optimistic-concurrency write for draft revisions: the row only updates when
+// the stored revisionId still equals the revision the caller loaded AND the
+// stored lock lease still matches the lease the caller validated. A missing
+// revisionId counts as 1 (matching the store's Number(revisionId || 1)); a
+// missing lock lease counts as ''. Returns false when another writer moved
+// the draft first — the caller re-reads and surfaces the same
+// revision-conflict contract the API has always exposed.
+export function updateFormSubmissionGuarded(submission, { expectedRevisionId, expectedLockLeaseId } = {}) {
+  const result = db
+    .prepare(
+      `
+      UPDATE form_submissions
+      SET client_id = ?, template_id = ?, status = ?, source = ?, created_by_user_id = ?,
+        created_at = ?, updated_at = ?, payload = ?
+      WHERE id = ? AND firm_id = ?
+        AND (? IS NULL OR CAST(COALESCE(json_extract(payload, '$.revisionId'), 1) AS INTEGER) = ?)
+        AND (? IS NULL OR COALESCE(json_extract(payload, '$.lock.leaseId'), '') = ?)
+    `
+    )
+    .run(
+      submission.clientId ?? null,
+      submission.templateId ?? null,
+      submission.status ?? null,
+      submission.source ?? null,
+      submission.createdByUserId ?? null,
+      submission.createdAt ?? null,
+      submission.updatedAt ?? submission.createdAt ?? null,
+      JSON.stringify(submission),
+      submission.id,
+      submission.firmId ?? 'unknown',
+      expectedRevisionId ?? null,
+      expectedRevisionId ?? null,
+      expectedLockLeaseId ?? null,
+      expectedLockLeaseId ?? null
+    )
+  return result.changes > 0
+}
+
+export function getFormSubmissionById(submissionId, { firmId = null } = {}) {
+  const row = firmId
+    ? db.prepare('SELECT payload FROM form_submissions WHERE id = ? AND firm_id = ?').get(submissionId, firmId)
+    : db.prepare('SELECT payload FROM form_submissions WHERE id = ?').get(submissionId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+export function listFormSubmissionsByFirm(firmId) {
+  return db
+    .prepare('SELECT payload FROM form_submissions WHERE firm_id = ? ORDER BY rowid ASC')
+    .all(firmId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function listFormSubmissionsByClient(firmId, clientId) {
+  return db
+    .prepare('SELECT payload FROM form_submissions WHERE firm_id = ? AND client_id = ? ORDER BY rowid ASC')
+    .all(firmId, clientId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function countFormSubmissionsByFirm(firmId) {
+  return db.prepare('SELECT COUNT(*) AS count FROM form_submissions WHERE firm_id = ?').get(firmId)?.count || 0
+}
+
+export function deleteFormSubmission(submissionId, firmId) {
+  const result = db.prepare('DELETE FROM form_submissions WHERE id = ? AND firm_id = ?').run(submissionId, firmId)
+  return result.changes > 0
+}
+
+// First portal draft for a template, in insertion order — mirrors the old
+// state.formSubmissions.find(...) that portalSubmit used to reuse drafts.
+export function findPortalDraftSubmission(firmId, clientId, templateId) {
+  const row = db
+    .prepare(
+      `
+      SELECT payload FROM form_submissions
+      WHERE firm_id = ? AND client_id = ? AND template_id = ? AND status = 'draft' AND source = 'portal'
+      ORDER BY rowid ASC
+      LIMIT 1
+    `
+    )
+    .get(firmId, clientId, templateId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// Newest submission for an export render context. Matches the old in-memory
+// sort exactly: (submittedAt || createdAt) descending, id descending, and the
+// legacy profileId alias is honored alongside clientId.
+export function findLatestFormSubmissionForExport(firmId, clientId = null) {
+  const normalizedClientId = clientId || null
+  const row = db
+    .prepare(
+      `
+      SELECT payload FROM form_submissions
+      WHERE firm_id = ?
+        AND (? IS NULL OR client_id = ? OR json_extract(payload, '$.profileId') = ?)
+      ORDER BY COALESCE(json_extract(payload, '$.submittedAt'), json_extract(payload, '$.createdAt'), '') DESC, id DESC
+      LIMIT 1
+    `
+    )
+    .get(firmId, normalizedClientId, normalizedClientId, normalizedClientId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// --- Portal draft section states (optimistic versioning) ---------------------
+// PK (firm_id, client_id, draft_id, section_id); the version column is the
+// optimistic-concurrency token. Writes are real row-level guards:
+//   - expectedVersion 0 -> INSERT OR IGNORE (loses to any existing row)
+//   - expectedVersion n -> UPDATE ... WHERE version = n
+// Either failing returns { ok: false, conflict: true, state } with the latest
+// row, preserving savePortalDraftSectionState's exact API contract.
+
+function rowToSectionState(row) {
+  if (!row) return null
+  let data = {}
+  try {
+    data = row.payload ? JSON.parse(row.payload) : {}
+  } catch {
+    data = {}
+  }
+  return {
+    firmId: row.firmId,
+    clientId: row.clientId,
+    draftId: row.draftId,
+    sectionId: row.sectionId,
+    version: Number(row.version || 0),
+    data,
+    updatedAt: row.updatedAt
+  }
+}
+
+const SECTION_STATE_COLUMNS = `
+  firm_id AS firmId,
+  client_id AS clientId,
+  draft_id AS draftId,
+  section_id AS sectionId,
+  version,
+  updated_at AS updatedAt,
+  payload
+`
+
+export function getDraftSectionState(firmId, clientId, draftId, sectionId) {
+  const row = db
+    .prepare(
+      `
+      SELECT ${SECTION_STATE_COLUMNS} FROM draft_step_states
+      WHERE firm_id = ? AND client_id = ? AND draft_id = ? AND section_id = ?
+    `
+    )
+    .get(firmId, clientId, draftId, sectionId)
+  return rowToSectionState(row)
+}
+
+export function listDraftSectionStates(firmId, clientId, draftId) {
+  return db
+    .prepare(
+      `
+      SELECT ${SECTION_STATE_COLUMNS} FROM draft_step_states
+      WHERE firm_id = ? AND client_id = ? AND draft_id = ?
+      ORDER BY rowid ASC
+    `
+    )
+    .all(firmId, clientId, draftId)
+    .map(rowToSectionState)
+}
+
+export function saveDraftSectionStateGuarded({
+  firmId,
+  clientId,
+  draftId,
+  sectionId,
+  expectedVersion,
+  data,
+  updatedAt
+}) {
+  const normalizedExpected = Number(expectedVersion || 0)
+  const payload = JSON.stringify(data && typeof data === 'object' ? data : {})
+  let applied = false
+  if (normalizedExpected === 0) {
+    const result = db
+      .prepare(
+        `
+        INSERT OR IGNORE INTO draft_step_states (firm_id, client_id, draft_id, section_id, version, updated_at, payload)
+        VALUES (?, ?, ?, ?, 1, ?, ?)
+      `
+      )
+      .run(firmId, clientId, draftId, sectionId, updatedAt, payload)
+    applied = result.changes > 0
+  } else {
+    const result = db
+      .prepare(
+        `
+        UPDATE draft_step_states
+        SET version = version + 1, updated_at = ?, payload = ?
+        WHERE firm_id = ? AND client_id = ? AND draft_id = ? AND section_id = ? AND version = ?
+      `
+      )
+      .run(updatedAt, payload, firmId, clientId, draftId, sectionId, normalizedExpected)
+    applied = result.changes > 0
+  }
+  const state = getDraftSectionState(firmId, clientId, draftId, sectionId)
+  if (!applied) {
+    return { ok: false, conflict: true, state }
+  }
+  return { ok: true, state }
+}
+
+// --- Pending upload intents ---------------------------------------------------
+// Presign flows insert an intent row; consuming an upload deletes it by id
+// (unscoped delete matches the old filter-by-id semantics; lookups stay
+// firm-scoped). Expired intents are swept by the lifecycle policies.
+
+export function insertUploadIntent(intent) {
+  db.prepare(
+    `
+    INSERT INTO pending_upload_intents (id, firm_id, client_id, expires_at, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      firm_id = excluded.firm_id,
+      client_id = excluded.client_id,
+      expires_at = excluded.expires_at,
+      created_at = excluded.created_at,
+      payload = excluded.payload
+  `
+  ).run(
+    intent.id,
+    intent.firmId ?? 'unknown',
+    intent.clientId ?? null,
+    intent.expiresAt ?? null,
+    intent.createdAt ?? null,
+    JSON.stringify(intent)
+  )
+  return intent
+}
+
+export function getUploadIntent(intentId, firmId) {
+  const row = db
+    .prepare('SELECT payload FROM pending_upload_intents WHERE id = ? AND firm_id = ?')
+    .get(intentId, firmId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+export function deleteUploadIntent(intentId) {
+  const result = db.prepare('DELETE FROM pending_upload_intents WHERE id = ?').run(intentId)
+  return result.changes > 0
+}
+
+export function deleteExpiredUploadIntents(cutoffIso = nowIso()) {
+  const result = db
+    .prepare('DELETE FROM pending_upload_intents WHERE expires_at IS NOT NULL AND expires_at <= ?')
+    .run(cutoffIso)
+  return result.changes
+}
+
+// Blob-to-table seeding for freshly seeded states (whose demo submissions
+// exist only in memory) and any legacy blob that predates migration 005.
+// Keyed INSERT OR IGNORE keeps it idempotent against the migration backfill.
+function ensureSubmissionEntitiesSeededFromState(state) {
+  const insertSubmission = db.prepare(`
+    INSERT OR IGNORE INTO form_submissions (
+      id, firm_id, client_id, template_id, status, source, created_by_user_id, created_at, updated_at, payload
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const submission of state.formSubmissions || []) {
+    if (!submission || typeof submission !== 'object' || !submission.id) continue
+    insertSubmission.run(...submissionParams(submission))
+  }
+  const insertSectionState = db.prepare(`
+    INSERT OR IGNORE INTO draft_step_states (firm_id, client_id, draft_id, section_id, version, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const entry of state.draftStepStates || []) {
+    if (!entry || typeof entry !== 'object') continue
+    if (!entry.firmId || !entry.clientId || !entry.draftId || !entry.sectionId) continue
+    insertSectionState.run(
+      entry.firmId,
+      entry.clientId,
+      entry.draftId,
+      entry.sectionId,
+      Number(entry.version || 0),
+      entry.updatedAt ?? null,
+      JSON.stringify(entry.data && typeof entry.data === 'object' ? entry.data : {})
+    )
+  }
+  const insertIntent = db.prepare(`
+    INSERT OR IGNORE INTO pending_upload_intents (id, firm_id, client_id, expires_at, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  for (const intent of state.pendingUploadIntents || []) {
+    if (!intent || typeof intent !== 'object' || !intent.id) continue
+    insertIntent.run(
+      intent.id,
+      intent.firmId ?? 'unknown',
+      intent.clientId ?? null,
+      intent.expiresAt ?? null,
+      intent.createdAt ?? null,
+      JSON.stringify(intent)
+    )
+  }
+}
+
 function syncAnalyticsMaterialized(state) {
   db.exec('DELETE FROM analytics_materialized')
   const firms = state.firms || []
@@ -450,15 +797,19 @@ function syncAnalyticsMaterialized(state) {
     age.sumDays += ageDays
     summary.stageAgingDays[stage] = age
   })
-  ;(state.formSubmissions || []).forEach((submission) => {
-    const summary = byFirm.get(submission.firmId)
-    if (!summary) return
-    const key = submission.templateId || 'unknown'
-    const bucket = summary.formCompletionRates[key] || { templateId: key, drafts: 0, submitted: 0 }
-    if (submission.status === 'submitted') bucket.submitted += 1
-    else bucket.drafts += 1
-    summary.formCompletionRates[key] = bucket
-  })
+  // form_submissions is the relational source of truth (the blob serializes
+  // an empty array), so completion rates aggregate over the table.
+  db.prepare('SELECT firm_id AS firmId, template_id AS templateId, status FROM form_submissions')
+    .all()
+    .forEach((submission) => {
+      const summary = byFirm.get(submission.firmId)
+      if (!summary) return
+      const key = submission.templateId || 'unknown'
+      const bucket = summary.formCompletionRates[key] || { templateId: key, drafts: 0, submitted: 0 }
+      if (submission.status === 'submitted') bucket.submitted += 1
+      else bucket.drafts += 1
+      summary.formCompletionRates[key] = bucket
+    })
 
   const usersById = new Map((state.users || []).map((user) => [user.id, user]))
   ;(state.notes || []).forEach((note) => {
@@ -529,18 +880,28 @@ export function loadState(seedFactory) {
   const row = db.prepare('SELECT payload FROM app_state WHERE id = 1').get()
   if (row?.payload) {
     const state = JSON.parse(row.payload)
-    // Legacy blobs mirrored the export queue in state.exportJobs and the
-    // audit trail in state.auditEvents. The export_jobs and audit_events
-    // tables are now the sole sources of truth: seed them once from the blob
-    // (old databases whose tables predate the cutover), then strip the
-    // mirrors from the blob so they never get written back.
+    // Legacy blobs mirrored the export queue in state.exportJobs, the audit
+    // trail in state.auditEvents, and the draft-churn entities in
+    // state.formSubmissions/draftStepStates/pendingUploadIntents. The
+    // relational tables are now the sole sources of truth: seed them once
+    // from the blob (old databases whose tables predate the cutover), then
+    // strip the mirrors from the blob so they never get written back.
     ensureQueueSeededFromState(state)
     ensureAuditSeededFromState(state)
-    const hadExportJobs = Array.isArray(state.exportJobs) && state.exportJobs.length > 0
-    const hadAuditEvents = Array.isArray(state.auditEvents) && state.auditEvents.length > 0
-    if (hadExportJobs || hadAuditEvents) {
+    ensureSubmissionEntitiesSeededFromState(state)
+    const hadBlobMirrors = [
+      state.exportJobs,
+      state.auditEvents,
+      state.formSubmissions,
+      state.draftStepStates,
+      state.pendingUploadIntents
+    ].some((entries) => Array.isArray(entries) && entries.length > 0)
+    if (hadBlobMirrors) {
       state.exportJobs = []
       state.auditEvents = []
+      state.formSubmissions = []
+      state.draftStepStates = []
+      state.pendingUploadIntents = []
       db.prepare(
         `
         INSERT INTO app_state (id, payload, updated_at)
@@ -551,6 +912,9 @@ export function loadState(seedFactory) {
     }
     state.exportJobs = []
     state.auditEvents = []
+    state.formSubmissions = []
+    state.draftStepStates = []
+    state.pendingUploadIntents = []
     // Sessions live exclusively in the sessions table (migrations 002/003
     // backfilled and cleared the blob). Keep the array shape for consumers
     // but never surface stale blob sessions.
@@ -562,17 +926,30 @@ export function loadState(seedFactory) {
   saveState(state)
   ensureQueueSeededFromState(state)
   ensureAuditSeededFromState(state)
+  ensureSubmissionEntitiesSeededFromState(state)
   state.exportJobs = []
   state.auditEvents = []
+  state.formSubmissions = []
+  state.draftStepStates = []
+  state.pendingUploadIntents = []
   state.sessions = []
   return state
 }
 
 export function saveState(state) {
-  // export_jobs, sessions, and audit_events are relational sources of truth:
-  // the blob keeps empty arrays for them purely for shape compatibility, so a
-  // stale in-memory mirror can never clobber targeted relational writes.
-  const payload = JSON.stringify({ ...state, exportJobs: [], sessions: [], auditEvents: [] })
+  // export_jobs, sessions, audit_events, form_submissions, draft_step_states,
+  // and pending_upload_intents are relational sources of truth: the blob
+  // keeps empty arrays for them purely for shape compatibility, so a stale
+  // in-memory mirror can never clobber targeted relational writes.
+  const payload = JSON.stringify({
+    ...state,
+    exportJobs: [],
+    sessions: [],
+    auditEvents: [],
+    formSubmissions: [],
+    draftStepStates: [],
+    pendingUploadIntents: []
+  })
   // The blob upsert, derived query tables, and materialized analytics must
   // commit together: a failure partway through (e.g. mid replaceRows) would
   // otherwise leave the blob and the relational projections out of sync.

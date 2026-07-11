@@ -1,7 +1,9 @@
 import { randomUUID } from 'node:crypto'
 import {
   enqueueExportJob,
+  findLatestFormSubmissionForExport,
   getExportJob,
+  getFormSubmissionById,
   listExportQueueJobs,
   processExportQueueTickAsync,
   readExportWorkerStatus,
@@ -30,20 +32,14 @@ function latestTemplateVersion(template) {
   return latest?.versionHash || template?.versionHash || latest?.version || null
 }
 
-function resolveSubmission(state, firmId, submissionId, clientId) {
+// form_submissions is the relational source of truth (the blob serializes an
+// empty array): explicit ids resolve firm-scoped, otherwise the newest
+// submission for the client wins, matching the old in-memory sort exactly.
+function resolveSubmission(firmId, submissionId, clientId) {
   if (submissionId) {
-    return state.formSubmissions.find((entry) => entry.id === submissionId && entry.firmId === firmId) || null
+    return getFormSubmissionById(submissionId, { firmId })
   }
-  const candidates = state.formSubmissions
-    .filter(
-      (entry) => entry.firmId === firmId && (!clientId || entry.clientId === clientId || entry.profileId === clientId)
-    )
-    .sort(
-      (a, b) =>
-        String(b.submittedAt || b.createdAt || '').localeCompare(String(a.submittedAt || a.createdAt || '')) ||
-        String(b.id).localeCompare(String(a.id))
-    )
-  return candidates[0] || null
+  return findLatestFormSubmissionForExport(firmId, clientId)
 }
 
 function createRenderContext({ firm, template, client, submission }) {
@@ -271,7 +267,7 @@ export function createStoreExportsRepository({
 
       const firm = state.firms.find((entry) => entry.id === user.firmId) || null
       const client = state.profiles.find((entry) => entry.id === input.clientId && entry.firmId === user.firmId) || null
-      const submission = resolveSubmission(state, user.firmId, String(input.submissionId || '').trim(), input.clientId)
+      const submission = resolveSubmission(user.firmId, String(input.submissionId || '').trim(), input.clientId)
       const renderContext = createRenderContext({ firm, template, client, submission })
 
       const queued = enqueueExportJob({
