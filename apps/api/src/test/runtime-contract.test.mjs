@@ -11,6 +11,10 @@ process.chdir(tempDir)
 process.env.APP_SECRET = 'test-secret-for-store-specs'
 const moduleUrl = pathToFileURL(resolve(previousCwd, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}`
 const imported = await import(moduleUrl)
+// Plain (non-cache-busted) storage import: resolves to the same module
+// instance the store writes through, so session-table mutations below hit the
+// store's database.
+const storage = await import(pathToFileURL(resolve(previousCwd, 'apps/api/src/storage.mjs')).href)
 const store = imported.createStore()
 
 test('store enforces strong passwords and session expiration', () => {
@@ -33,7 +37,9 @@ test('store enforces strong passwords and session expiration', () => {
   })
 
   assert.equal(store.requireUser(session.token).email, 'alex@example.com')
-  store.state.sessions[0].expiresAt = new Date(Date.now() - 1000).toISOString()
+  // Sessions live in the sessions table now: force absolute expiry there.
+  const row = storage.getSessionByToken(session.token)
+  storage.upsertSession({ ...row, expiresAt: new Date(Date.now() - 1000).toISOString() })
   assert.throws(() => store.requireUser(session.token), /Authentication required/)
 })
 

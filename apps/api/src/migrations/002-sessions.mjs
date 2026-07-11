@@ -6,6 +6,13 @@
 // Idempotency: CREATE TABLE IF NOT EXISTS plus a "only backfill into an empty
 // table" guard, so re-running up() (e.g. on a pre-versioned database that is
 // stamped later) never duplicates or resurrects rows.
+//
+// The backfill normalizes sparse legacy records exactly like the store used
+// to at startup (see normalizeSessionRecord below): the table is now the only
+// source of truth for sessions, and rows with NULL expiry columns would be
+// treated as already-expired by deleteExpiredSessions.
+import { normalizeSessionRecord } from './session-normalization.mjs'
+
 export default {
   version: 2,
   name: 'sessions-table',
@@ -51,14 +58,15 @@ export default {
     `)
     for (const session of sessions) {
       if (!session || typeof session.token !== 'string' || !session.token) continue
+      const normalized = normalizeSessionRecord(session)
       insert.run(
-        session.token,
-        session.userId ?? null,
-        session.firmId ?? null,
-        session.createdAt ?? null,
-        session.lastActivityAt ?? null,
-        session.expiresAt ?? null,
-        session.idleExpiresAt ?? null
+        normalized.token,
+        normalized.userId,
+        normalized.firmId,
+        normalized.createdAt,
+        normalized.lastActivityAt,
+        normalized.expiresAt,
+        normalized.idleExpiresAt
       )
     }
   }

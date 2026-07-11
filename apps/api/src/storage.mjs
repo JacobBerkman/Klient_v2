@@ -117,11 +117,12 @@ export function deleteExpiredCsrfTokens(cutoffIso = new Date().toISOString()) {
   db.prepare('DELETE FROM csrf_tokens WHERE expires_at <= ?').run(cutoffIso)
 }
 
-// --- Session repository (dual-write phase) ---------------------------------
+// --- Session repository (sole source of truth) ------------------------------
 // Sessions are the highest-write-volume entity: every authenticated request
-// touches lastActivityAt/idleExpiresAt. These helpers give session mutations
-// a targeted relational home so the request path never rewrites the full
-// app_state blob. Reads still come from the in-memory state for now.
+// touches lastActivityAt/idleExpiresAt. The sessions table is the only home
+// for session records: reads and writes both go through these helpers, and
+// the app_state blob serializes an empty sessions array purely for shape
+// compatibility.
 
 const SESSION_COLUMNS = `
   token,
@@ -171,24 +172,42 @@ export function deleteSession(token) {
   return result.changes > 0
 }
 
-// Returns the deleted tokens so callers can fire per-session cleanup
-// (CSRF token invalidation, session-invalidated callbacks) for each one.
+// Returns the deleted session rows (token, userId, firmId, expiry columns) so
+// callers can fire per-session cleanup (CSRF token invalidation,
+// session-invalidated callbacks) with the same payload the in-memory prune
+// used to provide, including enough data to distinguish idle vs absolute
+// expiry.
 export function deleteExpiredSessions(nowIsoCutoff = nowIso()) {
   const expired = db
     .prepare(
       `
-      SELECT token FROM sessions
+      SELECT ${SESSION_COLUMNS} FROM sessions
       WHERE expires_at IS NULL OR expires_at <= ?
         OR idle_expires_at IS NULL OR idle_expires_at <= ?
     `
     )
     .all(nowIsoCutoff, nowIsoCutoff)
-    .map((row) => row.token)
   if (expired.length) {
     const placeholders = expired.map(() => '?').join(', ')
-    db.prepare(`DELETE FROM sessions WHERE token IN (${placeholders})`).run(...expired)
+    db.prepare(`DELETE FROM sessions WHERE token IN (${placeholders})`).run(...expired.map((row) => row.token))
   }
   return expired
+}
+
+// Bulk revocation for a single user (password reset). Returns the deleted
+// tokens; deliberately does NOT fire per-session callbacks — that matches the
+// pre-table behavior where auth providers revoked sessions without invoking
+// onSessionInvalidated.
+export function deleteSessionsByUser(userId) {
+  const tokens = db
+    .prepare('SELECT token FROM sessions WHERE user_id = ?')
+    .all(userId)
+    .map((row) => row.token)
+  if (tokens.length) {
+    const placeholders = tokens.map(() => '?').join(', ')
+    db.prepare(`DELETE FROM sessions WHERE token IN (${placeholders})`).run(...tokens)
+  }
+  return tokens
 }
 
 export function listSessionsFromTable() {
@@ -197,24 +216,6 @@ export function listSessionsFromTable() {
 
 export function getSessionByToken(token) {
   return db.prepare(`SELECT ${SESSION_COLUMNS} FROM sessions WHERE token = ?`).get(token) || null
-}
-
-// Startup reconciliation: after the store normalizes the blob's sessions
-// (filling defaults for legacy records), rewrite the table once so the two
-// copies start out identical.
-export function replaceSessions(sessions = []) {
-  db.exec('BEGIN IMMEDIATE')
-  try {
-    db.exec('DELETE FROM sessions')
-    for (const session of sessions) {
-      if (!session?.token) continue
-      upsertSession(session)
-    }
-    db.exec('COMMIT')
-  } catch (error) {
-    db.exec('ROLLBACK')
-    throw error
-  }
 }
 
 export function listExportQueueJobs() {
@@ -493,6 +494,10 @@ export function loadState(seedFactory) {
       ).run(JSON.stringify(state))
     }
     state.exportJobs = []
+    // Sessions live exclusively in the sessions table (migrations 002/003
+    // backfilled and cleared the blob). Keep the array shape for consumers
+    // but never surface stale blob sessions.
+    state.sessions = []
     return state
   }
 
@@ -500,15 +505,16 @@ export function loadState(seedFactory) {
   saveState(state)
   ensureQueueSeededFromState(state)
   state.exportJobs = []
+  state.sessions = []
   return state
 }
 
 export function saveState(state) {
-  // export_jobs is the sole source of truth for the export queue: the blob
-  // keeps an empty exportJobs array purely for shape compatibility, so a
-  // stale in-memory mirror can never clobber queue writes from the separate
-  // export-worker process.
-  const payload = JSON.stringify({ ...state, exportJobs: [] })
+  // export_jobs is the sole source of truth for the export queue, and the
+  // sessions table is the sole source of truth for sessions: the blob keeps
+  // empty exportJobs/sessions arrays purely for shape compatibility, so a
+  // stale in-memory mirror can never clobber targeted relational writes.
+  const payload = JSON.stringify({ ...state, exportJobs: [], sessions: [] })
   // The blob upsert, derived query tables, and materialized analytics must
   // commit together: a failure partway through (e.g. mid replaceRows) would
   // otherwise leave the blob and the relational projections out of sync.
