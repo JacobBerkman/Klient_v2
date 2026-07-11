@@ -25,6 +25,20 @@
   --content-width: 1320px;
   --font-sans: 'Segoe UI Variable', 'Avenir Next', 'Trebuchet MS', sans-serif;
   --font-display: 'Georgia', 'Iowan Old Style', serif;
+  /* Categorical chart palette — fixed slot order, validated for CVD separation
+     (worst adjacent deltaE 28.6) and >=3:1 contrast on the cream surface. */
+  --chart-cat-1: #0f8a76;
+  --chart-cat-2: #bf7b1f;
+  --chart-cat-3: #3f6fd0;
+  --chart-cat-4: #b3446c;
+  --chart-cat-5: #8a4f9e;
+  --chart-cat-1-soft: #cfe8e2;
+  --chart-good: var(--success);
+  --chart-warn: var(--warning);
+  --chart-bad: var(--danger);
+  --chart-neutral: #8b7c68;
+  --chart-baseline: rgba(68, 52, 34, 0.28);
+  --chart-grid: rgba(68, 52, 34, 0.1);
 }
 
 * {
@@ -909,6 +923,105 @@ details summary {
   color: #f4eee5;
   font-size: 0.88rem;
   overflow: auto;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
+
+.chart-block {
+  display: grid;
+  gap: 0.7rem;
+}
+
+.chart-summary {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 0.92rem;
+}
+
+.chart-figure {
+  margin: 0;
+  display: grid;
+  gap: 0.55rem;
+}
+
+.chart-figure svg {
+  width: 100%;
+  height: auto;
+  display: block;
+}
+
+.chart-legend {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 1.1rem;
+  margin: 0;
+  padding: 0;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.chart-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.chart-swatch {
+  width: 0.7rem;
+  height: 0.7rem;
+  border-radius: 3px;
+  flex: none;
+}
+
+.chart-stat-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.8rem 1.6rem;
+}
+
+.chart-stat {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 6.5rem;
+}
+
+.chart-stat-label {
+  margin: 0;
+  font-size: 0.78rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.chart-stat-value {
+  font-size: 1.35rem;
+  line-height: 1.1;
+}
+
+.raw-data-details summary {
+  color: var(--text-muted);
+  font-size: 0.88rem;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.raw-data-details[open] summary {
+  margin-bottom: 0.6rem;
 }
 
 .portal-shell {

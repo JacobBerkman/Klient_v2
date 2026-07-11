@@ -477,20 +477,85 @@ export interface QueueHealthPayload {
   [key: string]: unknown
 }
 
+export interface FunnelStageRow {
+  stage: string
+  count: number
+  conversionRate: number
+  [key: string]: unknown
+}
+
+export interface StageAgingRow {
+  stage: string
+  stageId?: string
+  stageLabel?: string
+  isTerminal?: boolean
+  isDrop?: boolean
+  count: number
+  avgDays: number
+  [key: string]: unknown
+}
+
+export interface FormCompletionRateRow {
+  templateId: string
+  drafts: number
+  submitted: number
+  completionRate: number
+  [key: string]: unknown
+}
+
+export interface FormLatencyRow {
+  templateId: string
+  submissions: number
+  avgHours: number
+  [key: string]: unknown
+}
+
+export interface AdvisorProductivityRow {
+  advisorUserId: string
+  advisorName: string
+  profilesManaged: number
+  notesAuthored: number
+  stageMoves: number
+  formSubmissionsAuthored: number
+  productivityScore: number
+  [key: string]: unknown
+}
+
+export interface ExportUsageSummary {
+  byAdvisor?: Array<{ advisorUserId?: string; advisorName?: string; total?: number }>
+  byFirm?: {
+    firmId?: string
+    total?: number
+    byStatus?: Record<string, number>
+  }
+}
+
 export interface AnalyticsDashboardPayload {
   filters?: Record<string, unknown>
   stageMetadata?: PipelineStage[]
-  funnel?: Array<Record<string, unknown>>
+  funnel?: FunnelStageRow[]
   stageAging?: Record<string, unknown>
-  stageAgingOrdered?: Array<Record<string, unknown>>
-  bottlenecks?: Array<Record<string, unknown>>
-  formCompletionLatency?: Array<Record<string, unknown>>
-  exportUsage?: Record<string, unknown>
+  stageAgingOrdered?: StageAgingRow[]
+  bottlenecks?: StageAgingRow[]
+  formCompletionLatency?: FormLatencyRow[]
+  exportUsage?: ExportUsageSummary
+}
+
+export interface AnalyticsSummary {
+  funnel?: FunnelStageRow[]
+  overallConversionRate?: number
+  stageAgingOrdered?: StageAgingRow[]
+  bottlenecks?: StageAgingRow[]
+  formCompletionRates?: FormCompletionRateRow[]
+  formCompletionLatency?: FormLatencyRow[]
+  advisorProductivity?: AdvisorProductivityRow[]
+  exportUsage?: ExportUsageSummary
+  [key: string]: unknown
 }
 
 export interface AnalyticsPayload {
   stageCounts?: Array<Record<string, unknown>>
-  summary?: Record<string, unknown>
+  summary?: AnalyticsSummary
 }
 
 export interface DiagnosticsPayload {

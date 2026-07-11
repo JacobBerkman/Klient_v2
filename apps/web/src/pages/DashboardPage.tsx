@@ -1,8 +1,9 @@
 import { Link } from 'react-router-dom'
 import { api, routes } from '../lib/client'
-import { formatDateTime, profileName } from '../lib/format'
+import { formatCount, formatDateTime, formatPercent, humanizeKey, profileName } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
-import type { DashboardPayload } from '../lib/types'
+import type { AnalyticsDashboardPayload, DashboardPayload } from '../lib/types'
+import { HorizontalBarChart } from '../components/charts'
 import {
   ButtonLink,
   Card,
@@ -22,6 +23,62 @@ export const handle = {
   subtitle:
     'Firm-level summary, recent activity, and shortcuts without mixing operational forms into the landing page.',
   breadcrumb: 'Dashboard'
+}
+
+function FunnelOverview() {
+  const { data, error, loading } = useAsync<AnalyticsDashboardPayload>(
+    () => api.get(routes.analyticsDashboard()),
+    []
+  )
+
+  if (loading) return null
+  if (error || !data) {
+    return (
+      <PageSection title="Pipeline funnel" subtitle="Prospect counts by stage, from the analytics dashboard.">
+        <EmptyState title="Funnel unavailable." detail={error?.message || 'Analytics data could not be loaded.'} />
+      </PageSection>
+    )
+  }
+
+  const stageLabels = new Map(
+    (data.stageMetadata || []).map((stage) => [stage.id, stage.label || humanizeKey(stage.id)])
+  )
+  const funnel = data.funnel || []
+  const totalProspects = funnel.reduce((sum, row) => sum + (row.count || 0), 0)
+  const rows = funnel.map((row) => ({
+    key: row.stage,
+    label: stageLabels.get(row.stage) || humanizeKey(row.stage),
+    value: row.count || 0,
+    hover: `${stageLabels.get(row.stage) || humanizeKey(row.stage)}: ${formatCount(row.count || 0)} prospects (${formatPercent(row.conversionRate)} of the funnel)`
+  }))
+
+  return (
+    <PageSection
+      title="Pipeline funnel"
+      subtitle="Prospect counts by stage, from the analytics dashboard."
+      action={
+        <Link className="text-link" to="/analytics">
+          Open analytics
+        </Link>
+      }
+    >
+      <div className="chart-block">
+        {totalProspects ? (
+          <p className="chart-summary">{formatCount(totalProspects)} prospects currently in the pipeline.</p>
+        ) : null}
+        <HorizontalBarChart
+          title="Pipeline funnel"
+          description="Number of prospects currently sitting in each pipeline stage."
+          rows={rows}
+          color="var(--chart-cat-1)"
+          valueHeader="Prospects"
+          emptyTitle="No prospects in the funnel yet."
+          emptyDetail="Add prospects from Profiles to see stage-by-stage movement here."
+          testId="dashboard-funnel-chart"
+        />
+      </div>
+    </PageSection>
+  )
 }
 
 export function Component() {
@@ -62,6 +119,8 @@ export function Component() {
         <MetricCard label="Forms" value={data.stats.forms} hint="Drafts and submissions" />
         <MetricCard label="Exports" value={data.stats.exports} hint="Queued and completed packages" />
       </StatGroup>
+
+      <FunnelOverview />
 
       <div className="cards-grid">
         <Card className="section-card">
