@@ -30,6 +30,11 @@ interface PipelineData {
   clients: Profile[]
 }
 
+interface PendingMove {
+  profileId: string
+  stage: string
+}
+
 /**
  * Applies a stage move to the board locally so the card lands in its target
  * column before the server responds. Returns null when the card or target
@@ -52,6 +57,14 @@ function applyOptimisticMove(board: BoardPayload, profileId: string, stage: stri
   }
 }
 
+/**
+ * Re-applies every still-pending move on top of a server-confirmed board so
+ * queued optimistic placements survive reconciliation from earlier responses.
+ */
+function applyPendingMoves(board: BoardPayload, moves: PendingMove[]): BoardPayload {
+  return moves.reduce((current, move) => applyOptimisticMove(current, move.profileId, move.stage) ?? current, board)
+}
+
 export function Component() {
   const { user } = useAuth()
   const [refreshKey, setRefreshKey] = useState(0)
@@ -65,7 +78,17 @@ export function Component() {
   // Local board copy so moves render optimistically; reconciled from the server
   // payload after every successful move and re-synced on each refetch.
   const [board, setBoard] = useState<BoardPayload | null>(null)
-  const moveTokenRef = useRef(0)
+  // Last board the server confirmed (initial fetch, refetches, and move
+  // responses). Failed moves always roll back to this snapshot instead of a
+  // per-move closure copy, so a rejected move can never leave a superseded
+  // optimistic placement behind.
+  const confirmedBoardRef = useRef<BoardPayload | null>(null)
+  // FIFO of moves awaiting dispatch. Requests go out one at a time so each
+  // PATCH carries the boardVersion returned by the previous response; firing
+  // rapid moves in parallel from a stale render snapshot guaranteed a self-
+  // inflicted PIPELINE_ORDER_CONFLICT.
+  const moveQueueRef = useRef<PendingMove[]>([])
+  const dispatchingRef = useRef(false)
 
   const { data, error, loading } = useAsync<PipelineData>(async () => {
     const [board, clients] = await Promise.all([
@@ -76,34 +99,64 @@ export function Component() {
   }, [refreshKey])
 
   useEffect(() => {
-    if (data) setBoard(data.board)
+    if (!data) return
+    confirmedBoardRef.current = data.board
+    setBoard(applyPendingMoves(data.board, moveQueueRef.current))
   }, [data])
 
-  async function moveProfile(profileId: string, stage: string) {
+  function moveProfile(profileId: string, stage: string) {
     if (!hasGuard(user, 'canMovePipeline') || !board) return
-    const snapshot = board
-    const optimisticBoard = applyOptimisticMove(board, profileId, stage)
+    // Rebuild the freshest optimistic view from the refs (confirmed board plus
+    // queued moves) instead of the render closure, so back-to-back moves fired
+    // before a re-render both apply.
+    const baseBoard = confirmedBoardRef.current
+      ? applyPendingMoves(confirmedBoardRef.current, moveQueueRef.current)
+      : board
+    const optimisticBoard = applyOptimisticMove(baseBoard, profileId, stage)
     if (!optimisticBoard) return
-    const moveToken = ++moveTokenRef.current
     setBoard(optimisticBoard)
     setMoveMessage('Moving stage...')
+    moveQueueRef.current.push({ profileId, stage })
+    void dispatchQueuedMoves()
+  }
+
+  /**
+   * Drains the move queue strictly one request at a time. Each PATCH uses the
+   * boardVersion from the last server-confirmed board (updated by the previous
+   * response), so rapid successive moves no longer conflict with each other.
+   * On any failure the remaining queue is dropped and the board rolls back to
+   * the last confirmed state.
+   */
+  async function dispatchQueuedMoves() {
+    if (dispatchingRef.current) return
+    dispatchingRef.current = true
     try {
-      const result = await pipelineApi.moveCard({
-        profileId,
-        toStage: stage,
-        expectedBoardVersion: snapshot.boardVersion ?? null
-      })
-      if (moveTokenRef.current !== moveToken) return
-      setBoard(result.board)
-      setMoveMessage(`Moved to ${stage}.`)
-    } catch (moveError) {
-      if (moveTokenRef.current === moveToken) setBoard(snapshot)
-      if (moveError instanceof ApiError && moveError.code === 'PIPELINE_ORDER_CONFLICT') {
-        setMoveMessage('Board changed in another session. Reloaded the latest board.')
-        setRefreshKey((value) => value + 1)
-        return
+      while (moveQueueRef.current.length > 0) {
+        const move = moveQueueRef.current[0]
+        try {
+          const result = await pipelineApi.moveCard({
+            profileId: move.profileId,
+            toStage: move.stage,
+            expectedBoardVersion: confirmedBoardRef.current?.boardVersion ?? null
+          })
+          moveQueueRef.current.shift()
+          confirmedBoardRef.current = result.board
+          setBoard(applyPendingMoves(result.board, moveQueueRef.current))
+          if (moveQueueRef.current.length === 0) setMoveMessage(`Moved to ${move.stage}.`)
+        } catch (moveError) {
+          moveQueueRef.current = []
+          setBoard(confirmedBoardRef.current)
+          if (moveError instanceof ApiError && moveError.code === 'PIPELINE_ORDER_CONFLICT') {
+            setMoveMessage('Board changed in another session. Reloaded the latest board.')
+            setRefreshKey((value) => value + 1)
+            return
+          }
+          setMoveMessage(moveError instanceof Error ? moveError.message : 'Stage move failed.')
+          return
+        }
       }
-      setMoveMessage(moveError instanceof Error ? moveError.message : 'Stage move failed.')
+    } finally {
+      dispatchingRef.current = false
     }
   }
 
