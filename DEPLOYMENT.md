@@ -10,10 +10,9 @@ This deployment remains a single-process **Node + SQLite + static web** architec
 - the Node process serves the JSON API,
 - SQLite persists runtime data in `data/app.db`,
 - canonical React/Vite assets are built from `apps/web/src` into `apps/web/dist` during CI/Docker image creation,
-- the backend serves `apps/web/dist` first for product routes including `/portal`,
-- and `apps/web/public` is legacy-only, retained explicitly at `/legacy` and `/legacy/portal` until retirement.
+- and the backend serves `apps/web/dist` as the only web shell for all product routes including `/portal`.
 
-`apps/web/dist` is generated build output and is **not committed to git** (it is gitignored). On a fresh clone, run `npm run web:build` before serving the app directly with Node; until you do, the backend falls back to the legacy shell in `apps/web/public`. Docker image builds and the CI/`validate:master` gates build `apps/web/dist` themselves, so no pre-built assets are ever required from the repository.
+`apps/web/dist` is generated build output and is **not committed to git** (it is gitignored). On a fresh clone, run `npm run web:build` before serving the app directly with Node; until you do, the backend has no web shell and static routes return 404. Docker image builds and the CI/`validate:master` gates build `apps/web/dist` themselves, so no pre-built assets are ever required from the repository.
 
 ## Environment contract
 
@@ -179,7 +178,7 @@ npm run reset:test-data
 docker compose --env-file .env up --build -d
 ```
 
-The Dockerfile builds the React app during image creation and copies the generated `apps/web/dist` assets into the runtime image, so deployments do not rely on checked-in build output. The app will be available at `http://localhost:3000`; legacy fallback remains explicit at `/legacy` and `/legacy/portal`.
+The Dockerfile builds the React app during image creation and copies the generated `apps/web/dist` assets into the runtime image, so deployments do not rely on checked-in build output. The app will be available at `http://localhost:3000`.
 
 `docker-compose.yml` also starts `kinetic-klient-export-worker`, a companion process that runs `node scripts/export-worker.mjs` against the same storage/database volume. Production deployments must run this worker (or an equivalent scheduler using the same command) alongside the API; the API only enqueues export jobs.
 

@@ -31,9 +31,7 @@ export default defineConfig({
       '/api': apiProxy,
       '/health': apiProxy,
       '/ready': apiProxy,
-      '/system': apiProxy,
-      '/legacy/portal': apiProxy,
-      '/legacy': apiProxy
+      '/system': apiProxy
     }
   },
   preview: {

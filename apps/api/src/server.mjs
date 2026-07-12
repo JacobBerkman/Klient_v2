@@ -34,8 +34,6 @@ import {
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const distDir = resolve(__dirname, '../../web/dist')
-const publicDir = resolve(__dirname, '../../web/public')
-const legacyPortalPath = '/legacy/portal'
 const bootedAt = new Date().toISOString()
 const startupDiagnostics = validateRuntimeConfig()
 const COOKIE_POLICY = Object.freeze({
@@ -543,29 +541,18 @@ async function tryServeFrom(rootDir, pathname, res, requestId, fallbackFile = nu
 }
 
 async function serveStatic(pathname, res, requestId) {
-  if (pathname === '/legacy' || pathname === '/legacy/') {
-    const servedLegacy = await tryServeFrom(publicDir, '/', res, requestId, 'index.html')
-    if (servedLegacy) return true
-    return notFound(res, requestId)
-  }
-
-  if (pathname === legacyPortalPath || pathname === `${legacyPortalPath}/`) {
-    const servedLegacyPortal = await tryServeFrom(publicDir, '/portal.html', res, requestId)
-    if (servedLegacyPortal) return true
-    return notFound(res, requestId)
-  }
-
+  // The built React app (apps/web/dist) is the only served shell. Root and every
+  // routed deep link resolve to dist/index.html; the SPA router handles unknown
+  // paths (including the retired /legacy URLs) client-side. Requests for a file
+  // with an extension that is not present in dist return 404 (no legacy fallback).
   if (pathname === '/') {
     if (await tryServeFrom(distDir, '/', res, requestId, 'index.html')) return true
-    if (await tryServeFrom(publicDir, '/', res, requestId, 'index.html')) return true
     return notFound(res, requestId)
   }
 
   if (await tryServeFrom(distDir, pathname, res, requestId)) return true
-  if (await tryServeFrom(publicDir, pathname, res, requestId)) return true
   if (extname(pathname)) return notFound(res, requestId)
   if (await tryServeFrom(distDir, '/', res, requestId, 'index.html')) return true
-  if (await tryServeFrom(publicDir, '/', res, requestId, 'index.html')) return true
   return notFound(res, requestId)
 }
 

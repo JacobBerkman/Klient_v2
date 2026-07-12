@@ -4,7 +4,7 @@ Use this page as the command-level operator runbook for release preflight, deplo
 
 ## Canonical frontend path
 
-The product UI is the routed React/TypeScript/Vite app under `apps/web/src`. `npm run web:build` compiles it into `apps/web/dist`, and the existing Node backend serves those built assets for product routes. `apps/web/public` is legacy-only and remains available explicitly at `/legacy` and `/legacy/portal` until retirement.
+The product UI is the routed React/TypeScript/Vite app under `apps/web/src`. `npm run web:build` compiles it into `apps/web/dist`, and the existing Node backend serves those built assets as the only web shell for all product routes. The legacy vanilla-JS shell and its `/legacy` routes have been retired.
 
 ## Required environment variables
 

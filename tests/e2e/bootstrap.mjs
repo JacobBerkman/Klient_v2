@@ -88,12 +88,6 @@ export async function waitForAppReady(page, path = '/') {
     return
   }
 
-  if (path === '/legacy' || path.startsWith('/legacy/')) {
-    await expect(page.locator('#login-form')).toBeVisible()
-    await expect(page.locator('#register-form')).toBeVisible()
-    return
-  }
-
   await expect(page.locator('#root')).toHaveCount(1)
   await expect(page.locator('#login-form')).toHaveCount(0)
 }
@@ -209,14 +203,6 @@ export async function inviteAndAcceptAdvisor(page, seededRunId, label = 'advisor
 export async function signInFromUi(page, email, password, path = '/') {
   await page.goto(path)
   await page.waitForLoadState('domcontentloaded')
-  if (path === '/legacy') {
-    await page.locator('#login-form input[name="email"]').fill(email)
-    await page.locator('#login-form input[name="password"]').fill(password)
-    await page.locator('#login-form button[type="submit"]').click()
-    await expect(page.locator('#auth-status')).toContainText('Signed in successfully.')
-    await expect(page.getByRole('heading', { name: 'Dashboard' })).toBeVisible()
-    return
-  }
 
   const dashboardHeading = page.getByRole('heading', { name: 'Dashboard', exact: true })
   const loginEmail = page.getByRole('textbox', { name: 'Email' })

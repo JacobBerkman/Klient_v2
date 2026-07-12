@@ -41,10 +41,9 @@ Kinetic Klient is now consolidated onto **one real runtime architecture**:
 
 - a single Node.js HTTP server at `apps/api/src/server.mjs`
 - SQLite-backed persistence in `data/app.db`
-- the canonical routed React/Vite advisor and portal UI in `apps/web/src`, built to `apps/web/dist`
-- `apps/web/public` is legacy-only and remains reachable only through `/legacy` and `/legacy/portal` until retirement
+- the canonical routed React/Vite advisor and portal UI in `apps/web/src`, built to `apps/web/dist`, which is the only web shell the backend serves
 
-`apps/web/dist` is generated build output and is not committed to git: run `npm run web:build` after a fresh clone before serving the app with plain Node (Docker and CI build it themselves). Until it is built, the backend serves the legacy shell from `apps/web/public`.
+`apps/web/dist` is generated build output and is not committed to git: run `npm run web:build` after a fresh clone before serving the app with plain Node (Docker and CI build it themselves). Until it is built, the backend has no web shell to serve and static routes return 404.
 
 The older duplicate Fastify/TypeScript backend path and related workspace scaffolding have been removed so the repository now has one real startup path.
 
@@ -118,7 +117,6 @@ Open:
 - API/static production server: `http://localhost:3000`
 - Vite dev server: `http://127.0.0.1:5173`
 - Client portal route: `/portal?token=<token>`
-- Temporary legacy shell: `/legacy` and `/legacy/portal`
 
 ## Demo mode (optional, non-production only)
 

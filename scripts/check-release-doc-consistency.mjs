@@ -108,7 +108,7 @@ assertContains(
   filesToRead.readme
 )
 assertContains(contentByKey.readme, 'apps/web/src', filesToRead.readme)
-assertContains(contentByKey.readme, 'apps/web/public` is legacy-only', filesToRead.readme)
+assertContains(contentByKey.readme, 'the only web shell the backend serves', filesToRead.readme)
 assertContains(contentByKey.quickRef, 'npm run web:build', filesToRead.quickRef)
 assertContains(contentByKey.checklist, 'npm run web:build', filesToRead.checklist)
 assertContains(
