@@ -1,6 +1,4 @@
 :root {
-  color-scheme: light;
-
   /* ---------------------------------------------------------------------
      Kinetic Financial brand tokens (extracted from kineticfinancial.com).
      Use these everywhere; the --legacy aliases below map the older token
@@ -44,6 +42,9 @@
 
   /* Focus ring (light blue, brand accent) */
   --focus-ring: 0 0 0 3px rgba(0, 160, 252, 0.45);
+
+  /* Modal overlay scrim (behind ConfirmDialog) */
+  --overlay-scrim: rgba(16, 24, 40, 0.55);
 
   /* Radius scale */
   --radius-lg: 16px;
@@ -98,6 +99,102 @@
   --chart-neutral: #7e8090;
   --chart-baseline: rgba(16, 24, 40, 0.28);
   --chart-grid: rgba(16, 24, 40, 0.1);
+}
+
+/* Theme resolution: index.html's pre-paint script and src/lib/theme.ts always
+   stamp a RESOLVED theme ('light' | 'dark') on <html data-theme>, so no
+   duplicated media-query token block is needed here. When JS is unavailable
+   the attribute is absent and the light scheme applies. */
+:root:not([data-theme='dark']) {
+  color-scheme: light;
+}
+
+/* ---------------------------------------------------------------------------
+   Dark theme tokens — every :root token gets an override so components stay
+   token-driven (charts read the CSS vars directly and need no changes).
+   AA contrast pairs on the dark surfaces (#161a24 cards / #0e1117 canvas):
+   - --color-text        #f2f5fa  ~15.2:1 on surface (headings / strong)
+   - --color-text-body   #c6cddc  ~10.1:1 on surface (body copy)
+   - --color-text-muted  #96a0b5  ~5.9:1 on surface (secondary copy)
+   - --color-text-faint  #7a8399  ~4.0:1 on surface (decorative tier, matches
+     the light theme's non-text faint tier convention)
+   - --color-primary     #5aa9f6  ~6.4:1 on surface (links / accents)
+   - --color-on-primary  #0c1524  ~6.3:1 on the primary fill (button labels)
+   - --color-success-text #8ad98f, --color-warning-text #e6b566,
+     --color-danger-text #f19b94 — each >=7:1 on their soft tint chips
+   --------------------------------------------------------------------------- */
+[data-theme='dark'] {
+  color-scheme: dark;
+
+  --color-primary: #5aa9f6;
+  --color-primary-hover: #7bbcf8;
+  --color-primary-active: #3f95ee;
+  --color-primary-light: #8ecbff;
+  --color-primary-soft: rgba(90, 169, 246, 0.16);
+  --color-primary-softer: rgba(90, 169, 246, 0.1);
+
+  /* Navy chrome (sidebar, hero, json blocks) is already dark-safe; keep the
+     brand values so the shell reads identically in both themes. */
+  --color-navy: #181b31;
+  --color-navy-soft: #232744;
+  --color-navy-line: rgba(255, 255, 255, 0.12);
+
+  --color-success: #57b957;
+  --color-success-text: #8ad98f;
+  --color-success-soft: rgba(87, 185, 87, 0.18);
+
+  --color-warning: #d69a3a;
+  --color-warning-text: #e6b566;
+  --color-warning-soft: rgba(214, 154, 58, 0.16);
+
+  --color-danger: #d64545;
+  --color-danger-text: #f19b94;
+  --color-danger-soft: rgba(214, 69, 69, 0.18);
+
+  /* Neutrals */
+  --color-bg: #0e1117;
+  --color-surface: #161a24;
+  --color-surface-muted: #1c2130;
+  --color-surface-sunken: #12151f;
+  --color-border: #2a3040;
+  --color-border-strong: #3d465c;
+  --color-text: #f2f5fa;
+  --color-text-body: #c6cddc;
+  --color-text-muted: #96a0b5;
+  --color-text-faint: #7a8399;
+  --color-on-primary: #0c1524;
+
+  /* Focus ring stays the brand light blue, lifted for dark surfaces */
+  --focus-ring: 0 0 0 3px rgba(142, 203, 255, 0.5);
+
+  /* Modal overlay scrim */
+  --overlay-scrim: rgba(0, 0, 0, 0.65);
+
+  /* Elevation reads as depth, not glow, on dark surfaces */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.45), 0 8px 24px rgba(0, 0, 0, 0.45);
+  --shadow-lg: 0 12px 32px rgba(0, 0, 0, 0.6);
+
+  /* Categorical chart palette, re-tuned for dark: same slot order and CVD
+     separation, every mark >=3:1 against the card surface. */
+  --chart-cat-1: #6db3f7;
+  --chart-cat-2: #d9a648;
+  --chart-cat-3: #45b08c;
+  --chart-cat-4: #e084a8;
+  --chart-cat-5: #a794e8;
+  --chart-cat-1-soft: #1f3a5e;
+  --chart-good: #8ad98f;
+  --chart-warn: #e6b566;
+  --chart-bad: #f19b94;
+  --chart-neutral: #9aa1b5;
+  --chart-baseline: rgba(242, 245, 250, 0.4);
+  --chart-grid: rgba(242, 245, 250, 0.12);
+}
+
+/* The light danger hover darkens toward --color-danger-text; in dark that
+   token is a light tint, so hover keeps a saturated fill instead. */
+[data-theme='dark'] .danger-button:hover {
+  background: #b93a3a;
 }
 
 * {
@@ -284,13 +381,13 @@ summary:focus-visible {
 
 .nav-link-active {
   background: var(--color-primary);
-  color: #ffffff;
+  color: var(--color-on-primary);
   border-color: transparent;
 }
 
 .nav-link-active:hover {
   background: var(--color-primary);
-  color: #ffffff;
+  color: var(--color-on-primary);
 }
 
 .nav-badge,
@@ -547,7 +644,8 @@ summary:focus-visible {
 .auth-brand h1 {
   font-size: clamp(2.2rem, 4.4vw, 3.6rem);
   line-height: 1.05;
-  color: var(--color-navy);
+  /* Token, not the navy literal: near-identical in light, readable in dark. */
+  color: var(--color-text);
 }
 
 .auth-brand p {
@@ -1669,6 +1767,122 @@ details summary {
   margin: 1.25rem auto 2rem;
 }
 
+/* -------------------------------------------------------------------------
+   Toast notifications (components/toast.tsx)
+   ------------------------------------------------------------------------- */
+.toast-viewport {
+  position: fixed;
+  bottom: 1rem;
+  right: 1rem;
+  z-index: 80;
+  display: grid;
+  gap: 0.6rem;
+  width: min(22rem, calc(100vw - 2rem));
+}
+
+.toast {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  padding: 0.8rem 0.9rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--color-border);
+  border-left: 4px solid var(--color-primary);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+  /* Entry animation is neutralised by the prefers-reduced-motion block below. */
+  animation: rise-in 160ms ease;
+}
+
+.toast-message {
+  flex: 1;
+  margin: 0.15rem 0 0;
+  color: var(--color-text);
+  font-size: 0.92rem;
+  line-height: 1.45;
+}
+
+.toast-success {
+  border-left-color: var(--color-success);
+}
+
+.toast-error {
+  border-left-color: var(--color-danger);
+}
+
+.toast-info {
+  border-left-color: var(--color-primary);
+}
+
+.toast-dismiss {
+  flex: none;
+  display: inline-grid;
+  place-items: center;
+  width: 1.7rem;
+  height: 1.7rem;
+  padding: 0;
+  font-size: 1.05rem;
+  line-height: 1;
+  color: var(--color-text-muted);
+}
+
+/* -------------------------------------------------------------------------
+   Confirmation modal (components/ConfirmDialog.tsx)
+   ------------------------------------------------------------------------- */
+.modal-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: grid;
+  place-items: center;
+  padding: 1rem;
+  background: var(--overlay-scrim);
+}
+
+.modal-panel {
+  width: min(30rem, 100%);
+  display: grid;
+  gap: 0.9rem;
+  padding: 1.4rem;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-lg);
+  animation: rise-in 160ms ease;
+}
+
+.modal-title {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.modal-description {
+  display: grid;
+  gap: 0.5rem;
+  color: var(--color-text-body);
+  font-size: 0.95rem;
+  line-height: 1.55;
+}
+
+.modal-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.75rem;
+}
+
+@keyframes rise-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.5rem);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
 @keyframes spin {
   to {
     transform: rotate(360deg);
@@ -1840,12 +2054,22 @@ details summary {
    it is cheap, without altering the brand primary or layout.
    ------------------------------------------------------------------------- */
 @media (prefers-contrast: more) {
-  :root {
+  :root:not([data-theme='dark']) {
     --color-border: #b9bfca;
     --color-border-strong: #8b93a1;
     --color-text-body: #2d3648;
     --color-text-muted: #4a5262;
     --color-text-faint: #667085;
+  }
+
+  /* Dark-scoped equivalents: lift borders and de-emphasized text tiers
+     without altering the brand primary or layout. */
+  [data-theme='dark'] {
+    --color-border: #4a5470;
+    --color-border-strong: #77839f;
+    --color-text-body: #dde3ef;
+    --color-text-muted: #b8c1d4;
+    --color-text-faint: #96a0b5;
   }
 
   .card,
