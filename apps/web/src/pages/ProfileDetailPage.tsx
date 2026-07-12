@@ -1,10 +1,10 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, profilesApi, routes } from '../lib/client'
-import { formatDateTime, profileName } from '../lib/format'
+import { formatBytes, formatDateTime, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
-import type { ProfileDetailPayload } from '../lib/types'
+import type { ProfileDetailPayload, ProfileUploadPresignPayload, ProfileUploadsPayload } from '../lib/types'
 import { useAuth } from '../app/auth'
 import { ProfileTagsEditor } from '../components/ProfileTags'
 import {
@@ -30,6 +30,22 @@ export const handle = {
   breadcrumb: 'Profile detail'
 }
 
+// Advisor attachments are sent inline (base64) through the JSON body, which the
+// API caps at ~1MB. Keep the raw file comfortably under that envelope so the
+// upload fails fast client-side with a clear message instead of a network error.
+const MAX_ATTACHMENT_BYTES = 700_000
+
+async function fileToBase64(file: File): Promise<string> {
+  const buffer = await file.arrayBuffer()
+  const bytes = new Uint8Array(buffer)
+  let binary = ''
+  const chunkSize = 0x8000
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
+  }
+  return btoa(binary)
+}
+
 export function Component() {
   const { profileId = '' } = useParams()
   const { user } = useAuth()
@@ -38,6 +54,12 @@ export function Component() {
   const [noteBody, setNoteBody] = useState('')
   const [confirmingConvert, setConfirmingConvert] = useState(false)
   const [converting, setConverting] = useState(false)
+  const [uploading, setUploading] = useState(false)
+  const [uploadMessage, setUploadMessage] = useState('')
+  const [confirmingArchiveId, setConfirmingArchiveId] = useState('')
+  const [archivingId, setArchivingId] = useState('')
+
+  const canWriteProfiles = hasGuard(user, 'canWriteProfiles')
 
   const { data, error, loading } = useAsync<ProfileDetailPayload>(
     () => api.get(routes.profileDetail(profileId)),
@@ -45,6 +67,10 @@ export function Component() {
   )
   const sensitive = useAsync<Record<string, unknown>>(
     () => api.get(routes.profileSensitive(profileId)),
+    [profileId, refreshKey]
+  )
+  const uploads = useAsync<ProfileUploadsPayload>(
+    () => api.get(routes.profileUploads(profileId)),
     [profileId, refreshKey]
   )
 
@@ -94,6 +120,58 @@ export function Component() {
       setRefreshKey((value) => value + 1)
     } catch (noteError) {
       setStatusMessage(noteError instanceof Error ? noteError.message : 'Note creation failed.')
+    }
+  }
+
+  async function handleUpload(event: React.ChangeEvent<HTMLInputElement>) {
+    const input = event.currentTarget
+    const file = input.files?.[0]
+    if (!file) return
+    if (file.size > MAX_ATTACHMENT_BYTES) {
+      setUploadMessage(`"${file.name}" is too large. Attachments must be under ${formatBytes(MAX_ATTACHMENT_BYTES)}.`)
+      input.value = ''
+      return
+    }
+    setUploading(true)
+    setUploadMessage('')
+    try {
+      const fileBytesBase64 = await fileToBase64(file)
+      const contentType = file.type || 'application/octet-stream'
+      const presign = await api.post<ProfileUploadPresignPayload>(routes.profileUploadsPresign(profileId), {
+        fileName: file.name,
+        contentType
+      })
+      await api.post(routes.profileUploads(profileId), {
+        uploadId: presign.uploadId,
+        object: presign.object,
+        name: file.name,
+        fileName: file.name,
+        contentType,
+        fileBytesBase64,
+        sizeBytes: file.size
+      })
+      setUploadMessage(`Uploaded "${file.name}".`)
+      setRefreshKey((value) => value + 1)
+    } catch (uploadError) {
+      setUploadMessage(uploadError instanceof Error ? uploadError.message : 'Attachment upload failed.')
+    } finally {
+      setUploading(false)
+      input.value = ''
+    }
+  }
+
+  async function handleArchive(uploadId: string) {
+    setArchivingId(uploadId)
+    try {
+      await api.post(routes.profileUploadArchive(profileId, uploadId))
+      setConfirmingArchiveId('')
+      setUploadMessage('Attachment archived.')
+      setRefreshKey((value) => value + 1)
+    } catch (archiveError) {
+      setConfirmingArchiveId('')
+      setUploadMessage(archiveError instanceof Error ? archiveError.message : 'Archive failed.')
+    } finally {
+      setArchivingId('')
     }
   }
 
@@ -307,6 +385,108 @@ export function Component() {
           )}
         </PageSection>
       </div>
+
+      <PageSection
+        title="Attachments"
+        subtitle="Documents stored against this profile. Uploads are firm-scoped and follow the same retention lifecycle as portal uploads."
+      >
+        {canWriteProfiles ? (
+          <div className="attachment-upload">
+            <label className={`attachment-upload-control${uploading ? ' is-disabled' : ''}`}>
+              <span>{uploading ? 'Uploading…' : 'Upload attachment'}</span>
+              <input
+                type="file"
+                className="attachment-file-input"
+                disabled={uploading}
+                onChange={(event) => void handleUpload(event)}
+              />
+            </label>
+            <span className="muted compact">Max {formatBytes(MAX_ATTACHMENT_BYTES)} per file.</span>
+          </div>
+        ) : null}
+        {uploadMessage ? (
+          <p className="inline-notice inline-notice-info" data-testid="attachment-status">
+            {uploadMessage}
+          </p>
+        ) : null}
+        {uploads.loading ? (
+          <LoadingState label="Loading attachments" />
+        ) : uploads.error ? (
+          <ErrorState title="Attachments failed to load." detail={uploads.error.message} />
+        ) : uploads.data && uploads.data.uploads.length ? (
+          <DataTable caption="Profile attachments">
+            <thead>
+              <tr>
+                <th>Name</th>
+                <th>Size</th>
+                <th>Uploaded by</th>
+                <th>Uploaded</th>
+                <th>Actions</th>
+              </tr>
+            </thead>
+            <tbody>
+              {uploads.data.uploads.map((upload) => (
+                <tr key={upload.id} data-testid="attachment-row">
+                  <td>{upload.name}</td>
+                  <td>{formatBytes(upload.sizeBytes)}</td>
+                  <td>{upload.uploadedByUserId || upload.uploadedBy || 'advisor'}</td>
+                  <td>{formatDateTime(upload.updatedAt || upload.createdAt)}</td>
+                  <td>
+                    <div className="actions-row">
+                      <a
+                        className="text-link"
+                        href={routes.profileUploadDownload(profileId, upload.id)}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                      >
+                        Download
+                      </a>
+                      {canWriteProfiles ? (
+                        confirmingArchiveId === upload.id ? (
+                          <>
+                            <button
+                              type="button"
+                              className="ghost-button compact"
+                              disabled={archivingId === upload.id}
+                              onClick={() => void handleArchive(upload.id)}
+                            >
+                              Confirm archive
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-button compact"
+                              disabled={archivingId === upload.id}
+                              onClick={() => setConfirmingArchiveId('')}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className="ghost-button compact"
+                            onClick={() => {
+                              setUploadMessage('')
+                              setConfirmingArchiveId(upload.id)
+                            }}
+                          >
+                            Archive
+                          </button>
+                        )
+                      ) : null}
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </DataTable>
+        ) : (
+          <EmptyState
+            title="No attachments yet."
+            detail={canWriteProfiles ? 'Upload a document to attach it to this profile.' : 'No documents are attached to this profile.'}
+          />
+        )}
+      </PageSection>
 
       <PageSection
         title="Sensitive data"

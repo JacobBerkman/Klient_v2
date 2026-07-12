@@ -1415,6 +1415,103 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
+      const profileUploadPresignMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/uploads\/presign$/)
+      if (profileUploadPresignMatch && req.method === 'POST') {
+        const [, id] = profileUploadPresignMatch
+        const body = await parseBody(req)
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteProfiles')
+        const result = await modules.forms.createProfileUploadPresign(user, decodeURIComponent(id), body)
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      const profileUploadDownloadMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/uploads\/([^/]+)\/download$/)
+      if (profileUploadDownloadMatch && req.method === 'GET') {
+        const [, id, uploadId] = profileUploadDownloadMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadProfiles')
+        const artifact = await modules.forms.getProfileUploadDownload(
+          user,
+          decodeURIComponent(id),
+          decodeURIComponent(uploadId)
+        )
+        log('info', 'document_upload.downloaded', {
+          requestId,
+          userId: user.id,
+          firmId: user.firmId,
+          profileId: decodeURIComponent(id),
+          uploadId: decodeURIComponent(uploadId),
+          delivery: artifact?.redirectUrl ? 'presigned-redirect' : 'stream'
+        })
+        if (artifact?.redirectUrl) {
+          // Authorization above already gated this request; hand the browser a
+          // short-lived presigned URL (Content-Disposition travels inside the
+          // signed response-content-disposition query parameter).
+          res.writeHead(302, {
+            ...baseHeaders(),
+            'X-Request-Id': requestId,
+            Location: artifact.redirectUrl,
+            'Cache-Control': 'private, no-store'
+          })
+          finalizeLog(302)
+          return res.end()
+        }
+        const fileName = sanitizeDownloadFilename(artifact.fileName || `${uploadId}.bin`)
+        res.writeHead(200, {
+          ...baseHeaders(),
+          'X-Request-Id': requestId,
+          'Content-Type': artifact.contentType || 'application/octet-stream',
+          'Content-Length': String(artifact.sizeBytes || artifact.body?.length || 0),
+          'Content-Disposition': `attachment; filename=\"${fileName}\"`,
+          'Cache-Control': 'private, no-store'
+        })
+        finalizeLog(200)
+        return res.end(artifact.body)
+      }
+      const profileUploadArchiveMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/uploads\/([^/]+)\/archive$/)
+      if (profileUploadArchiveMatch && req.method === 'POST') {
+        const [, id, uploadId] = profileUploadArchiveMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteProfiles')
+        const result = modules.forms.archiveProfileUpload(user, decodeURIComponent(id), decodeURIComponent(uploadId))
+        logOperationalEvent(log, 'info', 'mutation.document_upload.archived', {
+          entity: 'document_upload',
+          id: decodeURIComponent(uploadId),
+          status: 'updated',
+          requestId,
+          userId: user.id,
+          firmId: user.firmId
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      const profileUploadsMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/uploads$/)
+      if (profileUploadsMatch && req.method === 'GET') {
+        const [, id] = profileUploadsMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadProfiles')
+        const includeArchived = url.searchParams.get('includeArchived') === 'true'
+        const result = modules.forms.listProfileUploads(user, decodeURIComponent(id), { includeArchived })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (profileUploadsMatch && req.method === 'POST') {
+        const [, id] = profileUploadsMatch
+        const body = await parseBody(req)
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteProfiles')
+        const result = await modules.forms.completeProfileUpload(user, decodeURIComponent(id), body)
+        logOperationalEvent(log, 'info', 'mutation.document_upload.created', {
+          entity: 'document_upload',
+          id: result?.id || null,
+          status: 'created',
+          requestId,
+          userId: user.id,
+          firmId: user.firmId
+        })
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
       const profileTagsMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/tags$/)
       if (profileTagsMatch && req.method === 'POST') {
         const [, id] = profileTagsMatch

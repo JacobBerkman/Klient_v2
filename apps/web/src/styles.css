@@ -1875,3 +1875,48 @@ details summary {
     scroll-behavior: auto !important;
   }
 }
+
+/* -------------------------------------------------------------------------
+   Profile attachments (advisor document uploads)
+   ------------------------------------------------------------------------- */
+.attachment-upload {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+}
+
+.attachment-upload-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.9rem;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 8px;
+  background: var(--color-surface);
+  color: var(--color-text-body);
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.attachment-upload-control:hover {
+  background: var(--color-surface-muted);
+  color: var(--color-text);
+}
+
+.attachment-upload-control.is-disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.attachment-file-input {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
+}
