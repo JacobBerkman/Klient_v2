@@ -1,7 +1,21 @@
-import { backupState, loadState, saveState } from '../apps/api/src/storage.mjs'
+import {
+  backupState,
+  listDocumentTemplateRows,
+  listFormTemplateRows,
+  listTemplateAggregateRows,
+  upsertDocumentTemplateRow,
+  upsertFormTemplateRow,
+  upsertTemplateAggregateRow
+} from '../apps/api/src/storage.mjs'
 
 const stageArg = process.argv.find((arg) => arg.startsWith('--stage='))
 const stage = (stageArg ? stageArg.split('=')[1] : 'plan') || 'plan'
+
+// Templates became relational sources of truth (migration 010): the canonical
+// aggregates live in template_aggregates and the two legacy projections in
+// form_templates / document_templates. This one-off unification tool now reads
+// and writes those tables directly (upsert per row) instead of the retired
+// app_state blob arrays.
 
 function normalizeTemplate(entry, kind) {
   const createdAt = entry.createdAt || new Date().toISOString()
@@ -38,40 +52,41 @@ function normalizeTemplate(entry, kind) {
   }
 }
 
-function regenerateLegacyProjections(state) {
-  state.formTemplates = (state.templateAggregates || [])
-    .filter((entry) => entry.kind === 'form')
-    .map((entry) => ({
-      id: entry.id,
-      firmId: entry.firmId,
-      name: entry.name,
-      description: entry.description || '',
-      sections: entry.formSchema?.sections || [],
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt
-    }))
-
-  state.documentTemplates = (state.templateAggregates || [])
-    .filter((entry) => entry.kind !== 'form')
-    .map((entry) => ({
-      id: entry.id,
-      firmId: entry.firmId,
-      name: entry.name,
-      fileName: entry.documentMetadata?.fileName || 'template.pdf',
-      blueprint: entry.blueprint || { sections: [] },
-      mappings: entry.mappings || [],
-      versions: entry.versions || [],
-      status: entry.publishState || 'draft',
-      publishState: entry.publishState || 'draft',
-      createdAt: entry.createdAt,
-      updatedAt: entry.updatedAt
-    }))
+function regenerateLegacyProjections() {
+  const aggregates = listTemplateAggregateRows()
+  for (const entry of aggregates) {
+    if (entry.kind === 'form') {
+      upsertFormTemplateRow({
+        id: entry.id,
+        firmId: entry.firmId,
+        name: entry.name,
+        description: entry.description || '',
+        sections: entry.formSchema?.sections || [],
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt
+      })
+    } else {
+      upsertDocumentTemplateRow({
+        id: entry.id,
+        firmId: entry.firmId,
+        name: entry.name,
+        fileName: entry.documentMetadata?.fileName || 'template.pdf',
+        blueprint: entry.blueprint || { sections: [] },
+        mappings: entry.mappings || [],
+        versions: entry.versions || [],
+        status: entry.publishState || 'draft',
+        publishState: entry.publishState || 'draft',
+        createdAt: entry.createdAt,
+        updatedAt: entry.updatedAt
+      })
+    }
+  }
 }
 
-function runPlan(state) {
-  const legacyFormIds = new Set((state.formTemplates || []).map((entry) => entry.id))
-  const legacyDocumentIds = new Set((state.documentTemplates || []).map((entry) => entry.id))
-  const canonicalIds = new Set((state.templateAggregates || []).map((entry) => entry.id))
+function runPlan() {
+  const legacyFormIds = new Set(listFormTemplateRows().map((entry) => entry.id))
+  const legacyDocumentIds = new Set(listDocumentTemplateRows().map((entry) => entry.id))
+  const canonicalIds = new Set(listTemplateAggregateRows().map((entry) => entry.id))
   const missing = [...legacyFormIds, ...legacyDocumentIds].filter((id) => !canonicalIds.has(id))
   return {
     stage: 'plan',
@@ -83,14 +98,13 @@ function runPlan(state) {
   }
 }
 
-function runBackfill(state) {
-  state.templateAggregates ||= []
-  const existing = new Set(state.templateAggregates.map((entry) => entry.id))
+function runBackfill() {
+  const existing = new Set(listTemplateAggregateRows().map((entry) => entry.id))
   const copied = []
 
-  for (const form of state.formTemplates || []) {
+  for (const form of listFormTemplateRows()) {
     if (existing.has(form.id)) continue
-    state.templateAggregates.push(
+    upsertTemplateAggregateRow(
       normalizeTemplate(
         {
           ...form,
@@ -103,12 +117,13 @@ function runBackfill(state) {
         'form'
       )
     )
+    existing.add(form.id)
     copied.push(form.id)
   }
 
-  for (const document of state.documentTemplates || []) {
+  for (const document of listDocumentTemplateRows()) {
     if (existing.has(document.id)) continue
-    state.templateAggregates.push(
+    upsertTemplateAggregateRow(
       normalizeTemplate(
         {
           ...document,
@@ -118,15 +133,16 @@ function runBackfill(state) {
         'document'
       )
     )
+    existing.add(document.id)
     copied.push(document.id)
   }
 
   return { stage: 'backfill', copiedCount: copied.length, copiedIds: copied }
 }
 
-function runVerify(state) {
-  const canonical = new Set((state.templateAggregates || []).map((entry) => entry.id))
-  const legacy = [...(state.formTemplates || []), ...(state.documentTemplates || [])].map((entry) => entry.id)
+function runVerify() {
+  const canonical = new Set(listTemplateAggregateRows().map((entry) => entry.id))
+  const legacy = [...listFormTemplateRows(), ...listDocumentTemplateRows()].map((entry) => entry.id)
   const missing = legacy.filter((id) => !canonical.has(id))
   return {
     stage: 'verify',
@@ -142,19 +158,16 @@ if (!validStages.has(stage)) {
 }
 
 const backup = backupState()
-const state = loadState(() => ({}))
 let result
 
 if (stage === 'plan') {
-  result = runPlan(state)
+  result = runPlan()
 } else if (stage === 'backfill') {
-  result = runBackfill(state)
-  saveState(state)
+  result = runBackfill()
 } else if (stage === 'verify') {
-  result = runVerify(state)
+  result = runVerify()
 } else {
-  regenerateLegacyProjections(state)
-  saveState(state)
+  regenerateLegacyProjections()
   result = { stage: 'project-legacy', projected: true }
 }
 
