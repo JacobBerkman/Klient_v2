@@ -5,6 +5,7 @@ import type { DashboardPayload } from '../lib/types'
 import { homePathForUser } from '../lib/permissions'
 import { useTheme, type ThemePreference } from '../lib/theme'
 import { NotificationBell } from '../components/NotificationBell'
+import { GlobalSearch } from '../components/GlobalSearch'
 import { SegmentedControl } from '../components/ui'
 import { useAuth } from './auth'
 
@@ -176,6 +177,7 @@ export function AppShell() {
             <strong>{user ? `${user.firstName} ${user.lastName}` : 'Session'}</strong>
           </div>
           <div className="topbar-actions">
+            <GlobalSearch />
             <ThemeControl />
             <NotificationBell />
             <span className="role-pill" aria-label="Current role">

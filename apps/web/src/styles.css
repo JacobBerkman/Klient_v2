@@ -466,7 +466,9 @@ summary:focus-visible {
   background: var(--color-surface);
   color: var(--color-text-body);
   cursor: pointer;
-  transition: border-color 140ms ease, background-color 140ms ease;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
 }
 
 .notification-trigger:hover {
@@ -1034,7 +1036,9 @@ table textarea {
   border: 1px solid var(--color-border-strong);
   background: var(--color-surface);
   color: var(--color-text);
-  transition: border-color 140ms ease, box-shadow 140ms ease;
+  transition:
+    border-color 140ms ease,
+    box-shadow 140ms ease;
 }
 
 .toolbar input:focus,
@@ -1406,7 +1410,9 @@ details summary {
   border: 1px solid var(--color-border);
   background: var(--color-surface-muted);
   min-height: 320px;
-  transition: border-color 140ms ease, background-color 140ms ease;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
 }
 
 .kanban-column-header {
@@ -1436,7 +1442,10 @@ details summary {
   border: 1px solid var(--color-border);
   background: var(--color-surface);
   box-shadow: var(--shadow-sm);
-  transition: box-shadow 140ms ease, border-color 140ms ease, transform 140ms ease;
+  transition:
+    box-shadow 140ms ease,
+    border-color 140ms ease,
+    transform 140ms ease;
 }
 
 .kanban-card:hover {

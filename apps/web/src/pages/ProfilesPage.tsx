@@ -6,6 +6,7 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { CustomFieldSchemaPayload, Profile } from '../lib/types'
 import { useAuth } from '../app/auth'
+import { useToast } from '../components/toast'
 import {
   ActionPanel,
   ButtonLink,
@@ -35,12 +36,12 @@ interface ProfilesPageData {
 
 export function Component() {
   const { user } = useAuth()
+  const toast = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
   const [refreshKey, setRefreshKey] = useState(0)
   const [search, setSearch] = useState('')
   const [kindFilter, setKindFilter] = useState<'all' | 'prospect' | 'client'>('all')
   const [showArchived, setShowArchived] = useState(false)
-  const [statusMessage, setStatusMessage] = useState('')
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({
     kind: 'prospect',
@@ -75,7 +76,6 @@ export function Component() {
   async function handleCreateProfile(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setCreating(true)
-    setStatusMessage('')
     try {
       await api.post(routes.profiles(), {
         kind: form.kind,
@@ -85,7 +85,7 @@ export function Component() {
         phone: form.phone || undefined,
         ...(form.stage ? { stage: form.stage } : {})
       })
-      setStatusMessage('Profile created.')
+      toast.success('Profile created.')
       setForm({
         kind: 'prospect',
         firstName: '',
@@ -96,7 +96,7 @@ export function Component() {
       })
       setRefreshKey((value) => value + 1)
     } catch (createError) {
-      setStatusMessage(createError instanceof Error ? createError.message : 'Unable to create profile.')
+      toast.error(createError instanceof Error ? createError.message : 'Unable to create profile.')
     } finally {
       setCreating(false)
     }
@@ -249,9 +249,7 @@ export function Component() {
                     {creating ? 'Creating...' : 'Create profile'}
                   </button>
                 </form>
-                <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
-                  {statusMessage || 'Global create forms have been relocated into the relevant routed page.'}
-                </p>
+                <p className="muted">Global create forms have been relocated into the relevant routed page.</p>
               </ActionPanel>
 
               <ActionPanel

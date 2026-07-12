@@ -6,6 +6,8 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { Household, Profile } from '../lib/types'
 import { useAuth } from '../app/auth'
+import { ConfirmDialog } from '../components/ConfirmDialog'
+import { useToast } from '../components/toast'
 import {
   ActionPanel,
   DataTable,
@@ -32,8 +34,10 @@ interface HouseholdDetailData {
 export function Component() {
   const { householdId = '' } = useParams()
   const { user } = useAuth()
+  const toast = useToast()
   const [refreshKey, setRefreshKey] = useState(0)
-  const [statusMessage, setStatusMessage] = useState('')
+  const [confirmingRemoveClientId, setConfirmingRemoveClientId] = useState('')
+  const [removingMember, setRemovingMember] = useState(false)
   const [memberId, setMemberId] = useState('')
   const [memberRole, setMemberRole] = useState('member')
   const [spouseId, setSpouseId] = useState('')
@@ -66,10 +70,21 @@ export function Component() {
   async function refreshAfter(action: Promise<unknown>, message: string) {
     try {
       await action
-      setStatusMessage(message)
+      toast.success(message)
       setRefreshKey((value) => value + 1)
     } catch (actionError) {
-      setStatusMessage(actionError instanceof Error ? actionError.message : 'Request failed.')
+      toast.error(actionError instanceof Error ? actionError.message : 'Request failed.')
+    }
+  }
+
+  async function handleRemoveMember(clientId: string) {
+    if (!household) return
+    setRemovingMember(true)
+    try {
+      await refreshAfter(api.delete(routes.householdMembers(household.id), { clientId }), 'Member removed.')
+    } finally {
+      setConfirmingRemoveClientId('')
+      setRemovingMember(false)
     }
   }
 
@@ -111,15 +126,20 @@ export function Component() {
                           type="button"
                           className="ghost-button"
                           disabled={!hasGuard(user, 'canWriteHouseholds')}
-                          onClick={() =>
-                            void refreshAfter(
-                              api.delete(routes.householdMembers(household.id), { clientId: member.clientId }),
-                              'Member removed.'
-                            )
-                          }
+                          onClick={() => setConfirmingRemoveClientId(member.clientId)}
                         >
                           Remove
                         </button>
+                        <ConfirmDialog
+                          open={confirmingRemoveClientId === member.clientId}
+                          title="Remove household member?"
+                          description={`Removing ${profileName(profileById.get(member.clientId))} detaches them from ${household.name}. Their profile is unaffected and can be re-added later.`}
+                          confirmLabel="Confirm remove"
+                          tone="danger"
+                          busy={removingMember}
+                          onConfirm={() => void handleRemoveMember(member.clientId)}
+                          onCancel={() => setConfirmingRemoveClientId('')}
+                        />
                       </td>
                     </tr>
                   ))}
@@ -242,9 +262,7 @@ export function Component() {
         </ActionPanel>
       </div>
 
-      <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
-        {statusMessage || 'Create, add, split, and spouse-link flows have been relocated here from the old shell.'}
-      </p>
+      <p className="muted">Create, add, split, and spouse-link flows have been relocated here from the old shell.</p>
     </div>
   )
 }

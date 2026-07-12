@@ -606,7 +606,11 @@ export function Component() {
         ) : (
           <EmptyState
             title="No attachments yet."
-            detail={canWriteProfiles ? 'Upload a document to attach it to this profile.' : 'No documents are attached to this profile.'}
+            detail={
+              canWriteProfiles
+                ? 'Upload a document to attach it to this profile.'
+                : 'No documents are attached to this profile.'
+            }
           />
         )}
       </PageSection>
@@ -697,7 +701,11 @@ export function Component() {
         ) : (
           <EmptyState
             title="No meetings logged yet."
-            detail={canWriteProfiles ? 'Log the first meeting with this profile above.' : 'No meetings are recorded for this profile.'}
+            detail={
+              canWriteProfiles
+                ? 'Log the first meeting with this profile above.'
+                : 'No meetings are recorded for this profile.'
+            }
           />
         )}
       </PageSection>
