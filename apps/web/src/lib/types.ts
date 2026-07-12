@@ -357,6 +357,35 @@ export interface FormSubmission {
   [key: string]: unknown
 }
 
+export interface DraftSearchDraft {
+  id: string
+  templateId: string
+  templateName: string
+  status: 'draft'
+  updatedAt?: string
+  createdAt?: string
+  revisionId?: number
+  sectionCount?: number
+}
+
+export interface DraftSearchMatch {
+  id: string
+  firstName: string
+  lastName: string
+  name: string
+  email: string
+  kind: 'prospect' | 'client'
+  archived: boolean
+  drafts: DraftSearchDraft[]
+}
+
+export interface DraftSearchResult {
+  query: string
+  queryType: 'text' | 'ssn4' | 'empty'
+  ssnSearchAvailable: boolean
+  matches: DraftSearchMatch[]
+}
+
 export interface DraftCollaboratorsPayload {
   ok?: boolean
   action: string

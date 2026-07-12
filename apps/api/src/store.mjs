@@ -3392,6 +3392,113 @@ export function createStore({
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
     },
+    // Advisor-side draft-resume search. Firm-scoped and gated on forms:write
+    // (drafts are being resumed for EDITING, so readonly is denied). Query
+    // semantics:
+    //  - Text (default): case-insensitive substring over firstName/lastName/
+    //    full name/email.
+    //  - SSN last-4: ONLY when q is exactly four digits do we enter the PII
+    //    branch and decrypt each firm profile's SSN envelope in memory to
+    //    compare the last four digits. Non-4-digit queries never touch
+    //    decryptSensitiveValue — the decrypt call is lexically inside the
+    //    `isSsn4` guard, so it is structurally provable that a text query
+    //    performs zero decryption.
+    // The scan is bounded to this firm's non-archived profiles (pilot scale),
+    // and no plaintext last-4 column/index is introduced. If the PII key can't
+    // be resolved (rotated away / absent), decryption throws per profile; we
+    // catch it, flip ssnSearchAvailable=false, and degrade to name/email-only
+    // rather than erroring. Every search is audited (queryType + match count);
+    // the raw query string is logged ONLY for text queries, never for SSN4.
+    searchDrafts(user, rawQuery = '') {
+      requirePermission(user, 'forms:write')
+      const actorUserId = resolveUserId(user)
+      const q = String(rawQuery || '').trim()
+      const isSsn4 = /^\d{4}$/.test(q)
+      const queryType = q ? (isSsn4 ? 'ssn4' : 'text') : 'empty'
+
+      // The one and only candidate set the SSN decrypt scan ever iterates.
+      const firmProfiles = listProfileRows({ firmId: user.firmId }).filter((profile) => !profile.archivedAt)
+      const qLower = q.toLowerCase()
+      let ssnSearchAvailable = true
+
+      function textMatch(profile) {
+        if (!qLower) return false
+        const haystack = `${profile.firstName || ''} ${profile.lastName || ''} ${profile.email || ''}`.toLowerCase()
+        return haystack.includes(qLower)
+      }
+
+      function ssn4Match(profile) {
+        const envelope = profile.pii?.ssnEncrypted || profile.pii?.ssnCiphertext
+        if (!envelope) return false
+        let ssn
+        try {
+          ssn = decryptSensitiveValue(envelope)
+        } catch {
+          // Missing/unresolvable key: degrade gracefully. Flag it once and stop
+          // treating SSN4 as a viable match path for the rest of this scan.
+          ssnSearchAvailable = false
+          return false
+        }
+        if (!ssn) return false
+        const digits = String(ssn).replace(/\D/g, '')
+        return digits.length >= 4 && digits.slice(-4) === q
+      }
+
+      const matchedProfiles = firmProfiles.filter((profile) => {
+        const byText = textMatch(profile)
+        // Decrypt is reached ONLY through this guard — never for text queries.
+        const bySsn = isSsn4 ? ssn4Match(profile) : false
+        return byText || bySsn
+      })
+
+      const matches = []
+      for (const profile of matchedProfiles) {
+        const drafts = listFormSubmissionsByClient(user.firmId, profile.id)
+          .filter((entry) => entry.status === 'draft')
+          .map((entry) => {
+            const template = state.templateAggregates.find((candidate) => candidate.id === entry.templateId)
+            const sections = template?.formSchema?.sections || template?.sections || []
+            return {
+              id: entry.id,
+              templateId: entry.templateId,
+              templateName: template?.name || entry.templateId,
+              status: entry.status,
+              updatedAt: entry.updatedAt || entry.createdAt,
+              createdAt: entry.createdAt,
+              revisionId: entry.revisionId || 1,
+              sectionCount: Array.isArray(sections) ? sections.length : 0
+            }
+          })
+          .sort((a, b) => new Date(b.updatedAt).getTime() - new Date(a.updatedAt).getTime())
+        // "Resume a draft" only surfaces profiles that actually have an
+        // in-progress draft to resume.
+        if (!drafts.length) continue
+        matches.push({
+          id: profile.id,
+          firstName: profile.firstName || '',
+          lastName: profile.lastName || '',
+          name: `${profile.firstName || ''} ${profile.lastName || ''}`.trim(),
+          email: profile.email || '',
+          kind: profile.kind,
+          archived: Boolean(profile.archivedAt),
+          drafts
+        })
+      }
+      matches.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id))
+
+      // Audit EVERY search. Log the raw query for text; for SSN4 log only the
+      // queryType (never the four digits).
+      const auditMetadata = { queryType, matches: matches.length, ssnSearchAvailable }
+      if (queryType === 'text') auditMetadata.query = q
+      addAudit(user.firmId, actorUserId, 'form_submission', user.firmId, 'drafts.searched', auditMetadata)
+
+      return {
+        query: queryType === 'ssn4' ? '' : q,
+        queryType,
+        ssnSearchAvailable,
+        matches
+      }
+    },
     getClientWorkspace(user) {
       const profile = requireClientProfile(user)
       const submissions = listFormSubmissionsByClient(user.firmId, profile.id).sort(

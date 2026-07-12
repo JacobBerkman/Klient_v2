@@ -2017,3 +2017,24 @@ details summary {
   justify-content: center;
   margin-top: var(--space-2);
 }
+
+.draft-resume-search {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: var(--space-3);
+}
+
+.draft-resume-match {
+  border: 1px solid var(--color-border, rgba(148, 163, 184, 0.35));
+  border-radius: var(--radius-2, 0.6rem);
+  padding: var(--space-3);
+  display: grid;
+  gap: var(--space-2);
+}
+
+.draft-resume-match-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-1);
+}

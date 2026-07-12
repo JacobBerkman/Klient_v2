@@ -226,6 +226,9 @@ export class StoreFormsRepository extends FormsRepository {
   listFormDrafts(user) {
     return this.store.listFormDrafts(user)
   }
+  searchDrafts(user, query) {
+    return this.store.searchDrafts(user, query)
+  }
   createFormSubmission(user, input) {
     return this.store.createFormSubmission(user, input)
   }
