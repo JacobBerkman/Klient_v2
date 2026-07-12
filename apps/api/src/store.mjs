@@ -108,6 +108,7 @@ import {
   validateFormDefinitionSchema
 } from './modules/forms/schema/form-definition-validator.mjs'
 import { validateMappingRules } from './modules/templates/schema/mapping-rules-validator.mjs'
+import { collectMissingRequiredFields } from './form-conditions.mjs'
 import { extractTemplateFieldsFromPdfBytes } from './modules/templates/template-ingestion.mjs'
 import { buildFormTemplateFromExtractedFields } from './modules/templates/template-form-builder.mjs'
 import { createDefaultFirmStageConfig, getStageKey, normalizeFirmStageConfig } from './stage-config.mjs'
@@ -644,6 +645,31 @@ function createTemplateVersion(template, event, overrides = {}) {
     diff: overrides.diff || null,
     actorUserId: overrides.actorUserId || null,
     createdAt: now()
+  }
+}
+
+function resolveTemplateFormSections(template) {
+  if (!template || typeof template !== 'object') return []
+  const fromSchema = template.formSchema && Array.isArray(template.formSchema.sections) ? template.formSchema.sections : null
+  if (fromSchema) return fromSchema
+  return Array.isArray(template.sections) ? template.sections : []
+}
+
+// Enforce required fields when a form is FINALIZED (status transitions to
+// 'submitted'). Draft saves are never blocked. A field hidden by its visibleIf
+// condition against the submitted data is NOT required (even if required:true);
+// its stale value is preserved but excluded from this check. Repeatable sections
+// validate per-row. Absence of required fields = no-op, so existing templates
+// (and generated PDF forms, which carry no conditions) are unaffected.
+function assertRequiredFieldsForSubmission(template, data) {
+  const sections = resolveTemplateFormSections(template)
+  const missing = collectMissingRequiredFields(sections, data)
+  if (missing.length) {
+    const error = new Error('Form submission is missing required fields.')
+    error.statusCode = 400
+    error.code = 'FORMS_REQUIRED_FIELDS_MISSING'
+    error.details = { missing }
+    throw error
   }
 }
 
@@ -3030,13 +3056,15 @@ export function createStore({
       )
       if (!template) throw new Error('Form template not found.')
       const status = input.status === 'draft' ? 'draft' : 'submitted'
+      const submissionData = input.data && typeof input.data === 'object' ? input.data : {}
+      if (status === 'submitted') assertRequiredFieldsForSubmission(template, submissionData)
       const submission = {
         id: randomUUID(),
         firmId: user.firmId,
         clientId: profile.id,
         templateId: input.templateId,
         status,
-        data: input.data && typeof input.data === 'object' ? input.data : {},
+        data: submissionData,
         source: 'client_portal',
         createdByUserId: user.id,
         createdAt: now(),
@@ -3296,6 +3324,12 @@ export function createStore({
       requirePermission(user, 'forms:write')
       const actorUserId = resolveUserId(user)
       const status = input.status || 'draft'
+      if (status === 'submitted') {
+        const template = state.templateAggregates.find(
+          (entry) => entry.id === input.templateId && entry.firmId === user.firmId && entry.kind === 'form'
+        )
+        if (template) assertRequiredFieldsForSubmission(template, input.data || {})
+      }
       const createdAt = now()
       const submission = {
         id: randomUUID(),
@@ -3442,7 +3476,14 @@ export function createStore({
         }
       }
 
-      submission.data = input.data && typeof input.data === 'object' ? input.data : {}
+      const nextData = input.data && typeof input.data === 'object' ? input.data : {}
+      if (input.status === 'submitted') {
+        const template = state.templateAggregates.find(
+          (entry) => entry.id === submission.templateId && entry.firmId === user.firmId && entry.kind === 'form'
+        )
+        if (template) assertRequiredFieldsForSubmission(template, nextData)
+      }
+      submission.data = nextData
       submission.revisionId = currentRevision + 1
       submission.updatedAt = now()
       if (input.status === 'submitted') {
@@ -4719,13 +4760,15 @@ export function createStore({
           return existingDraft
         }
       }
+      const portalSubmissionData = input.data && typeof input.data === 'object' ? input.data : {}
+      if (status === 'submitted' && template) assertRequiredFieldsForSubmission(template, portalSubmissionData)
       const submission = {
         id: randomUUID(),
         firmId: link.firmId,
         clientId: link.profileId,
         templateId,
         status,
-        data: input.data && typeof input.data === 'object' ? input.data : {},
+        data: portalSubmissionData,
         createdByUserId: null,
         createdAt: now(),
         updatedAt: now(),

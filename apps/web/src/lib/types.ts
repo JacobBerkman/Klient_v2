@@ -253,6 +253,12 @@ export interface CustomFieldSchemaPayload {
   fields: CustomFieldDefinition[]
 }
 
+export interface FormFieldVisibleIf {
+  field: string
+  op: 'equals' | 'notEquals' | 'in' | 'notEmpty'
+  value?: string | string[]
+}
+
 export interface FormField {
   key: string
   label?: string
@@ -261,6 +267,9 @@ export interface FormField {
   required?: boolean
   options?: string[]
   fields?: FormField[]
+  // Optional single-condition show-if. Absent = always visible. See
+  // lib/formConditions.ts for evaluation semantics.
+  visibleIf?: FormFieldVisibleIf
   [key: string]: unknown
 }
 

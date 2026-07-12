@@ -88,6 +88,121 @@ function collectRepeaterPaths(fields, parentPath, issues, basePath, target) {
   }
 }
 
+const VISIBLE_IF_OPS = new Set(['equals', 'notEquals', 'in', 'notEmpty'])
+
+// The identifier a field is keyed by in submission data / referenced by a
+// sibling's visibleIf. Mirrors fieldKey() in form-conditions.mjs.
+function conditionFieldKey(field) {
+  if (!isObject(field)) return ''
+  return String(field.key ?? field.path ?? field.name ?? field.id ?? '')
+}
+
+// Validate the optional visibleIf conditions inside a single fields[] scope
+// (one section, or one repeatable-section row). A condition may only reference
+// a SIBLING field key in the same scope — cross-section references are rejected
+// here because such a key is simply absent from this scope's key set. Self- and
+// circular references are rejected too. Nested repeater sub-fields are validated
+// recursively in their own scope.
+function validateVisibleIfScope(fields, issues, basePath) {
+  if (!Array.isArray(fields)) return
+
+  const keySet = new Set()
+  for (const field of fields) {
+    if (!isObject(field)) continue
+    const key = conditionFieldKey(field)
+    if (key) keySet.add(key)
+  }
+
+  // field key -> referenced sibling key, for cycle detection.
+  const edges = new Map()
+
+  fields.forEach((field, index) => {
+    if (!isObject(field)) return
+    const fieldPath = `${basePath}/${index}`
+    const key = conditionFieldKey(field)
+
+    if (field.visibleIf !== undefined && field.visibleIf !== null) {
+      const condition = field.visibleIf
+      const conditionPath = `${fieldPath}/visibleIf`
+      if (!isObject(condition)) {
+        pushIssue(issues, conditionPath, 'visibleIf must be an object with { field, op, value? }.')
+      } else {
+        const ref = typeof condition.field === 'string' ? condition.field.trim() : ''
+        if (!ref) {
+          pushIssue(issues, `${conditionPath}/field`, 'visibleIf.field is required and must name a sibling field key.')
+        } else if (ref === key) {
+          pushIssue(issues, `${conditionPath}/field`, `visibleIf.field "${ref}" cannot reference the field itself.`)
+        } else if (!keySet.has(ref)) {
+          pushIssue(
+            issues,
+            `${conditionPath}/field`,
+            `visibleIf.field "${ref}" must reference an existing field key in the same section (cross-section references are not allowed).`
+          )
+        } else {
+          edges.set(key, ref)
+        }
+
+        if (!VISIBLE_IF_OPS.has(condition.op)) {
+          pushIssue(
+            issues,
+            `${conditionPath}/op`,
+            `visibleIf.op "${condition.op}" is not supported. Use one of: ${[...VISIBLE_IF_OPS].join(', ')}.`
+          )
+        } else if (condition.op === 'in') {
+          if (!Array.isArray(condition.value) || condition.value.length === 0) {
+            pushIssue(
+              issues,
+              `${conditionPath}/value`,
+              'visibleIf.value must be a non-empty array of strings when op is "in".'
+            )
+          }
+        } else if (condition.op !== 'notEmpty') {
+          if (
+            condition.value === undefined ||
+            condition.value === null ||
+            (typeof condition.value !== 'string' && typeof condition.value !== 'number')
+          ) {
+            pushIssue(
+              issues,
+              `${conditionPath}/value`,
+              `visibleIf.value is required and must be a string when op is "${condition.op}".`
+            )
+          }
+        }
+      }
+    }
+
+    // Recurse into nested repeater sub-fields; each nested fields[] is its own
+    // sibling scope.
+    if (Array.isArray(field.fields)) {
+      validateVisibleIfScope(field.fields, issues, `${fieldPath}/fields`)
+    }
+    if (Array.isArray(field.items)) {
+      validateVisibleIfScope(field.items, issues, `${fieldPath}/items`)
+    }
+  })
+
+  // Detect circular visibleIf references within this scope. Each node has at
+  // most one outgoing edge, so a cycle is any node whose follow-the-edge walk
+  // returns to a node already seen on this walk.
+  for (const start of edges.keys()) {
+    const seen = new Set()
+    let current = start
+    while (current !== undefined && edges.has(current)) {
+      if (seen.has(current)) {
+        pushIssue(
+          issues,
+          `${basePath}`,
+          `Circular visibleIf reference detected involving field "${current}". Conditions must not form a cycle within a section.`
+        )
+        break
+      }
+      seen.add(current)
+      current = edges.get(current)
+    }
+  }
+}
+
 export function convertLegacyFormDefinition(input) {
   const normalized = normalizeLegacySections(input)
   if (isObject(normalized) && Array.isArray(normalized.sections)) {
@@ -130,6 +245,9 @@ export function validateFormDefinitionSchema(input, options = {}) {
         repeaterPaths.add(sectionKey)
       }
       collectRepeaterPaths(section.fields || [], sectionParentPath, issues, `${sectionPath}/fields`, repeaterPaths)
+      // Validate optional visibleIf conditions: references must stay within this
+      // section's field scope (per-row for repeatable sections).
+      validateVisibleIfScope(section.fields || [], issues, `${sectionPath}/fields`)
     })
   }
 
