@@ -126,6 +126,38 @@ services:
         condition: service_started
     restart: unless-stopped
 
+  # Scheduled encrypted backups. Disabled by default; enable with:
+  #   docker compose --profile backup up --build -d
+  # Runs scripts/backup.mjs on a fixed interval (BACKUP_INTERVAL_SECONDS,
+  # default 24h) writing AES-256-GCM artifacts to the shared data volume under
+  # BACKUP_DIR (data/backups). Set BACKUP_ENCRYPTION_KEY to a dedicated 32-byte
+  # hex key; without it the script falls back to APP_SECRET and warns. See
+  # DEPLOYMENT.md ("Backups & restore") for the host cron alternative.
+  kinetic-klient-backup:
+    build: .
+    profiles: ['backup']
+    read_only: true
+    tmpfs:
+      - /tmp
+      - /app/tmp
+    volumes:
+      - ./data:/app/data
+    environment:
+      NODE_ENV: production
+      APP_SECRET: ${APP_SECRET}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      BACKUP_ENCRYPTION_KEY: ${BACKUP_ENCRYPTION_KEY:-}
+      BACKUP_DIR: ${BACKUP_DIR:-data/backups}
+      BACKUP_RETENTION: ${BACKUP_RETENTION:-7}
+      BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-86400}
+    # Simple interval loop: back up immediately on start, then every
+    # BACKUP_INTERVAL_SECONDS. Keeps the container dependency-free (no cron image).
+    entrypoint:
+      - /bin/sh
+      - -c
+      - 'while true; do node scripts/backup.mjs || echo "backup failed (exit $$?)"; sleep "$${BACKUP_INTERVAL_SECONDS:-86400}"; done'
+    restart: unless-stopped
+
   # Optional TLS termination. Disabled by default; enable with:
   #   docker compose --profile tls up --build -d
   # The app service keeps serving plain HTTP on :3000 either way; Caddy

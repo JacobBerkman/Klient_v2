@@ -273,6 +273,129 @@ Both scripts emit structured JSON metadata for release evidence automation:
 - backup: `operation`, `status`, `artifact.path`, `artifact.sizeBytes`, `artifact.sha256`, `artifact.sqliteQuickCheck`, `startedAt`, `finishedAt`
 - restore/verify: `operation`, `status`, `executionMode` (`live-restore` or `verify-only-drill`), `evidenceLabel`, `source.*`, `restoreTarget.*`, `restoreTarget.kind`, `checks.sizeMatch`, `checks.sha256Match`, `checks.sourceQuickCheckOk`, `checks.targetQuickCheckOk`, timestamps
 
+> The `scripts/backup-db.mjs` / `scripts/restore-db.mjs` pair above produces
+> **unencrypted** `.db` snapshots and is retained for the release-evidence
+> rollback flow. For at-rest protection of SSNs and other PII, operate the
+> **encrypted** pipeline below (`npm run backup` / `npm run restore`) as the
+> default day-to-day and scheduled backup mechanism.
+
+## Backups & restore (encrypted)
+
+Because the database stores field-level-encrypted SSNs, scheduled backups are
+themselves **encrypted at rest** so a stolen backup file leaks nothing.
+
+### How it works
+
+1. `npm run backup` (→ `scripts/backup.mjs`) runs `VACUUM INTO` a temp file — a
+   WAL-safe, consistent, checkpointed snapshot taken through SQLite itself, not
+   a copy of a live file mid-write.
+2. It runs `PRAGMA quick_check` on the snapshot.
+3. It encrypts the snapshot with **AES-256-GCM** and writes a single
+   self-contained artifact: 4-byte magic `KLBK`, a 4-byte header length, a JSON
+   header (version, algorithm, `createdAt`, key metadata, `iv`, `authTag`,
+   `plaintextSha256`), then the ciphertext. The IV is a random 96-bit nonce and
+   the 128-bit GCM auth tag detects any tampering.
+4. Artifacts land in `BACKUP_DIR` (default `data/backups`) named
+   `backup-<timestamp>.klbackup`.
+5. **Retention:** the newest `BACKUP_RETENTION` (default 7) artifacts are kept;
+   older ones are deleted.
+
+### Encryption key
+
+- **`BACKUP_ENCRYPTION_KEY` (recommended):** a dedicated key. Provide either a
+  64-character hex string (used directly as a 32-byte key) or any passphrase
+  (stretched with `scrypt` and a random per-artifact salt stored in the header).
+  Generate one with:
+
+  ```bash
+  node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+  ```
+
+- **Fallback:** if `BACKUP_ENCRYPTION_KEY` is unset, the key is derived from
+  `APP_SECRET` via `scrypt`, and the backup **warns loudly**. A dedicated key is
+  strongly recommended so backup and app secrets rotate independently.
+
+Restore must run with the **same** environment variable that produced the
+artifact (the header records `keySource`, so it reads `BACKUP_ENCRYPTION_KEY` or
+`APP_SECRET` accordingly).
+
+### Environment variables
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `BACKUP_ENCRYPTION_KEY` | (unset → APP_SECRET fallback) | Dedicated backup key: 64-hex raw key, or a passphrase (scrypt-stretched). |
+| `BACKUP_DIR` | `data/backups` | Where artifacts are written. |
+| `BACKUP_RETENTION` | `7` | Number of newest artifacts to keep. |
+| `BACKUP_INTERVAL_SECONDS` | `86400` | Interval for the compose backup service. |
+
+### Run a manual backup
+
+```bash
+BACKUP_ENCRYPTION_KEY=<64-hex> npm run backup
+```
+
+### Restore + verify
+
+Verify-only drill (decrypts to a temp path, runs `quick_check` +
+`integrity_check`, then removes it — never touches the live DB):
+
+```bash
+BACKUP_ENCRYPTION_KEY=<64-hex> npm run restore -- data/backups/backup-<timestamp>.klbackup --verify-only
+```
+
+Live restore (refuses to overwrite `data/app.db` without `--force`; stop the API
+first):
+
+```bash
+BACKUP_ENCRYPTION_KEY=<64-hex> npm run restore -- data/backups/backup-<timestamp>.klbackup --out data/app.db --force
+```
+
+A tampered artifact or a wrong key **fails auth-tag verification** and the
+restore aborts before writing anything usable.
+
+### Restore drill (automated)
+
+`npm run backup:verify` runs `apps/api/src/test/backup-restore-drill.test.mjs`,
+which seeds known rows across relational tables (firms, profiles, notes,
+audit_events, sessions), takes an encrypted backup, restores it to a temp path,
+and asserts: (a) `quick_check` ok, (b) per-table row counts match the source,
+(c) a flipped ciphertext byte makes restore fail, and (d) a wrong key fails to
+decrypt. It also runs as part of the default `node --test` suite.
+
+### Scheduling
+
+**Docker Compose (behind the `backup` profile):**
+
+```bash
+docker compose --profile backup up --build -d
+```
+
+The `kinetic-klient-backup` service loops `scripts/backup.mjs` every
+`BACKUP_INTERVAL_SECONDS` (default 24h), mounting the shared `./data` volume.
+It does not affect the default services or the `tls` profile.
+
+**Host `cron` (Linux/macOS)** — daily at 02:30, keeping the newest 14:
+
+```cron
+30 2 * * * cd /srv/kinetic-klient && BACKUP_ENCRYPTION_KEY=<64-hex> BACKUP_RETENTION=14 /usr/bin/node scripts/backup.mjs >> /var/log/klient-backup.log 2>&1
+```
+
+**Windows Task Scheduler** — daily trigger running:
+
+```powershell
+node C:\srv\kinetic-klient\scripts\backup.mjs
+```
+
+with `BACKUP_ENCRYPTION_KEY`, `BACKUP_DIR`, and `BACKUP_RETENTION` set as
+environment variables for the task's user (or the machine).
+
+### WAL caveat
+
+The snapshot uses `VACUUM INTO`, which produces a single self-contained database
+file with **no `-wal` sidecar**, so restores never miss committed data still
+living in the WAL. (Older copy-`data/app.db`-only scripts could — see "Rolling
+back across a WAL/schema upgrade" below.)
+
 ## Deterministic operations flows
 
 ### Flow A — deterministic preflight (single command)
