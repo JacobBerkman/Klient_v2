@@ -247,7 +247,11 @@ test('migration 006 backfills board entities from a legacy blob with ported fixu
       assert.deepEqual(parsed.boardVersions, {})
       assert.deepEqual(parsed.pipelineStagesByFirm, {})
       assert.deepEqual(parsed.pipelineStages, [])
-      const stageKeys = parsed.firms[0].stageConfig.stages.map((stage) => [stage.key, stage.order])
+      // Migration 009 moved firms out of the blob into the firms table, so the
+      // ported firm stage-config normalization (from migration 006) is now
+      // observed on the relational row rather than the blob array.
+      assert.deepEqual(parsed.firms, [])
+      const stageKeys = storage.getFirmRow('firm-a').stageConfig.stages.map((stage) => [stage.key, stage.order])
       assert.deepEqual(stageKeys, [
         ['analysis', 1],
         ['discovery', 2]

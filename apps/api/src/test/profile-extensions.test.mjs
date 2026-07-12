@@ -23,7 +23,7 @@ async function loadStore() {
 
 test('createProfile computes financial summary from extension fallback values', async () => {
   const store = await loadStore()
-  const user = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const user = { ...store.__listUsersForTest().find((entry) => entry.role === 'admin') }
   const profile = store.createProfile(user, {
     kind: 'client',
     firstName: 'Jordan',
@@ -41,7 +41,7 @@ test('createProfile computes financial summary from extension fallback values', 
 
 test('updateProfile rejects invalid extension value type based on schema metadata', async () => {
   const store = await loadStore()
-  const user = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const user = { ...store.__listUsersForTest().find((entry) => entry.role === 'admin') }
   const profile = store.createProfile(user, {
     kind: 'client',
     firstName: 'Taylor',
@@ -62,7 +62,7 @@ test('updateProfile rejects invalid extension value type based on schema metadat
 
 test('admin can create and update firm custom field schema entries', async () => {
   const store = await loadStore()
-  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const admin = { ...store.__listUsersForTest().find((entry) => entry.role === 'admin') }
 
   const created = store.createProfileCustomField(admin, {
     key: 'risk_tolerance',
@@ -90,7 +90,7 @@ test('admin can create and update firm custom field schema entries', async () =>
 
 test('custom field schema rejects invalid field type payloads', async () => {
   const store = await loadStore()
-  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const admin = { ...store.__listUsersForTest().find((entry) => entry.role === 'admin') }
 
   let error
   try {
@@ -107,7 +107,7 @@ test('custom field schema rejects invalid field type payloads', async () => {
 
 test('custom field schema validation payload includes mappable field errors for key and metadata', async () => {
   const store = await loadStore()
-  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const admin = { ...store.__listUsersForTest().find((entry) => entry.role === 'admin') }
   let missingKeyError
   try {
     store.createProfileCustomField(admin, { type: 'text' })
@@ -131,7 +131,7 @@ test('custom field schema validation payload includes mappable field errors for 
 
 test('custom field schema persists required flag changes and normalizes truthy/falsy inputs', async () => {
   const store = await loadStore()
-  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const admin = { ...store.__listUsersForTest().find((entry) => entry.role === 'admin') }
 
   const created = store.createProfileCustomField(admin, {
     key: 'household_reviewed',
@@ -153,7 +153,7 @@ test('custom field schema persists required flag changes and normalizes truthy/f
 
 test('custom field schema store blocks readonly users from schema mutation', async () => {
   const store = await loadStore()
-  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const admin = { ...store.__listUsersForTest().find((entry) => entry.role === 'admin') }
   const readonlyInvite = store.inviteUser(admin, { email: `readonly-custom-${Date.now()}@example.com`, role: 'readonly' })
   const readonlySession = store.acceptInvite({
     token: readonlyInvite.token,
@@ -172,7 +172,7 @@ test('custom field schema store blocks readonly users from schema mutation', asy
 
 test('custom field schema remains tenant-isolated across firms', async () => {
   const store = await loadStore()
-  const adminA = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const adminA = { ...store.__listUsersForTest().find((entry) => entry.role === 'admin') }
   const firmBSession = store.register({
     firmName: 'Other Firm',
     firstName: 'Second',
@@ -199,7 +199,7 @@ test('custom field schema remains tenant-isolated across firms', async () => {
 
 test('custom field dry-run preview reports validation and diff counts for CRUD propagation planning', async () => {
   const store = await loadStore()
-  const admin = { ...store.state.users.find((entry) => entry.role === 'admin') }
+  const admin = { ...store.__listUsersForTest().find((entry) => entry.role === 'admin') }
   store.createProfileCustomField(admin, {
     key: 'planning_score',
     type: 'number',

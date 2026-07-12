@@ -3,6 +3,10 @@ import { createDefaultFirmStageConfig } from '../stage-config.mjs'
 import {
   deleteInviteRow,
   findInviteRowByToken,
+  getUserByEmail,
+  getUserRow,
+  upsertFirmRow,
+  upsertUserRow,
   insertAuthAttempt,
   countFailedLoginsByEmail,
   countFailedLoginsByIp,
@@ -149,14 +153,17 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       throw new Error('Too many failed login attempts from this IP. Please wait 15 minutes and try again.')
     }
 
-    const user = state.users.find((entry) => entry.email === normalizedEmail)
+    // users is a relational source of truth (migration 009): read by email.
+    const user = getUserByEmail(normalizedEmail)
     const lockoutUntil = new Date(user?.security?.lockoutUntil || 0).getTime()
     if (lockoutUntil > Date.now()) {
       throw new Error('Account is temporarily locked due to failed login attempts.')
     }
     if (user && user?.security?.lockoutUntil) {
       clearUserLockout(user)
-      persist()
+      // The lockout-clear is an in-place user mutation: it must be upserted
+      // (persist() no longer flushes user rows).
+      upsertUserRow(user)
     }
   }
 
@@ -171,7 +178,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       { pruneCutoff: loginCutoff }
     )
 
-    const user = state.users.find((entry) => entry.email === normalizedEmail)
+    const user = getUserByEmail(normalizedEmail)
     if (user) {
       user.security ||= {}
       user.security.failedLoginCount = Number(user.security.failedLoginCount || 0) + 1
@@ -180,8 +187,10 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         user.security.lockedAt = nowIso()
         user.security.lockoutUntil = new Date(Date.now() + LOGIN_WINDOW_MS).toISOString()
       }
+      // The incremented failed-login counter / lockout window is an in-place
+      // user mutation and MUST be upserted — otherwise lockout never triggers.
+      upsertUserRow(user)
     }
-    persist()
   }
 
   function registerSuccessfulLogin(user) {
@@ -194,7 +203,8 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
     user.security.failedLoginCount = 0
     user.security.lastSuccessfulLoginAt = nowIso()
     clearUserLockout(user)
-    persist()
+    // Reset counters / cleared lockout are in-place user mutations: upsert them.
+    upsertUserRow(user)
   }
 
   function ensureResetRateLimit(email, ipAddress) {
@@ -274,9 +284,9 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
     authenticate({ email, password, mfaChallengeToken, totpCode, backupCode, ipAddress }) {
       const normalizedEmail = normalizeEmail(email)
       ensureLoginAllowed(normalizedEmail, ipAddress)
-      const user = state.users.find((entry) => entry.email === normalizedEmail && entry.passwordHash === hash(password))
+      const existingUser = getUserByEmail(normalizedEmail)
+      const user = existingUser && existingUser.passwordHash === hash(password) ? existingUser : null
       if (!user) {
-        const existingUser = state.users.find((entry) => entry.email === normalizedEmail)
         registerFailedLogin(normalizedEmail, ipAddress)
         addAudit(existingUser?.firmId || 'system', existingUser?.id || null, 'auth', normalizedEmail, 'auth.login.failed', {
           after: { email: normalizedEmail, reason: 'invalid_credentials' }
@@ -308,24 +318,23 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       const totpValid = totpCode ? verifyTotpCode(mfa.totpSecret, totpCode) : false
       const backupValid = backupCode ? consumeBackupCode(user, backupCode) : false
       if (!totpValid && !backupValid) {
-        persist()
         addAudit(user.firmId, user.id, 'user', user.id, 'auth.mfa.challenge_failed', { after: { challengeId: challenge.id } })
         throw new Error('Invalid MFA verification code.')
       }
 
       // mfaChallenges is relational: consume the challenge by id.
       deleteMfaChallengeById(challenge.id)
+      // A consumed backup code (splice) is an in-place user mutation: upsert it.
+      upsertUserRow(user)
       addAudit(user.firmId, user.id, 'user', user.id, 'auth.login.succeeded', {
         after: { email: normalizedEmail, mfaEnabled: true, challengeId: challenge.id }
       })
-      persist()
       return createSession(user)
     },
     register({ firmName, firstName, lastName, email, password }) {
       assertStrongPassword(password)
       const normalizedEmail = normalizeEmail(email)
-      if (state.users.some((user) => user.email === normalizedEmail))
-        throw new Error('An account with this email already exists.')
+      if (getUserByEmail(normalizedEmail)) throw new Error('An account with this email already exists.')
       const firm = {
         id: randomUUID(),
         name: firmName,
@@ -345,8 +354,10 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         mfa: { enabled: false, totpSecret: null, backupCodes: [] },
         createdAt: nowIso()
       }
-      state.firms.push(firm)
-      state.users.push(user)
+      // firms and users are source-of-truth tables now: targeted upserts create
+      // the new firm + admin user (persist() no longer flushes either).
+      upsertFirmRow(firm)
+      upsertUserRow(user)
       addAudit(firm.id, user.id, 'firm', firm.id, 'firm.created', { name: firm.name })
       return createSession(user)
     },
@@ -357,8 +368,9 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       if (invite.expiresAt && new Date(invite.expiresAt).getTime() <= Date.now()) {
         throw new Error('Invite expired.')
       }
-      const existingUser = state.users.find((entry) => entry.email === invite.email && entry.firmId === invite.firmId)
-      if (existingUser) throw new Error('Invite email is already associated with an account.')
+      const existingUser = getUserByEmail(invite.email)
+      if (existingUser && existingUser.firmId === invite.firmId)
+        throw new Error('Invite email is already associated with an account.')
 
       const user = {
         id: randomUUID(),
@@ -374,7 +386,9 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         createdAt: nowIso()
       }
 
-      state.users.push(user)
+      // users is a source-of-truth table now: targeted upsert (persist() no
+      // longer flushes user rows).
+      upsertUserRow(user)
       // invites is a source-of-truth table now: accepting removes the row by id.
       deleteInviteRow(invite.id)
       addAudit(invite.firmId, user.id, 'invite', invite.id, 'invite.accepted', { email: invite.email, role: invite.role })
@@ -384,7 +398,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
     requestReset({ email, ipAddress }) {
       const normalizedEmail = normalizeEmail(email)
       ensureResetRateLimit(normalizedEmail, ipAddress)
-      const user = state.users.find((entry) => entry.email === normalizedEmail)
+      const user = getUserByEmail(normalizedEmail)
       if (!user) {
         // The rate-limit attempt was already recorded durably in
         // password_reset_attempts; nothing else to persist.
@@ -417,13 +431,16 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         deletePasswordResetById(reset.id)
         throw new Error('Reset token expired.')
       }
-      const user = state.users.find((entry) => entry.id === reset.userId)
+      const user = getUserRow(reset.userId)
       if (!user) throw new Error('User not found.')
       user.passwordHash = hash(password)
       user.security ||= {}
       user.security.failedLoginCount = 0
       user.security.lockoutUntil = null
       user.security.lockedAt = null
+      // New password hash + reset security counters are in-place user mutations:
+      // upsert them (persist() no longer flushes user rows).
+      upsertUserRow(user)
       // Consume every reset token and pending MFA challenge for the user (both
       // relational sources of truth). This cross-table cleanup replaces the old
       // blob-array filters.
@@ -435,7 +452,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       return { ok: true, revokedSessions }
     },
     startTotpEnrollment(user) {
-      const actor = state.users.find((entry) => entry.id === user.id)
+      const actor = getUserRow(user.id)
       if (!actor) throw new Error('User not found.')
       const secret = randomBase32(32)
       const enrollment = {
@@ -458,7 +475,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       }
     },
     confirmTotpEnrollment(user, { enrollmentToken, code }) {
-      const actor = state.users.find((entry) => entry.id === user.id)
+      const actor = getUserRow(user.id)
       if (!actor) throw new Error('User not found.')
       const enrollment = (state.mfaEnrollments || []).find(
         (entry) => entry.token === enrollmentToken && entry.userId === actor.id
@@ -472,19 +489,22 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       mfa.enabled = true
       mfa.totpSecret = enrollment.secret
       mfa.backupCodes = hashedCodes
+      // Enabling MFA (totpSecret + backup codes) is an in-place user mutation:
+      // upsert it. persist() still flushes the mfaEnrollments blob array.
+      upsertUserRow(actor)
       state.mfaEnrollments = state.mfaEnrollments.filter((entry) => entry.id !== enrollment.id)
       addAudit(actor.firmId, actor.id, 'user', actor.id, 'auth.mfa.enabled', { method: 'totp' })
       persist()
       return { ok: true, backupCodes: plainCodes }
     },
     createMfaChallenge(user) {
-      const actor = state.users.find((entry) => entry.id === user.id)
+      const actor = getUserRow(user.id)
       if (!actor) throw new Error('User not found.')
       const challenge = createAndPersistMfaChallenge(actor.id)
       return { challengeToken: challenge.token, methods: ['totp', 'backup_code'] }
     },
     verifyMfaChallenge(user, { challengeToken, totpCode, backupCode }) {
-      const actor = state.users.find((entry) => entry.id === user.id)
+      const actor = getUserRow(user.id)
       if (!actor) throw new Error('User not found.')
       const mfa = ensureMfaData(actor)
       if (!mfa.enabled) throw new Error('MFA is not enabled for this account.')
@@ -494,24 +514,26 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       const totpValid = totpCode ? verifyTotpCode(mfa.totpSecret, totpCode) : false
       const backupValid = backupCode ? consumeBackupCode(actor, backupCode) : false
       if (!totpValid && !backupValid) {
-        persist()
         throw new Error('Invalid MFA verification code.')
       }
       // mfaChallenges is relational: consume the challenge by id.
       deleteMfaChallengeById(challenge.id)
+      // A consumed backup code (splice) is an in-place user mutation: upsert it.
+      upsertUserRow(actor)
       addAudit(actor.firmId, actor.id, 'user', actor.id, 'auth.mfa.challenge_verified', {
         after: { challengeId: challenge.id }
       })
-      persist()
       return { ok: true }
     },
     rotateBackupCodes(user) {
-      const actor = state.users.find((entry) => entry.id === user.id)
+      const actor = getUserRow(user.id)
       if (!actor) throw new Error('User not found.')
       const mfa = ensureMfaData(actor)
       if (!mfa.enabled) throw new Error('MFA is not enabled for this account.')
       const { plainCodes, hashedCodes } = createBackupCodes()
       mfa.backupCodes = hashedCodes
+      // Rotated backup codes are an in-place user mutation: upsert them.
+      upsertUserRow(actor)
       addAudit(actor.firmId, actor.id, 'user', actor.id, 'auth.mfa.backup_codes_rotated', {})
       persist()
       return { backupCodes: plainCodes }

@@ -58,7 +58,13 @@ function createFederatedProvider({
   persist = () => {},
   createSession,
   addAudit = () => {},
-  fallbackProvider = null
+  fallbackProvider = null,
+  // firms/users are relational sources of truth (migration 009). When wired
+  // through the store these upsert the synced identity into its table; the
+  // standalone contract harness leaves them as no-ops and reads the injected
+  // state array instead.
+  upsertUserRow = () => {},
+  upsertFirmRow = () => {}
 }) {
   function maybeFallback(method, input, user) {
     if (fallbackProvider?.[method]) {
@@ -98,6 +104,7 @@ function createFederatedProvider({
           createdAt: nowIso()
         }
         state.firms.push(firm)
+        upsertFirmRow(firm)
         firmId = firm.id
       }
       user = {
@@ -121,6 +128,9 @@ function createFederatedProvider({
       user.mfa ||= { enabled: false, totpSecret: null, backupCodes: [] }
       if (normalized.amr.includes('mfa')) user.mfa.enabled = true
     }
+    // Persist the synced identity to its source-of-truth table (no-op in the
+    // standalone contract harness).
+    upsertUserRow(user)
 
     if (identity) {
       identity.userId = user.id

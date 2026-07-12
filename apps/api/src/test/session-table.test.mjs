@@ -467,7 +467,7 @@ test('store: a backfilled legacy session row authenticates against the table', a
 
   // Insert a row shaped exactly like the 002 backfill produces for a sparse
   // legacy blob record (normalized defaults), keyed to a real seeded user.
-  const adminUser = store.state.users.find((entry) => entry.email === 'admin@demo.test')
+  const adminUser = store.__listUsersForTest().find((entry) => entry.email === 'admin@demo.test')
   assert.ok(adminUser)
   const createdAt = new Date().toISOString()
   const token = `legacy-backfilled-${randomUUID()}`
