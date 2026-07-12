@@ -220,6 +220,13 @@ test('user lookup mode is constrained to same-firm members and supports search',
   assert.ok(lookup.users.every((entry) => entry.email.includes('lookup')))
   assert.ok(lookup.users.every((entry) => entry.id !== admin.id))
   assert.ok(lookup.users.every((entry) => entry.email !== 'other-firm@example.com'))
+
+  // Full-list mode is capped too: an explicit limit is honored and oversized
+  // or invalid limits fall back to the ≤200 clamp instead of unbounded rows.
+  const fullList = store.listUsers(admin)
+  assert.ok(Array.isArray(fullList) && fullList.length >= 2, 'full list returns same-firm users')
+  assert.equal(store.listUsers(admin, { limit: 1 }).length, 1, 'full-list limit is honored')
+  assert.equal(store.listUsers(admin, { limit: 9_999 }).length, fullList.length, 'oversized limit is clamped')
 })
 
 test('ops and export policy guards enforce production privilege boundaries', async () => {

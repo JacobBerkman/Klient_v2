@@ -92,6 +92,20 @@ test('event listing excludes archived by default; includeArchived opts back in; 
   )
 })
 
+test('event listing clamps the limit parameter', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  store.createEvent(user, { name: 'First', eventDate: '2026-01-01' })
+  store.createEvent(user, { name: 'Second', eventDate: '2026-02-01' })
+  store.createEvent(user, { name: 'Third', eventDate: '2026-03-01' })
+
+  assert.equal(store.listEvents(user, { limit: 2 }).length, 2, 'requested limit is honored')
+  assert.equal(store.listEvents(user, { limit: 'garbage' }).length, 3, 'invalid limit falls back to the default cap')
+  assert.equal(store.listEvents(user, { limit: -5 }).length, 1, 'limit clamps to at least 1')
+  assert.equal(store.listEvents(user, { limit: 9_999 }).length, 3, 'oversized limit is clamped, never throws')
+})
+
 test('events are firm-scoped: another firm cannot read, update, or archive them', async () => {
   const store = await loadStore()
   const firmA = createAdvisor(store, 'Firm A')
@@ -159,8 +173,7 @@ test('profile source eventId: nonexistent, foreign, and archived events are reje
 
   const expectRejected = (source) =>
     assert.throws(
-      () =>
-        store.createProfile(firmA, { kind: 'prospect', firstName: 'X', lastName: 'Y', stage: 'discovery', source }),
+      () => store.createProfile(firmA, { kind: 'prospect', firstName: 'X', lastName: 'Y', stage: 'discovery', source }),
       (error) => {
         assert.equal(error.code, 'PROFILE_SOURCE_EVENT_NOT_FOUND')
         assert.equal(error.statusCode, 400)
@@ -215,7 +228,11 @@ test('meeting CRUD: create normalizes type/time, list newest-first, delete remov
   assert.equal(late.meetingType, 'other', 'unknown type normalized to other')
 
   const list = store.listMeetings(user, profile.id)
-  assert.deepEqual(list.map((m) => m.id), [late.id, early.id], 'newest scheduled first')
+  assert.deepEqual(
+    list.map((m) => m.id),
+    [late.id, early.id],
+    'newest scheduled first'
+  )
 
   const audit = store.listAudit(user)
   assert.ok(audit.find((e) => e.action === 'meeting.created' && e.entityId === early.id))
@@ -298,16 +315,46 @@ test('analytics sourced attribution: per-venue/event/YoY counts with converted c
   const dinner = store.createEvent(user, { name: 'Dinner', venue: 'Bistro', city: 'Austin', eventDate: '2026-04-10' })
 
   // Seminar (2025): 2 prospects + 1 converted client.
-  store.createProfile(user, { kind: 'prospect', firstName: 'S1', lastName: 'P', stage: 'discovery', source: { eventId: seminar.id } })
-  store.createProfile(user, { kind: 'prospect', firstName: 'S2', lastName: 'P', stage: 'discovery', source: { eventId: seminar.id } })
-  const converted = store.createProfile(user, { kind: 'prospect', firstName: 'S3', lastName: 'P', stage: 'discovery', source: { eventId: seminar.id } })
+  store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'S1',
+    lastName: 'P',
+    stage: 'discovery',
+    source: { eventId: seminar.id }
+  })
+  store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'S2',
+    lastName: 'P',
+    stage: 'discovery',
+    source: { eventId: seminar.id }
+  })
+  const converted = store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'S3',
+    lastName: 'P',
+    stage: 'discovery',
+    source: { eventId: seminar.id }
+  })
   store.convertProspectToClient(user, converted.id, {})
 
   // Dinner (2026): 1 prospect, archived (must be excluded).
-  const archivedProspect = store.createProfile(user, { kind: 'prospect', firstName: 'D1', lastName: 'P', stage: 'discovery', source: { eventId: dinner.id } })
+  const archivedProspect = store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'D1',
+    lastName: 'P',
+    stage: 'discovery',
+    source: { eventId: dinner.id }
+  })
   store.archiveProfile(user, archivedProspect.id, {})
   // Dinner (2026): 1 live prospect.
-  store.createProfile(user, { kind: 'prospect', firstName: 'D2', lastName: 'P', stage: 'discovery', source: { eventId: dinner.id } })
+  store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'D2',
+    lastName: 'P',
+    stage: 'discovery',
+    source: { eventId: dinner.id }
+  })
 
   const snap = store.buildAnalyticsSnapshot(user)
   const { byVenue, byEvent, yearOverYear } = snap.sourcedAttribution
@@ -332,5 +379,9 @@ test('analytics sourced attribution: per-venue/event/YoY counts with converted c
   assert.equal(y2025.clientCount, 1)
   assert.equal(y2026.prospectCount, 1, 'archived prospect excluded from YoY')
   assert.equal(y2026.clientCount, 0)
-  assert.deepEqual(yearOverYear.map((y) => y.year), ['2025', '2026'], 'years sorted ascending')
+  assert.deepEqual(
+    yearOverYear.map((y) => y.year),
+    ['2025', '2026'],
+    'years sorted ascending'
+  )
 })

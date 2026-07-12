@@ -216,8 +216,9 @@ export function createStore({
   // executePipelineTransaction wraps board mutations in a real SQL
   // transaction.
 
-  const { resolveCompletionObject, createUploadIntent, normalizeMalwareScan } =
-    createUploadPrimitives({ objectStorage })
+  const { resolveCompletionObject, createUploadIntent, normalizeMalwareScan } = createUploadPrimitives({
+    objectStorage
+  })
 
   // A portal link is "active" when it is still usable by a portal visitor —
   // exactly the liveness contract resolvePortalLinkByToken enforces (not
@@ -948,9 +949,7 @@ export function createStore({
       const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
         entityName: 'Profile'
       })
-      const household = profile.householdId
-        ? getHouseholdRow(profile.householdId, { firmId: user.firmId })
-        : null
+      const household = profile.householdId ? getHouseholdRow(profile.householdId, { firmId: user.firmId }) : null
       const householdMembers = household
         ? state.householdMembers.filter((entry) => entry.householdId === household.id && entry.firmId === user.firmId)
         : []
@@ -3130,11 +3129,14 @@ export function createStore({
       })
       return { processed: result.processed, leased: result.leased, failed: result.failed }
     },
-    listAudit(user) {
+    listAudit(user, { limit } = {}) {
       requirePermission(user, 'audit:read')
       // Firm-scoped SQL read, newest first — audit_events is the source of
-      // truth and the blob no longer carries audit events at all.
-      return listAuditEvents(user.firmId)
+      // truth and the blob no longer carries audit events at all. The read is
+      // clamped to the newest 200 rows so the endpoint stays bounded; the
+      // keyset-paginated activity feed is the path for deeper history.
+      const cappedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 200, 1), 200)
+      return listAuditEvents(user.firmId, { limit: cappedLimit })
     },
     // Keyset-paginated, filtered activity-feed read. Permission gating and the
     // category->prefix mapping live in the activity module; this is the thin
@@ -3211,7 +3213,10 @@ export function createStore({
           }))
         return { mode: 'lookup', total: users.length, users }
       }
-      return firmUsers.map(publicUser)
+      // Full-list mode is capped too (pilot firms are small; 200 is generous)
+      // so the endpoint can never return an unbounded payload.
+      const fullListLimit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 200, 1), 200)
+      return firmUsers.slice(0, fullListLimit).map(publicUser)
     },
     inviteUser(user, input) {
       requirePermission(user, 'users:manage')
