@@ -11,6 +11,7 @@ import {
 } from '../lib/formSchema'
 import { formatDateTime, profileName } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
+import { autosaveStatusLabel, useAutosave } from '../lib/useAutosave'
 import type { ClientWorkspacePayload, FormField, FormTemplate, PortalPayload } from '../lib/types'
 import { useAuth } from '../app/auth'
 import {
@@ -169,6 +170,23 @@ export function Component() {
     return data.templates.find((template) => template.id === selectedTemplateId) || null
   }, [data, selectedTemplateId])
 
+  // Debounced autosave of the in-progress draft via the existing draft-save
+  // endpoint (portal token POST or the signed-in client POST). Non-destructive:
+  // it does not clear the form or refetch, so the client can keep typing.
+  const portalAutosave = useAutosave<Record<string, unknown>>({
+    value: draftData,
+    enabled: Boolean(selectedTemplate),
+    save: async (dataToSave) => {
+      if (!selectedTemplate) return
+      const payload = { templateId: selectedTemplate.id, status: 'draft', data: dataToSave }
+      if (token) {
+        await postPortalSubmission(token, payload)
+      } else {
+        await api.post(routes.clientFormSubmissions(), payload)
+      }
+    }
+  })
+
   useEffect(() => {
     if (!data || data.mode === 'empty') return
     const fallback = data.templates[0]?.id || ''
@@ -177,6 +195,8 @@ export function Component() {
 
   useEffect(() => {
     setDraftData({})
+    portalAutosave.reset({})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedTemplateId])
 
   async function handleSubmit(status: 'draft' | 'submitted') {
@@ -200,6 +220,7 @@ export function Component() {
         })
       }
       setDraftData({})
+      portalAutosave.reset({})
       setStatusMessage(status === 'draft' ? 'Draft saved.' : 'Form submitted.')
       setRefreshKey((value) => value + 1)
     } catch (submitError) {
@@ -303,7 +324,21 @@ export function Component() {
               </div>
 
               {selectedTemplate ? (
-                <div className="compact-stack">
+                <div
+                  className="compact-stack"
+                  onBlur={() => portalAutosave.flush()}
+                >
+                  <p
+                    className={
+                      portalAutosave.status === 'error' || portalAutosave.status === 'conflict'
+                        ? 'autosave-status is-error'
+                        : 'autosave-status'
+                    }
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {autosaveStatusLabel(portalAutosave.status) || 'Autosave on'}
+                  </p>
                   {selectedTemplate.sections.map((section, sectionIndex) => {
                     if (section.repeatable) {
                       const rows = repeaterRows(draftData, section, sectionIndex)

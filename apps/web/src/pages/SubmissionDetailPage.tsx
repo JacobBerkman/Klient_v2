@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { api, routes } from '../lib/client'
+import { autosaveStatusLabel, useAutosave } from '../lib/useAutosave'
 import {
   appendRepeaterRow,
   fieldInputType,
@@ -119,6 +120,10 @@ export function Component() {
   const [lookupResults, setLookupResults] = useState<UserLookup[]>([])
   const [lookupQuery, setLookupQuery] = useState('')
   const [selectedCollaboratorId, setSelectedCollaboratorId] = useState('')
+  // Live draft revision + lease, advanced by autosave without a full refetch so
+  // the next autosave uses the server's incremented revision.
+  const revisionRef = useRef(1)
+  const leaseRef = useRef<string | undefined>(undefined)
 
   const { data, error, loading } = useAsync<SubmissionDetailData>(async () => {
     const [submissions, templates, profiles] = await Promise.all([
@@ -155,6 +160,36 @@ export function Component() {
   const canEditDraft = Boolean(submission?.status === 'draft' && canWriteForms && lockIsMine)
   const canEditSubmission = Boolean(submission?.status === 'submitted' && canWriteForms)
 
+  // Debounced autosave for the draft editor. Uses the existing revision/lease-
+  // aware PATCH endpoint and respects its 409 conflict contract: a conflict is
+  // surfaced (status 'conflict') and the stale revision is NOT advanced, so the
+  // client never silently clobbers a concurrent edit.
+  const autosave = useAutosave<Record<string, unknown>>({
+    value: editorData,
+    enabled: canEditDraft,
+    save: async (dataToSave) => {
+      if (!submission) return
+      const result = await api.patch<{ ok?: boolean; submission?: FormSubmission }>(routes.formDraft(submission.id), {
+        data: dataToSave,
+        leaseId: leaseRef.current,
+        expectedRevisionId: revisionRef.current,
+        status: 'draft'
+      })
+      if (result?.submission) {
+        revisionRef.current = Number(result.submission.revisionId || revisionRef.current)
+        if (result.submission.lock?.leaseId) leaseRef.current = result.submission.lock.leaseId
+      }
+    }
+  })
+
+  useEffect(() => {
+    if (!submission) return
+    revisionRef.current = Number(submission.revisionId || 1)
+    leaseRef.current = submission.lock?.leaseId
+    autosave.reset((submission.data as Record<string, unknown>) || {})
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [submission?.id, submission?.updatedAt, submission?.revisionId])
+
   async function refreshWithMessage(message: string) {
     setStatusMessage(message)
     setRefreshKey((value) => value + 1)
@@ -188,8 +223,8 @@ export function Component() {
     try {
       await api.patch(routes.formDraft(submission.id), {
         data: editorData,
-        leaseId: submission.lock?.leaseId,
-        expectedRevisionId: submission.revisionId || 1,
+        leaseId: leaseRef.current ?? submission.lock?.leaseId,
+        expectedRevisionId: revisionRef.current || submission.revisionId || 1,
         status
       })
       await refreshWithMessage(status === 'submitted' ? 'Draft submitted.' : 'Draft saved.')
@@ -420,8 +455,26 @@ export function Component() {
           title="Form editor"
           subtitle="Scalar fields edit inline here, while repeaters keep explicit row controls."
         >
+          {canEditDraft ? (
+            <p
+              className={
+                autosave.status === 'error' || autosave.status === 'conflict'
+                  ? 'autosave-status is-error'
+                  : 'autosave-status'
+              }
+              role="status"
+              aria-live="polite"
+            >
+              {autosaveStatusLabel(autosave.status) || 'Autosave on'}
+            </p>
+          ) : null}
           {template && template.sections.length ? (
-            <div className="compact-stack">
+            <div
+              className="compact-stack"
+              onBlur={() => {
+                if (canEditDraft) autosave.flush()
+              }}
+            >
               {template.sections.map((section, sectionIndex) => {
                 if (section.repeatable) {
                   const rows = repeaterRows(editorData, section, sectionIndex)
