@@ -54,6 +54,7 @@ import {
   listNoteRowsByFirm,
   listNoteRowsByProfile,
   listPipelineStageRecordRows,
+  listPortalLinkRowsByProfile,
   listProfileRows,
   listProspectRowsByStage,
   listProspectStageIds,
@@ -1430,6 +1431,22 @@ export function createStore({
     return link
   }
 
+  // A portal link is "active" when it is still usable by a portal visitor —
+  // exactly the liveness contract resolvePortalLinkByToken enforces (not
+  // revoked, not expired, and not use-exhausted). The archive guard reuses this
+  // so archiving is blocked ONLY by links that could still grant portal access;
+  // spent/revoked/expired links are dead and never block.
+  function isPortalLinkActive(link) {
+    if (!link || link.revokedAt) return false
+    if (link.expiresAt && new Date(link.expiresAt).getTime() <= Date.now()) return false
+    if (Number(link.maxUses || 0) > 0 && Number(link.usedCount || 0) >= Number(link.maxUses)) return false
+    return true
+  }
+
+  function listActivePortalLinksForProfile(firmId, profileId) {
+    return listPortalLinkRowsByProfile(firmId, profileId).filter(isPortalLinkActive)
+  }
+
   function findDraftForScope({ draftId, firmId, clientId }) {
     const submission = getFormSubmissionById(draftId, { firmId })
     if (!submission || submission.clientId !== clientId || submission.status !== 'draft') {
@@ -2062,7 +2079,10 @@ export function createStore({
       requirePermission(user, 'dashboard:read')
       // Insertion-order table read: recentProfiles keeps showing the last
       // five created profiles, exactly like the old in-memory array slice.
-      const profiles = listProfileRows({ firmId: user.firmId })
+      // Archived profiles/households are soft-deleted: excluded from every count
+      // and from the recent-profiles strip. They remain readable at their detail
+      // route but never inflate dashboard stats.
+      const profiles = listProfileRows({ firmId: user.firmId }).filter((profile) => !profile.archivedAt)
       const prospects = profiles.filter((profile) => profile.kind === 'prospect')
       const clients = profiles.filter((profile) => profile.kind === 'client')
       return {
@@ -2071,7 +2091,7 @@ export function createStore({
           totalProfiles: profiles.length,
           prospects: prospects.length,
           clients: clients.length,
-          households: listHouseholdRows({ firmId: user.firmId }).length,
+          households: listHouseholdRows({ firmId: user.firmId }).filter((household) => !household.archivedAt).length,
           forms: countFormSubmissionsByFirm(user.firmId),
           exports: listExportQueueJobs().filter((job) => job.firmId === user.firmId).length
         },
@@ -2080,10 +2100,15 @@ export function createStore({
         recentAuditEvents: listAuditEvents(user.firmId, { limit: 10 })
       }
     },
-    listProfiles(user, kind, search = '') {
+    listProfiles(user, kind, search = '', options = {}) {
       requirePermission(user, 'profiles:read')
       const q = String(search || '').toLowerCase()
+      // Archived profiles are hidden by default (client pickers, portal-link
+      // targets, and the directory all read through here). `includeArchived`
+      // opts a single caller — the directory's "Show archived" toggle — back in.
+      const includeArchived = Boolean(options?.includeArchived)
       return listProfileRows({ firmId: user.firmId })
+        .filter((profile) => includeArchived || !profile.archivedAt)
         .filter((profile) => !kind || profile.kind === kind)
         .filter(
           (profile) => !q || `${profile.firstName} ${profile.lastName} ${profile.email || ''}`.toLowerCase().includes(q)
@@ -2314,6 +2339,214 @@ export function createStore({
         )
         return { profile, board: buildBoardPayload(user) }
       })
+    },
+    // Soft-delete a profile (archive). Conservative semantics documented inline:
+    //  - A PROSPECT leaves the board exactly like conversion does: its stage and
+    //    order indices are cleared, the vacated stage is compacted, and the board
+    //    version is bumped so open kanban sessions reconcile. The previous stage
+    //    is remembered in `archivedFromStage` so restore can re-seat the card.
+    //    Nulling the stage means the SQL board reads (listProspectRowsByStage,
+    //    countProspectRowsInStage) naturally exclude it — no column/migration
+    //    needed. kind stays 'prospect'; only in-memory profile readers must skip
+    //    archived rows (see getDashboard/listProfiles/buildAnalyticsSnapshot).
+    //  - A CLIENT is never on the board, so archiving just stamps archivedAt.
+    //  - EITHER remains fully readable at its detail route (with its notes,
+    //    uploads, and submissions intact); it is only hidden from lists/counts.
+    //  - Guard: a profile with a live portal link is blocked (409) rather than
+    //    silently orphaning that access — the advisor must revoke the link first.
+    archiveProfile(user, profileId, options = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.archiveProfile' })
+      requirePermission(user, 'profiles:write')
+      const { expectedUpdatedAt = null } = options || {}
+
+      const assertArchivePreconditions = (profile) => {
+        if (profile.archivedAt) {
+          const error = new Error('Profile is already archived.')
+          error.statusCode = 409
+          error.code = 'PROFILE_ALREADY_ARCHIVED'
+          error.details = { profileId }
+          throw error
+        }
+        if (expectedUpdatedAt && String(expectedUpdatedAt) !== String(profile.updatedAt)) {
+          const error = new Error('Profile update conflict: updatedAt precondition failed.')
+          error.statusCode = 409
+          error.code = 'PROFILE_UPDATE_CONFLICT'
+          error.details = {
+            expectedUpdatedAt,
+            currentUpdatedAt: profile.updatedAt,
+            mergePrompt: {
+              suggestion: 'Conflict detected: another change was saved first. Review latest data and retry.'
+            }
+          }
+          throw error
+        }
+        const activeLinks = listActivePortalLinksForProfile(user.firmId, profileId)
+        if (activeLinks.length) {
+          const error = new Error(
+            'Profile has active portal links. Revoke them before archiving so no live portal access is orphaned.'
+          )
+          error.statusCode = 409
+          error.code = 'PROFILE_HAS_ACTIVE_PORTAL_LINKS'
+          error.details = { profileId, activePortalLinkIds: activeLinks.map((link) => link.id) }
+          throw error
+        }
+      }
+
+      // Prospect archive touches the board, so it runs inside the same pipeline
+      // transaction machinery as convert (deferred audit, SQL rollback, board
+      // version bump). The preconditions are re-checked INSIDE the transaction
+      // to close the read/archive race.
+      const preview = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
+      if (preview.kind === 'prospect') {
+        return executePipelineTransaction(() => {
+          const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+            entityName: 'Profile'
+          })
+          assertArchivePreconditions(profile)
+          const fromStage = profile.stage || null
+          const archivedAt = now()
+          profile.archivedAt = archivedAt
+          // Remember where the card was so restore can re-enter the same stage.
+          profile.archivedFromStage = fromStage
+          profile.stage = null
+          profile.stageOrderIndex = null
+          profile.orderIndex = null
+          profile.pipelineVersion = null
+          profile.updatedAt = archivedAt
+          upsertProfileRow(profile)
+          if (fromStage) {
+            compactStageIndices(user.firmId, fromStage)
+          }
+          bumpBoardVersion(user.firmId)
+          // Audit-grade "left the board" marker in stage history. toStage
+          // 'archived' is a synthetic sentinel (like convert's 'converted'):
+          // analytics only reads stage history for kind==='prospect' &&
+          // !archivedAt profiles, so this row never distorts funnel/aging math.
+          insertStageChange({
+            id: randomUUID(),
+            firmId: user.firmId,
+            clientId: profile.id,
+            fromStage,
+            toStage: 'archived',
+            changedByUserId: user.id,
+            changedAt: archivedAt
+          })
+          addAudit(
+            user.firmId,
+            user.id,
+            'profile',
+            profile.id,
+            'profile.archived',
+            { kind: 'prospect', fromStage },
+            { persist: false }
+          )
+          return { profile, board: buildBoardPayload(user) }
+        })
+      }
+
+      // Client archive: no board involvement, so a plain mutate + persist.
+      const profile = preview
+      assertArchivePreconditions(profile)
+      const archivedAt = now()
+      profile.archivedAt = archivedAt
+      profile.updatedAt = archivedAt
+      upsertProfileRow(profile)
+      addAudit(user.firmId, user.id, 'profile', profile.id, 'profile.archived', { kind: profile.kind })
+      persist()
+      return { profile, board: buildBoardPayload(user) }
+    },
+    // Restore (un-archive) a profile. Clears archivedAt. A restored PROSPECT
+    // re-enters the board at the END of its previous stage when that stage still
+    // exists AND is active; otherwise it falls back to the default start stage
+    // (same stage-assignment rule createProfile uses). Order indices are assigned
+    // contiguously after the current occupants and the board version is bumped. A
+    // restored CLIENT simply clears archivedAt.
+    restoreProfile(user, profileId, options = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.restoreProfile' })
+      requirePermission(user, 'profiles:write')
+      const { expectedUpdatedAt = null } = options || {}
+
+      const assertRestorePreconditions = (profile) => {
+        if (!profile.archivedAt) {
+          const error = new Error('Profile is not archived.')
+          error.statusCode = 409
+          error.code = 'PROFILE_NOT_ARCHIVED'
+          error.details = { profileId }
+          throw error
+        }
+        if (expectedUpdatedAt && String(expectedUpdatedAt) !== String(profile.updatedAt)) {
+          const error = new Error('Profile update conflict: updatedAt precondition failed.')
+          error.statusCode = 409
+          error.code = 'PROFILE_UPDATE_CONFLICT'
+          error.details = {
+            expectedUpdatedAt,
+            currentUpdatedAt: profile.updatedAt,
+            mergePrompt: {
+              suggestion: 'Conflict detected: another change was saved first. Review latest data and retry.'
+            }
+          }
+          throw error
+        }
+      }
+
+      const preview = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
+      if (preview.kind === 'prospect') {
+        return executePipelineTransaction(() => {
+          const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+            entityName: 'Profile'
+          })
+          assertRestorePreconditions(profile)
+          const activeStageIds = new Set(getActiveStageIds(user.firmId))
+          const previousStage = profile.archivedFromStage || null
+          const targetStage =
+            previousStage && activeStageIds.has(previousStage) ? previousStage : getDefaultProspectStage(user.firmId)
+          // Append after the current occupants of the target stage (1-based).
+          const inStage = countProspectRowsInStage(user.firmId, targetStage)
+          const restoredAt = now()
+          profile.archivedAt = null
+          delete profile.archivedFromStage
+          profile.stage = targetStage
+          profile.stageOrderIndex = inStage + 1
+          profile.orderIndex = inStage + 1
+          profile.pipelineVersion = 1
+          profile.updatedAt = restoredAt
+          upsertProfileRow(profile)
+          insertStageChange({
+            id: randomUUID(),
+            firmId: user.firmId,
+            clientId: profile.id,
+            toStage: targetStage,
+            changedByUserId: user.id,
+            changedAt: restoredAt
+          })
+          bumpBoardVersion(user.firmId)
+          addAudit(
+            user.firmId,
+            user.id,
+            'profile',
+            profile.id,
+            'profile.restored',
+            { kind: 'prospect', toStage: targetStage },
+            { persist: false }
+          )
+          return { profile, board: buildBoardPayload(user) }
+        })
+      }
+
+      const profile = preview
+      assertRestorePreconditions(profile)
+      const restoredAt = now()
+      profile.archivedAt = null
+      if ('archivedFromStage' in profile) delete profile.archivedFromStage
+      profile.updatedAt = restoredAt
+      upsertProfileRow(profile)
+      addAudit(user.firmId, user.id, 'profile', profile.id, 'profile.restored', { kind: profile.kind })
+      persist()
+      return { profile, board: buildBoardPayload(user) }
     },
     addProfileTag(user, profileId, tag) {
       const firmContext = requireFirmContext(user, { method: 'store.addProfileTag' })
@@ -2851,15 +3084,63 @@ export function createStore({
       persist()
       return member
     },
-    listHouseholds(user) {
+    listHouseholds(user, options = {}) {
       requirePermission(user, 'households:read')
+      // Archived households are hidden by default (they are auto-created via
+      // spouse linkage, so the directory is the main surface). includeArchived
+      // opts back in for an admin view.
+      const includeArchived = Boolean(options?.includeArchived)
       return listHouseholdRows({ firmId: user.firmId })
+        .filter((household) => includeArchived || !household.archivedAt)
         .map((household) => ({
           ...household,
           members: state.householdMembers.filter(
             (member) => member.firmId === user.firmId && member.householdId === household.id
           )
         }))
+    },
+    // Soft-delete a household. Scope is deliberately minimal and documented:
+    // ONLY the household row is stamped with archivedAt. Member profiles are NOT
+    // cascaded (they stay active and readable) and spouse links are left intact,
+    // so restoring the household brings back exactly the prior grouping. Archived
+    // households drop out of listHouseholds and the dashboard/analytics counts.
+    archiveHousehold(user, householdId, options = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.archiveHousehold' })
+      requirePermission(user, 'households:write')
+      const household = validateTenantEntityOwnership(firmContext, getHouseholdRow(householdId), {
+        entityName: 'Household'
+      })
+      if (household.archivedAt) {
+        const error = new Error('Household is already archived.')
+        error.statusCode = 409
+        error.code = 'HOUSEHOLD_ALREADY_ARCHIVED'
+        error.details = { householdId }
+        throw error
+      }
+      household.archivedAt = now()
+      upsertHouseholdRow(household)
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.archived', { name: household.name })
+      persist()
+      return household
+    },
+    restoreHousehold(user, householdId) {
+      const firmContext = requireFirmContext(user, { method: 'store.restoreHousehold' })
+      requirePermission(user, 'households:write')
+      const household = validateTenantEntityOwnership(firmContext, getHouseholdRow(householdId), {
+        entityName: 'Household'
+      })
+      if (!household.archivedAt) {
+        const error = new Error('Household is not archived.')
+        error.statusCode = 409
+        error.code = 'HOUSEHOLD_NOT_ARCHIVED'
+        error.details = { householdId }
+        throw error
+      }
+      household.archivedAt = null
+      upsertHouseholdRow(household)
+      addAudit(user.firmId, user.id, 'household', householdId, 'household.restored', { name: household.name })
+      persist()
+      return household
     },
     listNotes(user, profileId) {
       requirePermission(user, 'profiles:read')
@@ -4824,9 +5105,19 @@ export function createStore({
     createPortalLink(user, profileId, options = {}) {
       const firmContext = requireFirmContext(user, { method: 'store.createPortalLink' })
       requirePermission(user, 'portal:manage')
-      validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+      const linkedProfile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
         entityName: 'Profile'
       })
+      // Archived profiles are not valid portal-link targets: creating live access
+      // for a soft-deleted profile would contradict the archive guard that blocks
+      // archiving while active links exist.
+      if (linkedProfile.archivedAt) {
+        const error = new Error('Cannot create a portal link for an archived profile.')
+        error.statusCode = 409
+        error.code = 'PROFILE_ARCHIVED'
+        error.details = { profileId }
+        throw error
+      }
       const createdAt = now()
       const expiresAt =
         options.expiresAt || new Date(Date.now() + Number(options.expiresInHours || 24) * 3600 * 1000).toISOString()
@@ -5065,7 +5356,10 @@ export function createStore({
         return value && stageConfig.stageIdSet.has(value) ? value : LEGACY_STAGE_BUCKET
       }
 
-      const firmProfiles = listProfileRows({ firmId: user.firmId })
+      // Archived profiles are soft-deleted: excluded from the funnel, stage
+      // aging, profile/household counts, and advisor productivity. Filter them
+      // out once at the source so every downstream aggregate stays coherent.
+      const firmProfiles = listProfileRows({ firmId: user.firmId }).filter((entry) => !entry.archivedAt)
       const prospects = firmProfiles.filter((entry) => {
         if (entry.kind !== 'prospect') return false
         const created = toIsoDate(entry.createdAt)
@@ -5271,7 +5565,7 @@ export function createStore({
         advisorProductivity,
         exportUsage: { byAdvisor: exportUsageByAdvisor, byFirm: exportUsageByFirm },
         profileCount: firmProfiles.length,
-        householdCount: listHouseholdRows({ firmId: user.firmId }).length,
+        householdCount: listHouseholdRows({ firmId: user.firmId }).filter((household) => !household.archivedAt).length,
         exportCount: firmExportJobs.length,
         templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form')
           .length,

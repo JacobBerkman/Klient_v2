@@ -16,6 +16,12 @@ export class ProfileRepository {
   convertProfile(_firmContext, _profileId, _options = {}) {
     throwRepositoryScaffoldError('ProfileRepository', 'convertProfile')
   }
+  archiveProfile(_firmContext, _profileId, _options = {}) {
+    throwRepositoryScaffoldError('ProfileRepository', 'archiveProfile')
+  }
+  restoreProfile(_firmContext, _profileId, _options = {}) {
+    throwRepositoryScaffoldError('ProfileRepository', 'restoreProfile')
+  }
   addTag(_firmContext, _profileId, _tag) {
     throwRepositoryScaffoldError('ProfileRepository', 'addTag')
   }

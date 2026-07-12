@@ -39,6 +39,7 @@ export function Component() {
   const [refreshKey, setRefreshKey] = useState(0)
   const [search, setSearch] = useState('')
   const [kindFilter, setKindFilter] = useState<'all' | 'prospect' | 'client'>('all')
+  const [showArchived, setShowArchived] = useState(false)
   const [statusMessage, setStatusMessage] = useState('')
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({
@@ -54,11 +55,11 @@ export function Component() {
 
   const { data, error, loading } = useAsync<ProfilesPageData>(async () => {
     const [profiles, schema] = await Promise.all([
-      api.get<Profile[]>(routes.profiles()),
+      api.get<Profile[]>(routes.profiles(showArchived ? { includeArchived: 1 } : {})),
       api.get<CustomFieldSchemaPayload>(routes.profileCustomFieldSchema()).catch(() => ({ fields: [] }))
     ])
     return { profiles, schema }
-  }, [refreshKey])
+  }, [refreshKey, showArchived])
 
   const visibleProfiles = useMemo(() => {
     if (!data) return []
@@ -186,6 +187,14 @@ export function Component() {
                 <option value="prospect">Prospects</option>
                 <option value="client">Clients</option>
               </select>
+              <label className="checkbox-inline">
+                <input
+                  type="checkbox"
+                  checked={showArchived}
+                  onChange={(event) => setShowArchived(event.target.checked)}
+                />
+                Show archived
+              </label>
             </Toolbar>
 
             <div className="split-grid">
@@ -270,6 +279,7 @@ export function Component() {
                           </td>
                           <td>
                             <StatusBadge status={profile.kind} />
+                            {profile.archivedAt ? <StatusBadge status="Archived" /> : null}
                           </td>
                           <td>{profile.stage || 'Unassigned'}</td>
                           <td>{profile.householdId || 'Unlinked'}</td>

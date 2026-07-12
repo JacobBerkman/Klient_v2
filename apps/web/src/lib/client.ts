@@ -48,6 +48,8 @@ export const routes = {
   profiles: (query: Record<string, QueryValue> = {}) => withQuery('/api/profiles', query),
   profileDetail: (profileId: string) => joinPath('/api/profiles', profileId),
   profileConvert: (profileId: string) => joinPath('/api/profiles', profileId, 'convert'),
+  profileArchive: (profileId: string) => joinPath('/api/profiles', profileId, 'archive'),
+  profileRestore: (profileId: string) => joinPath('/api/profiles', profileId, 'restore'),
   profileStage: (profileId: string) => joinPath('/api/profiles', profileId, 'stage'),
   profileNotes: (profileId: string) => joinPath('/api/profiles', profileId, 'notes'),
   profileTags: (profileId: string) => joinPath('/api/profiles', profileId, 'tags'),
@@ -409,7 +411,11 @@ export interface ProfileConvertPayload {
 export const profilesApi = {
   // ApiClient.post attaches the CSRF token automatically for /api/ mutations.
   convert: (profileId: string, input: { expectedUpdatedAt?: string | null } = {}) =>
-    api.post<ProfileConvertPayload>(routes.profileConvert(profileId), input)
+    api.post<ProfileConvertPayload>(routes.profileConvert(profileId), input),
+  archive: (profileId: string, input: { expectedUpdatedAt?: string | null } = {}) =>
+    api.post<ProfileConvertPayload>(routes.profileArchive(profileId), input),
+  restore: (profileId: string, input: { expectedUpdatedAt?: string | null } = {}) =>
+    api.post<ProfileConvertPayload>(routes.profileRestore(profileId), input)
 }
 
 export const pipelineApi = {

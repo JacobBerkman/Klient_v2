@@ -88,6 +88,23 @@ export function createProfilesService({ profileRepository, policy }) {
       await assertUpdatePreconditions(user, profileId, { expectedUpdatedAt })
       return profileRepository.convertProfile(createFirmContext(user), profileId, { expectedUpdatedAt })
     },
+    async archiveProfile(user, profileId, input = {}) {
+      policy.requireGuard(user, 'canWriteProfiles')
+      const expectedUpdatedAt =
+        typeof input?.expectedUpdatedAt === 'string' ? input.expectedUpdatedAt.trim() : input?.expectedUpdatedAt
+      // Same optimistic-concurrency contract as convert: a stale expectedUpdatedAt
+      // fails with PROFILE_UPDATE_CONFLICT before the store write; the store
+      // re-checks inside its transaction to close the read/archive race.
+      await assertUpdatePreconditions(user, profileId, { expectedUpdatedAt })
+      return profileRepository.archiveProfile(createFirmContext(user), profileId, { expectedUpdatedAt })
+    },
+    async restoreProfile(user, profileId, input = {}) {
+      policy.requireGuard(user, 'canWriteProfiles')
+      const expectedUpdatedAt =
+        typeof input?.expectedUpdatedAt === 'string' ? input.expectedUpdatedAt.trim() : input?.expectedUpdatedAt
+      await assertUpdatePreconditions(user, profileId, { expectedUpdatedAt })
+      return profileRepository.restoreProfile(createFirmContext(user), profileId, { expectedUpdatedAt })
+    },
     addTag(user, profileId, tag) {
       policy.requireGuard(user, 'canWriteProfiles')
       return profileRepository.addTag(createFirmContext(user), profileId, tag)

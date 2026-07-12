@@ -26,6 +26,14 @@ export function createHouseholdsService({ store, policy }) {
     createSpouse(user, primaryClientId, spouse) {
       policy.requireGuard(user, 'canWriteHouseholds')
       return runAuditedMutation(store, () => store.createSpouse(user, primaryClientId, spouse))
+    },
+    archiveHousehold(user, householdId, input = {}) {
+      policy.requireGuard(user, 'canWriteHouseholds')
+      return runAuditedMutation(store, () => store.archiveHousehold(user, householdId, input))
+    },
+    restoreHousehold(user, householdId) {
+      policy.requireGuard(user, 'canWriteHouseholds')
+      return runAuditedMutation(store, () => store.restoreHousehold(user, householdId))
     }
   }
 }

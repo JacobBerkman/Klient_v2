@@ -44,6 +44,8 @@ export function Component() {
   const [noteBody, setNoteBody] = useState('')
   const [confirmingConvert, setConfirmingConvert] = useState(false)
   const [converting, setConverting] = useState(false)
+  const [confirmingArchiveProfile, setConfirmingArchiveProfile] = useState(false)
+  const [archivingProfile, setArchivingProfile] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadMessage, setUploadMessage] = useState('')
   const [confirmingArchiveId, setConfirmingArchiveId] = useState('')
@@ -97,6 +99,36 @@ export function Component() {
       setStatusMessage(convertError instanceof Error ? convertError.message : 'Conversion failed.')
     } finally {
       setConverting(false)
+    }
+  }
+
+  async function handleArchiveProfile() {
+    if (!data) return
+    setArchivingProfile(true)
+    try {
+      await profilesApi.archive(profileId, { expectedUpdatedAt: data.profile.updatedAt })
+      setConfirmingArchiveProfile(false)
+      setStatusMessage('Profile archived.')
+      setRefreshKey((value) => value + 1)
+    } catch (archiveError) {
+      setConfirmingArchiveProfile(false)
+      setStatusMessage(archiveError instanceof Error ? archiveError.message : 'Archive failed.')
+    } finally {
+      setArchivingProfile(false)
+    }
+  }
+
+  async function handleRestoreProfile() {
+    if (!data) return
+    setArchivingProfile(true)
+    try {
+      await profilesApi.restore(profileId, { expectedUpdatedAt: data.profile.updatedAt })
+      setStatusMessage('Profile restored.')
+      setRefreshKey((value) => value + 1)
+    } catch (restoreError) {
+      setStatusMessage(restoreError instanceof Error ? restoreError.message : 'Restore failed.')
+    } finally {
+      setArchivingProfile(false)
     }
   }
 
@@ -183,9 +215,29 @@ export function Component() {
           <>
             <StatusBadge status={data.profile.kind} />
             <StatusBadge status={data.profile.stage || 'No stage'} />
+            {data.profile.archivedAt ? <StatusBadge status="Archived" /> : null}
           </>
         }
       />
+      {data.profile.archivedAt ? (
+        <div data-testid="profile-archived-banner" className="compact-stack">
+          <InlineNotice tone="warning">
+            This profile is archived and hidden from lists, the pipeline board, dashboard counts, analytics, and client
+            pickers. Its notes, uploads, and submissions are preserved.
+          </InlineNotice>
+          {hasGuard(user, 'canWriteProfiles') ? (
+            <button
+              type="button"
+              className="secondary-button"
+              disabled={archivingProfile}
+              data-testid="profile-restore"
+              onClick={() => void handleRestoreProfile()}
+            >
+              {archivingProfile ? 'Restoring...' : 'Restore profile'}
+            </button>
+          ) : null}
+        </div>
+      ) : null}
       <PageSection
         title={profileName(data.profile)}
         subtitle={`${data.profile.kind} / ${data.profile.stage || 'No stage'} / Updated ${formatDateTime(data.profile.updatedAt || data.profile.createdAt)}`}
@@ -268,6 +320,48 @@ export function Component() {
                     }}
                   >
                     Convert to client
+                  </button>
+                )}
+              </div>
+            ) : null}
+            {!data.profile.archivedAt && hasGuard(user, 'canWriteProfiles') ? (
+              <div className="compact-stack" data-testid="profile-archive">
+                {confirmingArchiveProfile ? (
+                  <>
+                    <p className="muted compact">
+                      Archiving hides this {data.profile.kind} from lists, the pipeline board, dashboard counts,
+                      analytics, and client pickers. Notes, uploads, and submissions are preserved, and you can restore
+                      it later.
+                    </p>
+                    <div className="actions-row">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={archivingProfile}
+                        onClick={() => void handleArchiveProfile()}
+                      >
+                        Confirm archive
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={archivingProfile}
+                        onClick={() => setConfirmingArchiveProfile(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() => {
+                      setStatusMessage('')
+                      setConfirmingArchiveProfile(true)
+                    }}
+                  >
+                    Archive profile
                   </button>
                 )}
               </div>
