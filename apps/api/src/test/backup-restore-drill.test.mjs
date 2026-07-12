@@ -27,24 +27,30 @@ async function loadStorage(tempDir) {
 }
 
 function seedKnownRows(storage) {
-  storage.saveState({
-    marker: 'drill',
-    firms: [
-      { id: 'firm-1', name: 'Backup Firm', slug: 'backup-firm' },
-      { id: 'firm-2', name: 'Second Firm', slug: 'second-firm' }
-    ],
-    users: [
-      { id: 'user-1', firmId: 'firm-1', email: 'admin@firm1.test', role: 'admin', firstName: 'Ada', lastName: 'Admin' },
-      { id: 'user-2', firmId: 'firm-2', email: 'agent@firm2.test', role: 'agent', firstName: 'Gus', lastName: 'Agent' }
-    ],
-    profiles: [],
-    households: [],
-    formTemplates: [],
-    documentTemplates: [],
-    templateAggregates: [],
-    exportJobs: [],
-    notes: [],
-    auditEvents: []
+  // Every entity is a relational source of truth written by a targeted upsert
+  // (since the persistence rework retired syncQueryTables); saveState only
+  // carries singleton blob config now, so firms/users must be seeded through
+  // their upserts exactly like profiles/notes/sessions below.
+  storage.saveState({ marker: 'drill' })
+
+  storage.upsertFirmRow({ id: 'firm-1', name: 'Backup Firm', slug: 'backup-firm' })
+  storage.upsertFirmRow({ id: 'firm-2', name: 'Second Firm', slug: 'second-firm' })
+
+  storage.upsertUserRow({
+    id: 'user-1',
+    firmId: 'firm-1',
+    email: 'admin@firm1.test',
+    role: 'admin',
+    firstName: 'Ada',
+    lastName: 'Admin'
+  })
+  storage.upsertUserRow({
+    id: 'user-2',
+    firmId: 'firm-2',
+    email: 'agent@firm2.test',
+    role: 'agent',
+    firstName: 'Gus',
+    lastName: 'Agent'
   })
 
   storage.upsertProfileRow({
