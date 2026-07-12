@@ -145,6 +145,16 @@ function providerRuntimeDiagnostics(authProvider, { strict = false } = {}) {
   issues.push(`Unsupported AUTH_PROVIDER runtime diagnostics for provider "${authProvider}".`)
   return { issues, warnings }
 }
+const EMAIL_PROVIDERS = ['disabled', 'smtp']
+
+function readEmailProviderFromEnv() {
+  const normalized = readNonEmptyString('EMAIL_PROVIDER', 'disabled').toLowerCase()
+  if (!EMAIL_PROVIDERS.includes(normalized)) {
+    throw new Error(`Invalid EMAIL_PROVIDER: received "${normalized}". Accepted values: ${EMAIL_PROVIDERS.join(', ')}.`)
+  }
+  return normalized
+}
+
 function parseJsonObjectEnv(name) {
   const raw = readNonEmptyString(name)
   if (!raw) return { raw, parsed: null, parseError: null }
@@ -221,9 +231,7 @@ if (
   (!appSecretHealth.meetsLengthRequirement || !appSecretHealth.meetsEntropyRequirement) &&
   !allowUnsafeAppSecret
 ) {
-  throw new Error(
-    'APP_SECRET does not meet minimum security requirements for production.'
-  )
+  throw new Error('APP_SECRET does not meet minimum security requirements for production.')
 }
 
 export const runtime = {
@@ -263,7 +271,20 @@ export const runtime = {
   storageExportPurgeAfterDays: readNumber('STORAGE_EXPORT_PURGE_AFTER_DAYS', 30),
   storageUploadTtlDays: readNumber('STORAGE_UPLOAD_TTL_DAYS', 365),
   storageUploadArchiveAfterDays: readNumber('STORAGE_UPLOAD_ARCHIVE_AFTER_DAYS', 90),
-  storageUploadPurgeAfterDays: readNumber('STORAGE_UPLOAD_PURGE_AFTER_DAYS', 730)
+  storageUploadPurgeAfterDays: readNumber('STORAGE_UPLOAD_PURGE_AFTER_DAYS', 730),
+  // Email delivery is an OPTIONAL, additive capability (Google-sign-in
+  // precedent): EMAIL_PROVIDER defaults to 'disabled', in which case invite /
+  // password-reset / portal-link responses behave exactly as before (tokens in
+  // the API response only). 'smtp' enables the hand-rolled zero-dependency
+  // SMTP client in apps/api/src/mailer/.
+  appBaseUrl: readNonEmptyString('APP_BASE_URL'),
+  emailProvider: readEmailProviderFromEnv(),
+  emailFrom: readNonEmptyString('EMAIL_FROM'),
+  smtpHost: readNonEmptyString('SMTP_HOST'),
+  smtpPort: readNumber('SMTP_PORT', 587),
+  smtpSecure: readBoolean('SMTP_SECURE', false),
+  smtpUsername: readNonEmptyString('SMTP_USERNAME'),
+  smtpPassword: process.env.SMTP_PASSWORD || ''
 }
 
 export function validateRuntimeConfig() {
@@ -284,6 +305,18 @@ export function validateRuntimeConfig() {
     if (missingS3Config) {
       const message =
         'S3 storage provider requires STORAGE_ENDPOINT, STORAGE_REGION, STORAGE_ACCESS_KEY_ID, STORAGE_SECRET_ACCESS_KEY.'
+      if (runtime.nodeEnv === 'production') issues.push(message)
+      else warnings.push(message)
+    }
+  }
+
+  if (runtime.emailProvider === 'smtp') {
+    const missingEmailConfig = []
+    if (!runtime.smtpHost) missingEmailConfig.push('SMTP_HOST')
+    if (!runtime.emailFrom) missingEmailConfig.push('EMAIL_FROM')
+    if (!runtime.appBaseUrl) missingEmailConfig.push('APP_BASE_URL')
+    if (missingEmailConfig.length > 0) {
+      const message = `EMAIL_PROVIDER=smtp requires ${missingEmailConfig.join(', ')}.`
       if (runtime.nodeEnv === 'production') issues.push(message)
       else warnings.push(message)
     }
@@ -388,9 +421,7 @@ export function validateRuntimeConfig() {
     if (runtime.nodeEnv === 'test') {
       warnings.push('APP_SECRET is using fallback development secret under NODE_ENV=test.')
     } else if (runtime.nodeEnv === 'development' && runtime.allowDevFallbackSecret) {
-      warnings.push(
-        'APP_SECRET is using fallback development secret because ALLOW_DEV_FALLBACK_APP_SECRET=true.'
-      )
+      warnings.push('APP_SECRET is using fallback development secret because ALLOW_DEV_FALLBACK_APP_SECRET=true.')
     }
   }
 
@@ -415,6 +446,7 @@ export function validateRuntimeConfig() {
       googleSignInEnabled: runtime.googleOidc.enabled,
       piiKeyProvider: runtime.piiKeyProvider,
       opsTokenAuthEnabled: runtime.opsTokenAuthEnabled,
+      emailProvider: runtime.emailProvider,
       serviceName: runtime.serviceName,
       instanceId: runtime.instanceId,
       storageProvider: runtime.storageProvider,

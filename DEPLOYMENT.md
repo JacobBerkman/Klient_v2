@@ -115,6 +115,31 @@ When a user signs in through Google with a verified Google identity, the session
 - No `id_token`/`access_token` is persisted; only the transient verified claims are used to look up the pilot user.
 - The session/CSRF cookies issued on Google sign-in use the same secure/SameSite flags as local login.
 
+## Email delivery (optional)
+
+Klient can send plain-text transactional emails for user invites, password resets, and portal links. Like Google sign-in, this is an **optional, additive** capability that is **off by default** (`EMAIL_PROVIDER=disabled`): invites, password resets, and portal links keep returning their tokens in the API response exactly as before. When enabled, delivery is **fire-and-forget** — a send failure is swallowed, logged, and audited, and never changes an API response (the anti-enumeration behavior of password resets is preserved: an unknown email sends nothing and the response is unchanged).
+
+The implementation is a hand-rolled, zero-dependency SMTP client (`apps/api/src/mailer/smtp-client.mjs`) supporting STARTTLS, implicit TLS (port 465), and `AUTH PLAIN`/`AUTH LOGIN`, with RFC 5321 dot-stuffing, CRLF normalization, and a 10s per-command timeout. Plaintext (non-TLS) SMTP is refused in production; it is only tolerated in non-production environments for local catch-all sinks and tests.
+
+### Configuration (config-gated — off unless set)
+
+| Variable         | Required when         | Notes                                                                                                       |
+| ---------------- | --------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `EMAIL_PROVIDER` | optional              | `disabled` (default) or `smtp`. Any other value fails startup.                                              |
+| `SMTP_HOST`      | `EMAIL_PROVIDER=smtp` | SMTP server hostname.                                                                                       |
+| `SMTP_PORT`      | optional              | Defaults to `587` (STARTTLS submission). Use `465` with `SMTP_SECURE=true` for implicit TLS.                |
+| `SMTP_SECURE`    | optional              | `true` for implicit TLS (port 465); default `false` (plain connection upgraded via STARTTLS).               |
+| `SMTP_USERNAME`  | optional              | Enables SMTP AUTH (`PLAIN` preferred, `LOGIN` fallback) when set.                                           |
+| `SMTP_PASSWORD`  | optional              | Password for SMTP AUTH. Never logged or audited.                                                            |
+| `EMAIL_FROM`     | `EMAIL_PROVIDER=smtp` | Sender address for all transactional email.                                                                 |
+| `APP_BASE_URL`   | `EMAIL_PROVIDER=smtp` | Public origin used to build the links in email bodies (shared with Google sign-in redirect derivation).     |
+
+Startup validation (via `validateRuntimeConfig()`): when `EMAIL_PROVIDER=smtp`, missing `SMTP_HOST`, `EMAIL_FROM`, or `APP_BASE_URL` fails startup in production (warning in dev), following the S3-storage validation pattern.
+
+### Audit and privacy
+
+Every attempted delivery records an audit event through the existing audit trail: `email.sent` on success, `email.send_failed` on failure. The audit payload contains only the template name, the provider, and a **masked** recipient (`j***@example.com`) — never the token or the tokenized URL.
+
 ## Demo mode vs production
 
 Production deployments should keep `ENABLE_DEMO_MODE=false` (or omit it). Even if set to `true`, runtime forces demo mode off in production (`NODE_ENV=production`).
