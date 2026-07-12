@@ -27,6 +27,7 @@ const requiredScripts = [
   'test:e2e',
   'test:security',
   'test:ui-contract',
+  'test:unit',
   'web:build'
 ]
 

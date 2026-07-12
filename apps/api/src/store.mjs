@@ -365,10 +365,6 @@ function daysBetween(thenIso, nowMs) {
   return Math.floor((nowMs - thenMs) / (1000 * 60 * 60 * 24))
 }
 
-function sourceDisplay(source) {
-  return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`
-}
-
 // Lightweight client/prospect tags. Normalization is deliberately conservative:
 // trim + collapse internal whitespace, drop empties, cap each tag's length, cap
 // the count, and dedupe case-insensitively while preserving the first-seen
@@ -1279,6 +1275,7 @@ export function createStore({
   const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
   migrateFirmStageConfig()
+  ;(state.profiles || []).forEach((profile) => migrateProfileSource(profile))
   saveState(state)
   state.pipelineStagesByFirm ||= {}
   // Sessions live exclusively in the sessions table: migration 002 backfilled
@@ -2031,7 +2028,7 @@ export function createStore({
         email: input.email || '',
         phone: input.phone || '',
         dateOfBirth: '',
-        source: input.source ? { ...input.source, displayValue: sourceDisplay(input.source) } : null,
+        source: normalizeProfileSource(input.source),
         status: input.status || (input.kind === 'client' ? 'active' : 'new'),
         stage: nextProspectStage,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
@@ -2100,8 +2097,8 @@ export function createStore({
         }
         delete nextPatch.taxId
       }
-      if ('source' in nextPatch && nextPatch.source) {
-        nextPatch.source = { ...nextPatch.source, displayValue: sourceDisplay(nextPatch.source) }
+      if ('source' in nextPatch) {
+        nextPatch.source = normalizeProfileSource(nextPatch.source)
       }
       if ('extensions' in nextPatch) {
         nextPatch.extensions = normalizeExtensions(nextPatch.extensions)
@@ -4527,7 +4524,6 @@ export function createStore({
       const firmStageChanges = listStageChangeRowsByFirm(user.firmId)
       const stageEvents = firmStageChanges.slice().sort((a, b) => parseIso(a.changedAt) - parseIso(b.changedAt))
       const stageEntryTimes = new Map()
-      const stageAging = {}
       stageEvents.forEach((event) => {
         const key = `${event.clientId}:${toAnalyticsStage(event.toStage)}`
         if (!stageEntryTimes.has(key)) stageEntryTimes.set(key, parseIso(event.changedAt))
@@ -4537,7 +4533,11 @@ export function createStore({
       )
       prospects.forEach((profile) => {
         const stage = toAnalyticsStage(profile.stage)
-        if (!stageAging[stage]) stageAging[stage] = { count: 0, avgDays: 0 }
+        // Profiles whose stage is not part of the analytics stage config are
+        // bucketed into LEGACY_STAGE_BUCKET (see toAnalyticsStage), which is
+        // never present in stageMetadata — seed its accumulator on demand so
+        // legacy-bucketed prospects age-aggregate instead of crashing.
+        if (!stageAgingMap[stage]) stageAgingMap[stage] = { count: 0, avgDays: 0, totalDays: 0 }
         const enteredAt = stageEntryTimes.get(`${profile.id}:${stage}`) || parseIso(profile.createdAt)
         const ageDays = Math.max(0, (nowMs - enteredAt) / 86_400_000)
         stageAgingMap[stage].count += 1
@@ -4556,6 +4556,19 @@ export function createStore({
         count: stageAgingMap[stage.id]?.count || 0,
         avgDays: stageAgingMap[stage.id]?.avgDays || 0
       }))
+      if (stageAgingMap[LEGACY_STAGE_BUCKET]) {
+        // Mirror the funnel's conditional legacy bucket (stageOrder push above)
+        // so stageAging/stageAgingOrdered stay consistent with the funnel.
+        stageAgingOrdered.push({
+          stage: LEGACY_STAGE_BUCKET,
+          stageId: LEGACY_STAGE_BUCKET,
+          stageLabel: 'Legacy / Unassigned',
+          isTerminal: false,
+          isDrop: false,
+          count: stageAgingMap[LEGACY_STAGE_BUCKET].count,
+          avgDays: stageAgingMap[LEGACY_STAGE_BUCKET].avgDays
+        })
+      }
       const stageAgingById = Object.fromEntries(
         stageAgingOrdered.map((entry) => [entry.stageId, { count: entry.count, avgDays: entry.avgDays }])
       )

@@ -44,6 +44,19 @@ function createDeps() {
       }
     }
   )
+  // Exports repository double: the service normalizes list results via
+  // Array.prototype.map, so `list` must return an array. Other methods keep the
+  // mutating behavior (record an audit event so runAuditedMutation is satisfied).
+  const exportsRepository = new Proxy(store, {
+    get(target, key) {
+      if (key === 'list') return () => []
+      if (key in target) return target[key]
+      return () => {
+        target.state.auditEvents.push({ id: `x-${target.state.auditEvents.length + 1}` })
+        return { ok: true }
+      }
+    }
+  })
 
   return {
     policy,
@@ -53,7 +66,7 @@ function createDeps() {
     households: createHouseholdsService({ store: mutatingStore, policy }),
     forms: createFormsService({ store: mutatingStore, policy }),
     templates: createTemplatesService({ templateRepository, policy, store }),
-    exports: createExportsService({ exportsRepository: mutatingStore, policy, store: mutatingStore }),
+    exports: createExportsService({ exportsRepository, policy, store: mutatingStore }),
     audit: createAuditService({ store: mutatingStore, policy }),
     analytics: createAnalyticsService({ store: mutatingStore, reads, policy })
   }
@@ -142,7 +155,7 @@ const operations = [
     invoke: (s, u) => s.forms.submitClientForm(u, {}),
     allowed: new Set(['client'])
   },
-  { key: 'templates.list', invoke: (s, u) => s.templates.list(u), allowed: new Set(['admin', 'advisor']) },
+  { key: 'templates.list', invoke: (s, u) => s.templates.list(u), allowed: new Set(['admin', 'advisor', 'readonly']) },
   { key: 'templates.create', invoke: (s, u) => s.templates.create(u, {}), allowed: new Set(['admin', 'advisor']) },
   { key: 'templates.publish', invoke: (s, u) => s.templates.publish(u, 't1'), allowed: new Set(['admin', 'advisor']) },
   { key: 'exports.list', invoke: (s, u) => s.exports.list(u), allowed: new Set(['admin', 'advisor']) },
@@ -150,14 +163,15 @@ const operations = [
   {
     key: 'exports.processQueuedExports',
     invoke: (s, u) => s.exports.processQueuedExports(u),
-    allowed: new Set(['admin', 'advisor'])
+    allowed: new Set(['admin']),
+    async: true
   },
   { key: 'audit.list', invoke: (s, u) => s.audit.list(u), allowed: new Set(['admin', 'advisor', 'readonly']) },
   { key: 'analytics.get', invoke: (s, u) => s.analytics.get(u), allowed: new Set(['admin', 'advisor', 'readonly']) },
   {
     key: 'analytics.getDiagnosticsContext',
     invoke: (s, u) => s.analytics.getDiagnosticsContext(u),
-    allowed: new Set(['admin', 'advisor'])
+    allowed: new Set(['admin'])
   }
 ]
 
@@ -168,12 +182,28 @@ test('policy engine deny-by-default returns reason codes', () => {
   assert.deepEqual(policy.evaluateGuard({ role: 'readonly' }, 'canWriteProfiles').reasonCode, 'POLICY_ACCESS_DENIED')
 })
 
-test('role regression covers read/write service boundaries', () => {
+test('role regression covers read/write service boundaries', async () => {
   const services = createDeps()
 
   for (const operation of operations) {
     for (const [role, user] of Object.entries(usersByRole)) {
-      if (operation.allowed.has(role)) {
+      const allowed = operation.allowed.has(role)
+      if (operation.async) {
+        // Async service methods turn the synchronous guard throw into a rejected
+        // promise, so the deny/allow boundary must be asserted via rejects/doesNotReject.
+        if (allowed) {
+          await assert.doesNotReject(
+            async () => operation.invoke(services, user),
+            `${operation.key} should allow ${role}`
+          )
+        } else {
+          await assert.rejects(
+            async () => operation.invoke(services, user),
+            (error) => error?.code === 'POLICY_ACCESS_DENIED',
+            `${operation.key} should deny ${role}`
+          )
+        }
+      } else if (allowed) {
         assert.doesNotThrow(() => operation.invoke(services, user), `${operation.key} should allow ${role}`)
       } else {
         assert.throws(

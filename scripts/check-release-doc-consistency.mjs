@@ -44,6 +44,7 @@ const canonicalStrictGateCommands = [
 const canonicalHardGateSequence = [
   'npm run check:syntax',
   'npm run check:conflicts',
+  'npm run test:unit',
   'npm run web:build',
   'npm run test:contract',
   'node scripts/integration-rbac.mjs',

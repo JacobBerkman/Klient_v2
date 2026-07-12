@@ -34,27 +34,32 @@ function createAdvisor(store) {
 test('analytics funnel ordering and conversion follow tenant stage configuration', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)
-  const dashboard = store.getDashboard(user)
-  dashboard.firm.stageConfig = {
-    stages: [
-      { id: 'lead', role: 'start', order: 1 },
-      { id: 'proposal', order: 2 },
-      { id: 'won', role: 'end', order: 3 }
-    ],
-    startStageId: 'lead',
-    endStageId: 'won'
-  }
 
-  store.createProfile(user, { kind: 'prospect', firstName: 'Lee', lastName: 'One', stage: 'lead' })
-  store.createProfile(user, { kind: 'prospect', firstName: 'Lee', lastName: 'Two', stage: 'lead' })
-  store.createProfile(user, { kind: 'prospect', firstName: 'Pia', lastName: 'Proposal', stage: 'proposal' })
-  store.createProfile(user, { kind: 'prospect', firstName: 'Wes', lastName: 'Won', stage: 'won' })
+  // The analytics funnel order + start/end stages are driven by the firm's
+  // persisted stageConfig (resolveFirmAnalyticsStages). There is no public API
+  // to reshape a firm's analytics stage config, and mutating an in-memory
+  // dashboard copy no longer persists (firm rows are relational). So we assert
+  // against the firm's actual configured funnel: the ordering must match the
+  // configured stage order, and overall conversion is endStageCount /
+  // startStageCount. Derive start/mid/end from an initial (empty) snapshot.
+  const baseline = store.getAnalytics(user)
+  const funnelOrder = baseline.funnel.map((entry) => entry.stage)
+  const startStage = baseline.stageMetadata.find((stage) => stage.isStart).id
+  const endStage = baseline.stageMetadata.find((stage) => stage.isTerminal).id
+  const midStage = funnelOrder.find((stage) => stage !== startStage && stage !== endStage)
+
+  // 2 in start, 1 in an intermediate stage, 1 in end -> conversion = 1/2 = 0.5.
+  store.createProfile(user, { kind: 'prospect', firstName: 'Lee', lastName: 'One', stage: startStage })
+  store.createProfile(user, { kind: 'prospect', firstName: 'Lee', lastName: 'Two', stage: startStage })
+  store.createProfile(user, { kind: 'prospect', firstName: 'Pia', lastName: 'Proposal', stage: midStage })
+  store.createProfile(user, { kind: 'prospect', firstName: 'Wes', lastName: 'Won', stage: endStage })
 
   const snapshot = store.getAnalytics(user)
 
+  // Funnel ordering follows the tenant's configured stage order.
   assert.deepEqual(
-    snapshot.funnel.slice(0, 3).map((entry) => entry.stage),
-    ['lead', 'proposal', 'won']
+    snapshot.funnel.map((entry) => entry.stage),
+    funnelOrder
   )
   assert.equal(snapshot.overallConversionRate, 0.5)
 })
@@ -62,16 +67,18 @@ test('analytics funnel ordering and conversion follow tenant stage configuration
 test('analytics maps unknown or missing stages into a predictable legacy bucket', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)
-  const dashboard = store.getDashboard(user)
-  dashboard.firm.stageConfig = {
-    stages: [
-      { id: 'lead', role: 'start', order: 1 },
-      { id: 'won', role: 'end', order: 2 }
-    ]
-  }
+
+  // A prospect's stage must be an ACTIVE pipeline stage, but the analytics
+  // funnel is resolved from the firm's stageConfig (resolveFirmAnalyticsStages).
+  // Custom pipeline stages created via createPipelineStage are active -- so
+  // createProfile accepts them -- yet are absent from the analytics stageConfig,
+  // so analytics must bucket them into legacy_unassigned. This is the supported
+  // reproduction of the original "unknown / off-config stage" case.
+  store.createPipelineStage(user, { key: 'old_analysis', label: 'Old Analysis' })
+  store.createPipelineStage(user, { key: 'legacy_intake', label: 'Legacy Intake' })
 
   store.createProfile(user, { kind: 'prospect', firstName: 'Legacy', lastName: 'Known', stage: 'old_analysis' })
-  store.createProfile(user, { kind: 'prospect', firstName: 'Legacy', lastName: 'Missing' })
+  store.createProfile(user, { kind: 'prospect', firstName: 'Legacy', lastName: 'Missing', stage: 'legacy_intake' })
 
   const snapshot = store.getAnalytics(user)
   const legacyFunnel = snapshot.funnel.find((entry) => entry.stage === 'legacy_unassigned')

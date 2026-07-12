@@ -332,25 +332,27 @@ When running `npm run validate:master`, the hard gate executes these commands in
 
 1. `npm run check:syntax`
 2. `npm run check:conflicts`
-3. `npm run web:build`
-4. `npm run test:contract`
-5. `node scripts/integration-rbac.mjs`
-6. `node scripts/integration-tenancy.mjs`
-7. `npm run test:integration`
-8. `npm run check:migrations`
-9. `npm run test:smoke`
-10. `npm run test:ui-contract`
-11. `npm run test:e2e`
-12. `npm run test:security`
+3. `npm run test:unit`
+4. `npm run web:build`
+5. `npm run test:contract`
+6. `node scripts/integration-rbac.mjs`
+7. `node scripts/integration-tenancy.mjs`
+8. `npm run test:integration`
+9. `npm run check:migrations`
+10. `npm run test:smoke`
+11. `npm run test:ui-contract`
+12. `npm run test:e2e`
+13. `npm run test:security`
 
 Release-blocking expectation:
 
 - Step 2 (`npm run check:conflicts`) is intentionally a hard fail guard. Any merge conflict marker (`<<<<<<<`, `=======`, `>>>>>>>`) found in tracked text files **or release-critical scripts under `scripts/*.mjs` (including `scripts/e2e-test.mjs`)** must terminate `validate:master` with a non-zero exit code.
 - Operators should treat this as a deterministic preflight block-by-design and must resolve markers before rerunning.
+- Step 3 (`npm run test:unit`) runs the backend `node:test` unit suite serially (`--test-concurrency=1`) via `scripts/run-unit-tests.mjs` and fails fast on backend logic regressions before the slower web build, integration, and browser steps. It excludes `web-static-serving.test.mjs` (covered by `test:ui-contract`, which needs the web build) and the two integration/gate-orchestration meta regressions (`master-integration-runner-lifecycle.regression.test.mjs`, `integration-aggregate-exports-handoff.artifact.regression.test.mjs`, covered by the Integration/Aggregate-handoff/E2E steps).
 
 Conditional final step:
 
-- `npm run check:merge-main` runs after step 12 only when the workspace has git metadata and a local `main` branch (or when `VALIDATE_MASTER_FORCE_MERGE_PARITY=1`).
+- `npm run check:merge-main` runs after step 13 only when the workspace has git metadata and a local `main` branch (or when `VALIDATE_MASTER_FORCE_MERGE_PARITY=1`).
 
 ## Release gate command ownership (six required commands)
 
