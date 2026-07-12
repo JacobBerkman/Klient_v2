@@ -1,6 +1,24 @@
 import { createHmac, createHash, randomBytes, randomUUID } from 'node:crypto'
 import { createDefaultFirmStageConfig } from '../stage-config.mjs'
-import { deleteInviteRow, findInviteRowByToken } from '../storage.mjs'
+import {
+  deleteInviteRow,
+  findInviteRowByToken,
+  insertAuthAttempt,
+  countFailedLoginsByEmail,
+  countFailedLoginsByIp,
+  deleteAuthAttemptsByEmail,
+  insertPasswordResetAttempt,
+  countResetAttemptsByEmail,
+  countResetAttemptsByIp,
+  insertPasswordReset,
+  findPasswordResetByToken,
+  deletePasswordResetsByUser,
+  deletePasswordResetById,
+  insertMfaChallenge,
+  findMfaChallengeByTokenAndUser,
+  deleteMfaChallengesByUser,
+  deleteMfaChallengeById
+} from '../storage.mjs'
 
 const LOGIN_WINDOW_MS = 1000 * 60 * 15
 const MAX_LOGIN_ATTEMPTS = 5
@@ -103,8 +121,9 @@ function pruneByAge(records, maxAgeMs, dateField = 'createdAt') {
 export function createLocalAuthProvider({ state, persist, createSession, addAudit, deleteSessionsByUser = () => [] }) {
 
   function clearLoginAttempts(email) {
-    const normalizedEmail = normalizeEmail(email)
-    state.authAttempts = (state.authAttempts || []).filter((attempt) => attempt.email !== normalizedEmail)
+    // authAttempts is a relational source of truth now: clearing means deleting
+    // every attempt row for the email.
+    deleteAuthAttemptsByEmail(normalizeEmail(email))
   }
 
   function clearUserLockout(user) {
@@ -117,15 +136,16 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
   function ensureLoginAllowed(email, ipAddress) {
     const normalizedEmail = normalizeEmail(email)
     const normalizedIp = sanitizeIp(ipAddress)
-    state.authAttempts = pruneByAge(state.authAttempts || [], LOGIN_WINDOW_MS)
+    // Only attempts inside the rolling window count. The old pruneByAge dropped
+    // rows older than the window; the SQL equivalent counts rows whose
+    // created_at is strictly after the window cutoff.
+    const loginCutoff = new Date(Date.now() - LOGIN_WINDOW_MS).toISOString()
 
-    const byEmailFailures = state.authAttempts.filter((attempt) => attempt.email === normalizedEmail && !attempt.ok)
-    if (byEmailFailures.length >= MAX_LOGIN_ATTEMPTS) {
+    if (countFailedLoginsByEmail(normalizedEmail, loginCutoff) >= MAX_LOGIN_ATTEMPTS) {
       throw new Error('Too many failed login attempts. Please wait 15 minutes and try again.')
     }
 
-    const byIpFailures = state.authAttempts.filter((attempt) => attempt.ipAddress === normalizedIp && !attempt.ok)
-    if (byIpFailures.length >= MAX_LOGIN_ATTEMPTS_PER_IP) {
+    if (countFailedLoginsByIp(normalizedIp, loginCutoff) >= MAX_LOGIN_ATTEMPTS_PER_IP) {
       throw new Error('Too many failed login attempts from this IP. Please wait 15 minutes and try again.')
     }
 
@@ -143,14 +163,13 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
   function registerFailedLogin(email, ipAddress) {
     const normalizedEmail = normalizeEmail(email)
     const normalizedIp = sanitizeIp(ipAddress)
-    state.authAttempts = pruneByAge(state.authAttempts || [], LOGIN_WINDOW_MS)
-    state.authAttempts.push({
-      id: randomUUID(),
-      email: normalizedEmail,
-      ipAddress: normalizedIp,
-      ok: false,
-      createdAt: nowIso()
-    })
+    // Insert the failed attempt, pruning rows past the window first (mirrors
+    // pruneByAge running on every write) to bound table growth.
+    const loginCutoff = new Date(Date.now() - LOGIN_WINDOW_MS).toISOString()
+    insertAuthAttempt(
+      { id: randomUUID(), email: normalizedEmail, ipAddress: normalizedIp, ok: false, createdAt: nowIso() },
+      { pruneCutoff: loginCutoff }
+    )
 
     const user = state.users.find((entry) => entry.email === normalizedEmail)
     if (user) {
@@ -165,17 +184,11 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
     persist()
   }
 
-  function registerSuccessfulLogin(user, ipAddress) {
+  function registerSuccessfulLogin(user) {
     const normalizedEmail = normalizeEmail(user.email)
-    const normalizedIp = sanitizeIp(ipAddress)
-    state.authAttempts = pruneByAge(state.authAttempts || [], LOGIN_WINDOW_MS)
-    state.authAttempts.push({
-      id: randomUUID(),
-      email: normalizedEmail,
-      ipAddress: normalizedIp,
-      ok: true,
-      createdAt: nowIso()
-    })
+    // The old code inserted an ok=1 row then clearLoginAttempts deleted every
+    // row for the email (including the one just inserted). The net effect is
+    // simply "no attempts remain for this email".
     clearLoginAttempts(normalizedEmail)
     user.security ||= {}
     user.security.failedLoginCount = 0
@@ -187,17 +200,20 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
   function ensureResetRateLimit(email, ipAddress) {
     const normalizedEmail = normalizeEmail(email)
     const normalizedIp = sanitizeIp(ipAddress)
-    state.passwordResetAttempts = pruneByAge(state.passwordResetAttempts || [], RESET_RATE_WINDOW_MS)
-    const byUser = state.passwordResetAttempts.filter((attempt) => attempt.email === normalizedEmail)
-    const byIp = state.passwordResetAttempts.filter((attempt) => attempt.ipAddress === normalizedIp)
-    if (byUser.length >= MAX_RESETS_PER_USER) throw new Error('Too many password reset requests for this user.')
-    if (byIp.length >= MAX_RESETS_PER_IP) throw new Error('Too many password reset requests from this IP.')
-    state.passwordResetAttempts.push({
-      id: randomUUID(),
-      email: normalizedEmail,
-      ipAddress: normalizedIp,
-      createdAt: nowIso()
-    })
+    // Only reset requests inside the rolling hour count (SQL equivalent of
+    // pruneByAge(RESET_RATE_WINDOW_MS) then filter/count).
+    const resetCutoff = new Date(Date.now() - RESET_RATE_WINDOW_MS).toISOString()
+    if (countResetAttemptsByEmail(normalizedEmail, resetCutoff) >= MAX_RESETS_PER_USER) {
+      throw new Error('Too many password reset requests for this user.')
+    }
+    if (countResetAttemptsByIp(normalizedIp, resetCutoff) >= MAX_RESETS_PER_IP) {
+      throw new Error('Too many password reset requests from this IP.')
+    }
+    // Record this request, pruning past-window rows first to bound growth.
+    insertPasswordResetAttempt(
+      { id: randomUUID(), email: normalizedEmail, ipAddress: normalizedIp, createdAt: nowIso() },
+      { pruneCutoff: resetCutoff }
+    )
   }
 
   function ensureMfaData(user) {
@@ -231,7 +247,6 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
   }
 
   function createAndPersistMfaChallenge(userId, method = 'totp') {
-    state.mfaChallenges = pruneByAge(state.mfaChallenges || [], MFA_CHALLENGE_TTL_MS)
     const challenge = {
       id: randomUUID(),
       token: randomUUID(),
@@ -240,8 +255,11 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       createdAt: nowIso(),
       expiresAt: new Date(Date.now() + MFA_CHALLENGE_TTL_MS).toISOString()
     }
-    state.mfaChallenges.push(challenge)
-    persist()
+    // mfaChallenges is relational: the insert is the durable write (no persist()
+    // needed — this function mutated no other blob state). Prune expired
+    // challenges (expires_at <= now, equivalent to the old pruneByAge on
+    // createdAt + TTL) first to bound table growth.
+    insertMfaChallenge(challenge, { pruneCutoff: nowIso() })
     return challenge
   }
   function revokeUserSessions(userId) {
@@ -265,7 +283,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         })
         throw new Error('Invalid email or password.')
       }
-      registerSuccessfulLogin(user, ipAddress)
+      registerSuccessfulLogin(user)
       const mfa = ensureMfaData(user)
       if (!mfa.enabled) {
         addAudit(user.firmId, user.id, 'user', user.id, 'auth.login.succeeded', {
@@ -282,9 +300,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         return { mfaRequired: true, challengeToken: challenge.token, methods: ['totp', 'backup_code'] }
       }
 
-      const challenge = state.mfaChallenges.find(
-        (entry) => entry.token === mfaChallengeToken && entry.userId === user.id
-      )
+      const challenge = findMfaChallengeByTokenAndUser(mfaChallengeToken, user.id)
       if (!challenge || new Date(challenge.expiresAt).getTime() <= Date.now()) {
         throw new Error('MFA challenge expired or not found.')
       }
@@ -297,7 +313,8 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         throw new Error('Invalid MFA verification code.')
       }
 
-      state.mfaChallenges = state.mfaChallenges.filter((entry) => entry.id !== challenge.id)
+      // mfaChallenges is relational: consume the challenge by id.
+      deleteMfaChallengeById(challenge.id)
       addAudit(user.firmId, user.id, 'user', user.id, 'auth.login.succeeded', {
         after: { email: normalizedEmail, mfaEnabled: true, challengeId: challenge.id }
       })
@@ -369,10 +386,14 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       ensureResetRateLimit(normalizedEmail, ipAddress)
       const user = state.users.find((entry) => entry.email === normalizedEmail)
       if (!user) {
-        persist()
+        // The rate-limit attempt was already recorded durably in
+        // password_reset_attempts; nothing else to persist.
         return { ok: true }
       }
-      state.passwordResets = (state.passwordResets || []).filter((entry) => entry.userId !== user.id)
+      // passwordResets is relational with one active token per user: delete any
+      // existing rows for the user, then insert the new token (relational
+      // writes are durable, so no persist() is needed).
+      deletePasswordResetsByUser(user.id)
       const reset = {
         id: randomUUID(),
         userId: user.id,
@@ -380,20 +401,20 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         createdAt: nowIso(),
         expiresAt: new Date(Date.now() + RESET_TTL_MS).toISOString()
       }
-      state.passwordResets.push(reset)
+      insertPasswordReset(reset, { pruneCutoff: nowIso() })
       addAudit(user.firmId, user.id, 'user', user.id, 'auth.password_reset.requested', {
         ipAddress: sanitizeIp(ipAddress)
       })
-      persist()
       return reset
     },
     resetPassword({ token, password }) {
       assertStrongPassword(password)
-      const reset = state.passwordResets.find((entry) => entry.token === token)
+      const reset = findPasswordResetByToken(token)
       if (!reset) throw new Error('Reset token not found.')
       if (new Date(reset.expiresAt).getTime() <= Date.now()) {
-        state.passwordResets = state.passwordResets.filter((entry) => entry.id !== reset.id)
-        persist()
+        // Expired token: consume the relational row and reject (durable delete,
+        // no user mutation, so no persist()).
+        deletePasswordResetById(reset.id)
         throw new Error('Reset token expired.')
       }
       const user = state.users.find((entry) => entry.id === reset.userId)
@@ -403,8 +424,11 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       user.security.failedLoginCount = 0
       user.security.lockoutUntil = null
       user.security.lockedAt = null
-      state.passwordResets = state.passwordResets.filter((entry) => entry.userId !== user.id)
-      state.mfaChallenges = (state.mfaChallenges || []).filter((entry) => entry.userId !== user.id)
+      // Consume every reset token and pending MFA challenge for the user (both
+      // relational sources of truth). This cross-table cleanup replaces the old
+      // blob-array filters.
+      deletePasswordResetsByUser(user.id)
+      deleteMfaChallengesByUser(user.id)
       const revokedSessions = revokeUserSessions(user.id)
       addAudit(user.firmId, user.id, 'user', user.id, 'auth.password_reset.completed', { revokedSessions })
       persist()
@@ -464,9 +488,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       if (!actor) throw new Error('User not found.')
       const mfa = ensureMfaData(actor)
       if (!mfa.enabled) throw new Error('MFA is not enabled for this account.')
-      const challenge = (state.mfaChallenges || []).find(
-        (entry) => entry.token === challengeToken && entry.userId === actor.id
-      )
+      const challenge = findMfaChallengeByTokenAndUser(challengeToken, actor.id)
       if (!challenge || new Date(challenge.expiresAt).getTime() <= Date.now())
         throw new Error('MFA challenge expired or not found.')
       const totpValid = totpCode ? verifyTotpCode(mfa.totpSecret, totpCode) : false
@@ -475,7 +497,8 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         persist()
         throw new Error('Invalid MFA verification code.')
       }
-      state.mfaChallenges = state.mfaChallenges.filter((entry) => entry.id !== challenge.id)
+      // mfaChallenges is relational: consume the challenge by id.
+      deleteMfaChallengeById(challenge.id)
       addAudit(actor.firmId, actor.id, 'user', actor.id, 'auth.mfa.challenge_verified', {
         after: { challengeId: challenge.id }
       })

@@ -104,8 +104,9 @@ test('password reset policy enforces TTL, one-time usage, and user/IP rate limit
   )
 
   const expiringReset = store.auth.requestReset({ email: 'rae@example.com', ipAddress: '192.0.2.1' })
-  const resetRecord = store.state.passwordResets.find((entry) => entry.token === expiringReset.token)
-  resetRecord.expiresAt = new Date(Date.now() - 1000).toISOString()
+  // passwordResets is a relational source of truth now: push the token's expiry
+  // into the past through the test hook instead of mutating a blob array.
+  store.__upsertPasswordResetForTest({ ...expiringReset, expiresAt: new Date(Date.now() - 1000).toISOString() })
   assert.throws(
     () => store.auth.resetPassword({ token: expiringReset.token, password: 'FinalSecure123!' }),
     /Reset token expired/

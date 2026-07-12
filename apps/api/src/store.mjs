@@ -61,6 +61,7 @@ import {
   upsertPipelineStageRecord,
   upsertPortalLinkRow,
   upsertProfileRow,
+  upsertPasswordResetRow,
   upsertSession
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
@@ -1177,9 +1178,7 @@ function seedState({ objectStorage = defaultObjectStorage } = {}) {
       }
     ],
     invites: [],
-    passwordResets: [],
     portalLinks: [],
-    authAttempts: [],
     boardVersions: { [firmId]: 1 },
     pipelineStagesByFirm: {
       [firmId]: DEFAULT_STAGE_DEFINITIONS.map((stage) => ({ ...stage }))
@@ -4760,6 +4759,12 @@ export function createStore({
     // this hook instead.
     __upsertInviteForTest(invite) {
       return upsertInviteRow(invite)
+    },
+    // Test-only: password resets live in the relational table (migration 008),
+    // so tests that used to mutate store.state.passwordResets in place (e.g. to
+    // push a token's expiresAt into the past) write through this hook instead.
+    __upsertPasswordResetForTest(reset) {
+      return upsertPasswordResetRow(reset)
     },
     __setPipelineStagesForTest(firmId, stages = []) {
       state.pipelineStagesByFirm ||= {}
