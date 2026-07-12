@@ -68,18 +68,22 @@ test('saveState is atomic: a failure mid-sync rolls back the blob and derived ta
     // Re-save so the materialized analytics pick up the upserted firm row.
     storage.saveState(goodState)
 
-    // Corrupt state: a form_templates row with a NULL name violates the table's
-    // NOT NULL constraint, so syncQueryTables throws AFTER the app_state blob
-    // upsert has already executed inside the same transaction. Without the
-    // transaction the blob (and the destructive DELETE in replaceRows) would
-    // survive the failure. (firms/users/households are no longer projected by
-    // syncQueryTables, so the corruption is routed through a table that still
-    // is.)
-    const corruptState = {
-      ...goodState,
-      marker: 'post-failure',
-      formTemplates: [{ id: 'tmpl-broken', firmId: 'firm-1', name: null }]
+    // Corrupt a firms row's payload to invalid JSON. saveState no longer
+    // projects derived query tables (syncQueryTables / replaceRows were retired
+    // once the template system became relational); the only in-transaction work
+    // left after the app_state blob upsert is the materialized-analytics
+    // rebuild, which reads the firms table via listFirmRows -> JSON.parse. The
+    // corrupt payload makes that parse throw AFTER the blob upsert has already
+    // executed inside the same transaction, so runInTransaction must roll the
+    // blob back. Without the transaction the blob would survive the failure.
+    const corrupt = new DatabaseSync(storage.DB_PATH)
+    try {
+      corrupt.prepare('UPDATE firms SET payload = ? WHERE id = ?').run('{not-valid-json', 'firm-1')
+    } finally {
+      corrupt.close()
     }
+
+    const corruptState = { ...goodState, marker: 'post-failure' }
     assert.throws(() => storage.saveState(corruptState))
 
     const inspect = new DatabaseSync(storage.DB_PATH)
@@ -114,6 +118,17 @@ test('saveState is atomic: a failure mid-sync rolls back the blob and derived ta
       assert.deepEqual(analyticsRows, ['firm-1'])
     } finally {
       inspect.close()
+    }
+
+    // Repair the corrupt firm payload so the analytics rebuild can parse it
+    // again; the point under test (transactional rollback) is already proven.
+    const repair = new DatabaseSync(storage.DB_PATH)
+    try {
+      repair
+        .prepare('UPDATE firms SET payload = ? WHERE id = ?')
+        .run(JSON.stringify({ id: 'firm-1', name: 'Atomic Firm', slug: 'atomic-firm' }), 'firm-1')
+    } finally {
+      repair.close()
     }
 
     // The connection must be usable again after the rollback: a subsequent

@@ -66,15 +66,6 @@ export function runInTransaction(fn) {
   }
 }
 
-function replaceRows(tableName, rows, mapper) {
-  db.exec(`DELETE FROM ${tableName}`)
-  for (const row of rows) {
-    const mapped = mapper(row)
-    const placeholders = mapped.map(() => '?').join(', ')
-    db.prepare(`INSERT INTO ${tableName} VALUES (${placeholders})`).run(...mapped)
-  }
-}
-
 export function upsertCsrfToken(record) {
   db.prepare(
     `
@@ -327,43 +318,198 @@ function ensureQueueSeededFromState(state) {
   }
 }
 
-function syncQueryTables(state) {
-  // firms, users, and households are deliberately absent: since migration 009
-  // these three tables are the sole source of truth, written by upsertFirmRow /
-  // upsertUserRow / upsertHouseholdRow — never a destructive resync from blob
-  // state. A blob resync here would silently clobber auth-critical in-place
-  // mutations (failed-login counters, lockout windows, MFA secrets) the moment
-  // a stale in-memory mirror was written back.
-  // profiles is deliberately absent: since migration 006 the profiles table
-  // is the source of truth, written by upsertProfileRow — never a destructive
-  // resync from blob state. Same for stage_changes, board_versions, and
-  // pipeline_stage_records.
-  replaceRows('form_templates', state.formTemplates || [], (template) => [
+// --- Template repositories (sources of truth) --------------------------------
+// The template system — form templates, document (PDF) templates, and the
+// unified template aggregates that back the mapper / publish flow — is the LAST
+// entity family to leave the app_state blob (migration 010). Until then
+// syncQueryTables destructively rebuilt these three tables from the blob arrays
+// via replaceRows on every saveState; with the cutover complete both
+// syncQueryTables and replaceRows are gone.
+//
+// template_aggregates is the canonical source: the store hydrates an in-memory
+// working set from it at boot (via listTemplateAggregateRows) and upserts the
+// row at every mutation site (create, mapping/pdf-layout edits, lifecycle /
+// publish transitions, version revert, auto-build linkage). Because these
+// tables are no longer flushed by persist(), a missed upsert silently drops
+// that mutation — e.g. a published template that reverts to draft on reload.
+// form_templates and document_templates are companion projection tables kept in
+// sync through the same mutation path (each row's payload is the adapter view of
+// its aggregate); the canonical aggregate object round-trips byte-exact through
+// the template_aggregates payload column (blueprint, mappings, pdfLayout,
+// versions, publishTransitions carried verbatim).
+
+const TEMPLATE_AGGREGATE_UPSERT_SQL = `
+  INSERT INTO template_aggregates (id, firm_id, name, kind, publish_state, payload)
+  VALUES (?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    firm_id = excluded.firm_id,
+    name = excluded.name,
+    kind = excluded.kind,
+    publish_state = excluded.publish_state,
+    payload = excluded.payload
+`
+
+export function upsertTemplateAggregateRow(template) {
+  db.prepare(TEMPLATE_AGGREGATE_UPSERT_SQL).run(
     template.id,
-    template.firmId,
-    template.name,
-    JSON.stringify(template)
-  ])
-  replaceRows('document_templates', state.documentTemplates || [], (template) => [
-    template.id,
-    template.firmId,
-    template.name,
-    template.status || 'draft',
-    JSON.stringify(template)
-  ])
-  replaceRows('template_aggregates', state.templateAggregates || [], (template) => [
-    template.id,
-    template.firmId,
-    template.name,
+    template.firmId ?? 'unknown',
+    template.name ?? '',
     template.kind || 'document',
     template.publishState || 'draft',
     JSON.stringify(template)
-  ])
-  // notes is deliberately absent: since migration 007 the notes table is the
-  // source of truth, written by upsertNoteRow — never a destructive resync
-  // from blob state. Same for document_uploads, portal_links, and invites.
-  // audit_events is deliberately absent: it is an append-only source of truth
-  // written by insertAuditEvent, never a destructive resync from blob state.
+  )
+  return template
+}
+
+// Unscoped by default: tenancy validation happens in the store via
+// validateTenantEntityOwnership so a cross-firm id surfaces the same
+// "Template not found." tenancy error the in-memory find produced.
+export function getTemplateAggregateRow(templateId, { firmId = null } = {}) {
+  if (!templateId) return null
+  const row = firmId
+    ? db.prepare('SELECT payload FROM template_aggregates WHERE id = ? AND firm_id = ?').get(templateId, firmId)
+    : db.prepare('SELECT payload FROM template_aggregates WHERE id = ?').get(templateId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// Insertion order (rowid ASC — the upsert is ON CONFLICT DO UPDATE, which
+// preserves rowid) mirrors the old state.templateAggregates push order.
+export function listTemplateAggregateRows({ firmId = null } = {}) {
+  const rows = firmId
+    ? db.prepare('SELECT payload FROM template_aggregates WHERE firm_id = ? ORDER BY rowid ASC').all(firmId)
+    : db.prepare('SELECT payload FROM template_aggregates ORDER BY rowid ASC').all()
+  return rows.map((row) => JSON.parse(row.payload))
+}
+
+export function deleteTemplateAggregateRow(templateId, firmId) {
+  const result = db.prepare('DELETE FROM template_aggregates WHERE id = ? AND firm_id = ?').run(templateId, firmId)
+  return result.changes > 0
+}
+
+const FORM_TEMPLATE_UPSERT_SQL = `
+  INSERT INTO form_templates (id, firm_id, name, payload)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    firm_id = excluded.firm_id,
+    name = excluded.name,
+    payload = excluded.payload
+`
+
+export function upsertFormTemplateRow(template) {
+  db.prepare(FORM_TEMPLATE_UPSERT_SQL).run(
+    template.id,
+    template.firmId ?? 'unknown',
+    template.name ?? '',
+    JSON.stringify(template)
+  )
+  return template
+}
+
+export function getFormTemplateRow(templateId, { firmId = null } = {}) {
+  if (!templateId) return null
+  const row = firmId
+    ? db.prepare('SELECT payload FROM form_templates WHERE id = ? AND firm_id = ?').get(templateId, firmId)
+    : db.prepare('SELECT payload FROM form_templates WHERE id = ?').get(templateId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+export function listFormTemplateRows({ firmId = null } = {}) {
+  const rows = firmId
+    ? db.prepare('SELECT payload FROM form_templates WHERE firm_id = ? ORDER BY rowid ASC').all(firmId)
+    : db.prepare('SELECT payload FROM form_templates ORDER BY rowid ASC').all()
+  return rows.map((row) => JSON.parse(row.payload))
+}
+
+export function deleteFormTemplateRow(templateId, firmId) {
+  const result = db.prepare('DELETE FROM form_templates WHERE id = ? AND firm_id = ?').run(templateId, firmId)
+  return result.changes > 0
+}
+
+const DOCUMENT_TEMPLATE_UPSERT_SQL = `
+  INSERT INTO document_templates (id, firm_id, name, status, payload)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    firm_id = excluded.firm_id,
+    name = excluded.name,
+    status = excluded.status,
+    payload = excluded.payload
+`
+
+export function upsertDocumentTemplateRow(template) {
+  db.prepare(DOCUMENT_TEMPLATE_UPSERT_SQL).run(
+    template.id,
+    template.firmId ?? 'unknown',
+    template.name ?? '',
+    template.status ?? template.publishState ?? 'draft',
+    JSON.stringify(template)
+  )
+  return template
+}
+
+export function getDocumentTemplateRow(templateId, { firmId = null } = {}) {
+  if (!templateId) return null
+  const row = firmId
+    ? db.prepare('SELECT payload FROM document_templates WHERE id = ? AND firm_id = ?').get(templateId, firmId)
+    : db.prepare('SELECT payload FROM document_templates WHERE id = ?').get(templateId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+export function listDocumentTemplateRows({ firmId = null } = {}) {
+  const rows = firmId
+    ? db.prepare('SELECT payload FROM document_templates WHERE firm_id = ? ORDER BY rowid ASC').all(firmId)
+    : db.prepare('SELECT payload FROM document_templates ORDER BY rowid ASC').all()
+  return rows.map((row) => JSON.parse(row.payload))
+}
+
+export function deleteDocumentTemplateRow(templateId, firmId) {
+  const result = db.prepare('DELETE FROM document_templates WHERE id = ? AND firm_id = ?').run(templateId, firmId)
+  return result.changes > 0
+}
+
+// Blob-to-table seeding for freshly seeded states (whose demo form/document
+// templates exist only in memory) and any legacy blob that predates migration
+// 010. Keyed INSERT OR IGNORE keeps it idempotent against the migration
+// backfill and the rows the old projection already left behind. The store's
+// boot-time migrateTemplateSystems then normalizes and re-upserts the canonical
+// aggregates (and re-derives the two companion projections).
+function ensureTemplateEntitiesSeededFromState(state) {
+  const insertAggregate = db.prepare(`
+    INSERT OR IGNORE INTO template_aggregates (id, firm_id, name, kind, publish_state, payload)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  for (const template of state.templateAggregates || []) {
+    if (!template || typeof template !== 'object' || !template.id) continue
+    insertAggregate.run(
+      template.id,
+      template.firmId ?? 'unknown',
+      template.name ?? '',
+      template.kind || 'document',
+      template.publishState || 'draft',
+      JSON.stringify(template)
+    )
+  }
+  const insertForm = db.prepare(`
+    INSERT OR IGNORE INTO form_templates (id, firm_id, name, payload)
+    VALUES (?, ?, ?, ?)
+  `)
+  for (const template of state.formTemplates || []) {
+    if (!template || typeof template !== 'object' || !template.id) continue
+    insertForm.run(template.id, template.firmId ?? 'unknown', template.name ?? '', JSON.stringify(template))
+  }
+  const insertDocument = db.prepare(`
+    INSERT OR IGNORE INTO document_templates (id, firm_id, name, status, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  for (const template of state.documentTemplates || []) {
+    if (!template || typeof template !== 'object' || !template.id) continue
+    insertDocument.run(
+      template.id,
+      template.firmId ?? 'unknown',
+      template.name ?? '',
+      template.status ?? template.publishState ?? 'draft',
+      JSON.stringify(template)
+    )
+  }
 }
 
 // --- Identity repositories (sources of truth) --------------------------------
@@ -1939,6 +2085,9 @@ function stripRelationalMirrors(state) {
   state.firms = []
   state.users = []
   state.households = []
+  state.formTemplates = []
+  state.documentTemplates = []
+  state.templateAggregates = []
   state.exportJobs = []
   state.auditEvents = []
   state.formSubmissions = []
@@ -1973,6 +2122,7 @@ export function loadState(seedFactory) {
     // tables predate the cutover), then strip the mirrors from the blob so
     // they never get written back.
     ensureIdentityEntitiesSeededFromState(state)
+    ensureTemplateEntitiesSeededFromState(state)
     ensureQueueSeededFromState(state)
     ensureAuditSeededFromState(state)
     ensureSubmissionEntitiesSeededFromState(state)
@@ -1984,6 +2134,9 @@ export function loadState(seedFactory) {
         state.firms,
         state.users,
         state.households,
+        state.formTemplates,
+        state.documentTemplates,
+        state.templateAggregates,
         state.exportJobs,
         state.auditEvents,
         state.formSubmissions,
@@ -2025,6 +2178,7 @@ export function loadState(seedFactory) {
   const state = seedFactory()
   saveState(state)
   ensureIdentityEntitiesSeededFromState(state)
+  ensureTemplateEntitiesSeededFromState(state)
   ensureQueueSeededFromState(state)
   ensureAuditSeededFromState(state)
   ensureSubmissionEntitiesSeededFromState(state)
@@ -2037,18 +2191,21 @@ export function loadState(seedFactory) {
 }
 
 export function saveState(state) {
-  // firms, users, households, export_jobs, sessions, audit_events,
-  // form_submissions, draft_step_states, pending_upload_intents, profiles,
-  // stage_changes, board_versions, pipeline_stage_records, notes,
-  // document_uploads, portal_links, and invites are relational sources of
-  // truth: the blob keeps empty arrays/maps for them purely for shape
-  // compatibility, so a stale in-memory mirror can never clobber targeted
-  // relational writes.
+  // firms, users, households, form_templates, document_templates,
+  // template_aggregates, export_jobs, sessions, audit_events, form_submissions,
+  // draft_step_states, pending_upload_intents, profiles, stage_changes,
+  // board_versions, pipeline_stage_records, notes, document_uploads,
+  // portal_links, and invites are relational sources of truth: the blob keeps
+  // empty arrays/maps for them purely for shape compatibility, so a stale
+  // in-memory mirror can never clobber targeted relational writes.
   const payload = JSON.stringify({
     ...state,
     firms: [],
     users: [],
     households: [],
+    formTemplates: [],
+    documentTemplates: [],
+    templateAggregates: [],
     exportJobs: [],
     sessions: [],
     auditEvents: [],
@@ -2069,11 +2226,14 @@ export function saveState(state) {
     passwordResets: [],
     mfaChallenges: []
   })
-  // The blob upsert, derived query tables, and materialized analytics must
-  // commit together: a failure partway through (e.g. mid replaceRows) would
-  // otherwise leave the blob and the relational projections out of sync.
-  // runInTransaction joins any outer transaction (e.g. a pipeline board
-  // transaction), so a persist() inside one commits/rolls back with it.
+  // The blob upsert and materialized analytics must commit together: a failure
+  // partway through (e.g. mid analytics rebuild) would otherwise leave the blob
+  // and the materialized view out of sync. Every relational entity is now a
+  // source of truth written by its own targeted upsert, so there are no derived
+  // query tables left to resync here — syncQueryTables and its replaceRows
+  // helper were retired once the template system (their last consumer) became
+  // relational. runInTransaction joins any outer transaction (e.g. a pipeline
+  // board transaction), so a persist() inside one commits/rolls back with it.
   runInTransaction(() => {
     db.prepare(
       `
@@ -2082,7 +2242,6 @@ export function saveState(state) {
       ON CONFLICT(id) DO UPDATE SET payload = excluded.payload, updated_at = excluded.updated_at
     `
     ).run(payload)
-    syncQueryTables(state)
     syncAnalyticsMaterialized(state)
   })
 }

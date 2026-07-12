@@ -28,6 +28,7 @@ import {
   getPortalLinkRow,
   getProfileRow,
   getSessionByToken,
+  getTemplateAggregateRow,
   getUploadIntent,
   getUserByEmail,
   getUserRow,
@@ -51,8 +52,11 @@ import {
   listProfileRows,
   listProspectRowsByStage,
   listProspectStageIds,
+  listDocumentTemplateRows,
+  listFormTemplateRows,
   listStageChangeRowsByClient,
   listStageChangeRowsByFirm,
+  listTemplateAggregateRows,
   listUserRows,
   loadState,
   processExportQueueTickAsync,
@@ -61,9 +65,11 @@ import {
   saveState,
   touchSession,
   updateFormSubmissionGuarded,
+  upsertDocumentTemplateRow,
   upsertDocumentUploadRow,
   upsertFirmRow,
   upsertFormSubmission,
+  upsertFormTemplateRow,
   upsertHouseholdRow,
   upsertInviteRow,
   upsertNoteRow,
@@ -72,6 +78,7 @@ import {
   upsertProfileRow,
   upsertPasswordResetRow,
   upsertSession,
+  upsertTemplateAggregateRow,
   upsertUserRow
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
@@ -824,10 +831,41 @@ function normalizeExtractedFields(input = []) {
   return Array.isArray(input) ? deepClone(input) : []
 }
 
+// template_aggregates is the relational source of truth (migration 010): the
+// canonical aggregate is written by upsertTemplateAggregateRow, and the two
+// companion projection tables (form_templates / document_templates) are kept in
+// sync through this single helper — its adapter view of the aggregate is what
+// the old syncQueryTables projected via replaceRows, now written non-
+// destructively per mutation. EVERY template mutation site must route through
+// here (or upsertTemplateAggregateRow directly); persist() no longer flushes
+// these tables, so a missed upsert silently drops the mutation on reload.
+function persistTemplateAggregateRow(template) {
+  upsertTemplateAggregateRow(template)
+  if (template.kind === 'form') {
+    upsertFormTemplateRow(formTemplateAdapter(template))
+  } else {
+    upsertDocumentTemplateRow(documentTemplateAdapter(template))
+  }
+  return template
+}
+
+// Boot-time normalization + hydration for the template system. This runs ONCE
+// per store boot (not on every persist): it reads the canonical aggregates from
+// the relational table, normalizes them (filling versions/versionHashes/derived
+// readiness), rehydrates the in-memory working set the store's read paths use,
+// and re-upserts each row (aggregate + companion projection). The legacy path
+// — a database whose only template rows are the pre-aggregate form_templates /
+// document_templates projections (a fresh seed, or a very old blob) — derives
+// aggregates from those projection tables, mirroring the original in-memory
+// migrateTemplateSystems. After this pass the blob's template arrays stay empty
+// (saveState serializes them so); state.templateAggregates is the live cache.
 function migrateTemplateSystems(state) {
-  state.templateAggregates ||= []
-  if (state.templateAggregates.length === 0) {
-    const forms = (state.formTemplates || []).map((entry) =>
+  const aggregateRows = listTemplateAggregateRows()
+  let aggregates
+  if (aggregateRows.length > 0) {
+    aggregates = aggregateRows.map((entry) => normalizeTemplateAggregate(entry, entry.kind || 'document'))
+  } else {
+    const forms = listFormTemplateRows().map((entry) =>
       normalizeTemplateAggregate(
         {
           ...entry,
@@ -840,7 +878,7 @@ function migrateTemplateSystems(state) {
         'form'
       )
     )
-    const documents = (state.documentTemplates || []).map((entry) =>
+    const documents = listDocumentTemplateRows().map((entry) =>
       normalizeTemplateAggregate(
         {
           ...entry,
@@ -850,18 +888,16 @@ function migrateTemplateSystems(state) {
         'document'
       )
     )
-    state.templateAggregates = [...forms, ...documents]
-  } else {
-    state.templateAggregates = state.templateAggregates.map((entry) =>
-      normalizeTemplateAggregate(entry, entry.kind || 'document')
-    )
+    aggregates = [...forms, ...documents]
   }
-
-  // Deprecated compatibility projections for persistence only; do not read internally.
-  state.formTemplates = state.templateAggregates.filter((entry) => entry.kind === 'form').map(formTemplateAdapter)
-  state.documentTemplates = state.templateAggregates
-    .filter((entry) => entry.kind !== 'form')
-    .map(documentTemplateAdapter)
+  state.templateAggregates = aggregates
+  for (const aggregate of aggregates) {
+    persistTemplateAggregateRow(aggregate)
+  }
+  // The in-memory projection arrays are deprecated (nothing reads them; the
+  // companion tables are the projection now). Keep the shape but empty.
+  state.formTemplates = []
+  state.documentTemplates = []
 }
 
 // migrateProspectOrdering (contiguous per-stage orderIndex backfill) and the
@@ -1410,7 +1446,10 @@ export function createStore({
   }
 
   function persist() {
-    migrateTemplateSystems(state)
+    // Templates are no longer re-normalized/re-projected here: migrateTemplateSystems
+    // runs once at boot, and each template mutation upserts its own row (aggregate
+    // + companion projection). persist() only serializes the app_state blob (with
+    // the relational arrays emptied) and rebuilds the materialized analytics.
     if (typeof testHooks.beforePersist === 'function') {
       testHooks.beforePersist(state)
     }
@@ -2615,6 +2654,7 @@ export function createStore({
         kind
       )
       state.templateAggregates.push(template)
+      persistTemplateAggregateRow(template)
       addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'template_aggregate.created', {
         kind: template.kind,
         name: template.name
@@ -2648,6 +2688,7 @@ export function createStore({
         })
       )
       template.updatedAt = now()
+      persistTemplateAggregateRow(template)
       persist()
       return template
     },
@@ -2674,6 +2715,7 @@ export function createStore({
         })
       )
       template.updatedAt = now()
+      persistTemplateAggregateRow(template)
       persist()
       return template
     },
@@ -3160,6 +3202,7 @@ export function createStore({
         'document'
       )
       state.templateAggregates.push(template)
+      persistTemplateAggregateRow(template)
       addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.created', {
         name: template.name
       })
@@ -3224,6 +3267,7 @@ export function createStore({
           count: template.mappings.length
         }
       })
+      persistTemplateAggregateRow(template)
       persist()
       return documentTemplateAdapter(template)
     },
@@ -3336,6 +3380,7 @@ export function createStore({
         before: { pdfLayout: previousLayout },
         after: { pdfLayout: template.pdfLayout }
       })
+      persistTemplateAggregateRow(template)
       persist()
       return documentTemplateAdapter(template)
     },
@@ -3522,6 +3567,7 @@ export function createStore({
         before: { publishState: previousState },
         after: { publishState: 'published' }
       })
+      persistTemplateAggregateRow(template)
       persist()
       return documentTemplateAdapter(template)
     },
@@ -3582,6 +3628,7 @@ export function createStore({
         })
       )
       template.updatedAt = now()
+      persistTemplateAggregateRow(template)
       persist()
       return {
         template: documentTemplateAdapter(template),
@@ -4134,6 +4181,7 @@ export function createStore({
             source: generatedForm.generation?.source || 'auto_build'
           }
         )
+        persistTemplateAggregateRow(linkedAggregate)
         persist()
         return documentTemplateAdapter(linkedAggregate)
       }
@@ -4783,6 +4831,23 @@ export function createStore({
     },
     __listHouseholdsForTest(firmId = null) {
       return listHouseholdRows(firmId ? { firmId } : {})
+    },
+    // Test-only: form/document templates and template aggregates live in
+    // relational tables (migration 010). These hooks read the canonical
+    // template_aggregates rows (and the companion projections) straight from the
+    // tables so persistence tests can prove a mutation's upsert fired rather than
+    // reading the in-memory working set.
+    __listTemplateAggregatesForTest(firmId = null) {
+      return listTemplateAggregateRows(firmId ? { firmId } : {})
+    },
+    __getTemplateAggregateForTest(templateId, firmId = null) {
+      return getTemplateAggregateRow(templateId, firmId ? { firmId } : {})
+    },
+    __listFormTemplatesForTest(firmId = null) {
+      return listFormTemplateRows(firmId ? { firmId } : {})
+    },
+    __listDocumentTemplatesForTest(firmId = null) {
+      return listDocumentTemplateRows(firmId ? { firmId } : {})
     },
     __upsertUserForTest(user) {
       return upsertUserRow(user)

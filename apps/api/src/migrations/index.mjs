@@ -7,6 +7,7 @@ import boardEntitiesSourceOfTruth from './006-board-entities.mjs'
 import clientDataEntitiesSourceOfTruth from './007-client-data-entities.mjs'
 import authEntitiesSourceOfTruth from './008-auth-entities.mjs'
 import identityEntitiesSourceOfTruth from './009-identity-entities.mjs'
+import templateEntitiesSourceOfTruth from './010-template-entities.mjs'
 
 // Ordered list of schema migrations. Each entry is { version, name, up(db) }.
 // Versions must be positive, unique, ascending integers; the applied version
@@ -20,7 +21,8 @@ export const migrations = [
   boardEntitiesSourceOfTruth,
   clientDataEntitiesSourceOfTruth,
   authEntitiesSourceOfTruth,
-  identityEntitiesSourceOfTruth
+  identityEntitiesSourceOfTruth,
+  templateEntitiesSourceOfTruth
 ]
 
 function assertMigrationList(list) {

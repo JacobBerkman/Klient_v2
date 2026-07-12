@@ -56,13 +56,16 @@ const tempRoot = await mkdtemp(join(tmpdir(), 'klient-migration-check-'))
 let closeStorage = null
 try {
   process.chdir(tempRoot)
-  const { loadState, saveState, closeDatabase } = await import('../apps/api/src/storage.mjs')
+  const { loadState, closeDatabase, listTemplateAggregateRows, upsertDocumentTemplateRow, upsertFormTemplateRow } =
+    await import('../apps/api/src/storage.mjs')
   closeStorage = closeDatabase
 
-  const seededState = loadState(() => ({}))
-  seededState.formTemplates = [{ id: 'form-legacy-1', firmId: 'firm-default', name: 'Legacy Form', sections: [] }]
-  seededState.documentTemplates = [{ id: 'doc-legacy-1', firmId: 'firm-default', name: 'Legacy Doc', mappings: [] }]
-  saveState(seededState)
+  // Seed the legacy projection tables (form_templates / document_templates)
+  // directly: templates are relational sources of truth now (migration 010), so
+  // the unification tool reads these tables rather than the retired blob arrays.
+  loadState(() => ({}))
+  upsertFormTemplateRow({ id: 'form-legacy-1', firmId: 'firm-default', name: 'Legacy Form', sections: [] })
+  upsertDocumentTemplateRow({ id: 'doc-legacy-1', firmId: 'firm-default', name: 'Legacy Doc', status: 'draft', mappings: [] })
 
   const migrateScript = resolve(repoRoot, 'scripts/migrate-template-unification.mjs')
   const reencryptScript = resolve(repoRoot, 'scripts/reencrypt-pii.mjs')
@@ -94,8 +97,10 @@ try {
     throw new Error('PII re-encryption validation output did not match expected schema.')
   }
 
-  const postState = loadState(() => ({}))
-  if (!Array.isArray(postState.templateAggregates) || postState.templateAggregates.length !== 2) {
+  // template_aggregates is the relational source of truth: the unified
+  // aggregates are read from the table, not the (now empty) blob array.
+  const postAggregates = listTemplateAggregateRows()
+  if (postAggregates.length !== 2) {
     throw new Error('Template aggregate data missing after migration flow.')
   }
 
@@ -123,7 +128,7 @@ try {
       templateMigrationVerify: 'pass',
       piiReencryptionPath: 'pass'
     },
-    templateAggregateCount: postState.templateAggregates.length,
+    templateAggregateCount: postAggregates.length,
     rotatedProfiles: rotation.rotatedProfiles,
     rotatedFields: rotation.rotatedFields
   }
