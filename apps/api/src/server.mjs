@@ -1412,6 +1412,18 @@ export function createHttpServer({ modules }) {
         if (status) query.status = status
         const includeArchived = url.searchParams.get('includeArchived')
         if (includeArchived === '1' || includeArchived === 'true') query.includeArchived = true
+        // Pagination is STRICTLY opt-in: only a limit/cursor query param
+        // switches to the { items, nextCursor } envelope. The no-param
+        // response stays the legacy bare array, byte-identical.
+        if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
+          const result = modules.profiles.listProfilesPage(user, {
+            ...query,
+            cursor: url.searchParams.get('cursor') || '',
+            limit: url.searchParams.get('limit') || ''
+          })
+          finalizeLog(200, { firmId: user.firmId })
+          return replyJson(200, result, { 'X-Request-Id': requestId })
+        }
         const result = modules.profiles.listProfiles(user, query)
         finalizeLog(200, { firmId: user.firmId })
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -1525,7 +1537,10 @@ export function createHttpServer({ modules }) {
         const result = await modules.forms.storeUploadedBytes({
           uploadId: decodeURIComponent(rawUploadId),
           objectKey: url.searchParams.get('key') || null,
-          contentType: String(req.headers['content-type'] || '').split(';')[0].trim() || null,
+          contentType:
+            String(req.headers['content-type'] || '')
+              .split(';')[0]
+              .trim() || null,
           body
         })
         finalizeLog(200)
@@ -1842,6 +1857,17 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/households' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadHouseholds')
+        // Opt-in pagination: limit/cursor switches to the { items, nextCursor }
+        // envelope; the no-param response stays the legacy bare array.
+        if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
+          const result = modules.households.listHouseholdsPage(user, {
+            search: url.searchParams.get('search') || '',
+            cursor: url.searchParams.get('cursor') || '',
+            limit: url.searchParams.get('limit') || ''
+          })
+          finalizeLog(200)
+          return replyJson(200, result, { 'X-Request-Id': requestId })
+        }
         const result = modules.households.listHouseholds(user)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -1921,6 +1947,17 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/forms/templates' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadForms')
+        // Opt-in pagination: limit/cursor switches to the { items, nextCursor }
+        // envelope; the no-param response stays the legacy bare array.
+        if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
+          const result = modules.forms.listFormTemplatesPage(user, {
+            search: url.searchParams.get('search') || '',
+            cursor: url.searchParams.get('cursor') || '',
+            limit: url.searchParams.get('limit') || ''
+          })
+          finalizeLog(200)
+          return replyJson(200, result, { 'X-Request-Id': requestId })
+        }
         const result = modules.forms.listFormTemplates(user)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -1935,6 +1972,17 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/forms/submissions' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadForms')
+        // Opt-in pagination: limit/cursor switches to the { items, nextCursor }
+        // envelope; the no-param response stays the legacy bare array.
+        if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
+          const result = modules.forms.listFormSubmissionsPage(user, {
+            status: url.searchParams.get('status') || '',
+            cursor: url.searchParams.get('cursor') || '',
+            limit: url.searchParams.get('limit') || ''
+          })
+          finalizeLog(200)
+          return replyJson(200, result, { 'X-Request-Id': requestId })
+        }
         const result = modules.forms.listFormSubmissions(user)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -2377,6 +2425,18 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      // Global search (Cmd/Ctrl+K). Read-only GET (no CSRF concerns), guarded
+      // by canUseGlobalSearch inside the service — the client role is excluded.
+      if (pathname === '/api/search' && req.method === 'GET') {
+        const user = requireUser()
+        const result = modules.search.search(user, {
+          q: url.searchParams.get('q') || '',
+          types: url.searchParams.get('types') || '',
+          limit: url.searchParams.get('limit') || ''
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname === '/api/analytics' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadAnalytics')
@@ -2443,7 +2503,10 @@ export function createHttpServer({ modules }) {
       const portalDraftSectionsMatch = pathname.match(/^\/api\/portal\/[^/]+\/drafts\/([^/]+)\/sections$/)
       if (portalDraftSectionsMatch && req.method === 'GET') {
         const { token } = requirePortalSession()
-        const result = modules.forms.listPortalDraftSectionStates(token, decodeURIComponent(portalDraftSectionsMatch[1]))
+        const result = modules.forms.listPortalDraftSectionStates(
+          token,
+          decodeURIComponent(portalDraftSectionsMatch[1])
+        )
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }

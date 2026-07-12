@@ -2284,3 +2284,106 @@ details summary {
   align-items: center;
   gap: var(--space-1);
 }
+
+/* Global search (Cmd/Ctrl+K) — dropdown follows the notification panel look. */
+.global-search {
+  position: relative;
+  display: inline-flex;
+}
+
+.global-search-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  height: 2.4rem;
+  padding: 0 0.85rem;
+  border-radius: var(--radius-pill);
+  border: 1px solid var(--color-border);
+  background: var(--color-surface);
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition:
+    border-color 140ms ease,
+    background-color 140ms ease;
+}
+
+.global-search-trigger:hover {
+  border-color: var(--color-primary);
+  background: var(--color-primary-softer);
+}
+
+.global-search-trigger kbd {
+  font-size: 0.7rem;
+  border: 1px solid var(--color-border);
+  border-radius: 0.3rem;
+  padding: 0.05rem 0.3rem;
+  background: var(--color-primary-softer);
+}
+
+.global-search-panel {
+  position: absolute;
+  top: calc(100% + 0.6rem);
+  right: 0;
+  width: min(26rem, 92vw);
+  z-index: 40;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  padding: 0.6rem;
+  display: grid;
+  gap: 0.5rem;
+}
+
+.global-search-panel input {
+  width: 100%;
+}
+
+.global-search-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  max-height: 20rem;
+  overflow-y: auto;
+  display: grid;
+  gap: 0.15rem;
+}
+
+.global-search-empty {
+  padding: 0.6rem 0.5rem;
+  color: var(--color-text-muted);
+}
+
+.global-search-option button {
+  display: grid;
+  width: 100%;
+  gap: 0.1rem;
+  text-align: left;
+  padding: 0.45rem 0.5rem;
+  border: 0;
+  border-radius: var(--radius-sm, 0.4rem);
+  background: transparent;
+  color: var(--color-text-body);
+  cursor: pointer;
+}
+
+.global-search-option.is-active button,
+.global-search-option button:hover {
+  background: var(--color-primary-soft);
+}
+
+.global-search-option-title {
+  font-weight: 600;
+}
+
+.global-search-option-subtitle {
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+}
+
+.global-search-option-type {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-muted);
+}

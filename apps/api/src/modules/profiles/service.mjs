@@ -1,4 +1,5 @@
 import { createFirmContext } from '../shared/tenancy.mjs'
+import { decodeCursor, encodeCursor } from '../shared/cursor.mjs'
 
 function customFieldGroupName(field = {}) {
   const rawGroup = field?.metadata && typeof field.metadata === 'object' ? field.metadata.group : ''
@@ -63,6 +64,21 @@ export function createProfilesService({ profileRepository, policy }) {
     listProfiles(user, query) {
       policy.requireGuard(user, 'canReadProfiles')
       return profileRepository.listProfiles(createFirmContext(user), query)
+    },
+    // Opt-in keyset pagination (limit/cursor query params). Returns the
+    // { items, nextCursor } envelope; the legacy bare-array listProfiles above
+    // is untouched for dashboard/export/full-list callers.
+    listProfilesPage(user, query = {}) {
+      policy.requireGuard(user, 'canReadProfiles')
+      const requestedLimit = Number.parseInt(query.limit, 10)
+      const { items, nextCursor } = profileRepository.listProfilesPage(createFirmContext(user), {
+        kind: query.kind || null,
+        search: query.search || '',
+        includeArchived: Boolean(query.includeArchived),
+        cursor: decodeCursor(query.cursor),
+        limit: Number.isFinite(requestedLimit) ? requestedLimit : 50
+      })
+      return { items, nextCursor: encodeCursor(nextCursor) }
     },
     getProfileDetail(user, profileId) {
       policy.requireGuard(user, 'canReadProfiles')

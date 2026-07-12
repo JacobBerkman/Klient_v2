@@ -1,10 +1,10 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, routes } from '../lib/client'
 import { collaboratorSummary, formatDateTime, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
-import type { DraftSearchResult, FormSubmission, FormTemplate, Profile } from '../lib/types'
+import type { DraftSearchResult, FormSubmission, FormTemplate, PageEnvelope, Profile } from '../lib/types'
 import { useAuth } from '../app/auth'
 import {
   ActionPanel,
@@ -26,10 +26,12 @@ export const handle = {
   breadcrumb: 'Forms'
 }
 
+const PAGE_SIZE = 50
+
 interface FormsPageData {
-  templates: FormTemplate[]
+  templatesPage: PageEnvelope<FormTemplate>
   drafts: FormSubmission[]
-  submissions: FormSubmission[]
+  submissionsPage: PageEnvelope<FormSubmission>
   profiles: Profile[]
 }
 
@@ -77,14 +79,70 @@ export function Component() {
   const templateFilter = searchParams.get('templateId') || ''
 
   const { data, error, loading } = useAsync<FormsPageData>(async () => {
-    const [templates, drafts, submissions, profiles] = await Promise.all([
-      api.get<FormTemplate[]>(routes.formTemplates()),
+    const [templatesPage, drafts, submissionsPage, profiles] = await Promise.all([
+      api.get<PageEnvelope<FormTemplate>>(routes.formTemplates({ limit: PAGE_SIZE })),
       api.get<FormSubmission[]>(routes.formDrafts()),
-      api.get<FormSubmission[]>(routes.formSubmissions()),
+      api.get<PageEnvelope<FormSubmission>>(routes.formSubmissions({ limit: PAGE_SIZE })),
       api.get<Profile[]>(routes.profiles({ kind: 'client' }))
     ])
-    return { templates, drafts, submissions, profiles }
+    return { templatesPage, drafts, submissionsPage, profiles }
   }, [refreshKey])
+
+  // "Load more" state for the two paged lists (templates, submissions);
+  // appended pages reset whenever the first page refetches.
+  const [extraTemplates, setExtraTemplates] = useState<FormTemplate[]>([])
+  const [templatesCursor, setTemplatesCursor] = useState<string | null>(null)
+  const [loadingMoreTemplates, setLoadingMoreTemplates] = useState(false)
+  const [extraSubmissions, setExtraSubmissions] = useState<FormSubmission[]>([])
+  const [submissionsCursor, setSubmissionsCursor] = useState<string | null>(null)
+  const [loadingMoreSubmissions, setLoadingMoreSubmissions] = useState(false)
+  useEffect(() => {
+    setExtraTemplates([])
+    setTemplatesCursor(data?.templatesPage.nextCursor ?? null)
+    setExtraSubmissions([])
+    setSubmissionsCursor(data?.submissionsPage.nextCursor ?? null)
+  }, [data])
+
+  async function handleLoadMoreTemplates() {
+    if (!templatesCursor || loadingMoreTemplates) return
+    setLoadingMoreTemplates(true)
+    try {
+      const page = await api.get<PageEnvelope<FormTemplate>>(
+        routes.formTemplates({ limit: PAGE_SIZE, cursor: templatesCursor })
+      )
+      setExtraTemplates((current) => [...current, ...page.items])
+      setTemplatesCursor(page.nextCursor)
+    } catch (loadError) {
+      setStatusMessage(loadError instanceof Error ? loadError.message : 'Unable to load more templates.')
+    } finally {
+      setLoadingMoreTemplates(false)
+    }
+  }
+
+  async function handleLoadMoreSubmissions() {
+    if (!submissionsCursor || loadingMoreSubmissions) return
+    setLoadingMoreSubmissions(true)
+    try {
+      const page = await api.get<PageEnvelope<FormSubmission>>(
+        routes.formSubmissions({ limit: PAGE_SIZE, cursor: submissionsCursor })
+      )
+      setExtraSubmissions((current) => [...current, ...page.items])
+      setSubmissionsCursor(page.nextCursor)
+    } catch (loadError) {
+      setStatusMessage(loadError instanceof Error ? loadError.message : 'Unable to load more submissions.')
+    } finally {
+      setLoadingMoreSubmissions(false)
+    }
+  }
+
+  const allTemplates = useMemo(
+    () => (data ? [...data.templatesPage.items, ...extraTemplates] : []),
+    [data, extraTemplates]
+  )
+  const allSubmissions = useMemo(
+    () => (data ? [...data.submissionsPage.items, ...extraSubmissions] : []),
+    [data, extraSubmissions]
+  )
 
   const profileById = useMemo(
     () => new Map((data?.profiles || []).map((profile) => [profile.id, profile])),
@@ -97,14 +155,12 @@ export function Component() {
   }, [data, profileFilter])
 
   const visibleSubmissions = useMemo(() => {
-    if (!data) return []
-    return data.submissions.filter((entry) => !profileFilter || entry.clientId === profileFilter)
-  }, [data, profileFilter])
+    return allSubmissions.filter((entry) => !profileFilter || entry.clientId === profileFilter)
+  }, [allSubmissions, profileFilter])
 
   const visibleTemplates = useMemo(() => {
-    if (!data) return []
-    return data.templates.filter((entry) => !templateFilter || entry.id === templateFilter)
-  }, [data, templateFilter])
+    return allTemplates.filter((entry) => !templateFilter || entry.id === templateFilter)
+  }, [allTemplates, templateFilter])
 
   async function handleCreateTemplate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -281,7 +337,7 @@ export function Component() {
                 required
               >
                 <option value="">Select a template</option>
-                {data.templates.map((template) => (
+                {allTemplates.map((template) => (
                   <option key={template.id} value={template.id}>
                     {template.name}
                   </option>
@@ -386,6 +442,13 @@ export function Component() {
             detail="Create one here, then route editing to a dedicated submission page."
           />
         )}
+        {templatesCursor ? (
+          <div className="activity-load-more">
+            <button type="button" onClick={() => void handleLoadMoreTemplates()} disabled={loadingMoreTemplates}>
+              {loadingMoreTemplates ? 'Loading...' : 'Load more'}
+            </button>
+          </div>
+        ) : null}
       </PageSection>
 
       <div className="split-grid">
@@ -479,6 +542,13 @@ export function Component() {
               detail="Create a draft or submission from the form builder panel above."
             />
           )}
+          {submissionsCursor ? (
+            <div className="activity-load-more">
+              <button type="button" onClick={() => void handleLoadMoreSubmissions()} disabled={loadingMoreSubmissions}>
+                {loadingMoreSubmissions ? 'Loading...' : 'Load more'}
+              </button>
+            </div>
+          ) : null}
         </PageSection>
       </div>
     </div>

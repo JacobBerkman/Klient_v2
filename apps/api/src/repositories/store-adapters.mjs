@@ -23,6 +23,10 @@ export class StoreProfileRepository extends ProfileRepository {
       includeArchived: Boolean(query?.includeArchived)
     })
   }
+  listProfilesPage(firmContext, query) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.listProfilesPage' })
+    return this.store.listProfilesPage(context, query)
+  }
   getProfileDetail(firmContext, profileId) {
     const context = requireFirmContext(firmContext, { method: 'profiles.getProfileDetail' })
     return {
@@ -156,6 +160,9 @@ export class StoreTemplatesV2Repository extends TemplatesV2Repository {
   }
   listCanonicalTemplates(user, filters = {}) {
     return this.store.listTemplateAggregates(user, filters)
+  }
+  listCanonicalTemplatesPage(user, filters = {}) {
+    return this.store.listTemplateAggregatesPage(user, filters)
   }
   createCanonicalTemplate(user, input) {
     return this.store.createTemplateAggregate(user, input)
