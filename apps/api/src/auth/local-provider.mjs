@@ -1,5 +1,6 @@
 import { createHmac, createHash, randomBytes, randomUUID } from 'node:crypto'
 import { createDefaultFirmStageConfig } from '../stage-config.mjs'
+import { deleteInviteRow, findInviteRowByToken } from '../storage.mjs'
 
 const LOGIN_WINDOW_MS = 1000 * 60 * 15
 const MAX_LOGIN_ATTEMPTS = 5
@@ -334,7 +335,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
     },
     acceptInvite({ token, firstName, lastName, password }) {
       assertStrongPassword(password)
-      const invite = (state.invites || []).find((entry) => entry.token === token)
+      const invite = findInviteRowByToken(token)
       if (!invite) throw new Error('Invite not found.')
       if (invite.expiresAt && new Date(invite.expiresAt).getTime() <= Date.now()) {
         throw new Error('Invite expired.')
@@ -357,7 +358,8 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       }
 
       state.users.push(user)
-      state.invites = (state.invites || []).filter((entry) => entry.id !== invite.id)
+      // invites is a source-of-truth table now: accepting removes the row by id.
+      deleteInviteRow(invite.id)
       addAudit(invite.firmId, user.id, 'invite', invite.id, 'invite.accepted', { email: invite.email, role: invite.role })
       persist()
       return createSession(user)

@@ -361,13 +361,9 @@ function syncQueryTables(state) {
     template.publishState || 'draft',
     JSON.stringify(template)
   ])
-  replaceRows('notes', state.notes || [], (note) => [
-    note.id,
-    note.firmId,
-    note.profileId,
-    note.createdAt,
-    JSON.stringify(note)
-  ])
+  // notes is deliberately absent: since migration 007 the notes table is the
+  // source of truth, written by upsertNoteRow — never a destructive resync
+  // from blob state. Same for document_uploads, portal_links, and invites.
   // audit_events is deliberately absent: it is an append-only source of truth
   // written by insertAuditEvent, never a destructive resync from blob state.
 }
@@ -1141,6 +1137,270 @@ function ensureBoardEntitiesSeededFromState(state) {
   }
 }
 
+// --- Notes repository (source of truth) --------------------------------------
+// Before migration 007 the notes table was a derived projection destructively
+// rebuilt on every saveState; it is now the sole source of truth, written by
+// upsertNoteRow. The full canonical note (including any encrypted bodyEncrypted
+// envelope) lives in the payload column; firm_id/profile_id/created_at are
+// promoted for keying and firm-scoped reads. Reads return payloads in
+// insertion order (rowid ASC), mirroring the old state.notes push order the
+// store's reverse()/filter readers relied on.
+
+export function upsertNoteRow(note) {
+  db.prepare(
+    `
+    INSERT INTO notes (id, firm_id, profile_id, created_at, payload)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      firm_id = excluded.firm_id,
+      profile_id = excluded.profile_id,
+      created_at = excluded.created_at,
+      payload = excluded.payload
+  `
+  ).run(note.id, note.firmId ?? 'unknown', note.profileId ?? 'unknown', note.createdAt ?? null, JSON.stringify(note))
+  return note
+}
+
+export function listNoteRowsByProfile(firmId, profileId) {
+  return db
+    .prepare('SELECT payload FROM notes WHERE firm_id = ? AND profile_id = ? ORDER BY rowid ASC')
+    .all(firmId, profileId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function listNoteRowsByFirm(firmId) {
+  return db
+    .prepare('SELECT payload FROM notes WHERE firm_id = ? ORDER BY rowid ASC')
+    .all(firmId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+// --- Document upload repository (source of truth) -----------------------------
+// The full upload object — object{bucket,key,checksum,contentType,
+// retentionClass}, malwareScan, visibility, retention timestamps — lives in
+// the payload column; firm_id/client_id/status are promoted for scoped reads
+// and the lifecycle sweep. applyLifecyclePolicies iterates every row
+// (unscoped) and writes each mutated upload back via upsertDocumentUploadRow.
+
+export function upsertDocumentUploadRow(upload) {
+  db.prepare(
+    `
+    INSERT INTO document_uploads (id, firm_id, client_id, status, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      firm_id = excluded.firm_id,
+      client_id = excluded.client_id,
+      status = excluded.status,
+      created_at = excluded.created_at,
+      updated_at = excluded.updated_at,
+      payload = excluded.payload
+  `
+  ).run(
+    upload.id,
+    upload.firmId ?? 'unknown',
+    upload.clientId ?? null,
+    upload.status ?? null,
+    upload.createdAt ?? null,
+    upload.updatedAt ?? upload.createdAt ?? null,
+    JSON.stringify(upload)
+  )
+  return upload
+}
+
+// Unscoped full-table read for the retention/lifecycle sweep, which mutates
+// uploads across every firm in one pass.
+export function listAllDocumentUploadRows() {
+  return db
+    .prepare('SELECT payload FROM document_uploads ORDER BY rowid ASC')
+    .all()
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function listDocumentUploadRowsByFirm(firmId) {
+  return db
+    .prepare('SELECT payload FROM document_uploads WHERE firm_id = ? ORDER BY rowid ASC')
+    .all(firmId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function listDocumentUploadRowsByFirmClient(firmId, clientId) {
+  return db
+    .prepare('SELECT payload FROM document_uploads WHERE firm_id = ? AND client_id = ? ORDER BY rowid ASC')
+    .all(firmId, clientId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function getDocumentUploadRow(uploadId, { firmId = null, clientId = null } = {}) {
+  const conditions = ['id = ?']
+  const params = [uploadId]
+  if (firmId !== null) {
+    conditions.push('firm_id = ?')
+    params.push(firmId)
+  }
+  if (clientId !== null) {
+    conditions.push('client_id = ?')
+    params.push(clientId)
+  }
+  const row = db.prepare(`SELECT payload FROM document_uploads WHERE ${conditions.join(' AND ')}`).get(...params)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// --- Portal link repository (source of truth) --------------------------------
+// The full link object (scope, usedCount, lastUsedAt) lives in the payload
+// column; firm_id/profile_id/token/created_at/expires_at/revoked_at are
+// promoted. token is UNIQUE — portal access resolves a single link by token.
+
+export function upsertPortalLinkRow(link) {
+  db.prepare(
+    `
+    INSERT INTO portal_links (id, firm_id, profile_id, token, created_at, expires_at, revoked_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      firm_id = excluded.firm_id,
+      profile_id = excluded.profile_id,
+      token = excluded.token,
+      created_at = excluded.created_at,
+      expires_at = excluded.expires_at,
+      revoked_at = excluded.revoked_at,
+      payload = excluded.payload
+  `
+  ).run(
+    link.id,
+    link.firmId ?? 'unknown',
+    link.profileId ?? null,
+    link.token,
+    link.createdAt ?? null,
+    link.expiresAt ?? null,
+    link.revokedAt ?? null,
+    JSON.stringify(link)
+  )
+  return link
+}
+
+export function findPortalLinkRowByToken(token) {
+  const row = db.prepare('SELECT payload FROM portal_links WHERE token = ?').get(token)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// Unscoped by id: tenancy validation happens in the store (validateEntityOwnership)
+// so a cross-firm id surfaces the same "Portal link not found." tenancy error.
+export function getPortalLinkRow(linkId) {
+  const row = db.prepare('SELECT payload FROM portal_links WHERE id = ?').get(linkId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// --- Invite repository (source of truth) -------------------------------------
+// The full invite object lives in the payload column; firm_id/token/email/role
+// are promoted. token is UNIQUE — invite acceptance resolves a single invite
+// by token. Accepting an invite deletes the row by id.
+
+export function upsertInviteRow(invite) {
+  db.prepare(
+    `
+    INSERT INTO invites (id, firm_id, token, email, role, created_at, expires_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      firm_id = excluded.firm_id,
+      token = excluded.token,
+      email = excluded.email,
+      role = excluded.role,
+      created_at = excluded.created_at,
+      expires_at = excluded.expires_at,
+      payload = excluded.payload
+  `
+  ).run(
+    invite.id,
+    invite.firmId ?? 'unknown',
+    invite.token,
+    invite.email ?? null,
+    invite.role ?? null,
+    invite.createdAt ?? null,
+    invite.expiresAt ?? null,
+    JSON.stringify(invite)
+  )
+  return invite
+}
+
+export function findInviteRowByToken(token) {
+  const row = db.prepare('SELECT payload FROM invites WHERE token = ?').get(token)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+export function deleteInviteRow(inviteId) {
+  const result = db.prepare('DELETE FROM invites WHERE id = ?').run(inviteId)
+  return result.changes > 0
+}
+
+// Blob-to-table seeding for freshly seeded states (whose demo notes/uploads
+// exist only in memory) and any legacy blob that predates migration 007.
+// Keyed INSERT OR IGNORE keeps it idempotent against the migration backfill.
+function ensureClientDataEntitiesSeededFromState(state) {
+  const insertNote = db.prepare(`
+    INSERT OR IGNORE INTO notes (id, firm_id, profile_id, created_at, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  for (const note of state.notes || []) {
+    if (!note || typeof note !== 'object' || !note.id) continue
+    insertNote.run(
+      note.id,
+      note.firmId ?? 'unknown',
+      note.profileId ?? 'unknown',
+      note.createdAt ?? null,
+      JSON.stringify(note)
+    )
+  }
+  const insertUpload = db.prepare(`
+    INSERT OR IGNORE INTO document_uploads (id, firm_id, client_id, status, created_at, updated_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const upload of state.documentUploads || []) {
+    if (!upload || typeof upload !== 'object' || !upload.id) continue
+    insertUpload.run(
+      upload.id,
+      upload.firmId ?? 'unknown',
+      upload.clientId ?? null,
+      upload.status ?? null,
+      upload.createdAt ?? null,
+      upload.updatedAt ?? upload.createdAt ?? null,
+      JSON.stringify(upload)
+    )
+  }
+  const insertPortalLink = db.prepare(`
+    INSERT OR IGNORE INTO portal_links (id, firm_id, profile_id, token, created_at, expires_at, revoked_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const link of state.portalLinks || []) {
+    if (!link || typeof link !== 'object' || !link.id || !link.token) continue
+    insertPortalLink.run(
+      link.id,
+      link.firmId ?? 'unknown',
+      link.profileId ?? null,
+      link.token,
+      link.createdAt ?? null,
+      link.expiresAt ?? null,
+      link.revokedAt ?? null,
+      JSON.stringify(link)
+    )
+  }
+  const insertInvite = db.prepare(`
+    INSERT OR IGNORE INTO invites (id, firm_id, token, email, role, created_at, expires_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const invite of state.invites || []) {
+    if (!invite || typeof invite !== 'object' || !invite.id || !invite.token) continue
+    insertInvite.run(
+      invite.id,
+      invite.firmId ?? 'unknown',
+      invite.token,
+      invite.email ?? null,
+      invite.role ?? null,
+      invite.createdAt ?? null,
+      invite.expiresAt ?? null,
+      JSON.stringify(invite)
+    )
+  }
+}
+
 function syncAnalyticsMaterialized(state) {
   db.exec('DELETE FROM analytics_materialized')
   const firms = state.firms || []
@@ -1196,21 +1456,28 @@ function syncAnalyticsMaterialized(state) {
     })
 
   const usersById = new Map((state.users || []).map((user) => [user.id, user]))
-  ;(state.notes || []).forEach((note) => {
-    const actor = usersById.get(note.createdByUserId)
-    if (!actor) return
-    const summary = byFirm.get(note.firmId)
-    if (!summary) return
-    const key = actor.id
-    const bucket = summary.advisorProductivity[key] || {
-      advisorUserId: key,
-      advisorName: `${actor.firstName} ${actor.lastName}`,
-      notesAuthored: 0,
-      stageMoves: 0
-    }
-    bucket.notesAuthored += 1
-    summary.advisorProductivity[key] = bucket
-  })
+  // notes is the relational source of truth (the blob serializes an empty
+  // array), so notes-authored counts aggregate over the table. createdByUserId
+  // is not a promoted column, so it is read from the payload JSON.
+  db.prepare(
+    "SELECT firm_id AS firmId, json_extract(payload, '$.createdByUserId') AS createdByUserId FROM notes"
+  )
+    .all()
+    .forEach((note) => {
+      const actor = usersById.get(note.createdByUserId)
+      if (!actor) return
+      const summary = byFirm.get(note.firmId)
+      if (!summary) return
+      const key = actor.id
+      const bucket = summary.advisorProductivity[key] || {
+        advisorUserId: key,
+        advisorName: `${actor.firstName} ${actor.lastName}`,
+        notesAuthored: 0,
+        stageMoves: 0
+      }
+      bucket.notesAuthored += 1
+      summary.advisorProductivity[key] = bucket
+    })
   // stage_changes is the relational source of truth for stage-move counts.
   db.prepare('SELECT firm_id AS firmId, changed_by_user_id AS changedByUserId FROM stage_changes')
     .all()
@@ -1274,6 +1541,10 @@ function stripRelationalMirrors(state) {
   state.boardVersions = {}
   state.pipelineStagesByFirm = {}
   state.pipelineStages = []
+  state.notes = []
+  state.documentUploads = []
+  state.portalLinks = []
+  state.invites = []
 }
 
 export function loadState(seedFactory) {
@@ -1284,14 +1555,16 @@ export function loadState(seedFactory) {
     // trail in state.auditEvents, the draft-churn entities in
     // state.formSubmissions/draftStepStates/pendingUploadIntents, and the
     // board entities in state.profiles/stageChanges/boardVersions/
-    // pipelineStages. The relational tables are now the sole sources of
-    // truth: seed them once from the blob (old databases whose tables
-    // predate the cutover), then strip the mirrors from the blob so they
-    // never get written back.
+    // pipelineStages, and the client-data entities in state.notes/
+    // documentUploads/portalLinks/invites. The relational tables are now the
+    // sole sources of truth: seed them once from the blob (old databases whose
+    // tables predate the cutover), then strip the mirrors from the blob so
+    // they never get written back.
     ensureQueueSeededFromState(state)
     ensureAuditSeededFromState(state)
     ensureSubmissionEntitiesSeededFromState(state)
     ensureBoardEntitiesSeededFromState(state)
+    ensureClientDataEntitiesSeededFromState(state)
     const hadBlobMirrors =
       [
         state.exportJobs,
@@ -1301,7 +1574,11 @@ export function loadState(seedFactory) {
         state.pendingUploadIntents,
         state.profiles,
         state.stageChanges,
-        state.pipelineStages
+        state.pipelineStages,
+        state.notes,
+        state.documentUploads,
+        state.portalLinks,
+        state.invites
       ].some((entries) => Array.isArray(entries) && entries.length > 0) ||
       [state.boardVersions, state.pipelineStagesByFirm].some(
         (entries) => entries && typeof entries === 'object' && Object.keys(entries).length > 0
@@ -1330,6 +1607,7 @@ export function loadState(seedFactory) {
   ensureAuditSeededFromState(state)
   ensureSubmissionEntitiesSeededFromState(state)
   ensureBoardEntitiesSeededFromState(state)
+  ensureClientDataEntitiesSeededFromState(state)
   stripRelationalMirrors(state)
   state.sessions = []
   return state
@@ -1337,10 +1615,11 @@ export function loadState(seedFactory) {
 
 export function saveState(state) {
   // export_jobs, sessions, audit_events, form_submissions, draft_step_states,
-  // pending_upload_intents, profiles, stage_changes, board_versions, and
-  // pipeline_stage_records are relational sources of truth: the blob keeps
-  // empty arrays/maps for them purely for shape compatibility, so a stale
-  // in-memory mirror can never clobber targeted relational writes.
+  // pending_upload_intents, profiles, stage_changes, board_versions,
+  // pipeline_stage_records, notes, document_uploads, portal_links, and invites
+  // are relational sources of truth: the blob keeps empty arrays/maps for them
+  // purely for shape compatibility, so a stale in-memory mirror can never
+  // clobber targeted relational writes.
   const payload = JSON.stringify({
     ...state,
     exportJobs: [],
@@ -1353,7 +1632,11 @@ export function saveState(state) {
     stageChanges: [],
     boardVersions: {},
     pipelineStagesByFirm: {},
-    pipelineStages: []
+    pipelineStages: [],
+    notes: [],
+    documentUploads: [],
+    portalLinks: [],
+    invites: []
   })
   // The blob upsert, derived query tables, and materialized analytics must
   // commit together: a failure partway through (e.g. mid replaceRows) would
