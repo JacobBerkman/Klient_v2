@@ -53,6 +53,13 @@ export const routes = {
   profileTags: (profileId: string) => joinPath('/api/profiles', profileId, 'tags'),
   profileTag: (profileId: string, tag: string) => joinPath('/api/profiles', profileId, 'tags', tag),
   profileSensitive: (profileId: string) => joinPath('/api/profiles', profileId, 'sensitive'),
+  profileUploads: (profileId: string, query: Record<string, QueryValue> = {}) =>
+    withQuery(joinPath('/api/profiles', profileId, 'uploads'), query),
+  profileUploadsPresign: (profileId: string) => joinPath('/api/profiles', profileId, 'uploads', 'presign'),
+  profileUploadDownload: (profileId: string, uploadId: string) =>
+    joinPath('/api/profiles', profileId, 'uploads', uploadId, 'download'),
+  profileUploadArchive: (profileId: string, uploadId: string) =>
+    joinPath('/api/profiles', profileId, 'uploads', uploadId, 'archive'),
   profileCustomFieldSchema: () => '/api/profiles/custom-fields/schema',
   households: () => '/api/households',
   householdMembers: (householdId: string) => joinPath('/api/households', householdId, 'members'),

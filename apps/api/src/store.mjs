@@ -3110,6 +3110,185 @@ export function createStore({
       if (!upload) throw new Error('Upload not found.')
       return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 })
     },
+    // --- Advisor-facing document uploads (profile-scoped) --------------------
+    // Uploads are stored in document_uploads with clientId === profileId, the
+    // same relational source of truth the portal/client flows write to. Firm
+    // scoping is derived from the authenticated session user (not a portal
+    // token), and each mutated row is upserted (mutation -> upsert discipline)
+    // so the retention/lifecycle sweep keeps working for advisor uploads.
+    listProfileUploads(user, profileId, { includeArchived = false } = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.listProfileUploads' })
+      requirePermission(user, 'profiles:read')
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
+      const uploads = listDocumentUploadRowsByFirmClient(user.firmId, profile.id)
+        .filter((upload) => {
+          if (upload.status === 'purged') return false
+          if (!includeArchived && upload.status === 'archived') return false
+          return true
+        })
+        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
+      return { uploads }
+    },
+    async createProfileUploadPresign(user, profileId, input = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.createProfileUploadPresign' })
+      requirePermission(user, 'profiles:write')
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
+      const intent = createUploadIntent({
+        firmId: user.firmId,
+        clientId: profile.id,
+        fileName: input.fileName,
+        contentType: input.contentType,
+        checksum: input.checksum,
+        category: input.category,
+        source: 'advisor',
+        retentionClass: input.retentionClass
+      })
+      const presigned = await objectStorage.createPresignedUploadUrl({
+        ...intent.object,
+        expiresInSeconds: Number(input.expiresInSeconds || 900)
+      })
+      persist()
+      return { uploadId: intent.id, object: intent.object, presigned }
+    },
+    async completeProfileUpload(user, profileId, input = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.completeProfileUpload' })
+      requirePermission(user, 'profiles:write')
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
+      const intent = input.uploadId ? getUploadIntent(input.uploadId, user.firmId) : null
+      const object = normalizeObjectMetadata(
+        input.object || intent?.object || {},
+        input.retentionClass || intent?.object?.retentionClass || 'uploaded_document'
+      )
+      // Optional inline bytes: advisors upload from the profile page, so persist
+      // the payload to object storage here (server-side putObject) at the
+      // intent's reserved key, which makes downloads work end-to-end without a
+      // separate browser->storage PUT. The handshake shape stays identical to the
+      // portal/client presign flow; only bytes are added.
+      const fileBytes =
+        typeof input.fileBytesBase64 === 'string' && input.fileBytesBase64
+          ? Buffer.from(input.fileBytesBase64, 'base64')
+          : null
+      let checksum = object.checksum
+      let sizeBytes = Number.isFinite(Number(input.sizeBytes)) ? Number(input.sizeBytes) : null
+      if (fileBytes && fileBytes.length) {
+        if (!object.bucket || !object.key) {
+          throw new Error('Upload object metadata (bucket/key) is required to store file bytes.')
+        }
+        const stored = await objectStorage.putObject({
+          bucket: object.bucket,
+          key: object.key,
+          body: fileBytes,
+          contentType: object.contentType,
+          retentionClass: object.retentionClass,
+          metadata: {
+            fileName: input.name || input.fileName || intent?.fileName || 'advisor-upload',
+            uploadedByUserId: user.id,
+            purpose: 'advisor_document_upload'
+          }
+        })
+        checksum = stored.checksum || checksum
+        sizeBytes = fileBytes.length
+      }
+      const malwareScan = normalizeMalwareScan(input.malwareScan)
+      const upload = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        clientId: profile.id,
+        name: input.name || input.fileName || intent?.fileName || 'Advisor upload',
+        category: input.category || intent?.category || 'general',
+        visibility: 'internal',
+        status: 'uploaded',
+        uploadedBy: 'advisor',
+        uploadedByUserId: user.id,
+        notes: input.notes || '',
+        sizeBytes,
+        malwareScan,
+        object: { ...object, checksum },
+        createdAt: now(),
+        updatedAt: now()
+      }
+      if (input.uploadId) deleteUploadIntent(input.uploadId)
+      upsertDocumentUploadRow(upload)
+      addAudit(user.firmId, user.id, 'document_upload', upload.id, 'advisor.document_upload.created', {
+        category: upload.category,
+        key: upload.object.key,
+        profileId: profile.id
+      })
+      persist()
+      return upload
+    },
+    async createProfileUploadDownload(user, profileId, uploadId) {
+      const firmContext = requireFirmContext(user, { method: 'store.createProfileUploadDownload' })
+      requirePermission(user, 'profiles:read')
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
+      const upload = getDocumentUploadRow(uploadId, { firmId: user.firmId, clientId: profile.id })
+      if (!upload || upload.status === 'purged') throw new Error('Upload not found.')
+      const object = upload.object || {}
+      if (!object.bucket || !object.key) throw new Error('Upload has no stored object.')
+      const fileName = sanitizeFileName(upload.name || `${uploadId}.bin`)
+      // Mirror the export download contract: hand out a short-lived presigned
+      // redirect on providers that support direct HTTP downloads (S3/MinIO), and
+      // otherwise stream the bytes back through the API (local provider).
+      if (
+        typeof objectStorage.supportsHttpPresignedDownload === 'function' &&
+        objectStorage.supportsHttpPresignedDownload()
+      ) {
+        try {
+          await objectStorage.statObject(object)
+          const presigned = await objectStorage.createPresignedDownloadUrl({
+            ...object,
+            expiresInSeconds: 900,
+            responseContentDisposition: `attachment; filename="${fileName}"`,
+            ...(object.contentType ? { responseContentType: object.contentType } : {})
+          })
+          return {
+            redirectUrl: presigned.url,
+            expiresAt: presigned.expiresAt,
+            fileName: upload.name,
+            contentType: object.contentType || null
+          }
+        } catch {
+          // Presign path unavailable (e.g. object missing); fall back to streaming.
+        }
+      }
+      const stored = await objectStorage.getObject(object)
+      return {
+        body: stored.body,
+        fileName: upload.name,
+        contentType: stored.contentType || object.contentType || 'application/octet-stream',
+        sizeBytes: stored.body.length
+      }
+    },
+    archiveProfileUpload(user, profileId, uploadId) {
+      const firmContext = requireFirmContext(user, { method: 'store.archiveProfileUpload' })
+      requirePermission(user, 'profiles:write')
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
+      const upload = getDocumentUploadRow(uploadId, { firmId: user.firmId, clientId: profile.id })
+      if (!upload) throw new Error('Upload not found.')
+      if (upload.status === 'archived') return upload
+      // Soft delete: reuse the same 'archived' lifecycle status the retention
+      // sweep assigns, so the row stays in document_uploads and keeps aging.
+      upload.status = 'archived'
+      upload.archivedAt = now()
+      upload.updatedAt = now()
+      upsertDocumentUploadRow(upload)
+      addAudit(user.firmId, user.id, 'document_upload', upload.id, 'advisor.document_upload.archived', {
+        key: upload.object?.key || null,
+        profileId: profile.id
+      })
+      persist()
+      return upload
+    },
     listFormDrafts(user) {
       return this.listFormSubmissions(user, 'draft')
     },

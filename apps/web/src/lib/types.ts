@@ -194,6 +194,52 @@ export interface ProfileDetailPayload {
   notes: Note[]
 }
 
+export interface DocumentUpload {
+  id: string
+  firmId?: string
+  clientId?: string
+  name: string
+  category?: string
+  status?: string
+  visibility?: string
+  uploadedBy?: string
+  uploadedByUserId?: string | null
+  notes?: string
+  sizeBytes?: number | null
+  object?: {
+    bucket?: string
+    key?: string
+    checksum?: string | null
+    contentType?: string | null
+    retentionClass?: string | null
+  }
+  createdAt?: string
+  updatedAt?: string
+  archivedAt?: string
+  [key: string]: unknown
+}
+
+export interface ProfileUploadsPayload {
+  uploads: DocumentUpload[]
+}
+
+export interface ProfileUploadPresignPayload {
+  uploadId: string
+  object: {
+    bucket: string
+    key: string
+    checksum?: string | null
+    contentType?: string | null
+    retentionClass?: string | null
+  }
+  presigned: {
+    method: string
+    url: string
+    headers?: Record<string, string>
+    expiresAt?: string
+  }
+}
+
 export interface CustomFieldDefinition {
   key: string
   label?: string

@@ -65,6 +65,20 @@ export function formatHours(value: unknown) {
   return `${rounded.toLocaleString()} ${rounded === 1 ? 'hour' : 'hours'}`
 }
 
+export function formatBytes(value: unknown) {
+  const parsed = Number(value)
+  if (!Number.isFinite(parsed) || parsed <= 0) return '—'
+  const units = ['B', 'KB', 'MB', 'GB']
+  let size = parsed
+  let unitIndex = 0
+  while (size >= 1024 && unitIndex < units.length - 1) {
+    size /= 1024
+    unitIndex += 1
+  }
+  const rounded = unitIndex === 0 ? Math.round(size) : Number(size.toFixed(1))
+  return `${rounded.toLocaleString()} ${units[unitIndex]}`
+}
+
 export function humanizeKey(value: string) {
   return value
     .replace(/([a-z])([A-Z])/g, '$1 $2')

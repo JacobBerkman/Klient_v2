@@ -414,6 +414,29 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
       policy.requireGuard(user, 'canWriteClientWorkspace')
       return store.createClientUploadPresign(user, input)
     },
+    // Advisor-facing, profile-scoped document uploads. Guarded like profile
+    // notes (read/write on profiles); the store applies firm scoping from the
+    // session user and re-checks the profiles:read/write permission.
+    listProfileUploads(user, profileId, options = {}) {
+      policy.requireGuard(user, 'canReadProfiles')
+      return store.listProfileUploads(user, profileId, options)
+    },
+    createProfileUploadPresign(user, profileId, input) {
+      policy.requireGuard(user, 'canWriteProfiles')
+      return store.createProfileUploadPresign(user, profileId, input)
+    },
+    completeProfileUpload(user, profileId, input) {
+      policy.requireGuard(user, 'canWriteProfiles')
+      return store.completeProfileUpload(user, profileId, input)
+    },
+    getProfileUploadDownload(user, profileId, uploadId) {
+      policy.requireGuard(user, 'canReadProfiles')
+      return store.createProfileUploadDownload(user, profileId, uploadId)
+    },
+    archiveProfileUpload(user, profileId, uploadId) {
+      policy.requireGuard(user, 'canWriteProfiles')
+      return store.archiveProfileUpload(user, profileId, uploadId)
+    },
     createPortalLink(user, profileId, options) {
       policy.requireGuard(user, 'canCreatePortalLink')
       return store.createPortalLink(user, profileId, options)
