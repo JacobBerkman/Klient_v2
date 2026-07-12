@@ -4,7 +4,7 @@ import { api, routes } from '../lib/client'
 import { formatDateTime } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
-import type { DocumentTemplate } from '../lib/types'
+import type { DocumentTemplate, ProfileUploadPresignPayload } from '../lib/types'
 import { useAuth } from '../app/auth'
 import {
   ActionPanel,
@@ -26,6 +26,10 @@ export const handle = {
   subtitle: 'Document template lifecycle with mappings, versions, preview, publish, and auto-build entry points.',
   breadcrumb: 'Templates'
 }
+
+// Auto-build source PDFs stream via the raw upload endpoint, matching the 20MB
+// per-flow intent cap enforced server-side.
+const MAX_AUTO_BUILD_BYTES = 20 * 1024 * 1024
 
 export function Component() {
   const { user } = useAuth()
@@ -69,13 +73,23 @@ export function Component() {
       setStatusMessage('Choose a PDF file for auto-build.')
       return
     }
+    if (autoBuildFile.size > MAX_AUTO_BUILD_BYTES) {
+      setStatusMessage(`"${autoBuildFile.name}" is too large. Source PDFs must be under 20 MB.`)
+      return
+    }
     setStatusMessage('')
     try {
-      const bytes = Array.from(new Uint8Array(await autoBuildFile.arrayBuffer()))
+      // Stream the source PDF via the presign -> raw PUT handshake, then hand
+      // auto-build the intent id instead of inlining the bytes in the JSON body.
+      const presign = await api.post<ProfileUploadPresignPayload>(routes.documentTemplateAutoBuildPresign(), {
+        fileName: autoBuildFile.name,
+        contentType: autoBuildFile.type || 'application/pdf'
+      })
+      await api.uploadRaw(presign.uploadId, presign.object.key, autoBuildFile)
       const built = await api.post<DocumentTemplate>(routes.documentTemplateAutoBuild(), {
         name: autoBuildName || autoBuildFile.name.replace(/\.pdf$/i, ''),
         fileName: autoBuildFile.name,
-        fileBytes: bytes
+        uploadId: presign.uploadId
       })
       setAutoBuildName('')
       setAutoBuildFile(null)

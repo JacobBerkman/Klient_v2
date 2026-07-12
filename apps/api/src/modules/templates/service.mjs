@@ -214,6 +214,12 @@ export function createTemplatesService({ templateRepository, policy, store = nul
         extraction: normalizeExtractionEnvelope(template?.extraction || {})
       }
     },
+    // Presign a scratch object for the source PDF so the browser can stream it via
+    // the raw upload endpoint instead of inlining it in the auto-build JSON body.
+    autoBuildPresign(user, input) {
+      policy.requireGuard(user, 'canEditTemplate')
+      return store.createTemplateSourceUploadPresign(user, input)
+    },
     publish(user, templateId, input) {
       policy.requireGuard(user, 'canPublishTemplate')
       try {

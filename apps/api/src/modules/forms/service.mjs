@@ -414,6 +414,14 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
       policy.requireGuard(user, 'canWriteClientWorkspace')
       return store.createClientUploadPresign(user, input)
     },
+    // Capability-based raw byte upload: authorized purely by possession of a live
+    // upload intent id + matching reserved key (see store.storeUploadedBytes and
+    // the CSRF-exemption note in server.mjs). No session/policy guard here — the
+    // presign step that minted the intent already enforced firm scope + auth, and
+    // portal-token callers legitimately have no session to guard against.
+    storeUploadedBytes(input) {
+      return store.storeUploadedBytes(input)
+    },
     // Advisor-facing, profile-scoped document uploads. Guarded like profile
     // notes (read/write on profiles); the store applies firm scoping from the
     // session user and re-checks the profiles:read/write permission.

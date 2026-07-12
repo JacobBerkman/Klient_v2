@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { createStore } from '../store.mjs'
 import { createObjectStorage } from '../object-storage/index.mjs'
 import { createLocalFilesystemStorageProvider } from '../object-storage/local-provider.mjs'
-import { getDocumentUploadRow, upsertDocumentUploadRow } from '../storage.mjs'
+import { getDocumentUploadRow, getUploadIntentById, insertUploadIntent, upsertDocumentUploadRow } from '../storage.mjs'
 
 // Advisor-facing profile attachments reuse the document_uploads relational
 // source of truth and the pending_upload_intents handshake, scoped to the
@@ -94,6 +94,181 @@ test('advisor upload handshake stores bytes and download streams them back (loca
     assert.equal(download.body.toString(), bytes.toString())
     assert.equal(download.contentType, 'application/pdf')
     assert.equal(download.redirectUrl, undefined, 'local provider must not hand out a presigned redirect')
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test('raw upload endpoint stores bytes at the reserved key and completion works byte-free', async () => {
+  const { rootDir, store, admin, profile } = await buildHarness()
+  try {
+    const presign = await store.createProfileUploadPresign(admin, profile.id, {
+      fileName: 'statement.pdf',
+      contentType: 'application/pdf',
+      category: 'statements'
+    })
+
+    const bytes = Buffer.from('%PDF-1.7 raw-upload endpoint bytes')
+    const stored = await store.storeUploadedBytes({
+      uploadId: presign.uploadId,
+      objectKey: presign.object.key,
+      contentType: 'application/pdf',
+      body: bytes
+    })
+    assert.equal(stored.sizeBytes, bytes.length)
+    assert.ok(stored.checksum, 'raw upload returns the stored checksum')
+
+    // The intent is now marked 'stored' but not yet consumed; completion runs
+    // without any inline bytes and verifies the object presence via stat.
+    const saved = await store.completeProfileUpload(admin, profile.id, {
+      uploadId: presign.uploadId,
+      object: presign.object,
+      name: 'Statement',
+      fileName: 'statement.pdf',
+      contentType: 'application/pdf'
+    })
+    assert.equal(saved.status, 'uploaded')
+    assert.equal(saved.sizeBytes, bytes.length, 'completion adopts the stat-reported size')
+
+    const download = await store.createProfileUploadDownload(admin, profile.id, saved.id)
+    assert.equal(download.body.toString(), bytes.toString(), 'download streams the raw-PUT bytes back')
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test('raw upload endpoint rejects a mismatched reserved key', async () => {
+  const { rootDir, store, admin, profile } = await buildHarness()
+  try {
+    const presign = await store.createProfileUploadPresign(admin, profile.id, {
+      fileName: 'ok.pdf',
+      contentType: 'application/pdf'
+    })
+    await assert.rejects(
+      () =>
+        store.storeUploadedBytes({
+          uploadId: presign.uploadId,
+          objectKey: `${presign.object.key}-tampered`,
+          contentType: 'application/pdf',
+          body: Buffer.from('nope')
+        }),
+      (error) => error.statusCode === 403 && /key does not match/i.test(error.message)
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test('raw upload endpoint rejects an expired intent', async () => {
+  const { rootDir, store } = await buildHarness()
+  try {
+    const uploadId = randomUUID()
+    insertUploadIntent({
+      id: uploadId,
+      firmId: 'firm-expired',
+      clientId: 'client-expired',
+      category: 'general',
+      source: 'advisor',
+      fileName: 'expired.bin',
+      object: { bucket: 'test-docs', key: `firm-expired/${uploadId}.bin`, contentType: 'application/pdf' },
+      maxSizeBytes: null,
+      status: 'pending',
+      createdAt: new Date(Date.now() - 3600_000).toISOString(),
+      expiresAt: new Date(Date.now() - 60_000).toISOString()
+    })
+    await assert.rejects(
+      () =>
+        store.storeUploadedBytes({
+          uploadId,
+          objectKey: `firm-expired/${uploadId}.bin`,
+          contentType: 'application/pdf',
+          body: Buffer.from('too late')
+        }),
+      (error) => error.statusCode === 410 && /expired/i.test(error.message)
+    )
+    assert.equal(getUploadIntentById(uploadId), null, 'expired intent is purged on rejection')
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test('raw upload endpoint rejects a reused (already stored) intent', async () => {
+  const { rootDir, store, admin, profile } = await buildHarness()
+  try {
+    const presign = await store.createProfileUploadPresign(admin, profile.id, {
+      fileName: 'once.pdf',
+      contentType: 'application/pdf'
+    })
+    await store.storeUploadedBytes({
+      uploadId: presign.uploadId,
+      objectKey: presign.object.key,
+      contentType: 'application/pdf',
+      body: Buffer.from('first write')
+    })
+    await assert.rejects(
+      () =>
+        store.storeUploadedBytes({
+          uploadId: presign.uploadId,
+          objectKey: presign.object.key,
+          contentType: 'application/pdf',
+          body: Buffer.from('second write')
+        }),
+      (error) => error.statusCode === 409 && /already been stored/i.test(error.message)
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test('raw upload endpoint rejects a body over the per-flow size cap', async () => {
+  const { rootDir, store } = await buildHarness()
+  try {
+    const uploadId = randomUUID()
+    insertUploadIntent({
+      id: uploadId,
+      firmId: 'firm-big',
+      clientId: 'client-big',
+      category: 'general',
+      source: 'advisor',
+      fileName: 'big.bin',
+      object: { bucket: 'test-docs', key: `firm-big/${uploadId}.bin`, contentType: 'application/octet-stream' },
+      maxSizeBytes: 8,
+      status: 'pending',
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 600_000).toISOString()
+    })
+    await assert.rejects(
+      () =>
+        store.storeUploadedBytes({
+          uploadId,
+          objectKey: `firm-big/${uploadId}.bin`,
+          body: Buffer.from('way past the eight byte ceiling')
+        }),
+      (error) => error.statusCode === 413 && /limit/i.test(error.message)
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test('completion without inline bytes fails when no object was uploaded to the key', async () => {
+  const { rootDir, store, admin, profile } = await buildHarness()
+  try {
+    const presign = await store.createProfileUploadPresign(admin, profile.id, {
+      fileName: 'never-uploaded.pdf',
+      contentType: 'application/pdf'
+    })
+    // No raw PUT happened, so the reserved key has no object; completion must
+    // refuse to record a dangling upload row.
+    await assert.rejects(() =>
+      store.completeProfileUpload(admin, profile.id, {
+        uploadId: presign.uploadId,
+        object: presign.object,
+        name: 'Missing',
+        fileName: 'never-uploaded.pdf',
+        contentType: 'application/pdf'
+      })
+    )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }
