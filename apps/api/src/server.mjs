@@ -1225,6 +1225,33 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      if (pathname === '/api/notifications' && req.method === 'GET') {
+        const user = requireUser()
+        const unreadOnly = ['1', 'true', 'yes'].includes(String(url.searchParams.get('unread') || '').toLowerCase())
+        const result = modules.notifications.list(user, { unreadOnly })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/notifications/unread-count' && req.method === 'GET') {
+        const user = requireUser()
+        const result = modules.notifications.unreadCount(user)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/notifications/read-all' && req.method === 'POST') {
+        const user = requireUser()
+        const result = modules.notifications.markAllRead(user)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      const notificationReadMatch = pathname.match(/^\/api\/notifications\/([^/]+)\/read$/)
+      if (notificationReadMatch && req.method === 'POST') {
+        const [, notificationId] = notificationReadMatch
+        const user = requireUser()
+        const result = modules.notifications.markRead(user, decodeURIComponent(notificationId))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname === '/api/profiles' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadProfiles')

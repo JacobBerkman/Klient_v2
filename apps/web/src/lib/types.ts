@@ -31,6 +31,27 @@ export interface AuditEvent {
   [key: string]: unknown
 }
 
+export interface AppNotification {
+  id: string
+  firmId: string
+  userId?: string | null
+  type: string
+  title?: string
+  body?: string
+  link?: string | null
+  entityType?: string | null
+  entityId?: string | null
+  readAt?: string | null
+  createdAt: string
+  [key: string]: unknown
+}
+
+export interface NotificationsPayload {
+  ok: boolean
+  notifications: AppNotification[]
+  unreadCount: number
+}
+
 export interface Profile {
   id: string
   firmId: string
@@ -48,6 +69,7 @@ export interface Profile {
   dateOfBirth?: string | null
   source?: Record<string, unknown> | null
   address?: Record<string, unknown> | null
+  tags?: string[] | null
   extensions?: {
     values?: Record<string, unknown>
   } | null

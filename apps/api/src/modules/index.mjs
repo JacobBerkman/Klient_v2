@@ -11,6 +11,7 @@ import { createTemplatesV2Service } from './templates-v2/service.mjs'
 import { createExportsService } from './exports/service.mjs'
 import { createAuditService } from './audit/service.mjs'
 import { createAnalyticsService } from './analytics/service.mjs'
+import { createNotificationsService } from './notifications/service.mjs'
 import {
   StoreProfileRepository,
   StoreTemplateRepository,
@@ -40,6 +41,7 @@ export function createModules({ store, reads }) {
     templates: createTemplatesService({ templateRepository, policy, store, templatesCompatibility }),
     exports: createExportsService({ exportsRepository, policy, store }),
     audit: createAuditService({ store, policy }),
-    analytics: createAnalyticsService({ store, reads, policy })
+    analytics: createAnalyticsService({ store, reads, policy }),
+    notifications: createNotificationsService({ policy })
   }
 }
