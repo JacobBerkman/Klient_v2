@@ -16,6 +16,11 @@ services:
       APP_SECRET: ${APP_SECRET}
       LOG_LEVEL: ${LOG_LEVEL:-info}
 
+      # API rate limiting (in-memory sliding window; see DEPLOYMENT.md).
+      RATE_LIMIT_ENABLED: ${RATE_LIMIT_ENABLED:-true}
+      RATE_LIMIT_MAX_REQUESTS: ${RATE_LIMIT_MAX_REQUESTS:-600}
+      RATE_LIMIT_WINDOW_SECONDS: ${RATE_LIMIT_WINDOW_SECONDS:-60}
+
       # Runtime production contract: AUTH_PROVIDER must be explicitly set.
       AUTH_PROVIDER: ${AUTH_PROVIDER}
 

@@ -186,6 +186,11 @@ const piiKeyProvider = readPiiKeyProviderFromEnv(process.env)
 const googleOidcRuntime = evaluateGoogleOidcRuntime(process.env, { strict: nodeEnv === 'production' })
 const klientOpsTokens = readOpsTokenSet()
 const klientOpsToken = klientOpsTokens[0]?.token || ''
+// API rate limiting (security/rate-limit.mjs). Default ON everywhere except
+// NODE_ENV=test — same spirit as ENABLE_TEST_CSRF_BYPASS: test suites hammer
+// /api/* from a single client and must stay flake-free without per-suite
+// tuning. Tests that exercise the limiter opt in with RATE_LIMIT_ENABLED=true.
+const rateLimitEnabled = readBoolean('RATE_LIMIT_ENABLED', nodeEnv !== 'test')
 
 if (nodeEnv === 'production' && enableTestCsrfBypass) {
   throw new Error('ENABLE_TEST_CSRF_BYPASS cannot be enabled in production.')
@@ -221,9 +226,7 @@ if (
   (!appSecretHealth.meetsLengthRequirement || !appSecretHealth.meetsEntropyRequirement) &&
   !allowUnsafeAppSecret
 ) {
-  throw new Error(
-    'APP_SECRET does not meet minimum security requirements for production.'
-  )
+  throw new Error('APP_SECRET does not meet minimum security requirements for production.')
 }
 
 export const runtime = {
@@ -263,7 +266,12 @@ export const runtime = {
   storageExportPurgeAfterDays: readNumber('STORAGE_EXPORT_PURGE_AFTER_DAYS', 30),
   storageUploadTtlDays: readNumber('STORAGE_UPLOAD_TTL_DAYS', 365),
   storageUploadArchiveAfterDays: readNumber('STORAGE_UPLOAD_ARCHIVE_AFTER_DAYS', 90),
-  storageUploadPurgeAfterDays: readNumber('STORAGE_UPLOAD_PURGE_AFTER_DAYS', 730)
+  storageUploadPurgeAfterDays: readNumber('STORAGE_UPLOAD_PURGE_AFTER_DAYS', 730),
+  rateLimit: {
+    enabled: rateLimitEnabled,
+    maxRequests: readNumber('RATE_LIMIT_MAX_REQUESTS', 600),
+    windowSeconds: readNumber('RATE_LIMIT_WINDOW_SECONDS', 60)
+  }
 }
 
 export function validateRuntimeConfig() {
@@ -388,9 +396,7 @@ export function validateRuntimeConfig() {
     if (runtime.nodeEnv === 'test') {
       warnings.push('APP_SECRET is using fallback development secret under NODE_ENV=test.')
     } else if (runtime.nodeEnv === 'development' && runtime.allowDevFallbackSecret) {
-      warnings.push(
-        'APP_SECRET is using fallback development secret because ALLOW_DEV_FALLBACK_APP_SECRET=true.'
-      )
+      warnings.push('APP_SECRET is using fallback development secret because ALLOW_DEV_FALLBACK_APP_SECRET=true.')
     }
   }
 
@@ -399,6 +405,10 @@ export function validateRuntimeConfig() {
   }
   if (readBoolean('ENABLE_TEST_CSRF_BYPASS', false) && runtime.nodeEnv !== 'test') {
     warnings.push('ENABLE_TEST_CSRF_BYPASS is only honored when NODE_ENV=test.')
+  }
+
+  if (runtime.nodeEnv === 'production' && !runtime.rateLimit.enabled) {
+    warnings.push('RATE_LIMIT_ENABLED=false disables API request rate limiting in production.')
   }
 
   return {
@@ -422,6 +432,7 @@ export function validateRuntimeConfig() {
         documents: runtime.storageBucketDocuments,
         exports: runtime.storageBucketExports
       },
+      rateLimit: runtime.rateLimit,
       requiredEnvChecks: requiredEnv.overall
     }
   }

@@ -43,6 +43,16 @@ PII_KEYRING={"app-key-v1":"plain:replace-with-32-byte-base64-or-hex-key"}
 | `STORAGE_PROVIDER`                                                                              | always in production                                                  | storage provider selector (`local` or `s3`).                                                                                                   |
 | `STORAGE_ENDPOINT`, `STORAGE_REGION`, `STORAGE_ACCESS_KEY_ID`, `STORAGE_SECRET_ACCESS_KEY`      | `STORAGE_PROVIDER=s3`                                                 | required together when S3 storage is selected.                                                                                                 |
 
+### API rate limiting
+
+The API enforces an in-memory sliding-window rate limit on `/api/*` routes. `/health`, `/ready`, `/api/csrf`, and static assets are exempt. Requests are keyed by a hash of the session cookie when one is present, otherwise by client IP. Limited requests receive `429` with a `Retry-After` header and error code `RATE_LIMITED` in the standard error envelope. Counters are surfaced in `/api/ops/diagnostics` under `data.security.rateLimit`. The limiter is deliberately in-memory (no shared store): the deployment is single-instance. Auth endpoints additionally keep their own durable per-email login lockouts.
+
+| Variable                    | Default                                | Behavior                                                                                       |
+| --------------------------- | -------------------------------------- | ---------------------------------------------------------------------------------------------- |
+| `RATE_LIMIT_ENABLED`        | `true` (`false` under `NODE_ENV=test`) | Master switch. The test default mirrors `ENABLE_TEST_CSRF_BYPASS` so test suites stay flake-free; disabling it in production emits a startup warning. |
+| `RATE_LIMIT_MAX_REQUESTS`   | `600`                                  | Maximum requests per key inside the sliding window.                                            |
+| `RATE_LIMIT_WINDOW_SECONDS` | `60`                                   | Sliding-window length in seconds.                                                              |
+
 ### Deployment contract consistency
 
 `docker-compose.yml` environment passthrough must be a **superset** of production keys validated by `validateRuntimeConfig()` in `apps/api/src/runtime.mjs`.

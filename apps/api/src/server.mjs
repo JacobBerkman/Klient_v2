@@ -31,6 +31,7 @@ import {
   readLastSuccessfulReleaseValidationTimestamp,
   summarizeExportQueue
 } from './operability.mjs'
+import { createRateLimiter } from './security/rate-limit.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const distDir = resolve(__dirname, '../../web/dist')
@@ -87,7 +88,32 @@ const securityDiagnostics = {
     rejectedByReason: {},
     rotatedTotal: 0,
     invalidatedTotal: 0
+  },
+  rateLimit: {
+    limitedTotal: 0,
+    limitedByKeyType: {}
   }
+}
+
+// Coarse per-caller request budget for /api/* routes (auth endpoints keep
+// their own durable SQLite lockouts in local-provider.mjs). Health/readiness
+// probes and the CSRF bootstrap are exempt; static assets never match /api/*.
+const RATE_LIMIT_EXEMPT_PATHS = new Set(['/health', '/ready', CSRF_BOOTSTRAP_PATH])
+const rateLimiter = runtime.rateLimit.enabled
+  ? createRateLimiter({
+      maxRequests: runtime.rateLimit.maxRequests,
+      windowSeconds: runtime.rateLimit.windowSeconds
+    })
+  : null
+
+// Keyed by session-cookie hash when a session cookie is present (stable per
+// signed-in caller, never stores the raw token), otherwise by client IP.
+function rateLimitIdentity(req) {
+  const sessionCookie = resolveSessionToken(req)
+  if (sessionCookie) {
+    return { keyType: 'session', key: `session:${createHash('sha256').update(sessionCookie).digest('hex')}` }
+  }
+  return { keyType: 'ip', key: `ip:${getClientIp(req)}` }
 }
 
 function json(res, status, body, headers = {}) {
@@ -825,6 +851,32 @@ export function createHttpServer({ modules }) {
     }
 
     try {
+      if (rateLimiter && pathname.startsWith('/api/') && !RATE_LIMIT_EXEMPT_PATHS.has(pathname)) {
+        const { key, keyType } = rateLimitIdentity(req)
+        const verdict = rateLimiter.check(key)
+        if (!verdict.allowed) {
+          securityDiagnostics.rateLimit.limitedTotal += 1
+          securityDiagnostics.rateLimit.limitedByKeyType[keyType] =
+            (securityDiagnostics.rateLimit.limitedByKeyType[keyType] || 0) + 1
+          const message = 'Too many requests. Please retry later.'
+          finalizeLog(429, { reason: 'rate_limited', rateLimitKeyType: keyType })
+          return json(
+            res,
+            429,
+            {
+              message,
+              error: {
+                message,
+                code: 'RATE_LIMITED',
+                details: { retryAfterSeconds: verdict.retryAfterSeconds },
+                statusCode: 429,
+                requestId
+              }
+            },
+            { 'X-Request-Id': requestId, 'Retry-After': String(verdict.retryAfterSeconds) }
+          )
+        }
+      }
       if (pathname === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
         const database = ensureDatabaseReady()
         const storageHealth = readStorageHealth()
@@ -1006,6 +1058,14 @@ export function createHttpServer({ modules }) {
                   rejectedByReason: securityDiagnostics.session.rejectedByReason,
                   rotatedTotal: securityDiagnostics.session.rotatedTotal,
                   invalidatedTotal: securityDiagnostics.session.invalidatedTotal
+                },
+                rateLimit: {
+                  enabled: Boolean(rateLimiter),
+                  maxRequests: runtime.rateLimit.maxRequests,
+                  windowSeconds: runtime.rateLimit.windowSeconds,
+                  limitedTotal: securityDiagnostics.rateLimit.limitedTotal,
+                  limitedByKeyType: securityDiagnostics.rateLimit.limitedByKeyType,
+                  trackedKeys: rateLimiter ? rateLimiter.keyCount : 0
                 }
               }
             }
@@ -1525,7 +1585,10 @@ export function createHttpServer({ modules }) {
         const result = await modules.forms.storeUploadedBytes({
           uploadId: decodeURIComponent(rawUploadId),
           objectKey: url.searchParams.get('key') || null,
-          contentType: String(req.headers['content-type'] || '').split(';')[0].trim() || null,
+          contentType:
+            String(req.headers['content-type'] || '')
+              .split(';')[0]
+              .trim() || null,
           body
         })
         finalizeLog(200)
@@ -1734,7 +1797,10 @@ export function createHttpServer({ modules }) {
         const includeArchived = ['1', 'true', 'yes'].includes(
           String(url.searchParams.get('includeArchived') || '').toLowerCase()
         )
-        const result = modules.events.listEvents(user, { includeArchived })
+        const result = modules.events.listEvents(user, {
+          includeArchived,
+          limit: url.searchParams.get('limit') || ''
+        })
         finalizeLog(200)
         return replyJson(200, { events: result }, { 'X-Request-Id': requestId })
       }
@@ -2246,7 +2312,8 @@ export function createHttpServer({ modules }) {
           clientId: url.searchParams.get('clientId') || undefined,
           fromDate: url.searchParams.get('fromDate') || undefined,
           toDate: url.searchParams.get('toDate') || undefined,
-          sort: url.searchParams.get('sort') || undefined
+          sort: url.searchParams.get('sort') || undefined,
+          limit: url.searchParams.get('limit') || undefined
         })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -2359,7 +2426,7 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/audit' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadAudit')
-        const result = modules.audit.list(user)
+        const result = modules.audit.list(user, { limit: url.searchParams.get('limit') || '' })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -2443,7 +2510,10 @@ export function createHttpServer({ modules }) {
       const portalDraftSectionsMatch = pathname.match(/^\/api\/portal\/[^/]+\/drafts\/([^/]+)\/sections$/)
       if (portalDraftSectionsMatch && req.method === 'GET') {
         const { token } = requirePortalSession()
-        const result = modules.forms.listPortalDraftSectionStates(token, decodeURIComponent(portalDraftSectionsMatch[1]))
+        const result = modules.forms.listPortalDraftSectionStates(
+          token,
+          decodeURIComponent(portalDraftSectionsMatch[1])
+        )
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
