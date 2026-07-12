@@ -147,11 +147,11 @@ export function Component() {
         </div>
       </form>
       {statusMessage ? (
-        <p className="inline-notice inline-notice-info" data-testid="auth-status">
+        <p className="inline-notice inline-notice-info" data-testid="auth-status" role="status" aria-live="polite">
           {statusMessage}
         </p>
       ) : (
-        <p className="muted" data-testid="auth-status">
+        <p className="muted" data-testid="auth-status" role="status" aria-live="polite">
           {pendingMfa ? 'Awaiting MFA verification.' : 'Sign in to continue.'}
         </p>
       )}

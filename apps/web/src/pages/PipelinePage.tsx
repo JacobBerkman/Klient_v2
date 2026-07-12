@@ -248,7 +248,9 @@ export function Component() {
             value={search}
             onChange={(event) => setSearch(event.target.value)}
           />
-          {moveMessage ? <Badge tone="info">{moveMessage}</Badge> : null}
+          <span role="status" aria-live="polite" aria-atomic="true">
+            {moveMessage ? <Badge tone="info">{moveMessage}</Badge> : null}
+          </span>
         </Toolbar>
 
         {viewMode === 'prospects' ? (
