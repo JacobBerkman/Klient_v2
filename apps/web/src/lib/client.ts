@@ -1,4 +1,4 @@
-import type { BoardMovePayload, PipelineStageRecord, PipelineStagesPayload } from './types'
+import type { BoardPayload, BoardMovePayload, PipelineStageRecord, PipelineStagesPayload, Profile } from './types'
 
 type QueryValue = string | number | boolean | null | undefined
 
@@ -47,6 +47,7 @@ export const routes = {
   pipelineReorder: () => '/api/pipeline/reorder',
   profiles: (query: Record<string, QueryValue> = {}) => withQuery('/api/profiles', query),
   profileDetail: (profileId: string) => joinPath('/api/profiles', profileId),
+  profileConvert: (profileId: string) => joinPath('/api/profiles', profileId, 'convert'),
   profileStage: (profileId: string) => joinPath('/api/profiles', profileId, 'stage'),
   profileNotes: (profileId: string) => joinPath('/api/profiles', profileId, 'notes'),
   profileTags: (profileId: string) => joinPath('/api/profiles', profileId, 'tags'),
@@ -358,6 +359,17 @@ class ApiClient {
 }
 
 export const api = new ApiClient()
+
+export interface ProfileConvertPayload {
+  profile: Profile
+  board: BoardPayload
+}
+
+export const profilesApi = {
+  // ApiClient.post attaches the CSRF token automatically for /api/ mutations.
+  convert: (profileId: string, input: { expectedUpdatedAt?: string | null } = {}) =>
+    api.post<ProfileConvertPayload>(routes.profileConvert(profileId), input)
+}
 
 export const pipelineApi = {
   listStages: () => api.get<PipelineStagesPayload>(routes.pipelineStages()),

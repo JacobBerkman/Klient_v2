@@ -77,6 +77,17 @@ export function createProfilesService({ profileRepository, policy }) {
       const patchWithPreconditions = await assertUpdatePreconditions(user, profileId, patch)
       return profileRepository.updateProfile(createFirmContext(user), profileId, patchWithPreconditions)
     },
+    async convertProfile(user, profileId, input = {}) {
+      policy.requireGuard(user, 'canWriteProfiles')
+      const expectedUpdatedAt =
+        typeof input?.expectedUpdatedAt === 'string' ? input.expectedUpdatedAt.trim() : input?.expectedUpdatedAt
+      // Reuse the shared optimistic-concurrency precondition so a stale
+      // expectedUpdatedAt fails with the same PROFILE_UPDATE_CONFLICT (409)
+      // contract as updateProfile before the board-touching write begins. The
+      // store re-checks inside its transaction to close the read/convert race.
+      await assertUpdatePreconditions(user, profileId, { expectedUpdatedAt })
+      return profileRepository.convertProfile(createFirmContext(user), profileId, { expectedUpdatedAt })
+    },
     addTag(user, profileId, tag) {
       policy.requireGuard(user, 'canWriteProfiles')
       return profileRepository.addTag(createFirmContext(user), profileId, tag)

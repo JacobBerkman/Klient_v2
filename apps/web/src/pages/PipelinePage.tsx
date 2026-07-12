@@ -1,6 +1,6 @@
 import { startTransition, useDeferredValue, useEffect, useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
-import { api, ApiError, pipelineApi, routes } from '../lib/client'
+import { api, ApiError, pipelineApi, profilesApi, routes } from '../lib/client'
 import { formatDateTime, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
@@ -74,6 +74,9 @@ export function Component() {
   const [moveMessage, setMoveMessage] = useState('')
   const [draggingProfileId, setDraggingProfileId] = useState('')
   const [dropStage, setDropStage] = useState('')
+  // Inline per-card confirm for the terminal-stage "Convert to client" action.
+  const [convertCardId, setConvertCardId] = useState('')
+  const [convertBusy, setConvertBusy] = useState(false)
   const deferredSearch = useDeferredValue(search)
 
   // Local board copy so moves render optimistically; reconciled from the server
@@ -161,11 +164,39 @@ export function Component() {
     }
   }
 
+  /**
+   * Promote a prospect to a client from a terminal-stage card. The server bumps
+   * the board version and returns the fresh board with the card removed, so we
+   * reconcile the confirmed board from that response (re-applying any still-
+   * pending moves) and trigger a refetch to refresh the client roster too.
+   */
+  async function convertCard(profileId: string, name: string) {
+    if (!hasGuard(user, 'canWriteProfiles')) return
+    setConvertBusy(true)
+    try {
+      const result = await profilesApi.convert(profileId)
+      confirmedBoardRef.current = result.board
+      setBoard(applyPendingMoves(result.board, moveQueueRef.current))
+      setConvertCardId('')
+      setMoveMessage(`${name} converted to client.`)
+      setRefreshKey((value) => value + 1)
+    } catch (convertError) {
+      setConvertCardId('')
+      setMoveMessage(convertError instanceof Error ? convertError.message : 'Conversion failed.')
+    } finally {
+      setConvertBusy(false)
+    }
+  }
+
   if (loading) return <LoadingState label="Loading pipeline" />
   if (error || !data) return <ErrorState title="Pipeline failed to load." detail={error?.message} />
 
   const searchValue = deferredSearch.trim().toLowerCase()
   const activeBoard = board ?? data.board
+  // Terminal columns expose the "Convert to client" action on their cards.
+  const terminalStageIds = new Set(
+    (activeBoard.stageMetadata || []).filter((stage) => stage.isTerminal).map((stage) => stage.id)
+  )
   const filteredColumns = activeBoard.columns.map((column) => ({
     ...column,
     cards: column.cards.filter((card) => {
@@ -289,6 +320,38 @@ export function Component() {
                         </select>
                       ) : null}
                     </div>
+                    {terminalStageIds.has(column.stage) && hasGuard(user, 'canWriteProfiles') ? (
+                      <div className="actions-row" data-testid={`pipeline-card-convert-${card.id}`}>
+                        {convertCardId === card.id ? (
+                          <>
+                            <button
+                              type="button"
+                              className="secondary-button"
+                              disabled={convertBusy}
+                              onClick={() => void convertCard(card.id, profileName(card))}
+                            >
+                              Confirm convert
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-button"
+                              disabled={convertBusy}
+                              onClick={() => setConvertCardId('')}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className="ghost-button"
+                            onClick={() => setConvertCardId(card.id)}
+                          >
+                            Convert to client
+                          </button>
+                        )}
+                      </div>
+                    ) : null}
                   </article>
                 ))}
                 {!column.cards.length ? (

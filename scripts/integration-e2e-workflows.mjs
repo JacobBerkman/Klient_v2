@@ -107,7 +107,10 @@ try {
     method: 'POST',
     headers: advisorHeaders,
     body: JSON.stringify({
-      kind: 'client',
+      // Starts as a prospect so the board-move step below is a valid pipeline
+      // operation; it is promoted to a client via /convert after the moves.
+      kind: 'prospect',
+      stage: 'discovery',
       firstName: 'Taylor',
       lastName: 'Client',
       email: 'taylor.client@e2e.test',
@@ -167,6 +170,19 @@ try {
     body: JSON.stringify({ stage: 'completed' })
   })
   assert(stageMove?.moved?.stage === 'completed', 'Pipeline board move should persist profile stage transition.')
+
+  const converted = await context.requestAs('advisor', `/api/profiles/${profile.id}/convert`, {
+    method: 'POST',
+    headers: advisorHeaders,
+    body: JSON.stringify({ expectedUpdatedAt: stageMove.moved.updatedAt })
+  })
+  assert(converted?.profile?.kind === 'client', 'Prospect should convert to an active client.')
+  assert(converted?.profile?.stage === null, 'Converted client should leave the pipeline board (null stage).')
+  const convertedBoard = converted.board
+  const boardStillListsProfile = (convertedBoard?.columns || []).some((column) =>
+    (column.cards || []).some((card) => card.id === profile.id)
+  )
+  assert(!boardStillListsProfile, 'Converted client should no longer appear on the pipeline board.')
 
   const formTemplate = await context.requestAs('advisor', '/api/forms/templates', {
     method: 'POST',

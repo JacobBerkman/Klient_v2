@@ -2168,6 +2168,87 @@ export function createStore({
       persist()
       return profile
     },
+    // Promote a prospect to an active client. This is a board-touching write
+    // (it vacates the prospect's stage), so it runs inside the same pipeline
+    // transaction machinery as reorderBoard: deferred audits, SQL rollback on
+    // failure, and a board-version bump so open kanban sessions reconcile.
+    convertProspectToClient(user, profileId, options = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.convertProspectToClient' })
+      requirePermission(user, 'profiles:write')
+      const { expectedUpdatedAt = null } = options || {}
+      return executePipelineTransaction(() => {
+        const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+          entityName: 'Profile'
+        })
+        if (profile.kind !== 'prospect') {
+          const error = new Error('Only prospects can be converted to clients.')
+          error.statusCode = 409
+          error.code = 'PROFILE_NOT_PROSPECT'
+          error.details = { profileId, kind: profile.kind }
+          throw error
+        }
+        // Same optimistic-concurrency contract as updateProfile's service-layer
+        // precondition (PROFILE_UPDATE_CONFLICT), enforced here inside the
+        // transaction so a concurrent edit between read and convert also loses.
+        if (expectedUpdatedAt && String(expectedUpdatedAt) !== String(profile.updatedAt)) {
+          const error = new Error('Profile update conflict: updatedAt precondition failed.')
+          error.statusCode = 409
+          error.code = 'PROFILE_UPDATE_CONFLICT'
+          error.details = {
+            expectedUpdatedAt,
+            currentUpdatedAt: profile.updatedAt,
+            mergePrompt: {
+              suggestion: 'Conflict detected: another change was saved first. Review latest data and retry.'
+            }
+          }
+          throw error
+        }
+
+        const fromStage = profile.stage || null
+        const convertedAt = now()
+        profile.kind = 'client'
+        profile.stage = null
+        profile.stageOrderIndex = null
+        profile.orderIndex = null
+        profile.pipelineVersion = null
+        if (profile.status === 'new') profile.status = 'active'
+        profile.updatedAt = convertedAt
+        upsertProfileRow(profile)
+
+        // Compact the vacated stage so the remaining prospects keep contiguous
+        // 1..n order indices (same hygiene as reorderBoard's previous-stage path).
+        if (fromStage) {
+          compactStageIndices(user.firmId, fromStage)
+        }
+        bumpBoardVersion(user.firmId)
+        // Terminal marker row. toStage:'converted' is a synthetic sentinel, not a
+        // real stage id: analytics' toAnalyticsStage() buckets any unknown stage
+        // into LEGACY_STAGE_BUCKET, and both the funnel and stage-aging loops
+        // iterate only kind==='prospect' profiles — a converted profile is now a
+        // client, so this row is never read for funnel/aging math. It exists only
+        // as an audit-grade "left the pipeline" marker in the profile's stage
+        // history, where 'converted' renders as a readable destination.
+        insertStageChange({
+          id: randomUUID(),
+          firmId: user.firmId,
+          clientId: profile.id,
+          fromStage,
+          toStage: 'converted',
+          changedByUserId: user.id,
+          changedAt: convertedAt
+        })
+        addAudit(
+          user.firmId,
+          user.id,
+          'profile',
+          profile.id,
+          'profile.converted',
+          { fromKind: 'prospect', toKind: 'client', fromStage },
+          { persist: false }
+        )
+        return { profile, board: buildBoardPayload(user) }
+      })
+    },
     addProfileTag(user, profileId, tag) {
       const firmContext = requireFirmContext(user, { method: 'store.addProfileTag' })
       requirePermission(user, 'profiles:write')
@@ -2505,6 +2586,18 @@ export function createStore({
           const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
             entityName: 'Profile'
           })
+
+          // Footgun guard: the board only holds prospects (clients have a null
+          // stage). A direct moveCard call targeting a converted client must NOT
+          // silently re-prospect it, so reject rather than reach the
+          // kind='prospect' assignment below.
+          if (profile.kind !== 'prospect') {
+            const error = new Error('Only prospects can be moved on the pipeline board.')
+            error.statusCode = 409
+            error.code = 'PROFILE_NOT_PROSPECT'
+            error.details = { profileId, kind: profile.kind }
+            throw error
+          }
 
           const currentVersion = Number(profile.pipelineVersion || 1)
           if (expectedVersion !== null && Number(expectedVersion) !== currentVersion) {

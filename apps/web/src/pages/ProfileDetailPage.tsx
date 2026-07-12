@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { api, routes } from '../lib/client'
+import { api, profilesApi, routes } from '../lib/client'
 import { formatDateTime, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
@@ -36,6 +36,8 @@ export function Component() {
   const [refreshKey, setRefreshKey] = useState(0)
   const [statusMessage, setStatusMessage] = useState('')
   const [noteBody, setNoteBody] = useState('')
+  const [confirmingConvert, setConfirmingConvert] = useState(false)
+  const [converting, setConverting] = useState(false)
 
   const { data, error, loading } = useAsync<ProfileDetailPayload>(
     () => api.get(routes.profileDetail(profileId)),
@@ -63,6 +65,22 @@ export function Component() {
       setRefreshKey((value) => value + 1)
     } catch (saveError) {
       setStatusMessage(saveError instanceof Error ? saveError.message : 'Profile save failed.')
+    }
+  }
+
+  async function handleConvert() {
+    if (!data) return
+    setConverting(true)
+    try {
+      await profilesApi.convert(profileId, { expectedUpdatedAt: data.profile.updatedAt })
+      setConfirmingConvert(false)
+      setStatusMessage('Prospect converted to client.')
+      setRefreshKey((value) => value + 1)
+    } catch (convertError) {
+      setConfirmingConvert(false)
+      setStatusMessage(convertError instanceof Error ? convertError.message : 'Conversion failed.')
+    } finally {
+      setConverting(false)
     }
   }
 
@@ -146,6 +164,47 @@ export function Component() {
             <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
               {statusMessage || 'Inline editing lives here instead of on the list page.'}
             </p>
+            {data.profile.kind === 'prospect' && hasGuard(user, 'canWriteProfiles') ? (
+              <div className="compact-stack" data-testid="profile-convert">
+                {confirmingConvert ? (
+                  <>
+                    <p className="muted compact">
+                      Converting promotes this prospect to an active client, removes it from the pipeline board, and
+                      clears its stage. This cannot be undone from here.
+                    </p>
+                    <div className="actions-row">
+                      <button
+                        type="button"
+                        className="secondary-button"
+                        disabled={converting}
+                        onClick={() => void handleConvert()}
+                      >
+                        Confirm convert to client
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost-button"
+                        disabled={converting}
+                        onClick={() => setConfirmingConvert(false)}
+                      >
+                        Cancel
+                      </button>
+                    </div>
+                  </>
+                ) : (
+                  <button
+                    type="button"
+                    className="secondary-button"
+                    onClick={() => {
+                      setStatusMessage('')
+                      setConfirmingConvert(true)
+                    }}
+                  >
+                    Convert to client
+                  </button>
+                )}
+              </div>
+            ) : null}
           </ActionPanel>
 
           <Card className="section-card">

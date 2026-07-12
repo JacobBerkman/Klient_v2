@@ -13,6 +13,9 @@ export class ProfileRepository {
   updateProfile(_firmContext, _profileId, _patch) {
     throwRepositoryScaffoldError('ProfileRepository', 'updateProfile')
   }
+  convertProfile(_firmContext, _profileId, _options = {}) {
+    throwRepositoryScaffoldError('ProfileRepository', 'convertProfile')
+  }
   addTag(_firmContext, _profileId, _tag) {
     throwRepositoryScaffoldError('ProfileRepository', 'addTag')
   }
