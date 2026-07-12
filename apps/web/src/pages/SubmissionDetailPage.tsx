@@ -10,6 +10,7 @@ import {
   sectionStorageKey,
   updateRepeaterRow
 } from '../lib/formSchema'
+import { isFieldVisible } from '../lib/formConditions'
 import { collaboratorSummary, formatDateTime, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
@@ -542,7 +543,9 @@ export function Component() {
                                   </div>
                                 </div>
                                 <div className="form-grid two-up">
-                                  {(section.fields || []).map((field) =>
+                                  {(section.fields || [])
+                                    .filter((field) => isFieldVisible(field, rowObject))
+                                    .map((field) =>
                                     inputControl(
                                       field,
                                       rowObject[field.key],
@@ -573,7 +576,9 @@ export function Component() {
                   <Card key={sectionStorageKey(section, sectionIndex)} className="section-card">
                     <h3>{section.title || `Section ${sectionIndex + 1}`}</h3>
                     <div className="form-grid two-up">
-                      {(section.fields || []).map((field) =>
+                      {(section.fields || [])
+                        .filter((field) => isFieldVisible(field, editorData))
+                        .map((field) =>
                         inputControl(
                           field,
                           editorData[field.key],

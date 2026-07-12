@@ -10,6 +10,7 @@ import {
   sectionStorageKey,
   updateRepeaterRow
 } from '../lib/formSchema'
+import { isFieldVisible } from '../lib/formConditions'
 import { formatDateTime, profileName } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import { autosaveStatusLabel, useAutosave } from '../lib/useAutosave'
@@ -334,7 +335,9 @@ function PortalDraftSection({
                   </button>
                 </div>
                 <div className="form-grid two-up">
-                  {(section.fields || []).map((field) =>
+                  {(section.fields || [])
+                    .filter((field) => isFieldVisible(field, rowObject))
+                    .map((field) =>
                     renderField(
                       field,
                       String(rowObject[field.key] || ''),
@@ -365,7 +368,9 @@ function PortalDraftSection({
       <h3>{section.title || `Section ${sectionIndex + 1}`}</h3>
       {sectionStatus}
       <div className="form-grid two-up">
-        {(section.fields || []).map((field) =>
+        {(section.fields || [])
+          .filter((field) => isFieldVisible(field, draftData))
+          .map((field) =>
           renderField(
             field,
             String(draftData[field.key] || ''),
