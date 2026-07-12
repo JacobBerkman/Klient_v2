@@ -195,7 +195,6 @@ export function Component() {
     revisionRef.current = Number(submission.revisionId || 1)
     leaseRef.current = submission.lock?.leaseId
     autosave.reset((submission.data as Record<string, unknown>) || {})
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [submission?.id, submission?.updatedAt, submission?.revisionId])
 
   async function refreshWithMessage(message: string) {
