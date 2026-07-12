@@ -32,6 +32,7 @@ export function createModules({ store, reads }) {
   return {
     policy,
     auth: createAuthService({ store }),
+    googleOidc: store.googleOidc,
     firmsUsers: createFirmsUsersService({ store, policy }),
     profiles: createProfilesService({ profileRepository, policy }),
     pipeline: createPipelineService({ store, policy }),

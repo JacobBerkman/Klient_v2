@@ -70,6 +70,51 @@ Required behavior and validation:
 - Failed login attempts are rate limited per email over a 15-minute window.
 - Operational policy for `AUTH_PROVIDER=local` in production: all staff users should enroll TOTP MFA (already built into local auth) as an operational requirement for SEC/SIPC compliance.
 
+## Google sign-in (optional)
+
+Klient supports a real Google (OpenID Connect) interactive sign-in that runs **alongside** the built-in local email+password provider. It is **not** the same as `AUTH_PROVIDER=oidc` (that selector is a reserved, not-yet-implemented federated-provider mode). Google sign-in is an additive login button on the existing local login form; local password login, TOTP MFA, backup codes, and password reset are unchanged.
+
+The implementation is a standards-correct Authorization Code flow with PKCE (S256), `state`, and `nonce` against Google's endpoints, using only `node:crypto` + `fetch` (no new dependencies). The `id_token` is validated locally: RS256 signature via Google's JWKS (with `kid` lookup and key caching), issuer (`https://accounts.google.com`), audience (your client id), `exp`/`iat` (with a small clock-skew allowance), `nonce` match, and `email_verified === true` (hard requirement).
+
+### Configuration (config-gated — off unless set)
+
+Google sign-in is enabled **only** when both `GOOGLE_CLIENT_ID` and `GOOGLE_CLIENT_SECRET` are set. When they are absent:
+
+- `GET /api/auth/google/start` and `GET /api/auth/google/callback` return `404`.
+- `GET /api/runtime` reports `googleAuthEnabled: false`, so the login page renders no "Sign in with Google" button.
+- There is zero behavior change to local auth.
+
+| Variable              | Required when             | Notes                                                                                                                        |
+| --------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `GOOGLE_CLIENT_ID`    | to enable Google sign-in  | OAuth 2.0 client id from the Google Cloud console. Enabling requires **both** id and secret.                                |
+| `GOOGLE_CLIENT_SECRET`| to enable Google sign-in  | OAuth 2.0 client secret. Never logged; the id_token/access_token are never persisted.                                       |
+| `GOOGLE_REDIRECT_URI` | optional                  | Exact callback URL registered in Google. If omitted, derived as `${APP_BASE_URL}/api/auth/google/callback`.                 |
+| `APP_BASE_URL`        | optional                  | The app's public origin (e.g. `https://app.example.com`). Used to derive `GOOGLE_REDIRECT_URI` when it is not set explicitly. |
+
+Startup validation (via `validateRuntimeConfig()`): if Google is enabled but no redirect URI can be resolved (`GOOGLE_REDIRECT_URI` unset **and** `APP_BASE_URL` unset), startup fails in production (warning in dev). In production the resolved redirect URI must be `https://`. Setting only one of `GOOGLE_CLIENT_ID`/`GOOGLE_CLIENT_SECRET` logs a warning and keeps Google sign-in disabled.
+
+### Google Cloud console steps
+
+1. In the Google Cloud console, create an **OAuth 2.0 Client ID** of type **Web application**.
+2. Under **Authorized redirect URIs**, add the exact callback URL: `https://<your-host>/api/auth/google/callback` (must match `GOOGLE_REDIRECT_URI`, or `${APP_BASE_URL}/api/auth/google/callback`).
+3. Copy the generated client id and secret into `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET`.
+4. Configure the OAuth consent screen for your organization (internal is recommended for a single-firm pilot).
+
+### Account handling — no auto-provisioning (invite-only pilot)
+
+A successful Google sign-in matches the **verified** Google email (case-insensitive) to an **existing** user. If no user matches, Klient does **not** create an account — it redirects back to `/login?error=oidc_no_account` with the message "No account exists for this Google email — ask your administrator for an invite." Provision users through the normal invite flow first; Google then federates their sign-in.
+
+### MFA interaction (Google sign-in skips local TOTP)
+
+When a user signs in through Google with a verified Google identity, the session is established directly and the **local TOTP/MFA step is skipped**, even if that user has TOTP enrolled locally. This is standard federated-IdP behavior: Google is the asserting identity provider for that login, so Klient does not re-challenge a local second factor. Enforce your second-factor policy at Google (e.g. require 2-Step Verification on the Google Workspace accounts). Local **password** logins are unaffected and still enforce TOTP MFA. This decision is documented in code at the top of `apps/api/src/auth/google-oidc.mjs`.
+
+### Security notes
+
+- The single-use `state` value is the CSRF/forgery defense for the GET callback (callbacks carry no CSRF token). State rows live in the `oidc_login_states` table (migration 012) with a ~10-minute TTL, are single-use (`used_at`), and are pruned on insert.
+- The PKCE `code_verifier` never leaves the server and is never logged.
+- No `id_token`/`access_token` is persisted; only the transient verified claims are used to look up the pilot user.
+- The session/CSRF cookies issued on Google sign-in use the same secure/SameSite flags as local login.
+
 ## Demo mode vs production
 
 Production deployments should keep `ENABLE_DEMO_MODE=false` (or omit it). Even if set to `true`, runtime forces demo mode off in production (`NODE_ENV=production`).

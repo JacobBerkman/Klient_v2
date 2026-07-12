@@ -111,6 +111,14 @@ test('production Node server contract supports auth and profile workflows', asyn
   assert.equal(typeof ready.checks.exportQueueNotStalled, 'boolean')
   assert.equal(ready.ready, true)
 
+  // Google interactive sign-in is config-gated: with no GOOGLE_CLIENT_ID/SECRET in
+  // this server's env it must report disabled and the start route must 404.
+  const { response: runtimeResponse, data: runtimePayload } = await jsonFetch(port, '/api/runtime')
+  assert.equal(runtimeResponse.status, 200)
+  assert.equal(runtimePayload.googleAuthEnabled, false)
+  const googleStartResponse = await fetch(`http://127.0.0.1:${port}/api/auth/google/start`, { redirect: 'manual' })
+  assert.equal(googleStartResponse.status, 404)
+
   const { response: loginResponse, data: login } = await jsonFetch(port, '/api/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

@@ -608,6 +608,7 @@ export interface ExportRuntimePayload {
 
 export interface RuntimePayload {
   enableDemoMode: boolean
+  googleAuthEnabled?: boolean
 }
 
 export interface ClientWorkspacePayload {
