@@ -30,6 +30,7 @@ import {
   getSessionByToken,
   getTemplateAggregateRow,
   getUploadIntent,
+  getUploadIntentById,
   getUserByEmail,
   getUserRow,
   insertOidcLoginState,
@@ -1309,7 +1310,17 @@ export function createStore({
     }
   }
 
-  function createUploadIntent({ firmId, clientId, fileName, contentType, checksum, category, source, retentionClass }) {
+  function createUploadIntent({
+    firmId,
+    clientId,
+    fileName,
+    contentType,
+    checksum,
+    category,
+    source,
+    retentionClass,
+    maxSizeBytes
+  }) {
     const id = randomUUID()
     const key = `${firmId}/documents/${clientId}/${Date.now()}-${id}-${sanitizeFileName(fileName || 'upload.bin')}`
     const object = normalizeObjectMetadata({
@@ -1327,6 +1338,12 @@ export function createStore({
       source: source || 'client',
       fileName: fileName || 'upload.bin',
       object,
+      // Per-flow byte ceiling the raw upload endpoint enforces alongside the
+      // global 25 MB hard cap; null means "hard cap only".
+      maxSizeBytes: Number(maxSizeBytes) > 0 ? Number(maxSizeBytes) : null,
+      // Raw-PUT lifecycle marker: 'pending' at presign time, flipped to 'stored'
+      // once bytes land at the reserved key. A single-use guard against re-PUTs.
+      status: 'pending',
       createdAt: now(),
       expiresAt: new Date(Date.now() + 15 * 60 * 1000).toISOString()
     }
@@ -3110,6 +3127,84 @@ export function createStore({
       if (!upload) throw new Error('Upload not found.')
       return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 })
     },
+    // --- Raw binary upload endpoint (PUT /api/storage/uploads/:uploadId) ------
+    // Capability-based, deliberately session-agnostic. The presign step (advisor,
+    // portal, or client — all already authenticated/authorized) mints a pending
+    // upload intent with an unguessable id and a reserved object key. Possessing
+    // that intent id + supplying the exact reserved key IS the authorization for
+    // the raw byte PUT: it works uniformly for cookie-session advisors and
+    // token-only portal callers without either a session lookup or a CSRF token,
+    // the same single-use-capability argument the OIDC `state` and portal tokens
+    // rely on. The route is CSRF-exempt for this reason (documented in server.mjs).
+    // Guards enforced here: intent exists, not expired, not already consumed
+    // ('stored'), reserved key matches, recorded content-type matches (when a
+    // specific one was presigned), and the byte length respects the per-flow and
+    // 25 MB hard caps. Success putObject's to the reserved key and flips the
+    // intent to 'stored' so the later completion POST can proceed byte-free.
+    async storeUploadedBytes({ uploadId, objectKey, contentType, body } = {}) {
+      const failWith = (message, statusCode) => {
+        const error = new Error(message)
+        error.statusCode = statusCode
+        return error
+      }
+      if (!uploadId) throw failWith('Upload id is required.', 400)
+      const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body || [])
+      const intent = getUploadIntentById(uploadId)
+      if (!intent) throw failWith('Upload intent not found or already consumed.', 404)
+      if (intent.expiresAt && new Date(intent.expiresAt).getTime() <= Date.now()) {
+        deleteUploadIntent(uploadId)
+        persist()
+        throw failWith('Upload intent expired.', 410)
+      }
+      if (intent.status === 'stored') {
+        throw failWith('Upload has already been stored for this intent.', 409)
+      }
+      const object = intent.object || {}
+      if (!object.bucket || !object.key) {
+        throw failWith('Upload intent has no reserved object key.', 409)
+      }
+      if (objectKey && objectKey !== object.key) {
+        throw failWith('Upload key does not match the reserved intent key.', 403)
+      }
+      // Only enforce content-type when a specific one was presigned; the generic
+      // application/octet-stream default is treated as "any".
+      const expectedContentType =
+        object.contentType && object.contentType !== 'application/octet-stream' ? object.contentType : null
+      if (expectedContentType && contentType && contentType !== expectedContentType) {
+        throw failWith('Content-Type does not match the presigned upload intent.', 400)
+      }
+      const HARD_CAP_BYTES = 25 * 1024 * 1024
+      const perFlowCap = Number(intent.maxSizeBytes) > 0 ? Number(intent.maxSizeBytes) : HARD_CAP_BYTES
+      const limitBytes = Math.min(HARD_CAP_BYTES, perFlowCap)
+      if (buffer.length > limitBytes) {
+        throw failWith(`Upload exceeds the ${Math.floor(limitBytes / (1024 * 1024))} MB limit.`, 413)
+      }
+      const stored = await objectStorage.putObject({
+        bucket: object.bucket,
+        key: object.key,
+        body: buffer,
+        contentType: expectedContentType || contentType || object.contentType,
+        retentionClass: object.retentionClass,
+        metadata: {
+          fileName: intent.fileName || 'upload.bin',
+          uploadIntentId: uploadId,
+          source: intent.source || 'client',
+          purpose: 'raw_upload'
+        }
+      })
+      intent.status = 'stored'
+      intent.storedAt = now()
+      intent.storedChecksum = stored.checksum || null
+      intent.storedSizeBytes = buffer.length
+      insertUploadIntent(intent)
+      persist()
+      return {
+        uploadId,
+        object: { ...object, checksum: stored.checksum || object.checksum || null },
+        sizeBytes: buffer.length,
+        checksum: stored.checksum || null
+      }
+    },
     // --- Advisor-facing document uploads (profile-scoped) --------------------
     // Uploads are stored in document_uploads with clientId === profileId, the
     // same relational source of truth the portal/client flows write to. Firm
@@ -3194,6 +3289,17 @@ export function createStore({
         })
         checksum = stored.checksum || checksum
         sizeBytes = fileBytes.length
+      } else if (intent && object.bucket && object.key) {
+        // Raw-PUT completion: the browser streamed the bytes to the reserved key
+        // out-of-band via PUT /api/storage/uploads/:uploadId, so no inline
+        // fileBytesBase64 is present. Confirm the object actually landed (and
+        // adopt its authoritative size/checksum) before recording the row —
+        // completing against a missing object would create a dangling upload.
+        const statResult = await objectStorage.statObject(object)
+        checksum = statResult?.checksum || checksum
+        if (Number.isFinite(Number(statResult?.sizeBytes))) {
+          sizeBytes = Number(statResult.sizeBytes)
+        }
       }
       const malwareScan = normalizeMalwareScan(input.malwareScan)
       const upload = {
@@ -4412,14 +4518,51 @@ export function createStore({
       persist()
       return { ok: true }
     },
+    // Template auto-build source PDFs are large, so they use the same presign ->
+    // raw PUT -> process handshake as document uploads instead of an inline body.
+    // The 20 MB per-flow ceiling matches the attachment/portal caps; the source
+    // PDF has no smaller intrinsic limit.
+    async createTemplateSourceUploadPresign(user, input = {}) {
+      requirePermission(user, 'templates:write')
+      const intent = createUploadIntent({
+        firmId: user.firmId,
+        clientId: 'template-source',
+        fileName: input.fileName || 'template.pdf',
+        contentType: input.contentType || 'application/pdf',
+        category: 'template_source',
+        source: 'advisor',
+        retentionClass: 'uploaded_document',
+        maxSizeBytes: 20 * 1024 * 1024
+      })
+      const presigned = await objectStorage.createPresignedUploadUrl({
+        ...intent.object,
+        expiresInSeconds: Number(input.expiresInSeconds || 900)
+      })
+      persist()
+      return { uploadId: intent.id, object: intent.object, presigned }
+    },
     async autoBuildTemplate(user, input = {}) {
       requirePermission(user, 'templates:write')
-      const pdfBytes =
+      let pdfBytes =
         typeof input.fileBytesBase64 === 'string'
           ? Buffer.from(input.fileBytesBase64, 'base64')
           : Array.isArray(input.fileBytes)
             ? Buffer.from(input.fileBytes)
             : null
+      // Raw-upload path: bytes were streamed to a reserved key via the presign +
+      // PUT /api/storage/uploads/:uploadId handshake. Load them from storage,
+      // then treat them identically to the legacy inline payload below.
+      let autoBuildIntent = null
+      if ((!pdfBytes || !pdfBytes.length) && input.uploadId) {
+        autoBuildIntent = getUploadIntent(input.uploadId, user.firmId)
+        if (!autoBuildIntent) throw new Error('Auto-build upload intent not found.')
+        const intentObject = autoBuildIntent.object || {}
+        if (!intentObject.bucket || !intentObject.key) {
+          throw new Error('Auto-build upload intent has no reserved object key.')
+        }
+        const fetched = await objectStorage.getObject(intentObject)
+        pdfBytes = fetched.body
+      }
       const fileName = input.fileName || 'uploaded.pdf'
       const legacyFields = Array.isArray(input.fields)
         ? input.fields
@@ -4490,6 +4633,19 @@ export function createStore({
           checksum: stored.checksum || checksum,
           sizeBytes: pdfBytes.length,
           retentionClass: 'uploaded_document'
+        }
+      }
+
+      // The auto-build handshake reserved a scratch object for the raw PUT; the
+      // canonical source PDF now lives under the template's own key, so retire the
+      // one-time intent and its scratch object (best effort) to avoid orphans.
+      if (autoBuildIntent) {
+        deleteUploadIntent(autoBuildIntent.id)
+        try {
+          await objectStorage.deleteObject(autoBuildIntent.object)
+        } catch {
+          // Scratch cleanup is non-critical; retention sweeps will not track it,
+          // but a stray temp object must never fail an otherwise-successful build.
         }
       }
 

@@ -30,21 +30,11 @@ export const handle = {
   breadcrumb: 'Profile detail'
 }
 
-// Advisor attachments are sent inline (base64) through the JSON body, which the
-// API caps at ~1MB. Keep the raw file comfortably under that envelope so the
-// upload fails fast client-side with a clear message instead of a network error.
-const MAX_ATTACHMENT_BYTES = 700_000
-
-async function fileToBase64(file: File): Promise<string> {
-  const buffer = await file.arrayBuffer()
-  const bytes = new Uint8Array(buffer)
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize))
-  }
-  return btoa(binary)
-}
+// Advisor attachments stream their raw bytes to the binary upload endpoint via a
+// presign -> PUT -> complete handshake, so they are no longer bounded by the ~1MB
+// JSON body limit. The 20MB ceiling mirrors the server's per-flow intent cap and
+// fails fast client-side with a clear message before the request is made.
+const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 
 export function Component() {
   const { profileId = '' } = useParams()
@@ -135,19 +125,18 @@ export function Component() {
     setUploading(true)
     setUploadMessage('')
     try {
-      const fileBytesBase64 = await fileToBase64(file)
       const contentType = file.type || 'application/octet-stream'
       const presign = await api.post<ProfileUploadPresignPayload>(routes.profileUploadsPresign(profileId), {
         fileName: file.name,
         contentType
       })
+      await api.uploadRaw(presign.uploadId, presign.object.key, file)
       await api.post(routes.profileUploads(profileId), {
         uploadId: presign.uploadId,
         object: presign.object,
         name: file.name,
         fileName: file.name,
         contentType,
-        fileBytesBase64,
         sizeBytes: file.size
       })
       setUploadMessage(`Uploaded "${file.name}".`)

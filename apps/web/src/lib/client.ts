@@ -118,7 +118,12 @@ export const routes = {
   portalDraftSection: (token: string, draftId: string, sectionId: string) =>
     joinPath('/api/portal', token, 'drafts', draftId, 'sections', sectionId),
   portalUploadsPresign: (token: string) => joinPath('/api/portal', token, 'uploads', 'presign'),
-  portalUploads: (token: string) => joinPath('/api/portal', token, 'uploads')
+  portalUploads: (token: string) => joinPath('/api/portal', token, 'uploads'),
+  documentTemplateAutoBuildPresign: () => '/api/templates/auto-build/presign',
+  // Raw binary upload endpoint. The reserved object key is echoed via ?key= so a
+  // mismatched key is rejected server-side.
+  storageUpload: (uploadId: string, objectKey: string) =>
+    `${joinPath('/api/storage/uploads', uploadId)}?key=${encodeURIComponent(objectKey)}`
 }
 
 export class ApiError extends Error {
@@ -354,6 +359,34 @@ class ApiClient {
       ...(payload !== undefined ? { body: JSON.stringify(payload) } : {}),
       ...options
     })
+  }
+
+  // Stream a File's raw bytes to the capability-authorized upload endpoint
+  // (PUT /api/storage/uploads/:uploadId). The unguessable intent id is the
+  // anti-CSRF token, so this route carries no CSRF header; the file is sent as an
+  // opaque binary body rather than base64-inlined in a JSON envelope.
+  async uploadRaw(uploadId: string, objectKey: string, file: File) {
+    const response = await fetch(routes.storageUpload(uploadId, objectKey), {
+      method: 'PUT',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': file.type || 'application/octet-stream' },
+      body: file
+    })
+    if (!response.ok) {
+      const errorBody = isJsonContentType(response) ? ((await response.json()) as Record<string, unknown>) : {}
+      const nested =
+        errorBody?.error && typeof errorBody.error === 'object' ? (errorBody.error as Record<string, unknown>) : {}
+      throw new ApiError(String(nested.message || errorBody.message || response.statusText || 'Upload failed.'), {
+        status: response.status,
+        requestId: response.headers.get('x-request-id')
+      })
+    }
+    return (await response.json()) as {
+      uploadId: string
+      object: { bucket: string; key: string; checksum?: string | null }
+      sizeBytes: number
+      checksum: string | null
+    }
   }
 
   delete<T>(path: string, payload?: unknown, options: RequestOptions = {}) {

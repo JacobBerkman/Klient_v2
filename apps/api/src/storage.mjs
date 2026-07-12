@@ -1032,6 +1032,17 @@ export function getUploadIntent(intentId, firmId) {
   return row?.payload ? JSON.parse(row.payload) : null
 }
 
+// Unscoped lookup by intent id alone. Used by the raw binary upload endpoint
+// (PUT /api/storage/uploads/:uploadId), where the unguessable intent id IS the
+// capability: the raw PUT is authorized by possessing a live intent + a matching
+// reserved object key, not by a firm-scoped session (portal uploads have no
+// session). Firm scoping is still enforced downstream when the completion POST
+// consumes the intent via the firm-scoped getUploadIntent().
+export function getUploadIntentById(intentId) {
+  const row = db.prepare('SELECT payload FROM pending_upload_intents WHERE id = ?').get(intentId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
 export function deleteUploadIntent(intentId) {
   const result = db.prepare('DELETE FROM pending_upload_intents WHERE id = ?').run(intentId)
   return result.changes > 0

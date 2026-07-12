@@ -262,7 +262,19 @@ function getExpectedOrigins(req) {
 }
 
 function isCsrfExempt(pathname) {
-  return pathname === CSRF_BOOTSTRAP_PATH || CSRF_EXEMPT_PATHS.has(pathname) || pathname.startsWith('/api/portal/')
+  return (
+    pathname === CSRF_BOOTSTRAP_PATH ||
+    CSRF_EXEMPT_PATHS.has(pathname) ||
+    pathname.startsWith('/api/portal/') ||
+    // The raw binary upload endpoint (PUT /api/storage/uploads/:uploadId) is a
+    // capability URL: the unguessable, single-use, server-minted upload intent id
+    // in the path is itself the anti-CSRF/anti-forgery token, exactly as the
+    // portal token and the OIDC `state` parameter are for their routes. It is
+    // also reachable by portal-token callers that have no CSRF token or session,
+    // so a header check would be impossible for them. Authorization is enforced
+    // in store.storeUploadedBytes (live intent + exact reserved-key match).
+    pathname.startsWith('/api/storage/uploads/')
+  )
 }
 
 function validateOriginAndReferer(req, requestId) {
@@ -1415,6 +1427,25 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
+      // Raw binary upload endpoint. Provider-agnostic (server-side putObject to
+      // the reserved key) and capability-authorized by the upload intent id in the
+      // path — see isCsrfExempt() and store.storeUploadedBytes() for the auth model.
+      // Accepts the raw file bytes (parseRawBody hard-caps at 25 MB; the intent's
+      // per-flow ceiling is enforced in the store). The exact reserved object key
+      // is echoed back via ?key= so a mismatched key is rejected.
+      const storageUploadMatch = pathname.match(/^\/api\/storage\/uploads\/([^/]+)$/)
+      if (storageUploadMatch && req.method === 'PUT') {
+        const [, rawUploadId] = storageUploadMatch
+        const body = await parseRawBody(req)
+        const result = await modules.forms.storeUploadedBytes({
+          uploadId: decodeURIComponent(rawUploadId),
+          objectKey: url.searchParams.get('key') || null,
+          contentType: String(req.headers['content-type'] || '').split(';')[0].trim() || null,
+          body
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       const profileUploadPresignMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/uploads\/presign$/)
       if (profileUploadPresignMatch && req.method === 'POST') {
         const [, id] = profileUploadPresignMatch
@@ -1893,6 +1924,13 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canEditTemplate')
         const result = modules.templates.create(user, await parseBody(req))
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/templates/auto-build/presign' && req.method === 'POST') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canEditTemplate')
+        const result = await modules.templates.autoBuildPresign(user, await parseBody(req))
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
