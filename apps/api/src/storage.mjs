@@ -328,18 +328,16 @@ function ensureQueueSeededFromState(state) {
 }
 
 function syncQueryTables(state) {
-  replaceRows('firms', state.firms || [], (firm) => [firm.id, firm.name, firm.slug, JSON.stringify(firm)])
-  replaceRows('users', state.users || [], (user) => [user.id, user.firmId, user.email, user.role, JSON.stringify(user)])
+  // firms, users, and households are deliberately absent: since migration 009
+  // these three tables are the sole source of truth, written by upsertFirmRow /
+  // upsertUserRow / upsertHouseholdRow — never a destructive resync from blob
+  // state. A blob resync here would silently clobber auth-critical in-place
+  // mutations (failed-login counters, lockout windows, MFA secrets) the moment
+  // a stale in-memory mirror was written back.
   // profiles is deliberately absent: since migration 006 the profiles table
   // is the source of truth, written by upsertProfileRow — never a destructive
   // resync from blob state. Same for stage_changes, board_versions, and
   // pipeline_stage_records.
-  replaceRows('households', state.households || [], (household) => [
-    household.id,
-    household.firmId,
-    household.name,
-    JSON.stringify(household)
-  ])
   replaceRows('form_templates', state.formTemplates || [], (template) => [
     template.id,
     template.firmId,
@@ -366,6 +364,183 @@ function syncQueryTables(state) {
   // from blob state. Same for document_uploads, portal_links, and invites.
   // audit_events is deliberately absent: it is an append-only source of truth
   // written by insertAuditEvent, never a destructive resync from blob state.
+}
+
+// --- Identity repositories (sources of truth) --------------------------------
+// firms, users, and households are the IDENTITY / TENANCY core. Since migration
+// 009 these tables are authoritative: the canonical object lives in the payload
+// JSON column (round-tripped byte-exact — a user's payload carries the
+// password hash, MFA totpSecret, backup codes, and security counters), and hot
+// columns (ids, tenancy, email, role, name, slug) are promoted for keying and
+// firm-scoped queries. Every in-place mutation MUST call the matching upsert:
+// with these tables removed from syncQueryTables, persist() no longer flushes
+// them, so a missed upsert silently drops that mutation (e.g. a failed-login
+// counter that never persists → lockout never triggers).
+
+const FIRM_UPSERT_SQL = `
+  INSERT INTO firms (id, name, slug, payload)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    name = excluded.name,
+    slug = excluded.slug,
+    payload = excluded.payload
+`
+
+export function upsertFirmRow(firm) {
+  db.prepare(FIRM_UPSERT_SQL).run(firm.id, firm.name ?? '', firm.slug ?? '', JSON.stringify(firm))
+  return firm
+}
+
+export function getFirmRow(firmId) {
+  if (!firmId) return null
+  const row = db.prepare('SELECT payload FROM firms WHERE id = ?').get(firmId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+export function getFirmBySlug(slug) {
+  if (!slug) return null
+  const row = db.prepare('SELECT payload FROM firms WHERE slug = ? ORDER BY rowid ASC').get(slug)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// Insertion order (rowid ASC — the upsert is ON CONFLICT DO UPDATE, which
+// preserves rowid) mirrors the old state.firms push order.
+export function listFirmRows() {
+  return db
+    .prepare('SELECT payload FROM firms ORDER BY rowid ASC')
+    .all()
+    .map((row) => JSON.parse(row.payload))
+}
+
+const USER_UPSERT_SQL = `
+  INSERT INTO users (id, firm_id, email, role, payload)
+  VALUES (?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    firm_id = excluded.firm_id,
+    email = excluded.email,
+    role = excluded.role,
+    payload = excluded.payload
+`
+
+export function upsertUserRow(user) {
+  db.prepare(USER_UPSERT_SQL).run(
+    user.id,
+    user.firmId ?? 'unknown',
+    user.email ?? '',
+    user.role ?? '',
+    JSON.stringify(user)
+  )
+  return user
+}
+
+export function getUserRow(userId) {
+  if (!userId) return null
+  const row = db.prepare('SELECT payload FROM users WHERE id = ?').get(userId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// Login treats email as globally unique (the local provider authenticates by
+// email alone), so this returns the first user with a matching email in
+// insertion order. Email is stored already lowercase-normalized by the write
+// paths, so callers pass a normalized email.
+export function getUserByEmail(email) {
+  if (!email) return null
+  const row = db.prepare('SELECT payload FROM users WHERE email = ? ORDER BY rowid ASC').get(email)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+export function listUserRows({ firmId = null } = {}) {
+  const rows = firmId
+    ? db.prepare('SELECT payload FROM users WHERE firm_id = ? ORDER BY rowid ASC').all(firmId)
+    : db.prepare('SELECT payload FROM users ORDER BY rowid ASC').all()
+  return rows.map((row) => JSON.parse(row.payload))
+}
+
+export function listUsersByFirm(firmId) {
+  return listUserRows({ firmId })
+}
+
+export function deleteUserRow(userId) {
+  const result = db.prepare('DELETE FROM users WHERE id = ?').run(userId)
+  return result.changes > 0
+}
+
+const HOUSEHOLD_UPSERT_SQL = `
+  INSERT INTO households (id, firm_id, name, payload)
+  VALUES (?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    firm_id = excluded.firm_id,
+    name = excluded.name,
+    payload = excluded.payload
+`
+
+export function upsertHouseholdRow(household) {
+  db.prepare(HOUSEHOLD_UPSERT_SQL).run(
+    household.id,
+    household.firmId ?? 'unknown',
+    household.name ?? '',
+    JSON.stringify(household)
+  )
+  return household
+}
+
+// Unscoped by default: tenancy validation happens in the store via
+// validateTenantEntityOwnership so a cross-firm id surfaces the same
+// "Household not found." tenancy error the in-memory find produced.
+export function getHouseholdRow(householdId, { firmId = null } = {}) {
+  if (!householdId) return null
+  const row = firmId
+    ? db.prepare('SELECT payload FROM households WHERE id = ? AND firm_id = ?').get(householdId, firmId)
+    : db.prepare('SELECT payload FROM households WHERE id = ?').get(householdId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+export function listHouseholdRows({ firmId = null } = {}) {
+  const rows = firmId
+    ? db.prepare('SELECT payload FROM households WHERE firm_id = ? ORDER BY rowid ASC').all(firmId)
+    : db.prepare('SELECT payload FROM households ORDER BY rowid ASC').all()
+  return rows.map((row) => JSON.parse(row.payload))
+}
+
+export function deleteHouseholdRow(householdId, firmId) {
+  const result = db.prepare('DELETE FROM households WHERE id = ? AND firm_id = ?').run(householdId, firmId)
+  return result.changes > 0
+}
+
+// Blob-to-table seeding for freshly seeded states (whose demo firm/admin/
+// household exist only in memory) and any legacy blob that predates migration
+// 009. Keyed INSERT OR IGNORE keeps it idempotent against the migration
+// backfill and the rows the old projection left behind.
+function ensureIdentityEntitiesSeededFromState(state) {
+  const insertFirm = db.prepare(`
+    INSERT OR IGNORE INTO firms (id, name, slug, payload)
+    VALUES (?, ?, ?, ?)
+  `)
+  for (const firm of state.firms || []) {
+    if (!firm || typeof firm !== 'object' || !firm.id) continue
+    insertFirm.run(firm.id, firm.name ?? '', firm.slug ?? '', JSON.stringify(firm))
+  }
+  const insertUser = db.prepare(`
+    INSERT OR IGNORE INTO users (id, firm_id, email, role, payload)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  for (const user of state.users || []) {
+    if (!user || typeof user !== 'object' || !user.id) continue
+    insertUser.run(user.id, user.firmId ?? 'unknown', user.email ?? '', user.role ?? '', JSON.stringify(user))
+  }
+  const insertHousehold = db.prepare(`
+    INSERT OR IGNORE INTO households (id, firm_id, name, payload)
+    VALUES (?, ?, ?, ?)
+  `)
+  for (const household of state.households || []) {
+    if (!household || typeof household !== 'object' || !household.id) continue
+    insertHousehold.run(
+      household.id,
+      household.firmId ?? 'unknown',
+      household.name ?? '',
+      JSON.stringify(household)
+    )
+  }
 }
 
 // --- Audit repository (append-only source of truth) --------------------------
@@ -1631,7 +1806,9 @@ function ensureAuthEntitiesSeededFromState(state) {
 
 function syncAnalyticsMaterialized(state) {
   db.exec('DELETE FROM analytics_materialized')
-  const firms = state.firms || []
+  // firms/users are relational sources of truth (the blob serializes empty
+  // arrays), so the analytics aggregation reads them from their tables.
+  const firms = listFirmRows()
   const byFirm = new Map()
   firms.forEach((firm) =>
     byFirm.set(firm.id, {
@@ -1683,7 +1860,7 @@ function syncAnalyticsMaterialized(state) {
       summary.formCompletionRates[key] = bucket
     })
 
-  const usersById = new Map((state.users || []).map((user) => [user.id, user]))
+  const usersById = new Map(listUserRows().map((user) => [user.id, user]))
   // notes is the relational source of truth (the blob serializes an empty
   // array), so notes-authored counts aggregate over the table. createdByUserId
   // is not a promoted column, so it is read from the payload JSON.
@@ -1759,6 +1936,9 @@ export function closeDatabase() {
 }
 
 function stripRelationalMirrors(state) {
+  state.firms = []
+  state.users = []
+  state.households = []
   state.exportJobs = []
   state.auditEvents = []
   state.formSubmissions = []
@@ -1792,6 +1972,7 @@ export function loadState(seedFactory) {
     // sole sources of truth: seed them once from the blob (old databases whose
     // tables predate the cutover), then strip the mirrors from the blob so
     // they never get written back.
+    ensureIdentityEntitiesSeededFromState(state)
     ensureQueueSeededFromState(state)
     ensureAuditSeededFromState(state)
     ensureSubmissionEntitiesSeededFromState(state)
@@ -1800,6 +1981,9 @@ export function loadState(seedFactory) {
     ensureAuthEntitiesSeededFromState(state)
     const hadBlobMirrors =
       [
+        state.firms,
+        state.users,
+        state.households,
         state.exportJobs,
         state.auditEvents,
         state.formSubmissions,
@@ -1840,6 +2024,7 @@ export function loadState(seedFactory) {
 
   const state = seedFactory()
   saveState(state)
+  ensureIdentityEntitiesSeededFromState(state)
   ensureQueueSeededFromState(state)
   ensureAuditSeededFromState(state)
   ensureSubmissionEntitiesSeededFromState(state)
@@ -1852,14 +2037,18 @@ export function loadState(seedFactory) {
 }
 
 export function saveState(state) {
-  // export_jobs, sessions, audit_events, form_submissions, draft_step_states,
-  // pending_upload_intents, profiles, stage_changes, board_versions,
-  // pipeline_stage_records, notes, document_uploads, portal_links, and invites
-  // are relational sources of truth: the blob keeps empty arrays/maps for them
-  // purely for shape compatibility, so a stale in-memory mirror can never
-  // clobber targeted relational writes.
+  // firms, users, households, export_jobs, sessions, audit_events,
+  // form_submissions, draft_step_states, pending_upload_intents, profiles,
+  // stage_changes, board_versions, pipeline_stage_records, notes,
+  // document_uploads, portal_links, and invites are relational sources of
+  // truth: the blob keeps empty arrays/maps for them purely for shape
+  // compatibility, so a stale in-memory mirror can never clobber targeted
+  // relational writes.
   const payload = JSON.stringify({
     ...state,
+    firms: [],
+    users: [],
+    households: [],
     exportJobs: [],
     sessions: [],
     auditEvents: [],

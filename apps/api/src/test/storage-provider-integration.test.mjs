@@ -82,7 +82,9 @@ function bootstrapClientUser(store, firmId) {
     role: 'client',
     createdAt: new Date().toISOString()
   }
-  store.state.users.push(clientUser)
+  // users is a source-of-truth table now (migration 009): write through the
+  // store hook instead of pushing onto a stripped blob array.
+  store.__upsertUserForTest(clientUser)
   return {
     id: clientUser.id,
     firmId,
@@ -144,8 +146,8 @@ async function runContractSuite(name, buildProvider) {
     })
 
     const store = createStore({ objectStorage })
-    const firmId = store.state.firms[0].id
-    const admin = { ...store.state.users.find((entry) => entry.firmId === firmId && entry.role === 'admin') }
+    const firmId = store.__listFirmsForTest()[0].id
+    const admin = { ...store.__listUsersForTest(firmId).find((entry) => entry.role === 'admin') }
     const client = bootstrapClientUser(store, firmId)
 
     const presign = await store.createClientUploadPresign(client, {

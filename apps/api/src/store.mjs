@@ -21,12 +21,16 @@ import {
   getDocumentUploadRow,
   getDraftSectionState,
   getExportJob,
+  getFirmRow,
   getFormSubmissionById,
+  getHouseholdRow,
   getPipelineStageRecordRow,
   getPortalLinkRow,
   getProfileRow,
   getSessionByToken,
   getUploadIntent,
+  getUserByEmail,
+  getUserRow,
   incrementBoardVersionGuarded,
   insertAuditEvent,
   insertStageChange,
@@ -37,8 +41,10 @@ import {
   listDocumentUploadRowsByFirmClient,
   listDraftSectionStates,
   listExportQueueJobs,
+  listFirmRows,
   listFormSubmissionsByClient,
   listFormSubmissionsByFirm,
+  listHouseholdRows,
   listNoteRowsByFirm,
   listNoteRowsByProfile,
   listPipelineStageRecordRows,
@@ -47,6 +53,7 @@ import {
   listProspectStageIds,
   listStageChangeRowsByClient,
   listStageChangeRowsByFirm,
+  listUserRows,
   loadState,
   processExportQueueTickAsync,
   runInTransaction,
@@ -55,14 +62,17 @@ import {
   touchSession,
   updateFormSubmissionGuarded,
   upsertDocumentUploadRow,
+  upsertFirmRow,
   upsertFormSubmission,
+  upsertHouseholdRow,
   upsertInviteRow,
   upsertNoteRow,
   upsertPipelineStageRecord,
   upsertPortalLinkRow,
   upsertProfileRow,
   upsertPasswordResetRow,
-  upsertSession
+  upsertSession,
+  upsertUserRow
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
@@ -858,12 +868,19 @@ function migrateTemplateSystems(state) {
 // profile-record normalization pass were ported into migration 006: profiles
 // are relational rows now, so boot-time blob fixups no longer apply to them.
 
-function migrateFirmStageConfig(state) {
-  state.firms = (state.firms || []).map((firm) => ({
-    ...firm,
-    stageConfig: normalizeFirmStageConfig(firm?.stageConfig),
-    customFieldSchema: normalizeCustomFieldSchema(firm?.customFieldSchema)
-  }))
+// Firms are relational rows now (migration 009), and migration 006 already
+// ported this normalization for legacy blob firms. This boot pass keeps
+// freshly seeded / newly registered firms eagerly normalized (stageConfig
+// order/keys, customFieldSchema shape) by rewriting each firm row through a
+// targeted upsert instead of mutating a blob-resident array.
+function migrateFirmStageConfig() {
+  for (const firm of listFirmRows()) {
+    upsertFirmRow({
+      ...firm,
+      stageConfig: normalizeFirmStageConfig(firm?.stageConfig),
+      customFieldSchema: normalizeCustomFieldSchema(firm?.customFieldSchema)
+    })
+  }
 }
 
 function pipelineConflict(message, details = {}) {
@@ -1194,7 +1211,7 @@ export function createStore({
 } = {}) {
   const state = loadState(() => seedState({ objectStorage }))
   migrateTemplateSystems(state)
-  migrateFirmStageConfig(state)
+  migrateFirmStageConfig()
   saveState(state)
   state.pipelineStagesByFirm ||= {}
   // Sessions live exclusively in the sessions table: migration 002 backfilled
@@ -1423,19 +1440,18 @@ export function createStore({
     return ensureBoardVersionRow(firmId)
   }
 
+  // firms is a relational source of truth (migration 009): scoped row read.
   function getFirmRecord(firmId) {
-    return state.firms.find((firm) => firm.id === firmId) || null
+    return getFirmRow(firmId)
   }
 
   function getFirmStageConfig(firmId) {
     const firm = getFirmRecord(firmId)
     if (!firm) return createDefaultFirmStageConfig()
-    if (!firm.stageConfig) {
-      firm.stageConfig = createDefaultFirmStageConfig()
-    } else {
-      firm.stageConfig = normalizeFirmStageConfig(firm.stageConfig)
-    }
-    return firm.stageConfig
+    // Lazy normalization on read; the firm row is normalized at boot
+    // (migrateFirmStageConfig) so this is a stable, idempotent transform and
+    // does not need to be written back here.
+    return firm.stageConfig ? normalizeFirmStageConfig(firm.stageConfig) : createDefaultFirmStageConfig()
   }
 
   function getActiveFirmStages(firmId) {
@@ -1512,7 +1528,7 @@ export function createStore({
   }
 
   function getFirmPipelineStageDefinitions(firmId) {
-    const firm = state.firms.find((entry) => entry.id === firmId) || null
+    const firm = getFirmRow(firmId)
     const stageRecords = firmPipelineStageRecords(firmId)
     const configured =
       (stageRecords.length > 0 &&
@@ -1622,7 +1638,7 @@ export function createStore({
   }
 
   function getFirmStageMetadata(firmId) {
-    const firm = state.firms.find((entry) => entry.id === firmId) || null
+    const firm = getFirmRow(firmId)
     const analyticsStages = resolveFirmAnalyticsStages(firm)
     const definitionsById = new Map(getFirmPipelineStageDefinitions(firmId).map((stage) => [stage.id, stage]))
     return analyticsStages.stageOrder.map((stageId, index) => {
@@ -1769,8 +1785,10 @@ export function createStore({
     pruneExpiredSessions()
     const session = getSessionByToken(token)
     if (!session) throw new Error('Authentication required.')
-    const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId)
-    if (!user) throw new Error('Authentication required.')
+    // users is a relational source of truth (migration 009): scoped row read,
+    // firm-matched exactly like the old in-memory find.
+    const user = getUserRow(session.userId)
+    if (!user || user.firmId !== session.firmId) throw new Error('Authentication required.')
     // Activity touches happen on EVERY authenticated request and used to call
     // persist(), serializing the entire state blob and rebuilding ~10 derived
     // tables per GET. A single-row UPDATE on the sessions table replaces that;
@@ -1786,8 +1804,8 @@ export function createStore({
     pruneExpiredSessions()
     const session = getSessionByToken(token)
     if (!session) throw new Error('Authentication required.')
-    const user = state.users.find((entry) => entry.id === session.userId && entry.firmId === session.firmId)
-    if (!user) throw new Error('Authentication required.')
+    const user = getUserRow(session.userId)
+    if (!user || user.firmId !== session.firmId) throw new Error('Authentication required.')
     invalidateSession(session, reason)
     persist()
     return createSession(user)
@@ -1838,8 +1856,11 @@ export function createStore({
     // table is the only place sessions live, so providers revoke through it.
     const common = { state, persist, createSession, addAudit, deleteSessionsByUser }
     if (runtime.authProvider === 'local') return createLocalAuthProvider(common)
-    if (runtime.authProvider === 'oidc') return createOidcAuthProvider(common)
-    if (runtime.authProvider === 'saml') return createSamlAuthProvider(common)
+    // firms/users are relational sources of truth (migration 009): the federated
+    // providers upsert synced identities into their tables.
+    const federatedCommon = { ...common, upsertUserRow, upsertFirmRow }
+    if (runtime.authProvider === 'oidc') return createOidcAuthProvider(federatedCommon)
+    if (runtime.authProvider === 'saml') return createSamlAuthProvider(federatedCommon)
     throw new Error(`Unsupported auth provider: ${runtime.authProvider}.`)
   }
 
@@ -1867,12 +1888,12 @@ export function createStore({
       const prospects = profiles.filter((profile) => profile.kind === 'prospect')
       const clients = profiles.filter((profile) => profile.kind === 'client')
       return {
-        firm: state.firms.find((firm) => firm.id === user.firmId),
+        firm: getFirmRow(user.firmId),
         stats: {
           totalProfiles: profiles.length,
           prospects: prospects.length,
           clients: clients.length,
-          households: state.households.filter((household) => household.firmId === user.firmId).length,
+          households: listHouseholdRows({ firmId: user.firmId }).length,
           forms: countFormSubmissionsByFirm(user.firmId),
           exports: listExportQueueJobs().filter((job) => job.firmId === user.firmId).length
         },
@@ -1904,7 +1925,7 @@ export function createStore({
         entityName: 'Profile'
       })
       const household = profile.householdId
-        ? state.households.find((entry) => entry.id === profile.householdId && entry.firmId === user.firmId)
+        ? getHouseholdRow(profile.householdId, { firmId: user.firmId })
         : null
       const householdMembers = household
         ? state.householdMembers.filter((entry) => entry.householdId === household.id && entry.firmId === user.firmId)
@@ -2036,14 +2057,14 @@ export function createStore({
     },
     getProfileCustomFieldSchema(user) {
       requirePermission(user, 'profiles:read')
-      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      const firm = getFirmRow(user.firmId)
       if (!firm) throw new Error('Firm not found.')
       firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
       return deepClone(firm.customFieldSchema)
     },
     createProfileCustomField(user, input = {}) {
       requirePermission(user, 'users:manage')
-      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      const firm = getFirmRow(user.firmId)
       if (!firm) throw new Error('Firm not found.')
       firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
       const key = String(input?.key || '')
@@ -2076,12 +2097,15 @@ export function createStore({
       }
       firm.customFieldSchema.fields.push(field)
       firm.customFieldSchema.updatedAt = now()
+      // firms is a source-of-truth table now: the mutated firm must be upserted
+      // (persist() no longer flushes firm rows).
+      upsertFirmRow(firm)
       persist()
       return deepClone(field)
     },
     updateProfileCustomField(user, fieldKey, patch = {}) {
       requirePermission(user, 'users:manage')
-      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      const firm = getFirmRow(user.firmId)
       if (!firm) throw new Error('Firm not found.')
       firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
       const field = firm.customFieldSchema.fields.find((entry) => entry.key === fieldKey)
@@ -2109,12 +2133,13 @@ export function createStore({
             : {}
       }
       firm.customFieldSchema.updatedAt = now()
+      upsertFirmRow(firm)
       persist()
       return deepClone(field)
     },
     previewProfileCustomFieldSchema(user, input = {}) {
       requirePermission(user, 'users:manage')
-      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      const firm = getFirmRow(user.firmId)
       if (!firm) throw new Error('Firm not found.')
       firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
       const rows = Array.isArray(input?.rows) ? input.rows : []
@@ -2178,7 +2203,7 @@ export function createStore({
     },
     deleteProfileCustomField(user, fieldKey) {
       requirePermission(user, 'users:manage')
-      const firm = state.firms.find((entry) => entry.id === user.firmId)
+      const firm = getFirmRow(user.firmId)
       if (!firm) throw new Error('Firm not found.')
       firm.customFieldSchema = normalizeCustomFieldSchema(firm.customFieldSchema)
       const before = firm.customFieldSchema.fields.length
@@ -2191,6 +2216,7 @@ export function createStore({
         throw error
       }
       firm.customFieldSchema.updatedAt = now()
+      upsertFirmRow(firm)
       persist()
       return { ok: true }
     },
@@ -2465,7 +2491,10 @@ export function createStore({
         primaryClientId: input.primaryClientId,
         createdAt: now()
       }
-      state.households.push(household)
+      // households is a source-of-truth table now: targeted upsert instead of
+      // pushing onto a blob array. householdMembers stays blob-resident (out of
+      // scope), so the persist() below still flushes the member side.
+      upsertHouseholdRow(household)
       state.householdMembers.push({
         householdId: household.id,
         clientId: input.primaryClientId,
@@ -2473,9 +2502,6 @@ export function createStore({
         firmId: user.firmId,
         createdAt: household.createdAt
       })
-      // Mixed write (expected in this phase): households stay blob-resident,
-      // the profile's household linkage is a targeted row update, and the
-      // persist() below flushes the household side of the mutation.
       const profile = getProfileRow(input.primaryClientId, { firmId: user.firmId })
       if (profile) {
         profile.householdId = household.id
@@ -2488,11 +2514,9 @@ export function createStore({
     addHouseholdMember(user, householdId, input) {
       const firmContext = requireFirmContext(user, { method: 'store.addHouseholdMember' })
       requirePermission(user, 'households:write')
-      const household = validateTenantEntityOwnership(
-        firmContext,
-        state.households.find((entry) => entry.id === householdId),
-        { entityName: 'Household' }
-      )
+      const household = validateTenantEntityOwnership(firmContext, getHouseholdRow(householdId), {
+        entityName: 'Household'
+      })
       validateTenantEntityOwnership(firmContext, getProfileRow(input.clientId), {
         entityName: 'Profile'
       })
@@ -2509,8 +2533,7 @@ export function createStore({
     },
     listHouseholds(user) {
       requirePermission(user, 'households:read')
-      return state.households
-        .filter((entry) => entry.firmId === user.firmId)
+      return listHouseholdRows({ firmId: user.firmId })
         .map((household) => ({
           ...household,
           members: state.householdMembers.filter(
@@ -3024,7 +3047,9 @@ export function createStore({
       if (userId === actorUserId) throw new Error('You are already a collaborator on this draft.')
       const permission = String(input.permission || '').toLowerCase() === 'write' ? 'write' : 'read'
       submission.collaborators = normalizeDraftCollaborators(submission)
-      const existingUser = state.users.find((entry) => entry.id === userId && entry.firmId === user.firmId)
+      const collaboratorCandidate = getUserRow(userId)
+      const existingUser =
+        collaboratorCandidate && collaboratorCandidate.firmId === user.firmId ? collaboratorCandidate : null
       if (!existingUser) throw new Error('Collaborator user not found.')
       if (submission.collaborators.some((entry) => entry.userId === userId))
         throw new Error('Collaborator already added.')
@@ -3078,7 +3103,7 @@ export function createStore({
       const formSchemaResult = validateFormDefinitionSchema(input.formSchema || { sections: [] }, {
         contextPath: '/formSchema'
       })
-      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
+      const allowedSourcePaths = profileSourcePathsForFirm(getFirmRow(user.firmId))
       collectFormSchemaSourcePaths(formSchemaResult.schema.sections, allowedSourcePaths)
       const normalizedExtractedFields = normalizeExtractedFields(input.extractedFields || input.requiredPdfFields || [])
       const requiredPdfFields = normalizeRequiredPdfFields(normalizedExtractedFields)
@@ -3154,7 +3179,7 @@ export function createStore({
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, {
         contextPath: '/formSchema'
       })
-      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
+      const allowedSourcePaths = profileSourcePathsForFirm(getFirmRow(user.firmId))
       collectFormSchemaSourcePaths(formSchemaResult.schema.sections, allowedSourcePaths)
       const requiredPdfFields = normalizeRequiredPdfFields(input.requiredPdfFields || template.extractedFields || [])
       const normalizedMappings = validateMappingRules(mappings || [], {
@@ -3343,7 +3368,7 @@ export function createStore({
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, {
         contextPath: '/formSchema'
       })
-      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
+      const allowedSourcePaths = profileSourcePathsForFirm(getFirmRow(user.firmId))
       collectFormSchemaSourcePaths(formSchemaResult.schema.sections, allowedSourcePaths)
       let issues = []
       try {
@@ -3414,7 +3439,7 @@ export function createStore({
       const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, {
         contextPath: '/formSchema'
       })
-      const allowedSourcePaths = profileSourcePathsForFirm(state.firms.find((entry) => entry.id === user.firmId))
+      const allowedSourcePaths = profileSourcePathsForFirm(getFirmRow(user.firmId))
       collectFormSchemaSourcePaths(formSchemaResult.schema.sections, allowedSourcePaths)
       validateMappingRules(template.mappings || [], {
         contextPath: '/mappings',
@@ -3692,7 +3717,7 @@ export function createStore({
         .toLowerCase()
       const limit = Math.min(Math.max(Number.parseInt(query.limit, 10) || 20, 1), 50)
       const includeSelf = query.includeSelf === true || query.includeSelf === 'true'
-      const firmUsers = state.users.filter((entry) => entry.firmId === user.firmId)
+      const firmUsers = listUserRows({ firmId: user.firmId })
       if (mode === 'lookup') {
         const users = firmUsers
           .filter((entry) => (includeSelf ? true : entry.id !== user.id))
@@ -3759,7 +3784,9 @@ export function createStore({
         role: invite.role,
         createdAt: now()
       }
-      state.users.push(user)
+      // users is a source-of-truth table now: targeted upsert instead of a blob
+      // push (persist() no longer flushes user rows).
+      upsertUserRow(user)
       if (user.role === 'client' && !findClientProfileRowByEmail(user.firmId, String(user.email || '').toLowerCase())) {
         const createdAt = now()
         upsertProfileRow(
@@ -3822,13 +3849,9 @@ export function createStore({
     removeHouseholdMember(user, householdId, clientId) {
       const firmContext = requireFirmContext(user, { method: 'store.removeHouseholdMember' })
       requirePermission(user, 'households:write')
-      validateTenantEntityOwnership(
-        firmContext,
-        state.households.find((entry) => entry.id === householdId),
-        {
-          entityName: 'Household'
-        }
-      )
+      validateTenantEntityOwnership(firmContext, getHouseholdRow(householdId), {
+        entityName: 'Household'
+      })
       validateTenantEntityOwnership(firmContext, getProfileRow(clientId), {
         entityName: 'Profile'
       })
@@ -4173,7 +4196,7 @@ export function createStore({
     },
     getPortalData(token) {
       const link = resolvePortalLinkByToken(token)
-      const firm = state.firms.find((entry) => entry.id === link.firmId) || null
+      const firm = getFirmRow(link.firmId)
       const profile = getProfileRow(link.profileId, { firmId: link.firmId })
       const submissions = listFormSubmissionsByClient(link.firmId, link.profileId)
         .filter(
@@ -4351,7 +4374,7 @@ export function createStore({
       const cohortValue = filters.cohortValue ? String(filters.cohortValue) : null
       const nowMs = parseIso(process.env.TEST_NOW || '') || Date.now()
 
-      const firm = state.firms.find((entry) => entry.id === user.firmId) || null
+      const firm = getFirmRow(user.firmId)
       const stageConfig = resolveFirmAnalyticsStages(firm)
       const stageMetadata = getFirmStageMetadata(user.firmId)
       const toAnalyticsStage = (stage) => {
@@ -4475,8 +4498,8 @@ export function createStore({
         avgHours: Number((entry.totalHours / entry.submissions).toFixed(2))
       }))
 
-      const advisors = state.users.filter(
-        (entry) => entry.firmId === user.firmId && ['advisor', 'admin'].includes(entry.role)
+      const advisors = listUserRows({ firmId: user.firmId }).filter((entry) =>
+        ['advisor', 'admin'].includes(entry.role)
       )
       // notes is a source-of-truth table now: read the firm's notes once and
       // count per-advisor in memory instead of scanning a blob-resident array.
@@ -4549,7 +4572,7 @@ export function createStore({
         advisorProductivity,
         exportUsage: { byAdvisor: exportUsageByAdvisor, byFirm: exportUsageByFirm },
         profileCount: firmProfiles.length,
-        householdCount: state.households.filter((entry) => entry.firmId === user.firmId).length,
+        householdCount: listHouseholdRows({ firmId: user.firmId }).length,
         exportCount: firmExportJobs.length,
         templateCount: state.templateAggregates.filter((entry) => entry.firmId === user.firmId && entry.kind !== 'form')
           .length,
@@ -4749,6 +4772,27 @@ export function createStore({
       return true
     },
     _internal: { piiCrypto: piiService, keyProvider },
+    // Test-only: firms/users/households live in relational tables (migration
+    // 009), so tests that used to read store.state.{users,firms,households}
+    // read through these hooks instead.
+    __listUsersForTest(firmId = null) {
+      return listUserRows(firmId ? { firmId } : {})
+    },
+    __listFirmsForTest() {
+      return listFirmRows()
+    },
+    __listHouseholdsForTest(firmId = null) {
+      return listHouseholdRows(firmId ? { firmId } : {})
+    },
+    __upsertUserForTest(user) {
+      return upsertUserRow(user)
+    },
+    __upsertFirmForTest(firm) {
+      return upsertFirmRow(firm)
+    },
+    __upsertHouseholdForTest(household) {
+      return upsertHouseholdRow(household)
+    },
     // Test-only: profiles live in the relational table, so tests that used to
     // mutate store.state.profiles in place write through this hook instead.
     __upsertProfileForTest(profile) {
