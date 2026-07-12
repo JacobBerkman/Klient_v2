@@ -1594,6 +1594,51 @@ export function createStore({
     return firmPipelineStageRecords(firmId)
   }
 
+  // --- Analytics stage config <-> pipeline stage records coupling -------------
+  // The pipeline stage RECORDS (relational pipeline_stage_records rows) are the
+  // source of truth mutated by the stage-management admin API (create / rename /
+  // reorder / deactivate). Analytics, however, reads firm.stageConfig via
+  // resolveFirmAnalyticsStages / buildAnalyticsSnapshot. Left decoupled, a
+  // prospect sitting in a custom-created stage fails toAnalyticsStage's
+  // stageIdSet membership check and collapses into LEGACY_STAGE_BUCKET.
+  //
+  // To keep ONE source of truth we rewrite firm.stageConfig from the current
+  // stage records after every stage mutation, INSIDE the same persist() cycle so
+  // analytics reflects the change immediately. Firms are relational rows: an
+  // in-place firm mutation is not flushed by persist() on its own, so this helper
+  // performs the required upsertFirmRow itself (mutation -> upsert discipline).
+  //
+  // Design choices baked in here:
+  //  - Ordering: stageConfig mirrors record order, so the analytics funnel and
+  //    stage-aging follow pipeline order and new custom stages slot into the
+  //    funnel exactly where the pipeline places them.
+  //  - Labels: record labels propagate into stageConfig, so a rename updates the
+  //    analytics label (surfaced via getFirmStageMetadata -> stageMetadata /
+  //    stageAging.stageLabel).
+  //  - Deactivation: deactivated stages are KEPT in stageConfig (active:false),
+  //    NOT dropped. This deliberately keeps their historical prospect counts as
+  //    their own funnel / stage-aging entries instead of dumping those profiles
+  //    into legacy_unassigned. The legacy bucket is reserved for genuinely
+  //    orphaned stage ids — profiles referencing a stage that no record and no
+  //    config entry knows about (pre-stage-management data, or a stage id removed
+  //    out-of-band).
+  function syncFirmStageConfigFromRecords(firmId) {
+    const firm = getFirmRow(firmId)
+    if (!firm) return
+    const records = firmPipelineStageRecords(firmId)
+    if (!records.length) return
+    const stageConfig = normalizeFirmStageConfig({
+      stages: records.map((record) => ({
+        id: record.key,
+        key: record.key,
+        label: record.label || record.key,
+        active: record.isActive !== false,
+        order: record.order
+      }))
+    })
+    upsertFirmRow({ ...firm, stageConfig })
+  }
+
   function getFirmPipelineStageDefinitions(firmId) {
     const firm = getFirmRow(firmId)
     const stageRecords = firmPipelineStageRecords(firmId)
@@ -2360,6 +2405,9 @@ export function createStore({
         deactivatedAt: null
       }
       upsertPipelineStageRecord(stage)
+      // Couple analytics to the new stage in the same persist cycle so a prospect
+      // moved into it appears as its own funnel entry, not legacy_unassigned.
+      syncFirmStageConfigFromRecords(context.firmId)
       addAudit(context.firmId, context.userId, 'pipeline', stage.id, 'pipeline.stage_config_created', {
         key: stage.key,
         label: stage.label
@@ -2378,6 +2426,8 @@ export function createStore({
       if (patch?.color !== undefined) stage.color = patch.color ? String(patch.color).trim() : null
       stage.updatedAt = now()
       upsertPipelineStageRecord(stage)
+      // Propagate label (and any future metadata) into the analytics stage config.
+      syncFirmStageConfigFromRecords(context.firmId)
       addAudit(context.firmId, context.userId, 'pipeline', stage.id, 'pipeline.stage_config_updated', {
         fields: Object.keys(patch || {})
       })
@@ -2395,6 +2445,10 @@ export function createStore({
       stage.deactivatedAt = now()
       stage.updatedAt = stage.deactivatedAt
       upsertPipelineStageRecord(stage)
+      // Keep the deactivated stage in the analytics config (active:false) so its
+      // historical prospect counts stay in the funnel rather than collapsing into
+      // legacy_unassigned. See syncFirmStageConfigFromRecords for rationale.
+      syncFirmStageConfigFromRecords(context.firmId)
       addAudit(context.firmId, context.userId, 'pipeline', stage.id, 'pipeline.stage_config_deactivated', {
         key: stage.key
       })
@@ -2419,6 +2473,8 @@ export function createStore({
         stage.updatedAt = now()
         upsertPipelineStageRecord(stage)
       })
+      // Reorder the analytics funnel to match the new pipeline order.
+      syncFirmStageConfigFromRecords(context.firmId)
       addAudit(context.firmId, context.userId, 'pipeline', context.firmId, 'pipeline.stage_config_reordered', {
         stageIds
       })
