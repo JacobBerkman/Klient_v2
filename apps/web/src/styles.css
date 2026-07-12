@@ -110,6 +110,12 @@ body,
   min-height: 100%;
 }
 
+html {
+  /* The topbar is sticky (see .topbar); keep programmatic scrolls
+     (scrollIntoView, anchor jumps) from landing content beneath it. */
+  scroll-padding-top: 90px;
+}
+
 body {
   margin: 0;
   font-family: var(--font-sans);

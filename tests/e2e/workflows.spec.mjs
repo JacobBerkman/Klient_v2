@@ -212,6 +212,9 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   await expect(page.getByText('layout saved')).toBeVisible()
   const overlay = page.getByTestId('pdf-field-overlay-client_name')
   await expect(overlay).toBeVisible()
+  // Raw page.mouse events do not auto-scroll: bring the overlay out from
+  // under the sticky topbar before reading viewport coordinates.
+  await overlay.scrollIntoViewIfNeeded()
   const overlayBox = await overlay.boundingBox()
   expect(overlayBox).toBeTruthy()
   await page.mouse.move(overlayBox.x + 10, overlayBox.y + 10)
@@ -219,6 +222,7 @@ test('@release-blocking PDF template auto-build creates generated form and downl
   await page.mouse.move(overlayBox.x + 38, overlayBox.y + 18)
   await page.mouse.up()
   const resize = page.getByTestId('pdf-field-resize-client_name')
+  await resize.scrollIntoViewIfNeeded()
   const resizeBox = await resize.boundingBox()
   expect(resizeBox).toBeTruthy()
   await page.mouse.move(resizeBox.x + 3, resizeBox.y + 3)
