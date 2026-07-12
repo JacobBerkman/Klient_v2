@@ -65,8 +65,8 @@ test('invite lifecycle enforces role constraints, expiration, and single-use', a
   )
 
   const expiredInvite = store.inviteUser(admin, { email: 'expired@example.com', role: 'readonly' })
-  const stateInvite = store.state.invites.find((entry) => entry.id === expiredInvite.id)
-  stateInvite.expiresAt = new Date(Date.now() - 1000).toISOString()
+  expiredInvite.expiresAt = new Date(Date.now() - 1000).toISOString()
+  store.__upsertInviteForTest(expiredInvite)
   assert.throws(
     () =>
       store.acceptInvite({

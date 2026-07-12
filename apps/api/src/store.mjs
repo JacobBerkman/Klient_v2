@@ -9,16 +9,21 @@ import {
   deleteExpiredSessions,
   deleteExpiredUploadIntents,
   deleteFormSubmission,
+  deleteInviteRow,
   deleteSession,
   deleteSessionsByUser,
   deleteUploadIntent,
   ensureBoardVersionRow,
   findClientProfileRowByEmail,
+  findInviteRowByToken,
   findPortalDraftSubmission,
+  findPortalLinkRowByToken,
+  getDocumentUploadRow,
   getDraftSectionState,
   getExportJob,
   getFormSubmissionById,
   getPipelineStageRecordRow,
+  getPortalLinkRow,
   getProfileRow,
   getSessionByToken,
   getUploadIntent,
@@ -26,11 +31,16 @@ import {
   insertAuditEvent,
   insertStageChange,
   insertUploadIntent,
+  listAllDocumentUploadRows,
   listAuditEvents,
+  listDocumentUploadRowsByFirm,
+  listDocumentUploadRowsByFirmClient,
   listDraftSectionStates,
   listExportQueueJobs,
   listFormSubmissionsByClient,
   listFormSubmissionsByFirm,
+  listNoteRowsByFirm,
+  listNoteRowsByProfile,
   listPipelineStageRecordRows,
   listProfileRows,
   listProspectRowsByStage,
@@ -44,8 +54,12 @@ import {
   saveState,
   touchSession,
   updateFormSubmissionGuarded,
+  upsertDocumentUploadRow,
   upsertFormSubmission,
+  upsertInviteRow,
+  upsertNoteRow,
   upsertPipelineStageRecord,
+  upsertPortalLinkRow,
   upsertProfileRow,
   upsertSession
 } from './storage.mjs'
@@ -1248,7 +1262,7 @@ export function createStore({
   }
 
   function resolvePortalLinkByToken(token) {
-    const link = state.portalLinks.find((entry) => entry.token === token)
+    const link = findPortalLinkRowByToken(token)
     if (!link) throw new Error('Portal link not found.')
     const nowMs = Date.now()
     if (link.revokedAt) throw new Error('Portal link revoked.')
@@ -1273,13 +1287,17 @@ export function createStore({
     }
   }
 
+  // portal_links is the source of truth now, so the consumed link (mutated
+  // usedCount/lastUsedAt) is written back with a targeted upsert instead of
+  // relying on a blob-resident reference being flushed by persist().
   function consumePortalLinkUse(link) {
     link.usedCount = Number(link.usedCount || 0) + 1
     link.lastUsedAt = now()
+    upsertPortalLinkRow(link)
   }
 
   function findPortalLink(token) {
-    const link = state.portalLinks.find((entry) => entry.token === token)
+    const link = findPortalLinkRowByToken(token)
     if (!link) throw new Error('Portal link not found.')
     return link
   }
@@ -1316,7 +1334,10 @@ export function createStore({
     const policy = objectStorage.retentionPolicies
     const nowMs = Date.now()
 
-    for (const upload of state.documentUploads) {
+    // document_uploads is the sole source of truth: iterate every row
+    // (unscoped, across all firms) and write each mutated upload back as a
+    // targeted row update instead of mutating an in-memory mirror.
+    for (const upload of listAllDocumentUploadRows()) {
       const object = upload.object
       if (!object?.bucket || !object?.key) continue
       const ageDays = daysBetween(upload.createdAt, nowMs)
@@ -1324,9 +1345,11 @@ export function createStore({
         await objectStorage.deleteObject(object).catch(() => null)
         upload.status = 'purged'
         upload.purgedAt = now()
+        upsertDocumentUploadRow(upload)
       } else if (ageDays >= policy.uploaded_document.archiveAfterDays && upload.status !== 'archived') {
         upload.status = 'archived'
         upload.archivedAt = now()
+        upsertDocumentUploadRow(upload)
       }
     }
 
@@ -1889,9 +1912,7 @@ export function createStore({
         : []
       const submissions = listFormSubmissionsByClient(user.firmId, profile.id)
       const stageHistory = listStageChangeRowsByClient(user.firmId, profile.id)
-      const notes = state.notes
-        .filter((entry) => entry.profileId === profile.id && entry.firmId === user.firmId)
-        .slice()
+      const notes = listNoteRowsByProfile(user.firmId, profile.id)
         .reverse()
         .map((entry) => ({ ...entry, body: entry.body || decryptSensitiveValue(entry.bodyEncrypted) || '' }))
       return { profile, household, householdMembers, submissions, stageHistory, notes }
@@ -2500,9 +2521,7 @@ export function createStore({
     },
     listNotes(user, profileId) {
       requirePermission(user, 'profiles:read')
-      return state.notes
-        .filter((entry) => entry.firmId === user.firmId && entry.profileId === profileId)
-        .slice()
+      return listNoteRowsByProfile(user.firmId, profileId)
         .reverse()
         .map((entry) => ({ ...entry, body: entry.body || decryptSensitiveValue(entry.bodyEncrypted) || '' }))
     },
@@ -2521,7 +2540,7 @@ export function createStore({
         createdByUserId: user.id,
         createdAt: now()
       }
-      state.notes.push(note)
+      upsertNoteRow(note)
       addAudit(user.firmId, user.id, 'profile_note', note.id, 'profile.note_added', { profileId })
       persist()
       return note
@@ -2687,10 +2706,9 @@ export function createStore({
           description: entry.description || '',
           sections: entry.formSchema?.sections || []
         }))
-      const uploads = state.documentUploads
-        .filter((entry) => entry.firmId === user.firmId && entry.clientId === profile.id)
-        .slice()
-        .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
+      const uploads = listDocumentUploadRowsByFirmClient(user.firmId, profile.id).sort(
+        (a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime()
+      )
       const submissionByTemplate = new Map()
       submissions.forEach((submission) => {
         if (!submissionByTemplate.has(submission.templateId))
@@ -2776,7 +2794,7 @@ export function createStore({
         updatedAt: now()
       }
       if (input.uploadId) deleteUploadIntent(input.uploadId)
-      state.documentUploads.push(upload)
+      upsertDocumentUploadRow(upload)
       addAudit(user.firmId, user.id, 'document_upload', upload.id, 'client.document_upload.created', {
         category: upload.category,
         key: upload.object.key
@@ -2787,9 +2805,7 @@ export function createStore({
     async createClientUploadDownloadUrl(user, uploadId) {
       requirePermission(user, 'client:write')
       const profile = requireClientProfile(user)
-      const upload = state.documentUploads.find(
-        (entry) => entry.id === uploadId && entry.firmId === user.firmId && entry.clientId === profile.id
-      )
+      const upload = getDocumentUploadRow(uploadId, { firmId: user.firmId, clientId: profile.id })
       if (!upload) throw new Error('Upload not found.')
       return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 })
     },
@@ -3722,14 +3738,14 @@ export function createStore({
         createdAt: now(),
         expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString()
       }
-      state.invites.push(invite)
+      upsertInviteRow(invite)
       addAudit(user.firmId, user.id, 'invite', invite.id, 'invite.created', { email: invite.email, role: invite.role })
       persist()
       return invite
     },
     acceptInvite(input) {
       assertStrongPassword(input.password)
-      const invite = state.invites.find((entry) => entry.token === input.token)
+      const invite = findInviteRowByToken(input.token)
       if (!invite) throw new Error('Invite not found.')
       if (invite.expiresAt && new Date(invite.expiresAt).getTime() <= Date.now()) {
         throw new Error('Invite expired.')
@@ -3774,7 +3790,7 @@ export function createStore({
           })
         )
       }
-      state.invites = state.invites.filter((entry) => entry.id !== invite.id)
+      deleteInviteRow(invite.id)
       addAudit(user.firmId, user.id, 'user', user.id, 'user.role_assigned', {
         before: { role: null },
         after: { role: user.role, invitedByUserId: invite.invitedByUserId }
@@ -4125,22 +4141,19 @@ export function createStore({
         lastUsedAt: null,
         scope: normalizePortalScope(options.scope || options)
       }
-      state.portalLinks.push(link)
+      upsertPortalLinkRow(link)
       persist()
       return link
     },
     revokePortalLink(user, linkId) {
       const firmContext = requireFirmContext(user, { method: 'store.revokePortalLink' })
       requirePermission(user, 'portal:manage')
-      const link = validateTenantEntityOwnership(
-        firmContext,
-        state.portalLinks.find((entry) => entry.id === linkId),
-        {
-          entityName: 'Portal link'
-        }
-      )
+      const link = validateTenantEntityOwnership(firmContext, getPortalLinkRow(linkId), {
+        entityName: 'Portal link'
+      })
       if (!link.revokedAt) {
         link.revokedAt = now()
+        upsertPortalLinkRow(link)
       }
       persist()
       return link
@@ -4187,15 +4200,13 @@ export function createStore({
           description: entry.description || '',
           sections: entry.formSchema?.sections || []
         }))
-      const uploads = state.documentUploads
-        .filter((entry) => entry.firmId === link.firmId && entry.clientId === link.profileId)
+      const uploads = listDocumentUploadRowsByFirmClient(link.firmId, link.profileId)
         .filter(
           (entry) =>
             !Array.isArray(link.scope?.uploadCategories) ||
             link.scope.uploadCategories.length === 0 ||
             link.scope.uploadCategories.includes(entry.category || 'general')
         )
-        .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
       return { firm, profile, submissions, availableTemplates, uploads }
     },
@@ -4323,15 +4334,13 @@ export function createStore({
       }
       consumePortalLinkUse(link)
       if (input.uploadId) deleteUploadIntent(input.uploadId)
-      state.documentUploads.push(upload)
+      upsertDocumentUploadRow(upload)
       persist()
       return upload
     },
     async createPortalUploadDownloadUrl(token, uploadId) {
       const link = resolvePortalLinkByToken(token)
-      const upload = state.documentUploads.find(
-        (entry) => entry.id === uploadId && entry.firmId === link.firmId && entry.clientId === link.profileId
-      )
+      const upload = getDocumentUploadRow(uploadId, { firmId: link.firmId, clientId: link.profileId })
       if (!upload) throw new Error('Upload not found.')
       return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 })
     },
@@ -4470,11 +4479,12 @@ export function createStore({
       const advisors = state.users.filter(
         (entry) => entry.firmId === user.firmId && ['advisor', 'admin'].includes(entry.role)
       )
+      // notes is a source-of-truth table now: read the firm's notes once and
+      // count per-advisor in memory instead of scanning a blob-resident array.
+      const firmNotes = listNoteRowsByFirm(user.firmId)
       const advisorProductivity = advisors.map((advisor) => {
         const assignedProfiles = firmProfiles.filter((entry) => entry.advisorUserId === advisor.id)
-        const notesCount = state.notes.filter(
-          (entry) => entry.firmId === user.firmId && entry.createdByUserId === advisor.id
-        ).length
+        const notesCount = firmNotes.filter((entry) => entry.createdByUserId === advisor.id).length
         const stageMoves = firmStageChanges.filter((entry) => entry.changedByUserId === advisor.id).length
         const submissions = firmSubmissions.filter((entry) => entry.createdByUserId === advisor.id).length
         return {
@@ -4598,7 +4608,7 @@ export function createStore({
       requirePermission(user, 'exports:write')
       await applyLifecyclePolicies()
       return {
-        uploads: state.documentUploads.filter((entry) => entry.firmId === user.firmId),
+        uploads: listDocumentUploadRowsByFirm(user.firmId),
         exports: listExportQueueJobs().filter((entry) => entry.firmId === user.firmId),
         retention: objectStorage.retentionPolicies
       }
@@ -4744,6 +4754,12 @@ export function createStore({
     // mutate store.state.profiles in place write through this hook instead.
     __upsertProfileForTest(profile) {
       return upsertProfileRow(profile)
+    },
+    // Test-only: invites live in the relational table (migration 007), so
+    // tests that used to mutate store.state.invites in place write through
+    // this hook instead.
+    __upsertInviteForTest(invite) {
+      return upsertInviteRow(invite)
     },
     __setPipelineStagesForTest(firmId, stages = []) {
       state.pipelineStagesByFirm ||= {}
