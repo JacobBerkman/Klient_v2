@@ -47,6 +47,7 @@ export const router = createBrowserRouter([
       { path: '/templates/:templateId', lazy: () => import('../pages/TemplateDetailPage') },
       { path: '/exports', lazy: () => import('../pages/ExportsPage') },
       { path: '/analytics', lazy: () => import('../pages/AnalyticsPage') },
+      { path: '/activity', lazy: () => import('../pages/ActivityPage') },
       { path: '/audit', lazy: () => import('../pages/AuditPage') },
       { path: '/admin/stages', lazy: () => import('../pages/AdminStagesPage') },
       { path: '/admin/ops', lazy: () => import('../pages/OpsPage') }

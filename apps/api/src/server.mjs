@@ -2176,6 +2176,20 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      if (pathname === '/api/activity' && req.method === 'GET') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadAudit')
+        const result = modules.activity.list(user, {
+          category: url.searchParams.get('category') || '',
+          actorId: url.searchParams.get('actorId') || '',
+          from: url.searchParams.get('from') || '',
+          to: url.searchParams.get('to') || '',
+          cursor: url.searchParams.get('cursor') || '',
+          limit: url.searchParams.get('limit') || ''
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname === '/api/analytics' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadAnalytics')

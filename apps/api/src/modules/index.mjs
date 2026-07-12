@@ -10,6 +10,7 @@ import { createTemplatesService } from './templates/service.mjs'
 import { createTemplatesV2Service } from './templates-v2/service.mjs'
 import { createExportsService } from './exports/service.mjs'
 import { createAuditService } from './audit/service.mjs'
+import { createActivityService } from './activity/service.mjs'
 import { createAnalyticsService } from './analytics/service.mjs'
 import { createNotificationsService } from './notifications/service.mjs'
 import {
@@ -42,6 +43,7 @@ export function createModules({ store, reads }) {
     templates: createTemplatesService({ templateRepository, policy, store, templatesCompatibility }),
     exports: createExportsService({ exportsRepository, policy, store }),
     audit: createAuditService({ store, policy }),
+    activity: createActivityService({ store, policy }),
     analytics: createAnalyticsService({ store, reads, policy }),
     notifications: createNotificationsService({ policy })
   }

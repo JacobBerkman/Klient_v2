@@ -98,6 +98,7 @@ export const routes = {
   exportsQueueHealth: () => '/api/ops/exports/queue',
   exportRuntime: () => '/api/ops/export-runtime',
   audit: () => '/api/audit',
+  activity: (query: Record<string, QueryValue> = {}) => withQuery('/api/activity', query),
   analytics: (query: Record<string, QueryValue> = {}) => withQuery('/api/analytics', query),
   analyticsDashboard: (query: Record<string, QueryValue> = {}) => withQuery('/api/analytics/dashboard', query),
   analyticsExport: (query: Record<string, QueryValue> = {}) => withQuery('/api/analytics/export', query),

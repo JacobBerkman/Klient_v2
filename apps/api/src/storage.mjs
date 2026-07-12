@@ -735,6 +735,84 @@ export function countAuditEvents() {
   return db.prepare('SELECT COUNT(*) AS count FROM audit_events').get()?.count || 0
 }
 
+// Firm-wide activity feed reader. Keyset pagination over the existing
+// (occurred_at DESC, rowid DESC) ordering — the same total order listAuditEvents
+// uses — so pages are stable with no duplicates or gaps as new events arrive.
+// The cursor is the (occurred_at, rowid) of the last returned row; rowid is the
+// stable tiebreaker for same-timestamp events. Filters (action prefixes, actor,
+// date range, and the non-admin auth self-restriction) are pushed into SQL so a
+// full page is always returned when more rows exist. Pilot scale is small, so
+// this scans the firm's rows without a dedicated index (see: no migration
+// added). actorId and actor comparisons read json_extract(payload,'$.actor.userId').
+export function queryAuditEventsPage({
+  firmId,
+  actionPrefixes = null,
+  actorId = null,
+  from = null,
+  to = null,
+  restrictAuthToSelf = false,
+  authPrefixes = [],
+  selfUserId = null,
+  cursor = null,
+  limit = 50
+} = {}) {
+  const clauses = ['firm_id = ?']
+  const params = [firmId]
+
+  if (Array.isArray(actionPrefixes) && actionPrefixes.length > 0) {
+    clauses.push(`(${actionPrefixes.map(() => 'action LIKE ?').join(' OR ')})`)
+    for (const prefix of actionPrefixes) params.push(`${prefix}%`)
+  }
+
+  if (actorId) {
+    clauses.push("json_extract(payload, '$.actor.userId') = ?")
+    params.push(actorId)
+  }
+
+  if (from) {
+    clauses.push('occurred_at >= ?')
+    params.push(from)
+  }
+  if (to) {
+    clauses.push('occurred_at <= ?')
+    params.push(to)
+  }
+
+  // Non-admins never see other users' auth-category events: exclude any event
+  // whose action is in the auth prefixes unless the actor is the requester.
+  if (restrictAuthToSelf && Array.isArray(authPrefixes) && authPrefixes.length > 0) {
+    const authMatch = authPrefixes.map(() => 'action LIKE ?').join(' OR ')
+    clauses.push(`NOT ((${authMatch}) AND COALESCE(json_extract(payload, '$.actor.userId'), '') <> ?)`)
+    for (const prefix of authPrefixes) params.push(`${prefix}%`)
+    params.push(selfUserId || '')
+  }
+
+  if (cursor && cursor.occurredAt) {
+    clauses.push('(occurred_at < ? OR (occurred_at = ? AND rowid < ?))')
+    params.push(cursor.occurredAt, cursor.occurredAt, Number(cursor.rowid) || 0)
+  }
+
+  const safeLimit = Math.min(Math.max(Number(limit) || 50, 1), 200)
+  const rows = db
+    .prepare(
+      `
+      SELECT rowid AS rowid, occurred_at AS occurredAt, payload
+      FROM audit_events
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY occurred_at DESC, rowid DESC
+      LIMIT ?
+    `
+    )
+    .all(...params, safeLimit + 1)
+
+  const hasMore = rows.length > safeLimit
+  const page = hasMore ? rows.slice(0, safeLimit) : rows
+  const events = page.map((row) => JSON.parse(row.payload))
+  const lastRow = page[page.length - 1]
+  const nextCursor = hasMore && lastRow ? { occurredAt: lastRow.occurredAt, rowid: lastRow.rowid } : null
+  return { events, nextCursor }
+}
+
 // Blob-to-table audit seeding: id-keyed INSERT OR IGNORE, so it is idempotent
 // against the migration 004 backfill and safe to run on the freshly seeded
 // state (whose seed audit events exist only in memory).
