@@ -1621,6 +1621,16 @@ export function getPortalLinkRow(linkId) {
   return row?.payload ? JSON.parse(row.payload) : null
 }
 
+// All portal links issued for one profile, in insertion order. Firm-scoped via
+// the promoted firm_id/profile_id columns. Feeds the archive guard, which must
+// decide whether a profile still has live portal access before soft-deleting it.
+export function listPortalLinkRowsByProfile(firmId, profileId) {
+  return db
+    .prepare('SELECT payload FROM portal_links WHERE firm_id = ? AND profile_id = ? ORDER BY rowid ASC')
+    .all(firmId, profileId)
+    .map((row) => JSON.parse(row.payload))
+}
+
 // --- Invite repository (source of truth) -------------------------------------
 // The full invite object lives in the payload column; firm_id/token/email/role
 // are promoted. token is UNIQUE — invite acceptance resolves a single invite

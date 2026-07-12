@@ -1352,6 +1352,8 @@ export function createHttpServer({ modules }) {
         }
         const status = url.searchParams.get('status')
         if (status) query.status = status
+        const includeArchived = url.searchParams.get('includeArchived')
+        if (includeArchived === '1' || includeArchived === 'true') query.includeArchived = true
         const result = modules.profiles.listProfiles(user, query)
         finalizeLog(200, { firmId: user.firmId })
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -1660,6 +1662,40 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      const profileArchiveMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/archive$/)
+      if (profileArchiveMatch && req.method === 'POST') {
+        const id = decodeURIComponent(profileArchiveMatch[1])
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteProfiles')
+        const result = await modules.profiles.archiveProfile(user, id, await parseBody(req))
+        logOperationalEvent(log, 'info', 'mutation.profile.archived', {
+          entity: 'profile',
+          id,
+          status: 'archived',
+          requestId,
+          userId: user.id,
+          firmId: user.firmId
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      const profileRestoreMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/restore$/)
+      if (profileRestoreMatch && req.method === 'POST') {
+        const id = decodeURIComponent(profileRestoreMatch[1])
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteProfiles')
+        const result = await modules.profiles.restoreProfile(user, id, await parseBody(req))
+        logOperationalEvent(log, 'info', 'mutation.profile.restored', {
+          entity: 'profile',
+          id,
+          status: 'restored',
+          requestId,
+          userId: user.id,
+          firmId: user.firmId
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/profiles/') && req.method === 'PATCH') {
         const id = pathname.split('/')[3]
         const user = requireUser()
@@ -1741,6 +1777,26 @@ export function createHttpServer({ modules }) {
         const result = modules.households.createSpouse(user, body.primaryClientId, body.spouse)
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      const householdArchiveMatch = pathname.match(/^\/api\/households\/([^/]+)\/archive$/)
+      if (householdArchiveMatch && req.method === 'POST') {
+        const id = decodeURIComponent(householdArchiveMatch[1])
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteHouseholds')
+        const result = modules.households.archiveHousehold(user, id, await parseBody(req))
+        log('info', 'mutation.household.archived', { requestId, userId: user.id, firmId: user.firmId, householdId: id })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      const householdRestoreMatch = pathname.match(/^\/api\/households\/([^/]+)\/restore$/)
+      if (householdRestoreMatch && req.method === 'POST') {
+        const id = decodeURIComponent(householdRestoreMatch[1])
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteHouseholds')
+        const result = modules.households.restoreHousehold(user, id)
+        log('info', 'mutation.household.restored', { requestId, userId: user.id, firmId: user.firmId, householdId: id })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/forms/templates' && req.method === 'GET') {
         const user = requireUser()

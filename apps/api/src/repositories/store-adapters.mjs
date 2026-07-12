@@ -19,7 +19,9 @@ export class StoreProfileRepository extends ProfileRepository {
 
   listProfiles(firmContext, query) {
     const context = requireFirmContext(firmContext, { method: 'profiles.listProfiles' })
-    return this.store.listProfiles(context, query?.kind, query?.search)
+    return this.store.listProfiles(context, query?.kind, query?.search, {
+      includeArchived: Boolean(query?.includeArchived)
+    })
   }
   getProfileDetail(firmContext, profileId) {
     const context = requireFirmContext(firmContext, { method: 'profiles.getProfileDetail' })
@@ -39,6 +41,14 @@ export class StoreProfileRepository extends ProfileRepository {
   convertProfile(firmContext, profileId, options = {}) {
     const context = requireFirmContext(firmContext, { method: 'profiles.convertProfile' })
     return this.store.convertProspectToClient(context, profileId, options)
+  }
+  archiveProfile(firmContext, profileId, options = {}) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.archiveProfile' })
+    return this.store.archiveProfile(context, profileId, options)
+  }
+  restoreProfile(firmContext, profileId, options = {}) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.restoreProfile' })
+    return this.store.restoreProfile(context, profileId, options)
   }
   addTag(firmContext, profileId, tag) {
     const context = requireFirmContext(firmContext, { method: 'profiles.addTag' })

@@ -66,6 +66,8 @@ export interface Profile {
   advisorUserId?: string | null
   createdAt?: string
   updatedAt?: string
+  archivedAt?: string | null
+  archivedFromStage?: string | null
   dateOfBirth?: string | null
   source?: Record<string, unknown> | null
   address?: Record<string, unknown> | null
