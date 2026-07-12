@@ -4,7 +4,7 @@ import { api, routes } from '../lib/client'
 import { collaboratorSummary, formatDateTime, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
-import type { FormSubmission, FormTemplate, Profile } from '../lib/types'
+import type { DraftSearchResult, FormSubmission, FormTemplate, Profile } from '../lib/types'
 import { useAuth } from '../app/auth'
 import {
   ActionPanel,
@@ -47,6 +47,31 @@ export function Component() {
     templateId: '',
     status: 'draft'
   })
+  const canResumeDrafts = hasGuard(user, 'canWriteForms')
+  const [draftSearchQuery, setDraftSearchQuery] = useState('')
+  const [draftSearch, setDraftSearch] = useState<DraftSearchResult | null>(null)
+  const [draftSearchState, setDraftSearchState] = useState<'idle' | 'loading' | 'error'>('idle')
+  const [draftSearchError, setDraftSearchError] = useState('')
+
+  async function handleDraftSearch(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const trimmed = draftSearchQuery.trim()
+    if (!trimmed) {
+      setDraftSearch(null)
+      setDraftSearchState('idle')
+      return
+    }
+    setDraftSearchState('loading')
+    setDraftSearchError('')
+    try {
+      const result = await api.get<DraftSearchResult>(routes.formDraftsSearch(trimmed))
+      setDraftSearch(result)
+      setDraftSearchState('idle')
+    } catch (searchError) {
+      setDraftSearchError(searchError instanceof Error ? searchError.message : 'Draft search failed.')
+      setDraftSearchState('error')
+    }
+  }
 
   const profileFilter = searchParams.get('profileId') || ''
   const templateFilter = searchParams.get('templateId') || ''
@@ -143,6 +168,91 @@ export function Component() {
           hint="Use profile-scoped deep links when needed"
         />
       </StatGroup>
+
+      {canResumeDrafts ? (
+        <PageSection
+          title="Resume a draft"
+          subtitle="Find a client or prospect's in-progress form drafts to resume filling in-office."
+        >
+          <form className="form-grid draft-resume-search" onSubmit={handleDraftSearch}>
+            <Field
+              label="Search"
+              hint={
+                draftSearch && !draftSearch.ssnSearchAvailable
+                  ? 'Search by name or email.'
+                  : 'Search by name, email, or SSN last 4.'
+              }
+            >
+              <input
+                type="text"
+                value={draftSearchQuery}
+                onChange={(event) => setDraftSearchQuery(event.target.value)}
+                placeholder="Name, email, or SSN last 4"
+                aria-label="Search drafts by name, email, or SSN last 4"
+              />
+            </Field>
+            <button type="submit" disabled={draftSearchState === 'loading' || !draftSearchQuery.trim()}>
+              {draftSearchState === 'loading' ? 'Searching…' : 'Search drafts'}
+            </button>
+          </form>
+
+          {draftSearchState === 'error' ? (
+            <ErrorState title="Draft search failed." detail={draftSearchError} />
+          ) : draftSearch ? (
+            draftSearch.matches.length ? (
+              <div className="stack">
+                {draftSearch.matches.map((match) => (
+                  <div className="draft-resume-match" key={match.id}>
+                    <div className="draft-resume-match-head">
+                      <strong>{match.name || 'Unnamed profile'}</strong>{' '}
+                      <StatusBadge status={match.kind === 'client' ? 'Client' : 'Prospect'} />
+                      {match.email ? <span className="muted"> · {match.email}</span> : null}
+                    </div>
+                    <DataTable caption={`Drafts for ${match.name || match.email || match.id}`}>
+                      <thead>
+                        <tr>
+                          <th>Form</th>
+                          <th>Sections</th>
+                          <th>Updated</th>
+                          <th>Actions</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {match.drafts.map((draft) => (
+                          <tr key={draft.id}>
+                            <td>
+                              <strong>{draft.templateName}</strong>
+                              <div className="muted">Revision {draft.revisionId || 1}</div>
+                            </td>
+                            <td>{draft.sectionCount ?? 0}</td>
+                            <td>{formatDateTime(draft.updatedAt || draft.createdAt)}</td>
+                            <td>
+                              <Link
+                                className="text-link"
+                                data-testid={`resume-draft-${draft.id}`}
+                                to={`/forms/submissions/${draft.id}`}
+                              >
+                                Resume draft
+                              </Link>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </DataTable>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <EmptyState
+                title="No matching drafts."
+                detail="No client or prospect with an in-progress draft matches that search."
+              />
+            )
+          ) : (
+            <p className="muted">Enter a name, email, or SSN last 4 to find drafts to resume.</p>
+          )}
+        </PageSection>
+      ) : null}
 
       <div className="split-grid">
         <ActionPanel

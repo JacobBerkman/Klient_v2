@@ -240,6 +240,14 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
       policy.requireGuard(user, 'canReadForms')
       return store.listFormDrafts(createFirmContext(user))
     },
+    searchDrafts(user, query) {
+      // Guarded on canWriteForms (not canReadForms): a matched draft is opened
+      // for editing/resume, so readonly is denied — matching the draft revise/
+      // lock write surface. Firm scoping + SSN-decrypt bounding + auditing all
+      // live in the store method.
+      policy.requireGuard(user, 'canWriteForms')
+      return store.searchDrafts(createFirmContext(user), query)
+    },
     createFormSubmission(user, input) {
       policy.requireGuard(user, 'canWriteForms')
       return store.createFormSubmission(createFirmContext(user), input)

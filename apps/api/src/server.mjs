@@ -1884,6 +1884,17 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      // Advisor-side draft-resume search. Read-only (GET, no CSRF token
+      // required) but gated on canWriteForms because a matched draft is opened
+      // for editing. `q` is matched over name/email and — only when it is
+      // exactly four digits — SSN last-4 (decrypted in memory, firm-scoped).
+      if (pathname === '/api/forms/drafts/search' && req.method === 'GET') {
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteForms')
+        const result = modules.forms.searchDrafts(user, url.searchParams.get('q') || '')
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       const draftLockMatch = pathname.match(/^\/api\/forms\/drafts\/([^/]+)\/lock$/)
       if (draftLockMatch && req.method === 'POST') {
         const [, draftId] = draftLockMatch

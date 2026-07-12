@@ -11,6 +11,9 @@ export class FormsRepository {
   listFormDrafts(_firmContext) {
     throw new Error('Not implemented')
   }
+  searchDrafts(_firmContext, _query) {
+    throw new Error('Not implemented')
+  }
   createFormSubmission(_firmContext, _input) {
     throw new Error('Not implemented')
   }

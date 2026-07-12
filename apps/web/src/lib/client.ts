@@ -73,6 +73,7 @@ export const routes = {
   formSubmissionSectionItem: (submissionId: string, sectionKey: string, itemKey: string) =>
     joinPath('/api/forms/submissions', submissionId, 'sections', sectionKey, 'items', itemKey),
   formDrafts: () => '/api/forms/drafts',
+  formDraftsSearch: (query: string) => withQuery('/api/forms/drafts/search', { q: query }),
   formDraft: (draftId: string) => joinPath('/api/forms/drafts', draftId),
   formDraftLock: (draftId: string) => joinPath('/api/forms/drafts', draftId, 'lock'),
   formDraftCollaborators: (draftId: string) => joinPath('/api/forms/drafts', draftId, 'collaborators'),
