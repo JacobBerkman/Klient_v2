@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { Dispatch, MutableRefObject, SetStateAction } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { api, routes } from '../lib/client'
+import { ApiError, api, routes } from '../lib/client'
 import {
   appendRepeaterRow,
   fieldInputType,
@@ -12,7 +13,15 @@ import {
 import { formatDateTime, profileName } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import { autosaveStatusLabel, useAutosave } from '../lib/useAutosave'
-import type { ClientWorkspacePayload, FormField, FormTemplate, PortalPayload } from '../lib/types'
+import type {
+  ClientWorkspacePayload,
+  FormField,
+  FormSection,
+  FormTemplate,
+  PortalDraftSectionSaveResult,
+  PortalDraftSectionState,
+  PortalPayload
+} from '../lib/types'
 import { useAuth } from '../app/auth'
 import {
   Card,
@@ -124,6 +133,255 @@ async function postPortalSubmission(token: string, payload: Record<string, unkno
   return body
 }
 
+// Load the revision-tracked per-section states for an existing portal draft so
+// the client can adopt each section's server version and reconcile local edits.
+async function fetchPortalDraftSections(token: string, draftId: string): Promise<PortalDraftSectionState[]> {
+  const response = await fetch(routes.portalDraftSections(token, draftId), { credentials: 'same-origin' })
+  const body = (await response.json()) as PortalDraftSectionState[] | { message?: string }
+  if (!response.ok) {
+    throw new Error((body as { message?: string }).message || 'Unable to load draft sections.')
+  }
+  return Array.isArray(body) ? body : []
+}
+
+// Save one section via the optimistic-concurrency PUT. A 409 is surfaced as an
+// ApiError whose `body` carries the latest server state so the caller can
+// reconcile without clobbering the concurrent edit.
+async function putPortalDraftSection(
+  token: string,
+  draftId: string,
+  sectionId: string,
+  payload: { expectedVersion: number; data: Record<string, unknown> }
+): Promise<PortalDraftSectionSaveResult> {
+  const response = await fetch(routes.portalDraftSection(token, draftId, sectionId), {
+    method: 'PUT',
+    credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload)
+  })
+  const body = (await response.json()) as PortalDraftSectionSaveResult & { message?: string }
+  if (!response.ok) {
+    throw new ApiError(String(body?.reason || body?.message || 'Section save conflict.'), {
+      status: response.status,
+      body
+    })
+  }
+  return body
+}
+
+// The stable section identifier the server keys draft_step_states on. It matches
+// the backend's normalizeSectionIdentifier so client keys line up with the ids
+// returned by the GET sections route (lower/snake, no leading/trailing '_').
+function portalSectionId(section: FormSection, index: number) {
+  return (
+    sectionStorageKey(section, index)
+      .replace(/[^a-z0-9_-]+/g, '_')
+      .replace(/^_+|_+$/g, '') || `section_${index + 1}`
+  )
+}
+
+// A section's slice of the flat draft object: repeatable sections carry their
+// row array under the storage key, scalar sections carry each field value.
+function extractSectionSlice(
+  data: Record<string, unknown>,
+  section: FormSection,
+  index: number
+): Record<string, unknown> {
+  if (section.repeatable) {
+    return { [sectionStorageKey(section, index)]: repeaterRows(data, section, index) }
+  }
+  const slice: Record<string, unknown> = {}
+  for (const field of section.fields || []) {
+    slice[field.key] = data[field.key] ?? ''
+  }
+  return slice
+}
+
+interface PortalDraftSectionProps {
+  section: FormSection
+  sectionIndex: number
+  token: string
+  draftId: string | null
+  ensureDraft: () => Promise<string>
+  versionsRef: MutableRefObject<Record<string, number>>
+  flushRegistryRef: MutableRefObject<Record<string, () => void>>
+  draftData: Record<string, unknown>
+  setDraftData: Dispatch<SetStateAction<Record<string, unknown>>>
+  enabled: boolean
+}
+
+// Renders one form section and, in token mode, autosaves that section
+// independently via the per-section PUT. It reuses the shared debounced
+// useAutosave (1.5s debounce + blur flush, 409-aware); on conflict it reloads
+// the server's latest section state instead of overwriting it.
+function PortalDraftSection({
+  section,
+  sectionIndex,
+  token,
+  draftId,
+  ensureDraft,
+  versionsRef,
+  flushRegistryRef,
+  draftData,
+  setDraftData,
+  enabled
+}: PortalDraftSectionProps) {
+  const sectionId = useMemo(() => portalSectionId(section, sectionIndex), [section, sectionIndex])
+  const slice = useMemo(
+    () => extractSectionSlice(draftData, section, sectionIndex),
+    [draftData, section, sectionIndex]
+  )
+  const conflictStateRef = useRef<PortalDraftSectionState | null>(null)
+  const [reloaded, setReloaded] = useState(false)
+
+  const autosave = useAutosave<Record<string, unknown>>({
+    value: slice,
+    enabled,
+    save: async (value) => {
+      const id = draftId || (await ensureDraft())
+      const expectedVersion = versionsRef.current[sectionId] ?? 0
+      try {
+        const result = await putPortalDraftSection(token, id, sectionId, { expectedVersion, data: value })
+        if (result.state) versionsRef.current[sectionId] = Number(result.state.version || 0)
+        setReloaded(false)
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          const body = error.body as PortalDraftSectionSaveResult | undefined
+          if (body?.state) conflictStateRef.current = body.state
+        }
+        throw error
+      }
+    }
+  })
+
+  // On a 409 the save threw with the server's latest state attached. Adopt that
+  // state (advance the revision + merge the server slice into the draft) and
+  // re-baseline autosave, so we surface the conflict without silently clobbering
+  // the concurrent edit and the next keystroke saves cleanly.
+  useEffect(() => {
+    if (autosave.status !== 'conflict') return
+    const serverState = conflictStateRef.current
+    if (!serverState) return
+    conflictStateRef.current = null
+    versionsRef.current[sectionId] = Number(serverState.version || 0)
+    const serverSlice =
+      serverState.data && typeof serverState.data === 'object' ? serverState.data : {}
+    setDraftData((current) => ({ ...current, ...serverSlice }))
+    autosave.reset(serverSlice)
+    setReloaded(true)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autosave.status])
+
+  // Register this section's flush so the shared container onBlur can flush every
+  // section's pending save when focus leaves the form (Card does not forward
+  // onBlur, so the parent drives blur flushing).
+  useEffect(() => {
+    if (!enabled) return
+    const registry = flushRegistryRef.current
+    registry[sectionId] = () => autosave.flush()
+    return () => {
+      delete registry[sectionId]
+    }
+  }, [enabled, sectionId, autosave.flush, flushRegistryRef])
+
+  const statusLabel = reloaded
+    ? 'Conflict — reloaded latest'
+    : autosaveStatusLabel(autosave.status) || (enabled ? 'Autosave on' : '')
+  const statusClass =
+    reloaded || autosave.status === 'error' || autosave.status === 'conflict'
+      ? 'autosave-status is-error'
+      : 'autosave-status'
+
+  const sectionStatus = enabled ? (
+    <p className={statusClass} role="status" aria-live="polite">
+      {statusLabel}
+    </p>
+  ) : null
+
+  if (section.repeatable) {
+    const rows = repeaterRows(draftData, section, sectionIndex)
+    return (
+      <Card className="section-card inset-card">
+        <div className="row-between">
+          <div>
+            <h3>{section.title || `Section ${sectionIndex + 1}`}</h3>
+            <p className="muted">Add repeatable entries as needed.</p>
+          </div>
+          <button
+            type="button"
+            className="secondary-button"
+            onClick={() => setDraftData((current) => appendRepeaterRow(current, section, sectionIndex))}
+          >
+            Add row
+          </button>
+        </div>
+        {sectionStatus}
+        {rows.length ? (
+          rows.map((row, rowIndex) => {
+            const rowObject = row && typeof row === 'object' ? (row as Record<string, unknown>) : {}
+            return (
+              <Card key={`${sectionStorageKey(section, sectionIndex)}-${rowIndex}`} className="section-card inset-card">
+                <div className="row-between">
+                  <strong>Row {rowIndex + 1}</strong>
+                  <button
+                    type="button"
+                    className="ghost-button"
+                    onClick={() =>
+                      setDraftData((current) => removeRepeaterRow(current, section, sectionIndex, rowIndex))
+                    }
+                  >
+                    Remove
+                  </button>
+                </div>
+                <div className="form-grid two-up">
+                  {(section.fields || []).map((field) =>
+                    renderField(
+                      field,
+                      String(rowObject[field.key] || ''),
+                      (nextValue) =>
+                        setDraftData((current) =>
+                          updateRepeaterRow(current, section, sectionIndex, rowIndex, {
+                            ...rowObject,
+                            [field.key]: nextValue
+                          })
+                        ),
+                      false,
+                      `-${rowIndex}`
+                    )
+                  )}
+                </div>
+              </Card>
+            )
+          })
+        ) : (
+          <InlineNotice tone="info">No rows yet. Add one to start.</InlineNotice>
+        )}
+      </Card>
+    )
+  }
+
+  return (
+    <Card className="section-card inset-card">
+      <h3>{section.title || `Section ${sectionIndex + 1}`}</h3>
+      {sectionStatus}
+      <div className="form-grid two-up">
+        {(section.fields || []).map((field) =>
+          renderField(
+            field,
+            String(draftData[field.key] || ''),
+            (nextValue) =>
+              setDraftData((current) => ({
+                ...current,
+                [field.key]: nextValue
+              })),
+            false
+          )
+        )}
+      </div>
+    </Card>
+  )
+}
+
 export function Component() {
   const { user } = useAuth()
   const [searchParams] = useSearchParams()
@@ -132,6 +390,21 @@ export function Component() {
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [draftData, setDraftData] = useState<Record<string, unknown>>({})
   const [statusMessage, setStatusMessage] = useState('')
+  // Per-section revision tracking for the portal token per-section PUT. draftId
+  // is the existing draft submission adopted from the portal payload (or created
+  // lazily on first edit); versionsRef holds each section's server version.
+  const [draftId, setDraftId] = useState<string | null>(null)
+  // Bumped on every wholesale draft reset (template switch, adopt, post-submit)
+  // so section editors remount and re-baseline autosave against the fresh data.
+  const [adoptGeneration, setAdoptGeneration] = useState(0)
+  const versionsRef = useRef<Record<string, number>>({})
+  const flushRegistryRef = useRef<Record<string, () => void>>({})
+  const draftIdRef = useRef<string | null>(null)
+  const draftDataRef = useRef<Record<string, unknown>>({})
+  const creatingDraftRef = useRef<Promise<string> | null>(null)
+
+  draftIdRef.current = draftId
+  draftDataRef.current = draftData
 
   const { data, error, loading } = useAsync<PortalScreenData>(async () => {
     if (token) {
@@ -169,23 +442,54 @@ export function Component() {
     if (!data || data.mode === 'empty') return null
     return data.templates.find((template) => template.id === selectedTemplateId) || null
   }, [data, selectedTemplateId])
+  const selectedTemplateRef = useRef<FormTemplate | null>(null)
+  selectedTemplateRef.current = selectedTemplate
 
-  // Debounced autosave of the in-progress draft via the existing draft-save
-  // endpoint (portal token POST or the signed-in client POST). Non-destructive:
-  // it does not clear the form or refetch, so the client can keep typing.
+  const tokenMode = data?.mode === 'token'
+
+  // Whole-draft autosave for the signed-in client workspace (no per-section
+  // route exists there). Token sessions autosave each section independently
+  // instead, so this is disabled in token mode to avoid a double write.
   const portalAutosave = useAutosave<Record<string, unknown>>({
     value: draftData,
-    enabled: Boolean(selectedTemplate),
+    enabled: Boolean(selectedTemplate) && data?.mode === 'client',
     save: async (dataToSave) => {
       if (!selectedTemplate) return
-      const payload = { templateId: selectedTemplate.id, status: 'draft', data: dataToSave }
-      if (token) {
-        await postPortalSubmission(token, payload)
-      } else {
-        await api.post(routes.clientFormSubmissions(), payload)
-      }
+      await api.post(routes.clientFormSubmissions(), {
+        templateId: selectedTemplate.id,
+        status: 'draft',
+        data: dataToSave
+      })
     }
   })
+
+  // Create a draft submission on demand so the per-section PUT (which requires an
+  // existing draft id) has something to write against. Deduped via a ref so
+  // concurrent section saves share one creation.
+  const ensureDraft = useCallback(async () => {
+    if (draftIdRef.current) return draftIdRef.current
+    if (creatingDraftRef.current) return creatingDraftRef.current
+    const template = selectedTemplateRef.current
+    if (!token || !template) throw new Error('Select a template first.')
+    const promise = (async () => {
+      const created = await postPortalSubmission(token, {
+        templateId: template.id,
+        status: 'draft',
+        data: draftDataRef.current
+      })
+      const id = String((created as { id?: string }).id || '')
+      if (!id) throw new Error('Draft creation failed.')
+      draftIdRef.current = id
+      setDraftId(id)
+      return id
+    })()
+    creatingDraftRef.current = promise
+    try {
+      return await promise
+    } finally {
+      creatingDraftRef.current = null
+    }
+  }, [token])
 
   useEffect(() => {
     if (!data || data.mode === 'empty') return
@@ -193,11 +497,61 @@ export function Component() {
     setSelectedTemplateId((current) => current || fallback)
   }, [data])
 
+  // Adopt the existing draft (and its per-section revisions) for the selected
+  // template, or reset to a blank draft. Bumping adoptGeneration remounts the
+  // section editors so their autosave baseline matches the freshly loaded data.
   useEffect(() => {
-    setDraftData({})
-    portalAutosave.reset({})
+    if (!data || data.mode === 'empty') return
+    const template = data.templates.find((entry) => entry.id === selectedTemplateId) || null
+    let cancelled = false
+
+    async function adopt() {
+      versionsRef.current = {}
+      if (!template || !data || data.mode !== 'token') {
+        draftIdRef.current = null
+        setDraftId(null)
+        setDraftData({})
+        portalAutosave.reset({})
+        setAdoptGeneration((value) => value + 1)
+        return
+      }
+      const existing = data.submissions.find(
+        (entry) => entry.templateId === template.id && entry.status === 'draft'
+      )
+      if (!existing) {
+        draftIdRef.current = null
+        setDraftId(null)
+        setDraftData({})
+        setAdoptGeneration((value) => value + 1)
+        return
+      }
+      const base =
+        existing.data && typeof existing.data === 'object' ? (existing.data as Record<string, unknown>) : {}
+      let merged: Record<string, unknown> = { ...base }
+      const versions: Record<string, number> = {}
+      try {
+        const states = await fetchPortalDraftSections(token, existing.id)
+        for (const state of states) {
+          versions[state.sectionId] = Number(state.version || 0)
+          if (state.data && typeof state.data === 'object') merged = { ...merged, ...state.data }
+        }
+      } catch {
+        // Section states are best-effort; fall back to the submission snapshot.
+      }
+      if (cancelled) return
+      versionsRef.current = versions
+      draftIdRef.current = existing.id
+      setDraftId(existing.id)
+      setDraftData(merged)
+      setAdoptGeneration((value) => value + 1)
+    }
+
+    void adopt()
+    return () => {
+      cancelled = true
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedTemplateId])
+  }, [data, selectedTemplateId])
 
   async function handleSubmit(status: 'draft' | 'submitted') {
     if (!selectedTemplate) {
@@ -219,6 +573,9 @@ export function Component() {
           data: draftData
         })
       }
+      draftIdRef.current = null
+      setDraftId(null)
+      versionsRef.current = {}
       setDraftData({})
       portalAutosave.reset({})
       setStatusMessage(status === 'draft' ? 'Draft saved.' : 'Form submitted.')
@@ -326,7 +683,10 @@ export function Component() {
               {selectedTemplate ? (
                 <div
                   className="compact-stack"
-                  onBlur={() => portalAutosave.flush()}
+                  onBlur={() => {
+                    portalAutosave.flush()
+                    for (const flush of Object.values(flushRegistryRef.current)) flush()
+                  }}
                 >
                   <p
                     className={
@@ -337,97 +697,25 @@ export function Component() {
                     role="status"
                     aria-live="polite"
                   >
-                    {autosaveStatusLabel(portalAutosave.status) || 'Autosave on'}
+                    {tokenMode
+                      ? 'Each section autosaves on its own.'
+                      : autosaveStatusLabel(portalAutosave.status) || 'Autosave on'}
                   </p>
-                  {selectedTemplate.sections.map((section, sectionIndex) => {
-                    if (section.repeatable) {
-                      const rows = repeaterRows(draftData, section, sectionIndex)
-                      return (
-                        <Card key={sectionStorageKey(section, sectionIndex)} className="section-card inset-card">
-                          <div className="row-between">
-                            <div>
-                              <h3>{section.title || `Section ${sectionIndex + 1}`}</h3>
-                              <p className="muted">Add repeatable entries as needed.</p>
-                            </div>
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              onClick={() =>
-                                setDraftData((current) => appendRepeaterRow(current, section, sectionIndex))
-                              }
-                            >
-                              Add row
-                            </button>
-                          </div>
-                          {rows.length ? (
-                            rows.map((row, rowIndex) => {
-                              const rowObject = row && typeof row === 'object' ? (row as Record<string, unknown>) : {}
-                              return (
-                                <Card
-                                  key={`${sectionStorageKey(section, sectionIndex)}-${rowIndex}`}
-                                  className="section-card inset-card"
-                                >
-                                  <div className="row-between">
-                                    <strong>Row {rowIndex + 1}</strong>
-                                    <button
-                                      type="button"
-                                      className="ghost-button"
-                                      onClick={() =>
-                                        setDraftData((current) =>
-                                          removeRepeaterRow(current, section, sectionIndex, rowIndex)
-                                        )
-                                      }
-                                    >
-                                      Remove
-                                    </button>
-                                  </div>
-                                  <div className="form-grid two-up">
-                                    {(section.fields || []).map((field) =>
-                                      renderField(
-                                        field,
-                                        String(rowObject[field.key] || ''),
-                                        (nextValue) =>
-                                          setDraftData((current) =>
-                                            updateRepeaterRow(current, section, sectionIndex, rowIndex, {
-                                              ...rowObject,
-                                              [field.key]: nextValue
-                                            })
-                                          ),
-                                        false,
-                                        `-${rowIndex}`
-                                      )
-                                    )}
-                                  </div>
-                                </Card>
-                              )
-                            })
-                          ) : (
-                            <InlineNotice tone="info">No rows yet. Add one to start.</InlineNotice>
-                          )}
-                        </Card>
-                      )
-                    }
-
-                    return (
-                      <Card key={sectionStorageKey(section, sectionIndex)} className="section-card inset-card">
-                        <h3>{section.title || `Section ${sectionIndex + 1}`}</h3>
-                        <div className="form-grid two-up">
-                          {(section.fields || []).map((field) =>
-                            renderField(
-                              field,
-                              String(draftData[field.key] || ''),
-                              (nextValue) =>
-                                setDraftData((current) => ({
-                                  ...current,
-                                  [field.key]: nextValue
-                                })),
-                              false
-                            )
-                          )}
-                        </div>
-                      </Card>
-                    )
-                  })}
+                  {selectedTemplate.sections.map((section, sectionIndex) => (
+                    <PortalDraftSection
+                      key={`section-${sectionIndex}-${adoptGeneration}`}
+                      section={section}
+                      sectionIndex={sectionIndex}
+                      token={token}
+                      draftId={draftId}
+                      ensureDraft={ensureDraft}
+                      versionsRef={versionsRef}
+                      flushRegistryRef={flushRegistryRef}
+                      draftData={draftData}
+                      setDraftData={setDraftData}
+                      enabled={tokenMode}
+                    />
+                  ))}
                   <div className="actions-row">
                     <button type="button" onClick={() => void handleSubmit('submitted')}>
                       Submit form

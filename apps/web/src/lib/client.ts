@@ -105,6 +105,10 @@ export const routes = {
   clientUploads: () => '/api/client/uploads',
   portal: (token: string) => joinPath('/api/portal', token),
   portalSubmissions: (token: string) => joinPath('/api/portal', token, 'submissions'),
+  portalDraftSections: (token: string, draftId: string) =>
+    joinPath('/api/portal', token, 'drafts', draftId, 'sections'),
+  portalDraftSection: (token: string, draftId: string, sectionId: string) =>
+    joinPath('/api/portal', token, 'drafts', draftId, 'sections', sectionId),
   portalUploadsPresign: (token: string) => joinPath('/api/portal', token, 'uploads', 'presign'),
   portalUploads: (token: string) => joinPath('/api/portal', token, 'uploads')
 }
