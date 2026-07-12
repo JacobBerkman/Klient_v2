@@ -36,6 +36,10 @@ export class StoreProfileRepository extends ProfileRepository {
     const context = requireFirmContext(firmContext, { method: 'profiles.updateProfile' })
     return this.store.updateProfile(context, profileId, patch)
   }
+  convertProfile(firmContext, profileId, options = {}) {
+    const context = requireFirmContext(firmContext, { method: 'profiles.convertProfile' })
+    return this.store.convertProspectToClient(context, profileId, options)
+  }
   addTag(firmContext, profileId, tag) {
     const context = requireFirmContext(firmContext, { method: 'profiles.addTag' })
     return this.store.addProfileTag(context, profileId, tag)

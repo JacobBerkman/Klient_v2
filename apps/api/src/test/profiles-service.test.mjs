@@ -54,6 +54,67 @@ test('profiles service strips expectedUpdatedAt before repository update', async
   assert.deepEqual(calls.updatePatch, { firstName: 'Morgan' })
 })
 
+test('profiles service convert rejects stale expectedUpdatedAt before touching the board', async () => {
+  const calls = { convert: null }
+  const service = createProfilesService({
+    profileRepository: {
+      getProfileDetail: async () => ({ id: 'profile-1', updatedAt: '2026-03-27T08:00:00.000Z' }),
+      convertProfile: async (_ctx, profileId, options) => {
+        calls.convert = { profileId, options }
+        return { profile: { id: profileId, kind: 'client' } }
+      }
+    },
+    policy: createPolicy()
+  })
+  const user = { id: 'advisor-1', role: 'advisor', firmId: 'firm-1' }
+
+  await assert.rejects(
+    service.convertProfile(user, 'profile-1', { expectedUpdatedAt: '2026-03-27T07:59:00.000Z' }),
+    (error) => {
+      assert.equal(error.code, 'PROFILE_UPDATE_CONFLICT')
+      assert.equal(error.statusCode, 409)
+      return true
+    }
+  )
+  assert.equal(calls.convert, null)
+})
+
+test('profiles service convert forwards expectedUpdatedAt to the repository on a fresh precondition', async () => {
+  const calls = { convert: null }
+  const service = createProfilesService({
+    profileRepository: {
+      getProfileDetail: async () => ({ id: 'profile-1', updatedAt: '2026-03-27T08:00:00.000Z' }),
+      convertProfile: async (_ctx, profileId, options) => {
+        calls.convert = { profileId, options }
+        return { profile: { id: profileId, kind: 'client' } }
+      }
+    },
+    policy: createPolicy()
+  })
+  const admin = { id: 'admin-1', role: 'admin', firmId: 'firm-1' }
+
+  const result = await service.convertProfile(admin, 'profile-1', {
+    expectedUpdatedAt: '2026-03-27T08:00:00.000Z'
+  })
+  assert.equal(result.profile.kind, 'client')
+  assert.deepEqual(calls.convert, {
+    profileId: 'profile-1',
+    options: { expectedUpdatedAt: '2026-03-27T08:00:00.000Z' }
+  })
+})
+
+test('profiles service convert requires canWriteProfiles', async () => {
+  const service = createProfilesService({
+    profileRepository: {
+      getProfileDetail: async () => ({ id: 'profile-1', updatedAt: '2026-03-27T08:00:00.000Z' }),
+      convertProfile: async () => ({ profile: { id: 'profile-1', kind: 'client' } })
+    },
+    policy: createPolicy()
+  })
+  const readonly = { id: 'readonly-1', role: 'readonly', firmId: 'firm-1' }
+  await assert.rejects(() => service.convertProfile(readonly, 'profile-1', {}), /Missing permission/)
+})
+
 test('custom field schema mutations require canManageUsers (admin only)', async () => {
   const calls = []
   const profileRepository = {

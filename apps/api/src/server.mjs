@@ -1437,6 +1437,22 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/convert') && req.method === 'POST') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteProfiles')
+        const result = await modules.profiles.convertProfile(user, id, await parseBody(req))
+        logOperationalEvent(log, 'info', 'mutation.profile.converted', {
+          entity: 'profile',
+          id,
+          status: 'converted',
+          requestId,
+          userId: user.id,
+          firmId: user.firmId
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/profiles/') && req.method === 'PATCH') {
         const id = pathname.split('/')[3]
         const user = requireUser()
