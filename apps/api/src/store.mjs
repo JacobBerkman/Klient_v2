@@ -369,6 +369,37 @@ function sourceDisplay(source) {
   return `${source.cityOrLocation} X ${source.venue} X ${source.occurredOn}`
 }
 
+// Lightweight client/prospect tags. Normalization is deliberately conservative:
+// trim + collapse internal whitespace, drop empties, cap each tag's length, cap
+// the count, and dedupe case-insensitively while preserving the first-seen
+// casing (friendlier for display than forcing lowercase). Returns a plain array
+// that round-trips in the profile canonical object (profiles.payload).
+const MAX_PROFILE_TAG_LENGTH = 40
+const MAX_PROFILE_TAGS = 20
+
+function normalizeProfileTag(value) {
+  return String(value ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, MAX_PROFILE_TAG_LENGTH)
+}
+
+function normalizeProfileTags(input) {
+  const list = Array.isArray(input) ? input : input == null ? [] : [input]
+  const seen = new Set()
+  const result = []
+  for (const raw of list) {
+    const tag = normalizeProfileTag(raw)
+    if (!tag) continue
+    const key = tag.toLowerCase()
+    if (seen.has(key)) continue
+    seen.add(key)
+    result.push(tag)
+    if (result.length >= MAX_PROFILE_TAGS) break
+  }
+  return result
+}
+
 function toFiniteNumber(value) {
   const parsed = Number(value)
   return Number.isFinite(parsed) ? parsed : null
@@ -2088,10 +2119,48 @@ export function createStore({
         )
       }
       if ('customProfile' in nextPatch) delete nextPatch.customProfile
+      if ('tags' in nextPatch) nextPatch.tags = normalizeProfileTags(nextPatch.tags)
       Object.assign(profile, nextPatch, { updatedAt: now() })
       upsertProfileRow(profile)
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) })
       persist()
+      return profile
+    },
+    addProfileTag(user, profileId, tag) {
+      const firmContext = requireFirmContext(user, { method: 'store.addProfileTag' })
+      requirePermission(user, 'profiles:write')
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
+      const normalized = normalizeProfileTag(tag)
+      if (!normalized) throw new Error('Tag is required.')
+      const nextTags = normalizeProfileTags([...(profile.tags || []), normalized])
+      const changed = nextTags.length !== (profile.tags || []).length
+      profile.tags = nextTags
+      if (changed) {
+        profile.updatedAt = now()
+        upsertProfileRow(profile)
+        addAudit(user.firmId, user.id, 'profile', profileId, 'profile.tag_added', { tag: normalized })
+        persist()
+      }
+      return profile
+    },
+    removeProfileTag(user, profileId, tag) {
+      const firmContext = requireFirmContext(user, { method: 'store.removeProfileTag' })
+      requirePermission(user, 'profiles:write')
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), {
+        entityName: 'Profile'
+      })
+      const target = normalizeProfileTag(tag).toLowerCase()
+      const nextTags = (profile.tags || []).filter((entry) => normalizeProfileTag(entry).toLowerCase() !== target)
+      const changed = nextTags.length !== (profile.tags || []).length
+      profile.tags = nextTags
+      if (changed) {
+        profile.updatedAt = now()
+        upsertProfileRow(profile)
+        addAudit(user.firmId, user.id, 'profile', profileId, 'profile.tag_removed', { tag: normalizeProfileTag(tag) })
+        persist()
+      }
       return profile
     },
     getProfileCustomFieldSchema(user) {

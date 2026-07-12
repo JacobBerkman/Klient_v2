@@ -3,6 +3,7 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { api, routes } from '../lib/client'
 import type { DashboardPayload } from '../lib/types'
 import { homePathForUser } from '../lib/permissions'
+import { NotificationBell } from '../components/NotificationBell'
 import { useAuth } from './auth'
 
 export interface RouteHandle {
@@ -151,6 +152,7 @@ export function AppShell() {
             <strong>{user ? `${user.firstName} ${user.lastName}` : 'Session'}</strong>
           </div>
           <div className="topbar-actions">
+            <NotificationBell />
             <span className="role-pill" aria-label="Current role">
               {user?.role || 'anonymous'}
             </span>

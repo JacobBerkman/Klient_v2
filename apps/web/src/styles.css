@@ -193,6 +193,129 @@ a:focus-visible {
   gap: 0.9rem;
 }
 
+.notification-bell {
+  position: relative;
+  display: inline-flex;
+}
+
+.notification-trigger {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.4rem;
+  height: 2.4rem;
+  padding: 0;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  cursor: pointer;
+}
+
+.notification-trigger:hover {
+  border-color: var(--accent);
+}
+
+.notification-icon {
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.notification-badge {
+  position: absolute;
+  top: -0.35rem;
+  right: -0.35rem;
+  min-width: 1.15rem;
+  height: 1.15rem;
+  padding: 0 0.3rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: var(--danger);
+  color: #fff;
+  font-size: 0.68rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.notification-panel {
+  position: absolute;
+  top: calc(100% + 0.6rem);
+  right: 0;
+  width: min(22rem, 90vw);
+  max-height: 26rem;
+  overflow-y: auto;
+  z-index: 40;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: 0 18px 40px rgba(20, 30, 28, 0.18);
+}
+
+.notification-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.75rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.notification-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.notification-empty {
+  padding: 1rem;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.notification-item {
+  border-bottom: 1px solid var(--border);
+}
+
+.notification-item:last-child {
+  border-bottom: none;
+}
+
+.notification-item.is-unread {
+  background: rgba(12, 124, 109, 0.08);
+}
+
+.notification-item-button {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  width: 100%;
+  padding: 0.7rem 1rem;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.notification-item-button:hover {
+  background: rgba(12, 124, 109, 0.06);
+}
+
+.notification-item-title {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+.notification-item-body {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.notification-item-time {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+}
+
 .page-shell {
   width: min(var(--content-width), calc(100vw - 360px));
   padding: 1.75rem 2rem 2.5rem;
@@ -836,6 +959,74 @@ details summary {
   border-radius: 999px;
   background: rgba(12, 124, 109, 0.08);
   color: #085d52;
+}
+
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(12, 124, 109, 0.1);
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+}
+
+.tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(8, 93, 82, 0.14);
+  color: var(--accent-strong);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tag-remove:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+
+.profile-tags {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.autosave-status {
+  margin: 0 0 0.4rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+
+.autosave-status.is-error {
+  color: var(--danger);
+  font-weight: 600;
+}
+
+.tag-input-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.tag-input-row input {
+  flex: 1;
+  min-width: 0;
 }
 
 .action-panel {

@@ -13,6 +13,12 @@ export class ProfileRepository {
   updateProfile(_firmContext, _profileId, _patch) {
     throwRepositoryScaffoldError('ProfileRepository', 'updateProfile')
   }
+  addTag(_firmContext, _profileId, _tag) {
+    throwRepositoryScaffoldError('ProfileRepository', 'addTag')
+  }
+  removeTag(_firmContext, _profileId, _tag) {
+    throwRepositoryScaffoldError('ProfileRepository', 'removeTag')
+  }
   listNotes(_firmContext, _profileId) {
     throwRepositoryScaffoldError('ProfileRepository', 'listNotes')
   }

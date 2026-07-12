@@ -1652,6 +1652,119 @@ export function deleteInviteRow(inviteId) {
   return result.changes > 0
 }
 
+// --- Notification repository (source of truth) --------------------------------
+// In-app notifications (migration 011). The canonical object — title, body,
+// link, entity refs — lives in the payload JSON column; firm_id/user_id/type/
+// read_at/created_at are promoted for the scoped list, unread-count, and
+// mark-read paths. A NULL user_id is a firm-wide notification: every scoped
+// read matches (user_id = ? OR user_id IS NULL). read_at NULL means unread.
+//
+// insertNotification runs from BOTH the API process (its inline queue tick) and
+// the standalone export worker (they share this database), so an export-
+// completion notification is created exactly once by whichever process
+// finalizes the job — the row is relational, so either writer is fine.
+
+function mapNotificationRow(row) {
+  const payload = row.payload ? JSON.parse(row.payload) : {}
+  return {
+    id: row.id,
+    firmId: row.firm_id,
+    userId: row.user_id,
+    type: row.type,
+    readAt: row.read_at,
+    createdAt: row.created_at,
+    ...payload
+  }
+}
+
+export function insertNotification(notification) {
+  const id = notification.id || randomUUID()
+  const createdAt = notification.createdAt || nowIso()
+  const payload = {
+    title: notification.title || '',
+    body: notification.body || '',
+    link: notification.link || null,
+    entityType: notification.entityType || null,
+    entityId: notification.entityId || null
+  }
+  if (notification.metadata && typeof notification.metadata === 'object') {
+    payload.metadata = notification.metadata
+  }
+  db.prepare(
+    `
+    INSERT OR IGNORE INTO notifications (id, firm_id, user_id, type, read_at, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `
+  ).run(
+    id,
+    notification.firmId ?? 'unknown',
+    notification.userId ?? null,
+    notification.type || 'generic',
+    notification.readAt ?? null,
+    createdAt,
+    JSON.stringify(payload)
+  )
+  return {
+    id,
+    firmId: notification.firmId ?? 'unknown',
+    userId: notification.userId ?? null,
+    type: notification.type || 'generic',
+    readAt: notification.readAt ?? null,
+    createdAt,
+    ...payload
+  }
+}
+
+// Recipient view: the user's own notifications plus firm-wide ones, newest
+// first. rowid DESC is the stable tiebreak when created_at collides.
+export function listNotificationsForUser({ firmId, userId = null, unreadOnly = false, limit = 50 } = {}) {
+  const clauses = ['firm_id = ?', '(user_id = ? OR user_id IS NULL)']
+  const params = [firmId, userId]
+  if (unreadOnly) clauses.push('read_at IS NULL')
+  params.push(Math.max(1, Math.min(Number(limit) || 50, 200)))
+  return db
+    .prepare(`SELECT * FROM notifications WHERE ${clauses.join(' AND ')} ORDER BY created_at DESC, rowid DESC LIMIT ?`)
+    .all(...params)
+    .map(mapNotificationRow)
+}
+
+export function countUnreadNotifications({ firmId, userId = null } = {}) {
+  return (
+    db
+      .prepare(
+        'SELECT COUNT(*) AS count FROM notifications WHERE firm_id = ? AND (user_id = ? OR user_id IS NULL) AND read_at IS NULL'
+      )
+      .get(firmId, userId)?.count || 0
+  )
+}
+
+// Idempotent: COALESCE preserves the original read timestamp on re-mark. The
+// changes count is nonzero when a scoped row matched (existence + ownership).
+export function markNotificationRead(id, { firmId, userId = null, readAt = null } = {}) {
+  const stamp = readAt || nowIso()
+  return (
+    db
+      .prepare(
+        'UPDATE notifications SET read_at = COALESCE(read_at, ?) WHERE id = ? AND firm_id = ? AND (user_id = ? OR user_id IS NULL)'
+      )
+      .run(stamp, id, firmId, userId).changes > 0
+  )
+}
+
+export function markAllNotificationsRead({ firmId, userId = null, readAt = null } = {}) {
+  const stamp = readAt || nowIso()
+  return db
+    .prepare(
+      'UPDATE notifications SET read_at = ? WHERE firm_id = ? AND (user_id = ? OR user_id IS NULL) AND read_at IS NULL'
+    )
+    .run(stamp, firmId, userId).changes
+}
+
+// Optional retention sweep: drop notifications created at/older than the cutoff.
+export function deleteExpiredNotifications(cutoffIso) {
+  return db.prepare('DELETE FROM notifications WHERE created_at <= ?').run(cutoffIso).changes
+}
+
 // Blob-to-table seeding for freshly seeded states (whose demo notes/uploads
 // exist only in memory) and any legacy blob that predates migration 007.
 // Keyed INSERT OR IGNORE keeps it idempotent against the migration backfill.
@@ -1718,6 +1831,29 @@ function ensureClientDataEntitiesSeededFromState(state) {
       invite.createdAt ?? null,
       invite.expiresAt ?? null,
       JSON.stringify(invite)
+    )
+  }
+}
+
+// Notifications are a source-of-truth table with no legacy blob predecessor,
+// so this only seeds any in-memory notifications a freshly seeded state might
+// carry (today none do). Keyed INSERT OR IGNORE keeps it idempotent.
+function ensureNotificationsSeededFromState(state) {
+  const insertRow = db.prepare(`
+    INSERT OR IGNORE INTO notifications (id, firm_id, user_id, type, read_at, created_at, payload)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `)
+  for (const notification of state.notifications || []) {
+    if (!notification || typeof notification !== 'object' || !notification.id) continue
+    const { id, firmId, userId, type, readAt, createdAt, ...rest } = notification
+    insertRow.run(
+      id,
+      firmId ?? 'unknown',
+      userId ?? null,
+      type || 'generic',
+      readAt ?? null,
+      createdAt ?? nowIso(),
+      JSON.stringify(rest)
     )
   }
 }
@@ -2102,6 +2238,7 @@ function stripRelationalMirrors(state) {
   state.documentUploads = []
   state.portalLinks = []
   state.invites = []
+  state.notifications = []
   state.authAttempts = []
   state.passwordResetAttempts = []
   state.passwordResets = []
@@ -2128,6 +2265,7 @@ export function loadState(seedFactory) {
     ensureSubmissionEntitiesSeededFromState(state)
     ensureBoardEntitiesSeededFromState(state)
     ensureClientDataEntitiesSeededFromState(state)
+    ensureNotificationsSeededFromState(state)
     ensureAuthEntitiesSeededFromState(state)
     const hadBlobMirrors =
       [
@@ -2149,6 +2287,7 @@ export function loadState(seedFactory) {
         state.documentUploads,
         state.portalLinks,
         state.invites,
+        state.notifications,
         state.authAttempts,
         state.passwordResetAttempts,
         state.passwordResets,
@@ -2184,6 +2323,7 @@ export function loadState(seedFactory) {
   ensureSubmissionEntitiesSeededFromState(state)
   ensureBoardEntitiesSeededFromState(state)
   ensureClientDataEntitiesSeededFromState(state)
+  ensureNotificationsSeededFromState(state)
   ensureAuthEntitiesSeededFromState(state)
   stripRelationalMirrors(state)
   state.sessions = []
@@ -2221,6 +2361,7 @@ export function saveState(state) {
     documentUploads: [],
     portalLinks: [],
     invites: [],
+    notifications: [],
     authAttempts: [],
     passwordResetAttempts: [],
     passwordResets: [],
@@ -2284,6 +2425,7 @@ export function enqueueExportJob(job) {
     clientId: job.clientId || null,
     templateId: job.templateId || null,
     submissionId: job.submissionId || null,
+    createdByUserId: job.createdByUserId || null,
     renderContext: job.renderContext || null,
     type: job.type || 'pdf',
     status: 'queued',
@@ -2421,6 +2563,33 @@ export function leaseExportJobs({ workerId = 'worker', limit = 5, leaseMs = 30_0
   return ids.map((id) => getExportJob(id)).filter(Boolean)
 }
 
+// Emits a single in-app notification for an export job that reached a terminal
+// lifecycle state. Called from markExportJobCompleted / markExportJobFailed, so
+// whichever process (API inline tick or standalone worker) finalizes the job
+// creates the row. Best-effort: a notification failure must never mask the
+// job-state write, so it is swallowed.
+function notifyExportLifecycle(job, kind) {
+  if (!job || !job.firmId) return
+  const shortId = String(job.id || '').slice(0, 8) || 'export'
+  const completed = kind === 'completed'
+  try {
+    insertNotification({
+      firmId: job.firmId,
+      userId: job.createdByUserId || null,
+      type: completed ? 'export.completed' : 'export.failed',
+      title: completed ? 'Export ready' : 'Export failed',
+      body: completed
+        ? `Your ${job.type || 'pdf'} export (${shortId}) finished and is ready to download.`
+        : `Your ${job.type || 'pdf'} export (${shortId}) failed. Review it and retry.`,
+      link: '/exports',
+      entityType: 'export_job',
+      entityId: job.id
+    })
+  } catch {
+    // Non-fatal: the export lifecycle write already committed.
+  }
+}
+
 export function markExportJobCompleted(jobId, output) {
   const existing = db.prepare('SELECT payload FROM export_jobs WHERE id = ?').get(jobId)
   if (!existing) return null
@@ -2447,6 +2616,7 @@ export function markExportJobCompleted(jobId, output) {
     WHERE id = ?
   `
   ).run(JSON.stringify(output || null), timestamp, timestamp, JSON.stringify(payload), jobId)
+  notifyExportLifecycle(payload, 'completed')
   return getExportJob(jobId)
 }
 
@@ -2526,6 +2696,7 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
       WHERE id = ?
     `
     ).run(attempts, normalizedError, timestamp, timestamp, timestamp, JSON.stringify(payload), jobId)
+    notifyExportLifecycle(payload, 'failed')
   } else if (failureClass === 'transient') {
     const delayBaseMs = Math.min(baseBackoffMs * 2 ** (attempts - 1), maxBackoffMs)
     const jitterMs = Math.round((Math.random() * 2 - 1) * delayBaseMs * jitterRatio)
@@ -2594,6 +2765,7 @@ export function markExportJobFailed(jobId, errorMessage, options = {}) {
       WHERE id = ?
     `
     ).run(attempts, normalizedError, timestamp, timestamp, JSON.stringify(payload), jobId)
+    notifyExportLifecycle(payload, 'failed')
   }
 
   return getExportJob(jobId)

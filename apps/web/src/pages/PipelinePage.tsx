@@ -18,6 +18,7 @@ import {
   SegmentedControl,
   Toolbar
 } from '../components/ui'
+import { TagChips } from '../components/ProfileTags'
 
 export const handle = {
   title: 'Pipeline',
@@ -267,6 +268,7 @@ export function Component() {
                       <Badge tone="neutral">{card.kind}</Badge>
                     </div>
                     <p className="muted">{card.email || 'No email on file'}</p>
+                    <TagChips tags={card.tags} />
                     <div className="actions-row">
                       <Link className="text-link" to={`/profiles/${card.id}`}>
                         Open
