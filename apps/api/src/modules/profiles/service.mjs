@@ -77,6 +77,14 @@ export function createProfilesService({ profileRepository, policy }) {
       const patchWithPreconditions = await assertUpdatePreconditions(user, profileId, patch)
       return profileRepository.updateProfile(createFirmContext(user), profileId, patchWithPreconditions)
     },
+    addTag(user, profileId, tag) {
+      policy.requireGuard(user, 'canWriteProfiles')
+      return profileRepository.addTag(createFirmContext(user), profileId, tag)
+    },
+    removeTag(user, profileId, tag) {
+      policy.requireGuard(user, 'canWriteProfiles')
+      return profileRepository.removeTag(createFirmContext(user), profileId, tag)
+    },
     listStageHistory(user, profileId) {
       policy.requireGuard(user, 'canReadProfiles')
       return profileRepository.listStageHistory(createFirmContext(user), profileId)

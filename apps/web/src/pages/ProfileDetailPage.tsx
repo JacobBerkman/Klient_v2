@@ -6,6 +6,7 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { ProfileDetailPayload } from '../lib/types'
 import { useAuth } from '../app/auth'
+import { ProfileTagsEditor } from '../components/ProfileTags'
 import {
   ActionPanel,
   ButtonLink,
@@ -146,6 +147,17 @@ export function Component() {
               {statusMessage || 'Inline editing lives here instead of on the list page.'}
             </p>
           </ActionPanel>
+
+          <Card className="section-card">
+            <h3>Tags</h3>
+            <p className="muted">Lightweight labels for segmenting prospects and clients.</p>
+            <ProfileTagsEditor
+              profileId={data.profile.id}
+              tags={data.profile.tags}
+              canEdit={hasGuard(user, 'canWriteProfiles')}
+              onChange={() => setRefreshKey((value) => value + 1)}
+            />
+          </Card>
 
           <Card className="section-card">
             <h3>Household + shortcuts</h3>

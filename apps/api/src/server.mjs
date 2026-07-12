@@ -1336,6 +1336,41 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
+      const profileTagsMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/tags$/)
+      if (profileTagsMatch && req.method === 'POST') {
+        const [, id] = profileTagsMatch
+        const body = await parseBody(req)
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteProfiles')
+        const result = modules.profiles.addTag(user, decodeURIComponent(id), body.tag || '')
+        logOperationalEvent(log, 'info', 'mutation.profile.tag_added', {
+          entity: 'profile',
+          id: decodeURIComponent(id),
+          status: 'updated',
+          requestId,
+          userId: user.id,
+          firmId: user.firmId
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      const profileTagDeleteMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/tags\/([^/]+)$/)
+      if (profileTagDeleteMatch && req.method === 'DELETE') {
+        const [, id, tag] = profileTagDeleteMatch
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canWriteProfiles')
+        const result = modules.profiles.removeTag(user, decodeURIComponent(id), decodeURIComponent(tag))
+        logOperationalEvent(log, 'info', 'mutation.profile.tag_removed', {
+          entity: 'profile',
+          id: decodeURIComponent(id),
+          status: 'updated',
+          requestId,
+          userId: user.id,
+          firmId: user.firmId
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/profiles/') && pathname.split('/').length === 4 && req.method === 'GET') {
         const id = pathname.split('/')[3]
         const user = requireUser()

@@ -961,6 +961,63 @@ details summary {
   color: #085d52;
 }
 
+.tag-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+}
+
+.tag-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: rgba(12, 124, 109, 0.1);
+  color: var(--accent-strong);
+  font-size: 0.78rem;
+}
+
+.tag-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.05rem;
+  height: 1.05rem;
+  padding: 0;
+  border: none;
+  border-radius: 999px;
+  background: rgba(8, 93, 82, 0.14);
+  color: var(--accent-strong);
+  font-size: 0.85rem;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.tag-remove:hover:not(:disabled) {
+  background: var(--danger);
+  color: #fff;
+}
+
+.profile-tags {
+  display: grid;
+  gap: 0.6rem;
+}
+
+.tag-input-row {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.tag-input-row input {
+  flex: 1;
+  min-width: 0;
+}
+
 .action-panel {
   display: grid;
   align-content: start;
