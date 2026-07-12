@@ -626,6 +626,27 @@ export interface PortalPayload {
   uploads?: Array<Record<string, unknown>>
 }
 
+// Revision-tracked per-section draft state for the portal PUT
+// /api/portal/:token/drafts/:draftId/sections/:sectionId route. `version` is the
+// optimistic-concurrency token: a save echoes { expectedVersion } and the server
+// returns the freshly incremented `version` (or, on 409, the latest server state).
+export interface PortalDraftSectionState {
+  firmId?: string
+  clientId?: string
+  draftId: string
+  sectionId: string
+  version: number
+  data: Record<string, unknown>
+  updatedAt?: string
+}
+
+export interface PortalDraftSectionSaveResult {
+  ok: boolean
+  conflict?: boolean
+  reason?: string
+  state: PortalDraftSectionState | null
+}
+
 export interface PortalLink {
   id: string
   firmId: string

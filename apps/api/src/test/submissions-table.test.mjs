@@ -265,6 +265,24 @@ test('store: portal draft section states use a real SQL version guard with the l
   const listedStates = store.listPortalDraftSectionStates(link.token, draft.id)
   assert.equal(listedStates.length, 1)
 
+  // Client-visible contract the portal UI relies on to adopt per-section saving:
+  //   (1) getPortalData exposes the draft submission id (= the draftId the
+  //       per-section PUT is scoped to) plus its data snapshot, and
+  //   (2) listPortalDraftSectionStates exposes each section's normalized id +
+  //       version so the client can seed expectedVersion and overlay section
+  //       data on top of the submission snapshot.
+  const portalData = store.getPortalData(link.token)
+  const adoptedDraft = portalData.submissions.find(
+    (entry) => entry.templateId === template.id && entry.status === 'draft'
+  )
+  assert.ok(adoptedDraft, 'portal data must expose the draft so the client can adopt its id')
+  assert.equal(adoptedDraft.id, draft.id)
+  assert.equal(adoptedDraft.data.primaryGoal, 'Initial')
+  const goalsState = listedStates.find((entry) => entry.sectionId === 'goals')
+  assert.ok(goalsState, 'section states must expose the normalized section id')
+  assert.equal(goalsState.version, 2)
+  assert.deepEqual(goalsState.data, { fields: { primaryGoal: 'Tab A update' } })
+
   // The guard is enforced in SQL, not in JS: bypass the store and race the
   // storage helper directly with a stale expected version.
   const raced = storage.saveDraftSectionStateGuarded({
