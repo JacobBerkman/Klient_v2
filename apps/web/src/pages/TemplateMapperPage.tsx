@@ -31,6 +31,38 @@ interface PointerState {
   startClientY: number
   startField: LayoutField
   viewport: ViewportState
+  snapshot: LayoutField[]
+}
+
+// Undo/redo keeps a bounded stack of full layout snapshots.
+const HISTORY_LIMIT = 50
+// Layout coordinates are stored in PDF points (1/72"). A 6pt grid lands at
+// roughly 8px on a 96dpi display: coarse enough to feel magnetic, fine enough
+// for form alignment. Kept OFF by default so precise drags stay exact.
+const SNAP_GRID_POINTS = 6
+const SNAP_STORAGE_KEY = 'kinetic.mapper.snapToGrid'
+
+function snapValue(value: number) {
+  return Math.round(value / SNAP_GRID_POINTS) * SNAP_GRID_POINTS
+}
+
+function snapField(field: LayoutField): LayoutField {
+  return {
+    ...field,
+    x: Math.max(0, snapValue(Number(field.x || 0))),
+    y: Math.max(0, snapValue(Number(field.y || 0))),
+    width: Math.max(8, snapValue(Number(field.width || 1))),
+    height: Math.max(8, snapValue(Number(field.height || 1)))
+  }
+}
+
+function readSnapPreference() {
+  if (typeof window === 'undefined') return false
+  try {
+    return window.localStorage.getItem(SNAP_STORAGE_KEY) === '1'
+  } catch {
+    return false
+  }
 }
 
 function fieldName(field: Record<string, unknown> | string) {
@@ -78,6 +110,13 @@ export function Component() {
   const pointerRef = useRef<PointerState | null>(null)
   const savedLayoutRef = useRef('')
   const [fields, setFields] = useState<LayoutField[]>([])
+  const [past, setPast] = useState<LayoutField[][]>([])
+  const [future, setFuture] = useState<LayoutField[][]>([])
+  const [snapEnabled, setSnapEnabled] = useState<boolean>(() => readSnapPreference())
+  const fieldsRef = useRef<LayoutField[]>([])
+  fieldsRef.current = fields
+  const snapEnabledRef = useRef(snapEnabled)
+  snapEnabledRef.current = snapEnabled
   const [statusMessage, setStatusMessage] = useState('')
   const [renderError, setRenderError] = useState('')
   const [pageIndex, setPageIndex] = useState(0)
@@ -92,8 +131,18 @@ export function Component() {
     const nextFields = defaultLayout(template)
     setFields(nextFields)
     savedLayoutRef.current = JSON.stringify(nextFields)
+    setPast([])
+    setFuture([])
     setPageIndex(0)
   }, [template?.id, template?.updatedAt])
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SNAP_STORAGE_KEY, snapEnabled ? '1' : '0')
+    } catch {
+      /* localStorage may be unavailable; the toggle still works in-session. */
+    }
+  }, [snapEnabled])
 
   useEffect(() => {
     let cancelled = false
@@ -136,8 +185,54 @@ export function Component() {
     }
   }, [template?.id, template?.sourceArtifact, pageIndex])
 
+  // Live drag/resize updates deliberately bypass history: a single completed
+  // gesture becomes one undo entry, committed at pointer-up.
   function updateField(index: number, patch: Partial<LayoutField>) {
     setFields((current) => current.map((field, fieldIndex) => (fieldIndex === index ? { ...field, ...patch } : field)))
+  }
+
+  // Record the current layout onto the undo stack, then apply the next layout.
+  function commit(next: LayoutField[]) {
+    setPast((entries) => [...entries, fieldsRef.current].slice(-HISTORY_LIMIT))
+    setFuture([])
+    setFields(next)
+  }
+
+  function updateFieldCommitted(index: number, patch: Partial<LayoutField>) {
+    commit(fieldsRef.current.map((field, fieldIndex) => (fieldIndex === index ? { ...field, ...patch } : field)))
+  }
+
+  function duplicateField(index: number) {
+    const source = fieldsRef.current[index]
+    if (!source) return
+    // Duplicate a placement (not a new form field): the layout array allows
+    // multiple entries per fieldName and the save route/renderer round-trip it.
+    const clone: LayoutField = {
+      ...source,
+      x: Math.max(0, Number(source.x || 0) + 12),
+      y: Math.max(0, Number(source.y || 0) - 12)
+    }
+    commit([...fieldsRef.current.slice(0, index + 1), clone, ...fieldsRef.current.slice(index + 1)])
+  }
+
+  function deleteField(index: number) {
+    commit(fieldsRef.current.filter((_, fieldIndex) => fieldIndex !== index))
+  }
+
+  function undo() {
+    if (!past.length) return
+    const previous = past[past.length - 1]
+    setPast(past.slice(0, -1))
+    setFuture([fieldsRef.current, ...future].slice(0, HISTORY_LIMIT))
+    setFields(previous)
+  }
+
+  function redo() {
+    if (!future.length) return
+    const next = future[0]
+    setFuture(future.slice(1))
+    setPast([...past, fieldsRef.current].slice(-HISTORY_LIMIT))
+    setFields(next)
   }
 
   function handlePointerDown(index: number, mode: PointerState['mode'], event: React.PointerEvent<HTMLDivElement>) {
@@ -150,7 +245,8 @@ export function Component() {
       startClientX: event.clientX,
       startClientY: event.clientY,
       startField,
-      viewport
+      viewport,
+      snapshot: fieldsRef.current
     }
     const handleMove = (moveEvent: PointerEvent) => {
       const state = pointerRef.current
@@ -177,13 +273,53 @@ export function Component() {
       }
     }
     const handleUp = () => {
+      const state = pointerRef.current
       pointerRef.current = null
       window.removeEventListener('pointermove', handleMove)
       window.removeEventListener('pointerup', handleUp)
+      if (!state) return
+      const current = fieldsRef.current
+      // Snap-to-grid quantizes only the settled field, folded into this same
+      // gesture so it costs a single undo entry.
+      const settled = snapEnabledRef.current
+        ? current.map((field, fieldIndex) => (fieldIndex === state.index ? snapField(field) : field))
+        : current
+      const changed = JSON.stringify(settled) !== JSON.stringify(state.snapshot)
+      if (changed) {
+        setPast((entries) => [...entries, state.snapshot].slice(-HISTORY_LIMIT))
+        setFuture([])
+      }
+      if (settled !== current) setFields(settled)
     }
     window.addEventListener('pointermove', handleMove)
     window.addEventListener('pointerup', handleUp, { once: true })
   }
+
+  const undoRef = useRef(() => {})
+  const redoRef = useRef(() => {})
+  undoRef.current = undo
+  redoRef.current = redo
+
+  // Ctrl/Cmd+Z undo, Ctrl+Y or Ctrl/Cmd+Shift+Z redo — scoped to this page and
+  // ignored while typing in a form control so field editing keeps native undo.
+  useEffect(() => {
+    function onKeyDown(event: KeyboardEvent) {
+      if (!(event.ctrlKey || event.metaKey)) return
+      const target = event.target as HTMLElement | null
+      const tag = target?.tagName
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || target?.isContentEditable) return
+      const key = event.key.toLowerCase()
+      if (key === 'z' && !event.shiftKey) {
+        event.preventDefault()
+        undoRef.current()
+      } else if (key === 'y' || (key === 'z' && event.shiftKey)) {
+        event.preventDefault()
+        redoRef.current()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [])
 
   async function handleSave() {
     if (!template) return
@@ -259,6 +395,37 @@ export function Component() {
         {template.sourceArtifact ? (
           <div className="mapper-grid">
             <Card className="mapper-preview-card">
+              <div className="mapper-toolbar mapper-history-toolbar">
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => undo()}
+                  disabled={!past.length}
+                  title="Undo (Ctrl+Z)"
+                >
+                  Undo
+                </button>
+                <button
+                  type="button"
+                  className="secondary-button"
+                  onClick={() => redo()}
+                  disabled={!future.length}
+                  title="Redo (Ctrl+Y)"
+                >
+                  Redo
+                </button>
+                <label className="mapper-snap-toggle">
+                  <input
+                    type="checkbox"
+                    checked={snapEnabled}
+                    onChange={(event) => setSnapEnabled(event.target.checked)}
+                  />
+                  <span>Snap to grid</span>
+                </label>
+                <span className="muted mapper-history-hint">
+                  {past.length ? `${past.length} undo step${past.length === 1 ? '' : 's'}` : 'No history yet'}
+                </span>
+              </div>
               <div className="mapper-toolbar">
                 <button
                   type="button"
@@ -367,6 +534,7 @@ export function Component() {
                   <th>Width</th>
                   <th>Height</th>
                   <th>Locked</th>
+                  <th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -379,7 +547,7 @@ export function Component() {
                         type="number"
                         min="0"
                         value={Number(field.pageIndex || 0)}
-                        onChange={(event) => updateField(index, { pageIndex: Number(event.target.value) })}
+                        onChange={(event) => updateFieldCommitted(index, { pageIndex: Number(event.target.value) })}
                       />
                     </td>
                     {(['x', 'y', 'width', 'height'] as const).map((key) => (
@@ -388,7 +556,7 @@ export function Component() {
                           aria-label={`${key} for ${field.fieldName}`}
                           type="number"
                           value={Number(field[key] || 0)}
-                          onChange={(event) => updateField(index, { [key]: Number(event.target.value) })}
+                          onChange={(event) => updateFieldCommitted(index, { [key]: Number(event.target.value) })}
                         />
                       </td>
                     ))}
@@ -397,8 +565,26 @@ export function Component() {
                         aria-label={`Locked ${field.fieldName}`}
                         type="checkbox"
                         checked={field.locked === true}
-                        onChange={(event) => updateField(index, { locked: event.target.checked })}
+                        onChange={(event) => updateFieldCommitted(index, { locked: event.target.checked })}
                       />
+                    </td>
+                    <td>
+                      <div className="mapper-row-actions">
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => duplicateField(index)}
+                        >
+                          Duplicate
+                        </button>
+                        <button
+                          type="button"
+                          className="ghost-button"
+                          onClick={() => deleteField(index)}
+                        >
+                          Delete
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
