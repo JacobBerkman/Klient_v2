@@ -40,6 +40,14 @@ import {
   insertAuditEvent,
   insertStageChange,
   insertUploadIntent,
+  upsertEventRow,
+  getEventRow,
+  listEventRowsByFirm,
+  upsertMeetingRow,
+  getMeetingRow,
+  listMeetingRowsByProfile,
+  listMeetingRowsByFirm,
+  deleteMeetingRow,
   listAllDocumentUploadRows,
   listAuditEvents,
   queryAuditEventsPage,
@@ -197,6 +205,8 @@ const LEGACY_STAGE_BUCKET = 'legacy_unassigned'
 // them (toAnalyticsStage buckets unknown stages into LEGACY_STAGE_BUCKET and only
 // prospect rows are iterated).
 const SYNTHETIC_STAGE_CHANGE_TARGETS = new Set(['archived', 'converted'])
+// Allowed meeting types; anything else is normalized to 'other'.
+const MEETING_TYPES = new Set(['intro', 'proposal', 'review', 'other'])
 const DEFAULT_ANALYTICS_STAGE_DEFINITIONS = createDefaultFirmStageConfig().stages.map((stage) => {
   const id = getStageKey(stage)
   return {
@@ -2071,6 +2081,63 @@ export function createStore({
     }
   }
 
+  // Marketing-event normalization. Frozen validation (name required, ISO date
+  // when provided) mirroring the profile-source date rule, so events and profile
+  // sources agree on calendar validity.
+  const EVENT_ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+  function normalizeEventInput(input = {}) {
+    const name = String(input.name ?? '').trim()
+    if (!name) throw new Error('Event requires a non-empty name.')
+    const venue = input.venue == null ? '' : String(input.venue).trim()
+    const city = input.city == null ? '' : String(input.city).trim()
+    let eventDate = null
+    if (input.eventDate != null && String(input.eventDate).trim() !== '') {
+      const raw = String(input.eventDate).trim()
+      if (!EVENT_ISO_DATE_PATTERN.test(raw)) {
+        throw new Error('Event eventDate must use YYYY-MM-DD format.')
+      }
+      if (!Number.isFinite(Date.parse(`${raw}T00:00:00.000Z`))) {
+        throw new Error('Event eventDate is not a valid calendar date.')
+      }
+      eventDate = raw
+    }
+    return { name, venue, city, eventDate }
+  }
+
+  // Resolve profile.source with an optional eventId linkage. The referenced
+  // event must exist and be firm-scoped (else a validation error is thrown at
+  // write time). Missing source venue/city/date are auto-filled from the event
+  // so a profile linked to an event inherits its attribution; explicitly
+  // provided source fields always win. normalizeProfileSource then validates the
+  // merged object (it still requires city/venue/date to be present after the
+  // auto-fill). Returns whatever normalizeProfileSource returns (including null
+  // for an absent source).
+  function resolveProfileSource(firmId, source) {
+    if (!source || typeof source !== 'object' || Array.isArray(source)) {
+      return normalizeProfileSource(source)
+    }
+    const eventId = source.eventId == null ? null : String(source.eventId).trim()
+    if (!eventId) {
+      return normalizeProfileSource(source)
+    }
+    const event = getEventRow(eventId, { firmId })
+    if (!event || event.archivedAt) {
+      const error = new Error('Profile source references an unknown or archived event.')
+      error.statusCode = 400
+      error.code = 'PROFILE_SOURCE_EVENT_NOT_FOUND'
+      error.details = { eventId }
+      throw error
+    }
+    const merged = {
+      ...source,
+      eventId,
+      sourceCity: source.sourceCity ?? source.cityOrLocation ?? event.city ?? undefined,
+      sourceVenue: source.sourceVenue ?? source.venue ?? event.venue ?? undefined,
+      sourceDate: source.sourceDate ?? source.occurredOn ?? event.eventDate ?? undefined
+    }
+    return normalizeProfileSource(merged)
+  }
+
   function requireClientProfile(user) {
     requirePermission(user, 'portal:read')
     const userEmail = String(user?.email || '').toLowerCase()
@@ -2222,7 +2289,7 @@ export function createStore({
         email: input.email || '',
         phone: input.phone || '',
         dateOfBirth: '',
-        source: normalizeProfileSource(input.source),
+        source: resolveProfileSource(user.firmId, input.source),
         status: input.status || (input.kind === 'client' ? 'active' : 'new'),
         stage: nextProspectStage,
         stageOrderIndex: input.kind === 'prospect' ? inStage + 1 : null,
@@ -2292,7 +2359,7 @@ export function createStore({
         delete nextPatch.taxId
       }
       if ('source' in nextPatch) {
-        nextPatch.source = normalizeProfileSource(nextPatch.source)
+        nextPatch.source = resolveProfileSource(user.firmId, nextPatch.source)
       }
       if ('extensions' in nextPatch) {
         nextPatch.extensions = normalizeExtensions(nextPatch.extensions)
@@ -5535,6 +5602,172 @@ export function createStore({
       if (!upload) throw new Error('Upload not found.')
       return objectStorage.createPresignedDownloadUrl({ ...upload.object, expiresInSeconds: 900 })
     },
+    // --- Marketing events -----------------------------------------------------
+    // Firm-level marketing-event configuration. Guarded at canWriteProfiles-level
+    // (profiles:write for mutations, profiles:read for reads): events are prospect
+    // source-attribution data, so this is the closest existing guard — the same
+    // [admin, advisor] write / [admin, advisor, readonly] read role set that
+    // profile management and pipeline-stage management both use. Soft-delete
+    // follows the profile archivedAt pattern (archiveEvent stamps archivedAt; no
+    // hard delete).
+    listEvents(user, { includeArchived = false } = {}) {
+      requireFirmContext(user, { method: 'store.listEvents' })
+      requirePermission(user, 'profiles:read')
+      return listEventRowsByFirm(user.firmId, { includeArchived })
+    },
+    getEvent(user, eventId) {
+      const firmContext = requireFirmContext(user, { method: 'store.getEvent' })
+      requirePermission(user, 'profiles:read')
+      return validateTenantEntityOwnership(firmContext, getEventRow(eventId), { entityName: 'Event' })
+    },
+    createEvent(user, input) {
+      requireFirmContext(user, { method: 'store.createEvent' })
+      requirePermission(user, 'profiles:write')
+      const normalized = normalizeEventInput(input || {})
+      const createdAt = now()
+      const event = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        name: normalized.name,
+        venue: normalized.venue,
+        city: normalized.city,
+        eventDate: normalized.eventDate,
+        archivedAt: null,
+        createdByUserId: user.id,
+        createdAt,
+        updatedAt: createdAt
+      }
+      upsertEventRow(event)
+      addAudit(user.firmId, user.id, 'event', event.id, 'event.created', { name: event.name })
+      persist()
+      return event
+    },
+    updateEvent(user, eventId, patch = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.updateEvent' })
+      requirePermission(user, 'profiles:write')
+      const event = validateTenantEntityOwnership(firmContext, getEventRow(eventId), { entityName: 'Event' })
+      // Re-validate the merged record so partial patches still enforce the
+      // name/date invariants.
+      const normalized = normalizeEventInput({
+        name: 'name' in patch ? patch.name : event.name,
+        venue: 'venue' in patch ? patch.venue : event.venue,
+        city: 'city' in patch ? patch.city : event.city,
+        eventDate: 'eventDate' in patch ? patch.eventDate : event.eventDate
+      })
+      Object.assign(event, normalized, { updatedAt: now() })
+      upsertEventRow(event)
+      addAudit(user.firmId, user.id, 'event', event.id, 'event.updated', { fields: Object.keys(patch) })
+      persist()
+      return event
+    },
+    archiveEvent(user, eventId) {
+      const firmContext = requireFirmContext(user, { method: 'store.archiveEvent' })
+      requirePermission(user, 'profiles:write')
+      const event = validateTenantEntityOwnership(firmContext, getEventRow(eventId), { entityName: 'Event' })
+      if (event.archivedAt) {
+        const error = new Error('Event is already archived.')
+        error.statusCode = 409
+        error.code = 'EVENT_ALREADY_ARCHIVED'
+        error.details = { eventId }
+        throw error
+      }
+      const archivedAt = now()
+      event.archivedAt = archivedAt
+      event.updatedAt = archivedAt
+      upsertEventRow(event)
+      addAudit(user.firmId, user.id, 'event', event.id, 'event.archived', { name: event.name })
+      persist()
+      return event
+    },
+    // --- Per-profile meetings -------------------------------------------------
+    // Lightweight meeting log scoped to a profile + firm. Guarded at
+    // canWriteProfiles-level (profiles:write for create/delete, profiles:read for
+    // list) — meetings are per-profile advisory activity, squarely a
+    // profile-management concern. Hard delete (list/create/delete only).
+    listMeetings(user, profileId) {
+      const firmContext = requireFirmContext(user, { method: 'store.listMeetings' })
+      requirePermission(user, 'profiles:read')
+      // Firm-scope the parent profile so a cross-firm id surfaces a tenancy error
+      // instead of silently returning an empty list.
+      validateTenantEntityOwnership(firmContext, getProfileRow(profileId), { entityName: 'Profile' })
+      return listMeetingRowsByProfile(user.firmId, profileId)
+    },
+    createMeeting(user, profileId, input = {}) {
+      const firmContext = requireFirmContext(user, { method: 'store.createMeeting' })
+      requirePermission(user, 'profiles:write')
+      const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), { entityName: 'Profile' })
+      const rawType = String(input.meetingType ?? input.type ?? '').trim().toLowerCase()
+      const meetingType = MEETING_TYPES.has(rawType) ? rawType : 'other'
+      let scheduledAt = null
+      if (input.scheduledAt != null && String(input.scheduledAt).trim() !== '') {
+        const raw = String(input.scheduledAt).trim()
+        const parsed = Date.parse(raw)
+        if (!Number.isFinite(parsed)) {
+          throw new Error('Meeting scheduledAt must be a valid date/time.')
+        }
+        scheduledAt = new Date(parsed).toISOString()
+      }
+      const notes = input.notes == null ? '' : String(input.notes).trim().slice(0, 2000)
+      const createdAt = now()
+      const meeting = {
+        id: randomUUID(),
+        firmId: user.firmId,
+        profileId: profile.id,
+        meetingType,
+        scheduledAt,
+        notes,
+        createdBy: user.id,
+        createdAt
+      }
+      upsertMeetingRow(meeting)
+      addAudit(user.firmId, user.id, 'meeting', meeting.id, 'meeting.created', {
+        profileId: profile.id,
+        meetingType
+      })
+      persist()
+      return meeting
+    },
+    deleteMeeting(user, profileId, meetingId) {
+      const firmContext = requireFirmContext(user, { method: 'store.deleteMeeting' })
+      requirePermission(user, 'profiles:write')
+      validateTenantEntityOwnership(firmContext, getProfileRow(profileId), { entityName: 'Profile' })
+      const meeting = getMeetingRow(meetingId, { firmId: user.firmId })
+      if (!meeting || meeting.profileId !== profileId) {
+        const error = new Error('Meeting not found.')
+        error.statusCode = 404
+        error.code = 'MEETING_NOT_FOUND'
+        error.details = { meetingId }
+        throw error
+      }
+      deleteMeetingRow(meetingId, user.firmId)
+      addAudit(user.firmId, user.id, 'meeting', meetingId, 'meeting.deleted', { profileId })
+      persist()
+      return { ok: true }
+    },
+    // Firm-wide upcoming meetings within a forward window (dashboard card).
+    listUpcomingMeetings(user, { windowDays = 14 } = {}) {
+      requireFirmContext(user, { method: 'store.listUpcomingMeetings' })
+      requirePermission(user, 'profiles:read')
+      const nowMs = parseIso(process.env.TEST_NOW || '') || Date.now()
+      const horizon = nowMs + windowDays * 86_400_000
+      const profilesById = new Map(listProfileRows({ firmId: user.firmId }).map((entry) => [entry.id, entry]))
+      return listMeetingRowsByFirm(user.firmId)
+        .filter((meeting) => {
+          if (!meeting.scheduledAt) return false
+          const at = parseIso(meeting.scheduledAt)
+          return at >= nowMs && at <= horizon
+        })
+        .map((meeting) => {
+          const profile = profilesById.get(meeting.profileId)
+          return {
+            ...meeting,
+            profileName: profile ? `${profile.firstName} ${profile.lastName}`.trim() : null,
+            profileArchived: Boolean(profile?.archivedAt)
+          }
+        })
+        .filter((meeting) => !meeting.profileArchived)
+        .sort((a, b) => parseIso(a.scheduledAt) - parseIso(b.scheduledAt))
+    },
     buildAnalyticsSnapshot(user, filters = {}) {
       requirePermission(user, 'analytics:read')
       const startDate = toIsoDate(filters.startDate)
@@ -5555,6 +5788,85 @@ export function createStore({
       // aging, profile/household counts, and advisor productivity. Filter them
       // out once at the source so every downstream aggregate stays coherent.
       const firmProfiles = listProfileRows({ firmId: user.firmId }).filter((entry) => !entry.archivedAt)
+
+      // --- Sourced attribution (venue / event / year-over-year) --------------
+      // Per-venue, per-event, and per-year prospect vs. converted-client counts.
+      // A "converted" client is any kind==='client' profile carrying that
+      // attribution (prospects are promoted to clients but keep their source).
+      // Archived profiles are already excluded via firmProfiles. conversionRate =
+      // clientCount / (prospectCount + clientCount). Events are resolved by
+      // source.eventId; the venue/year cuts read source.sourceVenue/sourceDate.
+      const eventsById = new Map(
+        listEventRowsByFirm(user.firmId, { includeArchived: true }).map((event) => [event.id, event])
+      )
+      const attributionRate = (bucket) => {
+        const total = bucket.prospectCount + bucket.clientCount
+        return total ? Number((bucket.clientCount / total).toFixed(4)) : 0
+      }
+      const venueBuckets = new Map()
+      const eventBuckets = new Map()
+      const yearBuckets = new Map()
+      for (const profile of firmProfiles) {
+        const source = profile.source
+        if (!source || typeof source !== 'object') continue
+        const isClient = profile.kind === 'client'
+        const bump = (bucket) => {
+          if (isClient) bucket.clientCount += 1
+          else bucket.prospectCount += 1
+        }
+        const venue = String(source.sourceVenue || '').trim()
+        if (venue) {
+          if (!venueBuckets.has(venue)) {
+            venueBuckets.set(venue, {
+              venue,
+              city: String(source.sourceCity || '').trim() || null,
+              prospectCount: 0,
+              clientCount: 0
+            })
+          }
+          bump(venueBuckets.get(venue))
+        }
+        const eventId = source.eventId ? String(source.eventId) : null
+        if (eventId) {
+          if (!eventBuckets.has(eventId)) {
+            const event = eventsById.get(eventId)
+            eventBuckets.set(eventId, {
+              eventId,
+              name: event?.name || null,
+              venue: event?.venue || (venue || null),
+              city: event?.city || (String(source.sourceCity || '').trim() || null),
+              eventDate: event?.eventDate || (source.sourceDate || null),
+              prospectCount: 0,
+              clientCount: 0
+            })
+          }
+          bump(eventBuckets.get(eventId))
+        }
+        const sourceDate = String(source.sourceDate || '').trim()
+        const year = /^\d{4}-\d{2}-\d{2}$/.test(sourceDate) ? sourceDate.slice(0, 4) : null
+        if (year) {
+          if (!yearBuckets.has(year)) {
+            yearBuckets.set(year, { year, prospectCount: 0, clientCount: 0 })
+          }
+          bump(yearBuckets.get(year))
+        }
+      }
+      const sourcedAttribution = {
+        byVenue: [...venueBuckets.values()]
+          .map((bucket) => ({ ...bucket, conversionRate: attributionRate(bucket) }))
+          .sort((a, b) => b.clientCount - a.clientCount || a.venue.localeCompare(b.venue)),
+        byEvent: [...eventBuckets.values()]
+          .map((bucket) => ({ ...bucket, conversionRate: attributionRate(bucket) }))
+          .sort(
+            (a, b) =>
+              String(b.eventDate || '').localeCompare(String(a.eventDate || '')) ||
+              b.clientCount - a.clientCount
+          ),
+        yearOverYear: [...yearBuckets.values()]
+          .map((bucket) => ({ ...bucket, conversionRate: attributionRate(bucket) }))
+          .sort((a, b) => a.year.localeCompare(b.year))
+      }
+
       const prospects = firmProfiles.filter((entry) => {
         if (entry.kind !== 'prospect') return false
         const created = toIsoDate(entry.createdAt)
@@ -5765,6 +6077,7 @@ export function createStore({
         formCompletionRates: Object.values(formsByTemplate),
         formCompletionLatency: latencyByTemplate,
         advisorProductivity,
+        sourcedAttribution,
         exportUsage: { byAdvisor: exportUsageByAdvisor, byFirm: exportUsageByFirm },
         profileCount: firmProfiles.length,
         householdCount: listHouseholdRows({ firmId: user.firmId }).filter((household) => !household.archivedAt).length,

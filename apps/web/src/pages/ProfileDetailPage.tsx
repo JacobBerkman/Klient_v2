@@ -4,7 +4,19 @@ import { api, profilesApi, routes } from '../lib/client'
 import { formatBytes, formatDateTime, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
-import type { ProfileDetailPayload, ProfileUploadPresignPayload, ProfileUploadsPayload } from '../lib/types'
+import type {
+  ProfileDetailPayload,
+  ProfileMeetingsPayload,
+  ProfileUploadPresignPayload,
+  ProfileUploadsPayload
+} from '../lib/types'
+
+const MEETING_TYPE_OPTIONS = [
+  { value: 'intro', label: 'Intro' },
+  { value: 'proposal', label: 'Proposal' },
+  { value: 'review', label: 'Review' },
+  { value: 'other', label: 'Other' }
+] as const
 import { useAuth } from '../app/auth'
 import { ProfileTagsEditor } from '../components/ProfileTags'
 import {
@@ -50,6 +62,12 @@ export function Component() {
   const [uploadMessage, setUploadMessage] = useState('')
   const [confirmingArchiveId, setConfirmingArchiveId] = useState('')
   const [archivingId, setArchivingId] = useState('')
+  const [meetingType, setMeetingType] = useState<string>('intro')
+  const [meetingScheduledAt, setMeetingScheduledAt] = useState('')
+  const [meetingNotes, setMeetingNotes] = useState('')
+  const [meetingMessage, setMeetingMessage] = useState('')
+  const [confirmingDeleteMeetingId, setConfirmingDeleteMeetingId] = useState('')
+  const [deletingMeetingId, setDeletingMeetingId] = useState('')
 
   const canWriteProfiles = hasGuard(user, 'canWriteProfiles')
 
@@ -63,6 +81,10 @@ export function Component() {
   )
   const uploads = useAsync<ProfileUploadsPayload>(
     () => api.get(routes.profileUploads(profileId)),
+    [profileId, refreshKey]
+  )
+  const meetings = useAsync<ProfileMeetingsPayload>(
+    () => api.get(routes.profileMeetings(profileId)),
     [profileId, refreshKey]
   )
 
@@ -193,6 +215,39 @@ export function Component() {
       setUploadMessage(archiveError instanceof Error ? archiveError.message : 'Archive failed.')
     } finally {
       setArchivingId('')
+    }
+  }
+
+  async function handleAddMeeting(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    try {
+      await api.post(routes.profileMeetings(profileId), {
+        meetingType,
+        scheduledAt: meetingScheduledAt || null,
+        notes: meetingNotes
+      })
+      setMeetingType('intro')
+      setMeetingScheduledAt('')
+      setMeetingNotes('')
+      setMeetingMessage('Meeting logged.')
+      setRefreshKey((value) => value + 1)
+    } catch (meetingError) {
+      setMeetingMessage(meetingError instanceof Error ? meetingError.message : 'Could not log meeting.')
+    }
+  }
+
+  async function handleDeleteMeeting(meetingId: string) {
+    setDeletingMeetingId(meetingId)
+    try {
+      await api.delete(routes.profileMeeting(profileId, meetingId))
+      setConfirmingDeleteMeetingId('')
+      setMeetingMessage('Meeting deleted.')
+      setRefreshKey((value) => value + 1)
+    } catch (meetingError) {
+      setConfirmingDeleteMeetingId('')
+      setMeetingMessage(meetingError instanceof Error ? meetingError.message : 'Meeting delete failed.')
+    } finally {
+      setDeletingMeetingId('')
     }
   }
 
@@ -567,6 +622,116 @@ export function Component() {
           <EmptyState
             title="No attachments yet."
             detail={canWriteProfiles ? 'Upload a document to attach it to this profile.' : 'No documents are attached to this profile.'}
+          />
+        )}
+      </PageSection>
+
+      <PageSection
+        title="Meetings"
+        subtitle="Lightweight log of meetings held with this profile (intro, proposal, review, or other)."
+      >
+        {canWriteProfiles ? (
+          <form className="form-grid meeting-form" onSubmit={handleAddMeeting}>
+            <Field label="Type">
+              <select value={meetingType} onChange={(event) => setMeetingType(event.target.value)}>
+                {MEETING_TYPE_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            <Field label="When">
+              <input
+                type="datetime-local"
+                value={meetingScheduledAt}
+                onChange={(event) => setMeetingScheduledAt(event.target.value)}
+              />
+            </Field>
+            <Field label="Note">
+              <input
+                type="text"
+                value={meetingNotes}
+                maxLength={2000}
+                placeholder="Short note (optional)"
+                onChange={(event) => setMeetingNotes(event.target.value)}
+              />
+            </Field>
+            <button type="submit">Log meeting</button>
+          </form>
+        ) : null}
+        {meetingMessage ? (
+          <p className="inline-notice inline-notice-info" data-testid="meeting-status">
+            {meetingMessage}
+          </p>
+        ) : null}
+        {meetings.loading ? (
+          <LoadingState label="Loading meetings" />
+        ) : meetings.error ? (
+          <ErrorState title="Meetings failed to load." detail={meetings.error.message} />
+        ) : meetings.data && meetings.data.meetings.length ? (
+          <DataTable caption="Profile meetings">
+            <thead>
+              <tr>
+                <th>Type</th>
+                <th>When</th>
+                <th>Note</th>
+                {canWriteProfiles ? <th>Actions</th> : null}
+              </tr>
+            </thead>
+            <tbody>
+              {meetings.data.meetings.map((meeting) => (
+                <tr key={meeting.id} data-testid="meeting-row">
+                  <td>
+                    <span className="role-pill">{meeting.meetingType || 'other'}</span>
+                  </td>
+                  <td>{meeting.scheduledAt ? formatDateTime(meeting.scheduledAt) : 'Unscheduled'}</td>
+                  <td>{meeting.notes || '-'}</td>
+                  {canWriteProfiles ? (
+                    <td>
+                      <div className="actions-row">
+                        {confirmingDeleteMeetingId === meeting.id ? (
+                          <>
+                            <button
+                              type="button"
+                              className="ghost-button compact"
+                              disabled={deletingMeetingId === meeting.id}
+                              onClick={() => void handleDeleteMeeting(meeting.id)}
+                            >
+                              Confirm delete
+                            </button>
+                            <button
+                              type="button"
+                              className="ghost-button compact"
+                              disabled={deletingMeetingId === meeting.id}
+                              onClick={() => setConfirmingDeleteMeetingId('')}
+                            >
+                              Cancel
+                            </button>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            className="ghost-button compact"
+                            onClick={() => {
+                              setMeetingMessage('')
+                              setConfirmingDeleteMeetingId(meeting.id)
+                            }}
+                          >
+                            Delete
+                          </button>
+                        )}
+                      </div>
+                    </td>
+                  ) : null}
+                </tr>
+              ))}
+            </tbody>
+          </DataTable>
+        ) : (
+          <EmptyState
+            title="No meetings logged yet."
+            detail={canWriteProfiles ? 'Log the first meeting with this profile above.' : 'No meetings are recorded for this profile.'}
           />
         )}
       </PageSection>

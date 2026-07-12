@@ -5,6 +5,7 @@ import { useAsync } from '../lib/useAsync'
 import type { AnalyticsDashboardPayload, AnalyticsPayload } from '../lib/types'
 import { HorizontalBarChart, StackedBarChart, StatTrendRow } from '../components/charts'
 import {
+  DataTable,
   EmptyState,
   ErrorState,
   Field,
@@ -119,6 +120,12 @@ export function Component() {
         summary.overallConversionRate || 0
       )} of those entering the first stage reach ${terminalStage ? stageLabel(terminalStage.stage) : 'the final stage'}.`
     : ''
+
+  const attribution = summary.sourcedAttribution || {}
+  const venueRows = attribution.byVenue || []
+  const eventRows = attribution.byEvent || []
+  const yoyRows = attribution.yearOverYear || []
+  const hasAttribution = venueRows.length > 0 || eventRows.length > 0 || yoyRows.length > 0
 
   const bottlenecks = data.dashboard.bottlenecks || []
   const bottleneckRows = bottlenecks.map((row) => ({
@@ -452,6 +459,111 @@ export function Component() {
           )}
         </PageSection>
       </div>
+
+      <PageSection
+        title="Sourced attribution"
+        subtitle="Prospect and converted-client counts by marketing venue, event, and year (archived profiles excluded)."
+      >
+        {hasAttribution ? (
+          <div className="stack">
+            <div className="chart-block">
+              <p className="chart-summary">Per-venue conversion (converted clients ÷ total attributed profiles).</p>
+              {venueRows.length ? (
+                <DataTable caption="Attribution by venue">
+                  <thead>
+                    <tr>
+                      <th>Venue</th>
+                      <th>City</th>
+                      <th>Prospects</th>
+                      <th>Clients</th>
+                      <th>Conversion</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {venueRows.map((row) => (
+                      <tr key={row.venue} data-testid="attribution-venue-row">
+                        <td>{row.venue}</td>
+                        <td>{row.city || '-'}</td>
+                        <td>{formatCount(row.prospectCount)}</td>
+                        <td>{formatCount(row.clientCount)}</td>
+                        <td>{formatPercent(row.conversionRate)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              ) : (
+                <EmptyState title="No venue attribution." detail="No profiles carry a source venue yet." />
+              )}
+            </div>
+
+            <div className="chart-block">
+              <p className="chart-summary">Per-event conversion for profiles linked to a marketing event.</p>
+              {eventRows.length ? (
+                <DataTable caption="Attribution by event">
+                  <thead>
+                    <tr>
+                      <th>Event</th>
+                      <th>Venue</th>
+                      <th>Date</th>
+                      <th>Prospects</th>
+                      <th>Clients</th>
+                      <th>Conversion</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {eventRows.map((row) => (
+                      <tr key={row.eventId} data-testid="attribution-event-row">
+                        <td>{row.name || row.eventId}</td>
+                        <td>{row.venue || '-'}</td>
+                        <td>{row.eventDate || '-'}</td>
+                        <td>{formatCount(row.prospectCount)}</td>
+                        <td>{formatCount(row.clientCount)}</td>
+                        <td>{formatPercent(row.conversionRate)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              ) : (
+                <EmptyState title="No event attribution." detail="Link profiles to a marketing event to see per-event conversion." />
+              )}
+            </div>
+
+            <div className="chart-block">
+              <p className="chart-summary">Year-over-year acquisition and conversion by source year.</p>
+              {yoyRows.length ? (
+                <DataTable caption="Year-over-year attribution">
+                  <thead>
+                    <tr>
+                      <th>Year</th>
+                      <th>Prospects</th>
+                      <th>Clients</th>
+                      <th>Conversion</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {yoyRows.map((row) => (
+                      <tr key={row.year} data-testid="attribution-yoy-row">
+                        <td>{row.year}</td>
+                        <td>{formatCount(row.prospectCount)}</td>
+                        <td>{formatCount(row.clientCount)}</td>
+                        <td>{formatPercent(row.conversionRate)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </DataTable>
+              ) : (
+                <EmptyState title="No year-over-year data." detail="Profiles need a source date to be grouped by year." />
+              )}
+            </div>
+            <RawData label="sourcedAttribution" value={attribution} />
+          </div>
+        ) : (
+          <EmptyState
+            title="No sourced attribution yet."
+            detail="Attribution appears once profiles carry a source venue, event, or date."
+          />
+        )}
+      </PageSection>
     </div>
   )
 }

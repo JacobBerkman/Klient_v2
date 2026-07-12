@@ -1590,6 +1590,136 @@ export function listNoteRowsByFirm(firmId) {
     .map((row) => JSON.parse(row.payload))
 }
 
+// --- Marketing events repository (source of truth) ---------------------------
+// Firm-scoped marketing events. The full canonical event object lives in the
+// payload column; firm_id/name/venue/city/event_date are promoted for keying
+// and the firm-scoped, date-ordered listing, and archived_at is the soft-delete
+// marker (no hard delete — archiveEvent stamps archivedAt, matching the profile
+// soft pattern). Reads return JSON.parse(payload) so the shape is byte-exact.
+
+const EVENT_UPSERT_SQL = `
+  INSERT INTO events (id, firm_id, name, venue, city, event_date, archived_at, created_at, updated_at, payload)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    firm_id = excluded.firm_id,
+    name = excluded.name,
+    venue = excluded.venue,
+    city = excluded.city,
+    event_date = excluded.event_date,
+    archived_at = excluded.archived_at,
+    created_at = excluded.created_at,
+    updated_at = excluded.updated_at,
+    payload = excluded.payload
+`
+
+export function upsertEventRow(event) {
+  db.prepare(EVENT_UPSERT_SQL).run(
+    event.id,
+    event.firmId ?? 'unknown',
+    event.name ?? '',
+    event.venue || null,
+    event.city || null,
+    event.eventDate || null,
+    event.archivedAt || null,
+    event.createdAt ?? null,
+    event.updatedAt ?? event.createdAt ?? null,
+    JSON.stringify(event)
+  )
+  return event
+}
+
+// Unscoped by default: tenancy validation happens in the store via
+// validateTenantEntityOwnership so a cross-firm id surfaces the same
+// "Event not found." tenancy error the other entities produce.
+export function getEventRow(eventId, { firmId = null } = {}) {
+  if (!eventId) return null
+  const row = firmId
+    ? db.prepare('SELECT payload FROM events WHERE id = ? AND firm_id = ?').get(eventId, firmId)
+    : db.prepare('SELECT payload FROM events WHERE id = ?').get(eventId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// Firm-scoped listing ordered by event_date descending (most recent first),
+// then insertion order (rowid ASC) as a stable tiebreaker. Archived events are
+// excluded unless includeArchived is set.
+export function listEventRowsByFirm(firmId, { includeArchived = false } = {}) {
+  const baseSql = includeArchived
+    ? 'SELECT payload FROM events WHERE firm_id = ?'
+    : 'SELECT payload FROM events WHERE firm_id = ? AND archived_at IS NULL'
+  return db
+    .prepare(`${baseSql} ORDER BY event_date DESC, rowid ASC`)
+    .all(firmId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function deleteEventRow(eventId, firmId) {
+  const result = db.prepare('DELETE FROM events WHERE id = ? AND firm_id = ?').run(eventId, firmId)
+  return result.changes > 0
+}
+
+// --- Meetings repository (source of truth) -----------------------------------
+// Lightweight per-profile meeting log. The full canonical meeting object lives
+// in the payload column; firm_id/profile_id/meeting_type/scheduled_at/created_by
+// are promoted for scoped reads. Meetings are hard-deleted (list/create/delete
+// only). Reads return payloads ordered by scheduled_at then insertion order.
+
+const MEETING_UPSERT_SQL = `
+  INSERT INTO meetings (id, firm_id, profile_id, meeting_type, scheduled_at, notes, created_by, created_at, payload)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  ON CONFLICT(id) DO UPDATE SET
+    firm_id = excluded.firm_id,
+    profile_id = excluded.profile_id,
+    meeting_type = excluded.meeting_type,
+    scheduled_at = excluded.scheduled_at,
+    notes = excluded.notes,
+    created_by = excluded.created_by,
+    created_at = excluded.created_at,
+    payload = excluded.payload
+`
+
+export function upsertMeetingRow(meeting) {
+  db.prepare(MEETING_UPSERT_SQL).run(
+    meeting.id,
+    meeting.firmId ?? 'unknown',
+    meeting.profileId ?? 'unknown',
+    meeting.meetingType || null,
+    meeting.scheduledAt || null,
+    meeting.notes || null,
+    meeting.createdBy || null,
+    meeting.createdAt ?? null,
+    JSON.stringify(meeting)
+  )
+  return meeting
+}
+
+export function getMeetingRow(meetingId, { firmId = null } = {}) {
+  if (!meetingId) return null
+  const row = firmId
+    ? db.prepare('SELECT payload FROM meetings WHERE id = ? AND firm_id = ?').get(meetingId, firmId)
+    : db.prepare('SELECT payload FROM meetings WHERE id = ?').get(meetingId)
+  return row?.payload ? JSON.parse(row.payload) : null
+}
+
+// Newest-scheduled-first, then insertion order as a stable tiebreaker.
+export function listMeetingRowsByProfile(firmId, profileId) {
+  return db
+    .prepare('SELECT payload FROM meetings WHERE firm_id = ? AND profile_id = ? ORDER BY scheduled_at DESC, rowid ASC')
+    .all(firmId, profileId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function listMeetingRowsByFirm(firmId) {
+  return db
+    .prepare('SELECT payload FROM meetings WHERE firm_id = ? ORDER BY scheduled_at DESC, rowid ASC')
+    .all(firmId)
+    .map((row) => JSON.parse(row.payload))
+}
+
+export function deleteMeetingRow(meetingId, firmId) {
+  const result = db.prepare('DELETE FROM meetings WHERE id = ? AND firm_id = ?').run(meetingId, firmId)
+  return result.changes > 0
+}
+
 // --- Document upload repository (source of truth) -----------------------------
 // The full upload object — object{bucket,key,checksum,contentType,
 // retentionClass}, malwareScan, visibility, retention timestamps — lives in

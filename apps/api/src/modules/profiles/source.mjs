@@ -23,6 +23,15 @@ function assertOptionalCampaignId(value) {
   return normalized
 }
 
+function assertOptionalEventId(value) {
+  if (value === undefined || value === null) return null
+  const normalized = toTrimmedString(value)
+  if (!normalized) {
+    throw new Error('Profile source eventId must be a non-empty string when provided.')
+  }
+  return normalized
+}
+
 function assertIsoSourceDate(value) {
   const normalized = assertRequiredString(value, 'sourceDate')
   if (!ISO_DATE_PATTERN.test(normalized)) {
@@ -71,6 +80,7 @@ export function normalizeProfileSource(source) {
   const sourceVenue = source.sourceVenue ?? source.venue
   const sourceDate = source.sourceDate ?? source.occurredOn
   const campaignId = source.campaignId
+  const eventId = source.eventId
 
   const normalized = {
     sourceCity: assertRequiredString(sourceCity, 'sourceCity'),
@@ -79,8 +89,17 @@ export function normalizeProfileSource(source) {
     campaignId: assertOptionalCampaignId(campaignId)
   }
 
+  // eventId is the optional linkage to a marketing events row. It is preserved
+  // through normalization (validated as a non-empty string when present) but is
+  // NOT part of the human-readable displayValue. Existence + firm-scoping of the
+  // referenced event is enforced at write time in the store (normalize is a pure
+  // function with no DB access), which also auto-fills any missing
+  // city/venue/date from the event before calling this.
+  const validatedEventId = assertOptionalEventId(eventId)
+
   return {
     ...normalized,
+    ...(validatedEventId ? { eventId: validatedEventId } : {}),
     displayValue: formatProfileSourceDisplay(normalized)
   }
 }

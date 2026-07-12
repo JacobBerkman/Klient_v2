@@ -690,6 +690,19 @@ summary:focus-visible {
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
 }
 
+/* Meetings quick-log form: fields flow inline on wider screens, stacking on
+   narrow ones, with the submit button aligned to the field baseline. */
+.meeting-form {
+  grid-template-columns: minmax(120px, 0.5fr) minmax(180px, 0.7fr) minmax(200px, 1fr) auto;
+  align-items: end;
+}
+
+@media (max-width: 720px) {
+  .meeting-form {
+    grid-template-columns: 1fr;
+  }
+}
+
 .metric-card {
   background: var(--color-surface);
   position: relative;
