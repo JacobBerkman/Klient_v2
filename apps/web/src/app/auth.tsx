@@ -30,6 +30,7 @@ interface AuthContextValue {
   status: AuthStatus
   user: User | null
   enableDemoMode: boolean
+  googleAuthEnabled: boolean
   pendingMfa: PendingMfaLogin | null
   refreshSession: () => Promise<User | null>
   login: (payload: LoginPayload) => Promise<{ mfaRequired: boolean; user: User | null }>
@@ -44,13 +45,20 @@ export function AuthProvider({ children }: PropsWithChildren) {
   const [status, setStatus] = useState<AuthStatus>('loading')
   const [user, setUser] = useState<User | null>(null)
   const [enableDemoMode, setEnableDemoMode] = useState(false)
+  const [googleAuthEnabled, setGoogleAuthEnabled] = useState(false)
   const [pendingMfa, setPendingMfa] = useState<PendingMfaLogin | null>(null)
 
   useEffect(() => {
     void api
       .get<RuntimePayload>(routes.runtime())
-      .then((runtime) => setEnableDemoMode(Boolean(runtime.enableDemoMode)))
-      .catch(() => setEnableDemoMode(false))
+      .then((runtime) => {
+        setEnableDemoMode(Boolean(runtime.enableDemoMode))
+        setGoogleAuthEnabled(Boolean(runtime.googleAuthEnabled))
+      })
+      .catch(() => {
+        setEnableDemoMode(false)
+        setGoogleAuthEnabled(false)
+      })
   }, [])
 
   useEffect(() => {
@@ -119,6 +127,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       status,
       user,
       enableDemoMode,
+      googleAuthEnabled,
       pendingMfa,
       refreshSession,
       login,
@@ -126,7 +135,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       logout,
       clearPendingMfa: () => setPendingMfa(null)
     }),
-    [enableDemoMode, pendingMfa, status, user]
+    [enableDemoMode, googleAuthEnabled, pendingMfa, status, user]
   )
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>

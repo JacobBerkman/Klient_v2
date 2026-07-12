@@ -2041,6 +2041,51 @@ export function deleteMfaChallengeById(id) {
   return db.prepare('DELETE FROM mfa_challenges WHERE id = ?').run(id).changes
 }
 
+// --- Google OIDC login states (migration 012) --------------------------------
+// Short-lived, single-use records for in-flight Google sign-ins. state is the PK
+// (opaque one-time value), code_verifier is the PKCE secret that never leaves the
+// server, nonce is asserted against the id_token, and used_at enforces single use.
+const OIDC_LOGIN_STATE_COLUMNS = `
+  state,
+  code_verifier AS codeVerifier,
+  nonce,
+  created_at AS createdAt,
+  expires_at AS expiresAt,
+  used_at AS usedAt
+`
+
+export function insertOidcLoginState(row, { pruneCutoff = null } = {}) {
+  runInTransaction(() => {
+    // Prune rows that have expired or were already consumed, mirroring the
+    // prune-on-insert pattern used by mfa_challenges / password_resets.
+    if (pruneCutoff) {
+      db.prepare('DELETE FROM oidc_login_states WHERE expires_at <= ? OR used_at IS NOT NULL').run(pruneCutoff)
+    }
+    db.prepare(
+      'INSERT INTO oidc_login_states (state, code_verifier, nonce, created_at, expires_at, used_at) VALUES (?, ?, ?, ?, ?, NULL)'
+    ).run(row.state, row.codeVerifier, row.nonce, row.createdAt ?? nowIso(), row.expiresAt)
+  })
+  return row
+}
+
+export function findOidcLoginStateByState(state) {
+  return (
+    db.prepare(`SELECT ${OIDC_LOGIN_STATE_COLUMNS} FROM oidc_login_states WHERE state = ?`).get(state) || null
+  )
+}
+
+// Single-use gate: returns 1 the first time a state is consumed, 0 on replay
+// (used_at already set). The WHERE used_at IS NULL guard makes this atomic.
+export function markOidcLoginStateUsed(state, usedAtIso) {
+  return db
+    .prepare('UPDATE oidc_login_states SET used_at = ? WHERE state = ? AND used_at IS NULL')
+    .run(usedAtIso, state).changes
+}
+
+export function deleteExpiredOidcLoginStates(cutoffIso) {
+  return db.prepare('DELETE FROM oidc_login_states WHERE expires_at <= ?').run(cutoffIso).changes
+}
+
 // Blob-to-table seeding for freshly seeded states and any legacy blob that
 // predates migration 008. Keyed INSERT OR IGNORE keeps it idempotent against
 // the migration backfill.

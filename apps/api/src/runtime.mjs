@@ -5,6 +5,7 @@ import {
   readStorageProviderFromEnv,
   evaluateRuntimeRequiredEnvPresence
 } from './runtime-requirements.mjs'
+import { evaluateGoogleOidcRuntime } from './auth/google-oidc.mjs'
 
 const DEFAULT_APP_SECRET = 'kinetic-klient-dev-secret'
 const MIN_APP_SECRET_LENGTH = 24
@@ -178,6 +179,11 @@ const appSecret = process.env.APP_SECRET || DEFAULT_APP_SECRET
 const authProviderRaw = readNonEmptyString('AUTH_PROVIDER')
 const authProvider = readAuthProviderFromEnv({ ...process.env, AUTH_PROVIDER: authProviderRaw || undefined })
 const piiKeyProvider = readPiiKeyProviderFromEnv(process.env)
+// Google interactive sign-in is an OPTIONAL, additive capability that sits
+// alongside local email+password auth (it is NOT AUTH_PROVIDER=oidc). It is
+// enabled only when GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET are set; diagnostics
+// escalate misconfiguration to hard failures in production.
+const googleOidcRuntime = evaluateGoogleOidcRuntime(process.env, { strict: nodeEnv === 'production' })
 const klientOpsTokens = readOpsTokenSet()
 const klientOpsToken = klientOpsTokens[0]?.token || ''
 
@@ -234,6 +240,8 @@ export const runtime = {
   authStartupDiagnostics: providerRuntimeDiagnostics(authProvider, {
     strict: nodeEnv === 'production'
   }),
+  googleOidc: googleOidcRuntime.config,
+  googleOidcDiagnostics: { issues: googleOidcRuntime.issues, warnings: googleOidcRuntime.warnings },
   piiKeyProvider,
   klientOpsTokens,
   klientOpsToken,
@@ -298,6 +306,12 @@ export function validateRuntimeConfig() {
   }
   if (runtime.authStartupDiagnostics.warnings.length) {
     warnings.push(...runtime.authStartupDiagnostics.warnings)
+  }
+  if (runtime.googleOidcDiagnostics.issues.length) {
+    issues.push(...runtime.googleOidcDiagnostics.issues)
+  }
+  if (runtime.googleOidcDiagnostics.warnings.length) {
+    warnings.push(...runtime.googleOidcDiagnostics.warnings)
   }
   if (runtime.nodeEnv === 'production' && !authProviderRaw) {
     issues.push(
@@ -398,6 +412,7 @@ export function validateRuntimeConfig() {
       logLevel: runtime.logLevel,
       authProvider: runtime.authProvider,
       authDiagnostics: runtime.authStartupDiagnostics,
+      googleSignInEnabled: runtime.googleOidc.enabled,
       piiKeyProvider: runtime.piiKeyProvider,
       opsTokenAuthEnabled: runtime.opsTokenAuthEnabled,
       serviceName: runtime.serviceName,

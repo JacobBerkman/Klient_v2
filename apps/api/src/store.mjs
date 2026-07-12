@@ -32,6 +32,9 @@ import {
   getUploadIntent,
   getUserByEmail,
   getUserRow,
+  insertOidcLoginState,
+  findOidcLoginStateByState,
+  markOidcLoginStateUsed,
   incrementBoardVersionGuarded,
   insertAuditEvent,
   insertStageChange,
@@ -85,6 +88,7 @@ import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
 import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
 import { createSamlAuthProvider } from './auth/saml-provider.mjs'
+import { createGoogleOidcProvider } from './auth/google-oidc.mjs'
 import { objectStorage as defaultObjectStorage } from './object-storage/index.mjs'
 import { formatProfileSourceDisplay, migrateProfileSource, normalizeProfileSource } from './modules/profiles/source.mjs'
 import { createCanonicalAuditEvent } from './modules/audit/schema.mjs'
@@ -1978,8 +1982,26 @@ export function createStore({
 
   const auth = createAuthService({ provider: createAuthProvider() })
 
+  // Google interactive sign-in sits ALONGSIDE the configured auth provider (it is
+  // not the AUTH_PROVIDER selection). It is inert unless GOOGLE_CLIENT_ID +
+  // GOOGLE_CLIENT_SECRET are set. It establishes sessions the same way local
+  // login does (createSession + auth.login audit), matching an existing pilot
+  // user by verified email — no auto-provisioning.
+  const googleOidc = createGoogleOidcProvider({
+    config: runtime.googleOidc,
+    storage: {
+      insertLoginState: insertOidcLoginState,
+      findLoginStateByState: findOidcLoginStateByState,
+      markLoginStateUsed: markOidcLoginStateUsed
+    },
+    createSession,
+    addAudit,
+    getUserByEmail
+  })
+
   return {
     state,
+    googleOidc,
     assertPermission(user, permission) {
       requirePermission(user, permission)
       return true

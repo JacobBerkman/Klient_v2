@@ -10,15 +10,26 @@ export const handle = {
   breadcrumb: 'Login'
 }
 
+function googleErrorMessage(code: string): string {
+  if (code === 'oidc_no_account') {
+    return 'No account exists for this Google email — ask your administrator for an invite.'
+  }
+  if (code === 'oidc_email_unverified') {
+    return 'Your Google email is not verified. Verify it with Google, then try again.'
+  }
+  return 'Google sign-in failed. Please try again or sign in with your email and password.'
+}
+
 export function Component() {
-  const { login, pendingMfa, clearPendingMfa, enableDemoMode } = useAuth()
+  const { login, pendingMfa, clearPendingMfa, enableDemoMode, googleAuthEnabled } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
+  const initialError = new URLSearchParams(location.search).get('error')
   const [email, setEmail] = useState('admin@demo.test')
   const [password, setPassword] = useState('ChangeMe123!')
   const [totpCode, setTotpCode] = useState('')
   const [backupCode, setBackupCode] = useState('')
-  const [statusMessage, setStatusMessage] = useState('')
+  const [statusMessage, setStatusMessage] = useState(initialError ? googleErrorMessage(initialError) : '')
   const [submitting, setSubmitting] = useState(false)
 
   const nextPath = (location.state as { from?: string } | null)?.from
@@ -142,6 +153,18 @@ export function Component() {
           {!pendingMfa && enableDemoMode ? (
             <button type="button" className="secondary-button" onClick={() => void handleDemoLogin()}>
               Use demo login
+            </button>
+          ) : null}
+          {!pendingMfa && googleAuthEnabled ? (
+            <button
+              type="button"
+              className="secondary-button"
+              data-testid="google-signin"
+              onClick={() => {
+                window.location.assign('/api/auth/google/start')
+              }}
+            >
+              Sign in with Google
             </button>
           ) : null}
         </div>

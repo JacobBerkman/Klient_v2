@@ -1028,7 +1028,11 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/runtime' && req.method === 'GET') {
         authorize('canAccessRuntime', { allowAnonymous: true })
         finalizeLog(200)
-        return replyJson(200, { enableDemoMode: runtime.enableDemoMode }, { 'X-Request-Id': requestId })
+        return replyJson(
+          200,
+          { enableDemoMode: runtime.enableDemoMode, googleAuthEnabled: modules.googleOidc.isEnabled() },
+          { 'X-Request-Id': requestId }
+        )
       }
       if (pathname.startsWith('/api/') && requiresCsrfProtection(req.method) && !isCsrfExempt(pathname)) {
         sessionToken = resolveSessionToken(req)
@@ -1105,6 +1109,81 @@ export function createHttpServer({ modules }) {
             [CSRF_HEADER]: csrf.headers[CSRF_HEADER]
           }
         )
+      }
+      // Google interactive sign-in (optional; config-gated by GOOGLE_CLIENT_ID +
+      // GOOGLE_CLIENT_SECRET). Both routes are GET, so the CSRF middleware (which
+      // only guards unsafe methods) does not apply — the single-use `state`
+      // parameter is the CSRF/forgery defense for the callback. When Google is
+      // not configured, the routes 404 and the login page shows no Google button.
+      if (pathname === '/api/auth/google/start' && req.method === 'GET') {
+        if (!modules.googleOidc.isEnabled()) {
+          finalizeLog(404)
+          return notFound(res, requestId)
+        }
+        const { authorizationUrl } = await modules.googleOidc.startLogin()
+        res.writeHead(302, {
+          ...baseHeaders(),
+          'X-Request-Id': requestId,
+          Location: authorizationUrl,
+          'Cache-Control': 'no-store'
+        })
+        finalizeLog(302)
+        return res.end()
+      }
+      if (pathname === '/api/auth/google/callback' && req.method === 'GET') {
+        if (!modules.googleOidc.isEnabled()) {
+          finalizeLog(404)
+          return notFound(res, requestId)
+        }
+        try {
+          const result = await modules.googleOidc.completeLogin({
+            state: url.searchParams.get('state'),
+            code: url.searchParams.get('code'),
+            error: url.searchParams.get('error')
+          })
+          // Rotate any pre-existing session, mirroring local login.
+          const priorToken = resolveSessionToken(req)
+          if (priorToken && priorToken !== result.session.token) {
+            modules.auth.logout(priorToken)
+            deleteCsrfTokensBySession(priorToken)
+            securityDiagnostics.session.rotatedTotal += 1
+          }
+          const csrf = issueCsrfForSession(req, result.session.token, result.session.user.id)
+          logOperationalEvent(log, 'info', 'auth.login.succeeded', {
+            entity: 'user',
+            id: result.session.user.id,
+            status: 'succeeded',
+            requestId,
+            firmId: result.session.user.firmId,
+            details: { method: 'google_oidc' }
+          })
+          res.writeHead(302, {
+            ...baseHeaders(),
+            'X-Request-Id': requestId,
+            Location: '/',
+            'Cache-Control': 'no-store',
+            'Set-Cookie': [buildSessionCookie(req, result.session.token), csrf.headers['Set-Cookie']]
+          })
+          finalizeLog(302)
+          return res.end()
+        } catch (error) {
+          const reason = error?.code || 'oidc_failed'
+          logOperationalEvent(log, 'warn', 'auth.login.failed', {
+            entity: 'auth',
+            id: null,
+            status: 'failed',
+            requestId,
+            details: { reason, method: 'google_oidc' }
+          })
+          res.writeHead(302, {
+            ...baseHeaders(),
+            'X-Request-Id': requestId,
+            Location: `/login?error=${encodeURIComponent(reason)}`,
+            'Cache-Control': 'no-store'
+          })
+          finalizeLog(302)
+          return res.end()
+        }
       }
       if (pathname === '/api/invites' && req.method === 'POST') {
         const user = requireUser()
