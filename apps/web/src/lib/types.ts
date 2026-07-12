@@ -31,6 +31,23 @@ export interface AuditEvent {
   [key: string]: unknown
 }
 
+export interface ActivityEvent {
+  id: string
+  timestamp?: string | null
+  action: string
+  category: string
+  actorUserId?: string | null
+  actorName: string
+  entityType?: string | null
+  entityId?: string | null
+  summary: string
+}
+
+export interface ActivityPayload {
+  events: ActivityEvent[]
+  nextCursor: string | null
+}
+
 export interface AppNotification {
   id: string
   firmId: string

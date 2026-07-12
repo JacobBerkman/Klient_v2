@@ -42,6 +42,7 @@ import {
   insertUploadIntent,
   listAllDocumentUploadRows,
   listAuditEvents,
+  queryAuditEventsPage,
   listDocumentUploadRowsByFirm,
   listDocumentUploadRowsByFirmClient,
   listDraftSectionStates,
@@ -4296,6 +4297,25 @@ export function createStore({
       // Firm-scoped SQL read, newest first — audit_events is the source of
       // truth and the blob no longer carries audit events at all.
       return listAuditEvents(user.firmId)
+    },
+    // Keyset-paginated, filtered activity-feed read. Permission gating and the
+    // category->prefix mapping live in the activity module; this is the thin
+    // firm-scoped SQL passthrough.
+    queryAuditEventsPage(options = {}) {
+      return queryAuditEventsPage(options)
+    },
+    // Actor-name directory for a firm, used to resolve audit actorUserId ->
+    // display name in one batch (no N+1). Intentionally ungated: it is only
+    // reached through the permission-checked activity service, and exposes just
+    // id/name/role, never credentials.
+    listFirmUserDirectory(firmId) {
+      return listUserRows({ firmId }).map((entry) => ({
+        id: entry.id,
+        firstName: entry.firstName || '',
+        lastName: entry.lastName || '',
+        email: entry.email || '',
+        role: entry.role || ''
+      }))
     },
     // Total number of recorded audit events (all firms). Used by
     // runAuditedMutation's "every mutation records an audit event" guard now
