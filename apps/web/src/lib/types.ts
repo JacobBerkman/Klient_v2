@@ -194,6 +194,36 @@ export interface Note {
   [key: string]: unknown
 }
 
+export interface Meeting {
+  id: string
+  firmId?: string
+  profileId: string
+  meetingType?: string
+  scheduledAt?: string | null
+  notes?: string
+  createdBy?: string | null
+  createdAt?: string
+  profileName?: string | null
+  [key: string]: unknown
+}
+
+export interface ProfileMeetingsPayload {
+  meetings: Meeting[]
+}
+
+export interface MarketingEvent {
+  id: string
+  firmId?: string
+  name: string
+  venue?: string | null
+  city?: string | null
+  eventDate?: string | null
+  archivedAt?: string | null
+  createdAt?: string
+  updatedAt?: string
+  [key: string]: unknown
+}
+
 export interface StageHistoryEntry {
   id?: string
   clientId?: string
@@ -637,6 +667,41 @@ export interface AnalyticsDashboardPayload {
   exportUsage?: ExportUsageSummary
 }
 
+export interface AttributionVenueRow {
+  venue: string
+  city?: string | null
+  prospectCount: number
+  clientCount: number
+  conversionRate: number
+  [key: string]: unknown
+}
+
+export interface AttributionEventRow {
+  eventId: string
+  name?: string | null
+  venue?: string | null
+  city?: string | null
+  eventDate?: string | null
+  prospectCount: number
+  clientCount: number
+  conversionRate: number
+  [key: string]: unknown
+}
+
+export interface AttributionYearRow {
+  year: string
+  prospectCount: number
+  clientCount: number
+  conversionRate: number
+  [key: string]: unknown
+}
+
+export interface SourcedAttribution {
+  byVenue?: AttributionVenueRow[]
+  byEvent?: AttributionEventRow[]
+  yearOverYear?: AttributionYearRow[]
+}
+
 export interface AnalyticsSummary {
   funnel?: FunnelStageRow[]
   overallConversionRate?: number
@@ -645,6 +710,7 @@ export interface AnalyticsSummary {
   formCompletionRates?: FormCompletionRateRow[]
   formCompletionLatency?: FormLatencyRow[]
   advisorProductivity?: AdvisorProductivityRow[]
+  sourcedAttribution?: SourcedAttribution
   exportUsage?: ExportUsageSummary
   [key: string]: unknown
 }

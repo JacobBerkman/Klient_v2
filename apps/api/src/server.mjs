@@ -1487,6 +1487,31 @@ export function createHttpServer({ modules }) {
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
+      if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/meetings') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        const result = modules.meetings.listMeetings(user, id)
+        finalizeLog(200)
+        return replyJson(200, { meetings: result }, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/meetings') && req.method === 'POST') {
+        const id = pathname.split('/')[3]
+        const body = await parseBody(req)
+        const user = requireUser()
+        const result = modules.meetings.createMeeting(user, id, body)
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      {
+        const meetingDeleteMatch = pathname.match(/^\/api\/profiles\/([^/]+)\/meetings\/([^/]+)$/)
+        if (meetingDeleteMatch && req.method === 'DELETE') {
+          const [, id, meetingId] = meetingDeleteMatch
+          const user = requireUser()
+          const result = modules.meetings.deleteMeeting(user, decodeURIComponent(id), decodeURIComponent(meetingId))
+          finalizeLog(200)
+          return replyJson(200, result, { 'X-Request-Id': requestId })
+        }
+      }
       // Raw binary upload endpoint. Provider-agnostic (server-side putObject to
       // the reserved key) and capability-authorized by the upload intent id in the
       // path — see isCsrfExempt() and store.storeUploadedBytes() for the auth model.
@@ -1703,6 +1728,43 @@ export function createHttpServer({ modules }) {
         const result = modules.pipeline.reorderBoard(user, body)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/events' && req.method === 'GET') {
+        const user = requireUser()
+        const includeArchived = ['1', 'true', 'yes'].includes(
+          String(url.searchParams.get('includeArchived') || '').toLowerCase()
+        )
+        const result = modules.events.listEvents(user, { includeArchived })
+        finalizeLog(200)
+        return replyJson(200, { events: result }, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/events' && req.method === 'POST') {
+        const user = requireUser()
+        const result = modules.events.createEvent(user, await parseBody(req))
+        finalizeLog(201)
+        return replyJson(201, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/events/') && pathname.endsWith('/archive') && req.method === 'POST') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        const result = modules.events.archiveEvent(user, decodeURIComponent(id))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/events/') && pathname.split('/').length === 4 && req.method === 'PATCH') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        const result = modules.events.updateEvent(user, decodeURIComponent(id), await parseBody(req))
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname === '/api/meetings/upcoming' && req.method === 'GET') {
+        const user = requireUser()
+        const windowDaysRaw = Number(url.searchParams.get('windowDays'))
+        const windowDays = Number.isFinite(windowDaysRaw) && windowDaysRaw > 0 ? Math.min(windowDaysRaw, 90) : 14
+        const result = modules.meetings.listUpcoming(user, { windowDays })
+        finalizeLog(200)
+        return replyJson(200, { meetings: result }, { 'X-Request-Id': requestId })
       }
       if (pathname.startsWith('/api/profiles/') && pathname.endsWith('/convert') && req.method === 'POST') {
         const id = pathname.split('/')[3]

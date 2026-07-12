@@ -2,7 +2,7 @@ import { Link } from 'react-router-dom'
 import { api, routes } from '../lib/client'
 import { formatCount, formatDateTime, formatPercent, humanizeKey, profileName } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
-import type { AnalyticsDashboardPayload, DashboardPayload } from '../lib/types'
+import type { AnalyticsDashboardPayload, DashboardPayload, ProfileMeetingsPayload } from '../lib/types'
 import { HorizontalBarChart } from '../components/charts'
 import {
   ButtonLink,
@@ -81,6 +81,61 @@ function FunnelOverview() {
   )
 }
 
+function UpcomingMeetings() {
+  const { data, error, loading } = useAsync<ProfileMeetingsPayload>(
+    () => api.get(routes.meetingsUpcoming({ windowDays: 14 })),
+    []
+  )
+
+  if (loading || error || !data) return null
+  const meetings = data.meetings || []
+
+  return (
+    <PageSection
+      title="Upcoming meetings"
+      subtitle="Meetings scheduled across the firm in the next 14 days."
+    >
+      {meetings.length ? (
+        <DataTable caption="Upcoming meetings (next 14 days)">
+          <thead>
+            <tr>
+              <th>When</th>
+              <th>Profile</th>
+              <th>Type</th>
+              <th>Note</th>
+            </tr>
+          </thead>
+          <tbody>
+            {meetings.map((meeting) => (
+              <tr key={meeting.id}>
+                <td>{meeting.scheduledAt ? formatDateTime(meeting.scheduledAt) : 'Unscheduled'}</td>
+                <td>
+                  {meeting.profileName ? (
+                    <Link className="text-link" to={`/profiles/${meeting.profileId}`}>
+                      {meeting.profileName}
+                    </Link>
+                  ) : (
+                    meeting.profileId
+                  )}
+                </td>
+                <td>
+                  <span className="role-pill">{meeting.meetingType || 'other'}</span>
+                </td>
+                <td>{meeting.notes || '-'}</td>
+              </tr>
+            ))}
+          </tbody>
+        </DataTable>
+      ) : (
+        <EmptyState
+          title="No upcoming meetings."
+          detail="Log a meeting with a future date on any profile to see it here."
+        />
+      )}
+    </PageSection>
+  )
+}
+
 export function Component() {
   const { data, error, loading } = useAsync<DashboardPayload>(() => api.get(routes.dashboard()), [])
 
@@ -121,6 +176,8 @@ export function Component() {
       </StatGroup>
 
       <FunnelOverview />
+
+      <UpcomingMeetings />
 
       <div className="cards-grid">
         <Card className="section-card">

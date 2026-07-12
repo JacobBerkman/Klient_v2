@@ -13,6 +13,8 @@ import { createAuditService } from './audit/service.mjs'
 import { createActivityService } from './activity/service.mjs'
 import { createAnalyticsService } from './analytics/service.mjs'
 import { createNotificationsService } from './notifications/service.mjs'
+import { createEventsService } from './events/service.mjs'
+import { createMeetingsService } from './meetings/service.mjs'
 import {
   StoreProfileRepository,
   StoreTemplateRepository,
@@ -45,6 +47,8 @@ export function createModules({ store, reads }) {
     audit: createAuditService({ store, policy }),
     activity: createActivityService({ store, policy }),
     analytics: createAnalyticsService({ store, reads, policy }),
-    notifications: createNotificationsService({ policy })
+    notifications: createNotificationsService({ policy }),
+    events: createEventsService({ store, policy }),
+    meetings: createMeetingsService({ store, policy })
   }
 }

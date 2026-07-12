@@ -11,6 +11,7 @@ import templateEntitiesSourceOfTruth from './010-template-entities.mjs'
 import notificationsSourceOfTruth from './011-notifications.mjs'
 import oidcLoginStates from './012-oidc-login-states.mjs'
 import oidcLoginStateBinding from './013-oidc-login-state-binding.mjs'
+import eventsAndMeetings from './014-events-meetings.mjs'
 
 // Ordered list of schema migrations. Each entry is { version, name, up(db) }.
 // Versions must be positive, unique, ascending integers; the applied version
@@ -28,7 +29,8 @@ export const migrations = [
   templateEntitiesSourceOfTruth,
   notificationsSourceOfTruth,
   oidcLoginStates,
-  oidcLoginStateBinding
+  oidcLoginStateBinding,
+  eventsAndMeetings
 ]
 
 function assertMigrationList(list) {
