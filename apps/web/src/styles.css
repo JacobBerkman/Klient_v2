@@ -159,6 +159,37 @@ summary:focus-visible {
   border-radius: var(--radius-sm);
 }
 
+/* Skip-to-content link — visually hidden until focused, then pinned to the
+   top-left above the sticky topbar so keyboard users can jump past the nav. */
+.skip-link {
+  position: fixed;
+  top: 0.5rem;
+  left: 0.5rem;
+  z-index: 100;
+  transform: translateY(-160%);
+  padding: 0.6rem 1rem;
+  border-radius: var(--radius-sm);
+  background: var(--color-primary);
+  color: var(--color-on-primary);
+  font-weight: 600;
+  text-decoration: none;
+  box-shadow: var(--shadow-lg);
+  transition: transform 140ms ease;
+}
+
+.skip-link:focus,
+.skip-link:focus-visible {
+  transform: translateY(0);
+  outline: 2px solid var(--color-on-primary);
+  outline-offset: 2px;
+}
+
+/* The main region receives focus after a skip; keep the programmatic focus
+   ring from lingering as a visible box around the whole content column. */
+.page-shell:focus {
+  outline: none;
+}
+
 /* -------------------------------------------------------------------------
    Application shell
    ------------------------------------------------------------------------- */
@@ -1641,6 +1672,169 @@ details summary {
 
   .hero-actions {
     justify-content: flex-start;
+  }
+}
+
+/* Tablet / large phone: keep the sidebar nav from consuming the whole first
+   screen by laying its links out as a wrapping, horizontally-flowing strip. */
+@media (max-width: 1080px) and (min-width: 641px) {
+  .sidebar nav {
+    grid-auto-flow: column;
+    grid-template-columns: none;
+    grid-auto-columns: max-content;
+    overflow-x: auto;
+    padding-bottom: 0.35rem;
+  }
+
+  .nav-link {
+    white-space: nowrap;
+  }
+}
+
+/* Small phones (~360–640px): tighten the shell chrome, let the topbar and
+   page header wrap instead of overflowing, and guard against page-level
+   horizontal scroll. */
+@media (max-width: 640px) {
+  .page-shell {
+    width: 100%;
+    max-width: 100%;
+    padding: 1rem 0.85rem 1.75rem;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    padding: 0.85rem 1rem;
+  }
+
+  .topbar-actions {
+    gap: 0.6rem;
+    flex-wrap: wrap;
+  }
+
+  .page-header {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .page-header h2 {
+    font-size: 1.4rem;
+  }
+
+  .breadcrumbs {
+    flex-wrap: wrap;
+  }
+
+  .section-card,
+  .metric-card,
+  .auth-card,
+  .portal-shell {
+    padding: 1.1rem;
+  }
+
+  .auth-card {
+    padding: 1.4rem;
+  }
+
+  .page-hero {
+    padding: 1.2rem;
+  }
+
+  .portal-shell {
+    width: min(1100px, calc(100vw - 1rem));
+    margin: 0.75rem auto 1.5rem;
+  }
+
+  .row-between {
+    flex-wrap: wrap;
+  }
+
+  /* Each toolbar control gets the full row so inputs/selects stay usable. */
+  .toolbar > * {
+    flex-basis: 100%;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   Touch targets — bump small/icon controls to a >=40px hit area on coarse
+   pointers (touchscreens) without changing the visual size on mouse devices.
+   ------------------------------------------------------------------------- */
+@media (pointer: coarse) {
+  .nav-link,
+  .primary-button,
+  .secondary-button,
+  .ghost-button,
+  .danger-button,
+  button,
+  .button-link,
+  .segmented-control button,
+  select,
+  input:not([type='checkbox']):not([type='radio']),
+  textarea {
+    min-height: 40px;
+  }
+
+  .notification-trigger,
+  .icon-button {
+    width: 2.75rem;
+    height: 2.75rem;
+  }
+
+  .tag-remove {
+    width: 1.75rem;
+    height: 1.75rem;
+    font-size: 1rem;
+  }
+
+  .link-button,
+  .text-link {
+    display: inline-flex;
+    align-items: center;
+    min-height: 40px;
+  }
+
+  .notification-item-button {
+    min-height: 44px;
+  }
+}
+
+/* -------------------------------------------------------------------------
+   High-contrast preference — strengthen borders and de-emphasized text where
+   it is cheap, without altering the brand primary or layout.
+   ------------------------------------------------------------------------- */
+@media (prefers-contrast: more) {
+  :root {
+    --color-border: #b9bfca;
+    --color-border-strong: #8b93a1;
+    --color-text-body: #2d3648;
+    --color-text-muted: #4a5262;
+    --color-text-faint: #667085;
+  }
+
+  .card,
+  .kanban-column,
+  .kanban-card,
+  .table-shell,
+  .toolbar,
+  .segmented-control,
+  .notification-trigger,
+  .notification-panel {
+    border-color: var(--color-border-strong);
+  }
+
+  .nav-link {
+    color: #ffffff;
+  }
+
+  .nav-link:focus-visible,
+  .secondary-button,
+  .ghost-button {
+    border-color: currentColor;
+  }
+
+  th,
+  td {
+    border-bottom-color: var(--color-border-strong);
   }
 }
 

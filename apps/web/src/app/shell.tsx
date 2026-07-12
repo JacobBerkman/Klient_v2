@@ -124,6 +124,9 @@ export function AppShell() {
 
   return (
     <div className="product-shell">
+      <a className="skip-link" href="#main-content">
+        Skip to main content
+      </a>
       <aside className="sidebar">
         <div className="sidebar-brand">
           <p className="eyebrow">Kinetic Klient</p>
@@ -161,7 +164,7 @@ export function AppShell() {
             </button>
           </div>
         </header>
-        <main className="page-shell">
+        <main className="page-shell" id="main-content" tabIndex={-1}>
           <div className="page-header">
             <div>
               <p className="eyebrow">Workspace</p>

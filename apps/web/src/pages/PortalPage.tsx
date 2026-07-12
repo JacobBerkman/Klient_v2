@@ -625,7 +625,9 @@ export function Component() {
             </>
           }
         />
-        {statusMessage ? <InlineNotice tone="info">{statusMessage}</InlineNotice> : null}
+        <div role="status" aria-live="polite" aria-atomic="true">
+          {statusMessage ? <InlineNotice tone="info">{statusMessage}</InlineNotice> : null}
+        </div>
 
         <div className="split-grid">
           <PageSection title="Progress" subtitle="See what is complete, in draft, or still waiting.">
@@ -671,7 +673,11 @@ export function Component() {
           {data.templates.length ? (
             <div className="compact-stack">
               <div className="toolbar">
-                <select value={selectedTemplateId} onChange={(event) => setSelectedTemplateId(event.target.value)}>
+                <select
+                  aria-label="Select a form template"
+                  value={selectedTemplateId}
+                  onChange={(event) => setSelectedTemplateId(event.target.value)}
+                >
                   {data.templates.map((template) => (
                     <option key={template.id} value={template.id}>
                       {template.name}
