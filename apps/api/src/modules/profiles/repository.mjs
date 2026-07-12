@@ -4,6 +4,9 @@ export class ProfileRepository {
   listProfiles(_firmContext, _query) {
     throwRepositoryScaffoldError('ProfileRepository', 'listProfiles')
   }
+  listProfilesPage(_firmContext, _query) {
+    throwRepositoryScaffoldError('ProfileRepository', 'listProfilesPage')
+  }
   getProfileDetail(_firmContext, _profileId) {
     throwRepositoryScaffoldError('ProfileRepository', 'getProfileDetail')
   }

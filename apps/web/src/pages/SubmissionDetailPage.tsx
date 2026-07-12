@@ -24,6 +24,8 @@ import type {
   UserLookup
 } from '../lib/types'
 import { useAuth } from '../app/auth'
+import { ConfirmDialog } from '../components/ConfirmDialog'
+import { useToast } from '../components/toast'
 import {
   Card,
   EmptyState,
@@ -114,6 +116,7 @@ function inputControl(
 export function Component() {
   const { submissionId = '' } = useParams()
   const { user } = useAuth()
+  const toast = useToast()
   const [refreshKey, setRefreshKey] = useState(0)
   const [editorData, setEditorData] = useState<Record<string, unknown>>({})
   const [statusMessage, setStatusMessage] = useState('')
@@ -121,6 +124,10 @@ export function Component() {
   const [lookupResults, setLookupResults] = useState<UserLookup[]>([])
   const [lookupQuery, setLookupQuery] = useState('')
   const [selectedCollaboratorId, setSelectedCollaboratorId] = useState('')
+  const [confirmingReleaseLock, setConfirmingReleaseLock] = useState(false)
+  const [releasingLock, setReleasingLock] = useState(false)
+  const [confirmingRemoveUserId, setConfirmingRemoveUserId] = useState('')
+  const [removingCollaborator, setRemovingCollaborator] = useState(false)
   // Live draft revision + lease, advanced by autosave without a full refetch so
   // the next autosave uses the server's incremented revision.
   const revisionRef = useRef(1)
@@ -203,19 +210,25 @@ export function Component() {
         leaseMs: 30_000,
         force
       })
-      await refreshWithMessage(force ? 'Draft lock force-acquired.' : 'Draft lock acquired.')
+      toast.success(force ? 'Draft lock force-acquired.' : 'Draft lock acquired.')
+      setRefreshKey((value) => value + 1)
     } catch (lockError) {
-      setStatusMessage(lockError instanceof Error ? lockError.message : 'Unable to acquire draft lock.')
+      toast.error(lockError instanceof Error ? lockError.message : 'Unable to acquire draft lock.')
     }
   }
 
   async function handleReleaseLock() {
     if (!submission?.lock) return
+    setReleasingLock(true)
     try {
       await api.delete(routes.formDraftLock(submission.id), { leaseId: submission.lock.leaseId })
-      await refreshWithMessage('Draft lock released.')
+      toast.success('Draft lock released.')
+      setRefreshKey((value) => value + 1)
     } catch (lockError) {
-      setStatusMessage(lockError instanceof Error ? lockError.message : 'Unable to release draft lock.')
+      toast.error(lockError instanceof Error ? lockError.message : 'Unable to release draft lock.')
+    } finally {
+      setConfirmingReleaseLock(false)
+      setReleasingLock(false)
     }
   }
 
@@ -274,24 +287,28 @@ export function Component() {
       })
       setCollaborators(payload)
       setSelectedCollaboratorId('')
-      setStatusMessage('Collaborator added.')
+      toast.success('Collaborator added.')
       setRefreshKey((value) => value + 1)
     } catch (actionError) {
-      setStatusMessage(actionError instanceof Error ? actionError.message : 'Unable to add collaborator.')
+      toast.error(actionError instanceof Error ? actionError.message : 'Unable to add collaborator.')
     }
   }
 
   async function handleRemoveCollaborator(collaboratorUserId: string) {
     if (!submission) return
+    setRemovingCollaborator(true)
     try {
       const payload = await api.delete<DraftCollaboratorsPayload>(
         routes.formDraftCollaborator(submission.id, collaboratorUserId)
       )
       setCollaborators(payload)
-      setStatusMessage('Collaborator removed.')
+      toast.success('Collaborator removed.')
       setRefreshKey((value) => value + 1)
     } catch (actionError) {
-      setStatusMessage(actionError instanceof Error ? actionError.message : 'Unable to remove collaborator.')
+      toast.error(actionError instanceof Error ? actionError.message : 'Unable to remove collaborator.')
+    } finally {
+      setConfirmingRemoveUserId('')
+      setRemovingCollaborator(false)
     }
   }
 
@@ -433,11 +450,20 @@ export function Component() {
                   <button
                     type="button"
                     className="ghost-button"
-                    onClick={() => void handleReleaseLock()}
+                    onClick={() => setConfirmingReleaseLock(true)}
                     disabled={!lockIsMine}
                   >
                     Release lock
                   </button>
+                  <ConfirmDialog
+                    open={confirmingReleaseLock}
+                    title="Release draft lock?"
+                    description="Releasing the lock stops your autosave lease and lets another collaborator take over editing this draft."
+                    confirmLabel="Confirm release"
+                    busy={releasingLock}
+                    onConfirm={() => void handleReleaseLock()}
+                    onCancel={() => setConfirmingReleaseLock(false)}
+                  />
                 </div>
               </div>
             ) : (
@@ -546,20 +572,20 @@ export function Component() {
                                   {(section.fields || [])
                                     .filter((field) => isFieldVisible(field, rowObject))
                                     .map((field) =>
-                                    inputControl(
-                                      field,
-                                      rowObject[field.key],
-                                      (nextValue) =>
-                                        setEditorData((current) =>
-                                          updateRepeaterRow(current, section, sectionIndex, rowIndex, {
-                                            ...rowObject,
-                                            [field.key]: nextValue
-                                          })
-                                        ),
-                                      submission.status === 'draft' ? !canEditDraft : !canEditSubmission,
-                                      `-${rowIndex}`
-                                    )
-                                  )}
+                                      inputControl(
+                                        field,
+                                        rowObject[field.key],
+                                        (nextValue) =>
+                                          setEditorData((current) =>
+                                            updateRepeaterRow(current, section, sectionIndex, rowIndex, {
+                                              ...rowObject,
+                                              [field.key]: nextValue
+                                            })
+                                          ),
+                                        submission.status === 'draft' ? !canEditDraft : !canEditSubmission,
+                                        `-${rowIndex}`
+                                      )
+                                    )}
                                 </div>
                               </Card>
                             )
@@ -579,17 +605,17 @@ export function Component() {
                       {(section.fields || [])
                         .filter((field) => isFieldVisible(field, editorData))
                         .map((field) =>
-                        inputControl(
-                          field,
-                          editorData[field.key],
-                          (nextValue) =>
-                            setEditorData((current) => ({
-                              ...current,
-                              [field.key]: nextValue
-                            })),
-                          submission.status === 'draft' ? !canEditDraft : !canEditSubmission
-                        )
-                      )}
+                          inputControl(
+                            field,
+                            editorData[field.key],
+                            (nextValue) =>
+                              setEditorData((current) => ({
+                                ...current,
+                                [field.key]: nextValue
+                              })),
+                            submission.status === 'draft' ? !canEditDraft : !canEditSubmission
+                          )
+                        )}
                     </div>
                   </Card>
                 )
@@ -685,11 +711,21 @@ export function Component() {
                           <button
                             type="button"
                             className="ghost-button"
-                            onClick={() => void handleRemoveCollaborator(entry.userId)}
+                            onClick={() => setConfirmingRemoveUserId(entry.userId)}
                             disabled={entry.userId === submission.createdByUserId}
                           >
                             Remove
                           </button>
+                          <ConfirmDialog
+                            open={confirmingRemoveUserId === entry.userId}
+                            title="Remove collaborator?"
+                            description={`Removing ${entry.userId} revokes their ${entry.permission} access to this draft. They can be re-added from the directory search.`}
+                            confirmLabel="Confirm remove"
+                            tone="danger"
+                            busy={removingCollaborator}
+                            onConfirm={() => void handleRemoveCollaborator(entry.userId)}
+                            onCancel={() => setConfirmingRemoveUserId('')}
+                          />
                         </div>
                       ))}
                     </div>

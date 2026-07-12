@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api, routes } from '../lib/client'
 import { profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
-import type { Household, Profile } from '../lib/types'
+import type { Household, PageEnvelope, Profile } from '../lib/types'
 import { useAuth } from '../app/auth'
 import {
   ActionPanel,
@@ -24,8 +24,10 @@ export const handle = {
   breadcrumb: 'Households'
 }
 
+const PAGE_SIZE = 50
+
 interface HouseholdsPageData {
-  households: Household[]
+  page: PageEnvelope<Household>
   clients: Profile[]
 }
 
@@ -36,12 +38,40 @@ export function Component() {
   const [statusMessage, setStatusMessage] = useState('')
 
   const { data, error, loading } = useAsync<HouseholdsPageData>(async () => {
-    const [households, clients] = await Promise.all([
-      api.get<Household[]>(routes.households()),
+    const [page, clients] = await Promise.all([
+      api.get<PageEnvelope<Household>>(routes.households({ limit: PAGE_SIZE })),
       api.get<Profile[]>(routes.profiles({ kind: 'client' }))
     ])
-    return { households, clients }
+    return { page, clients }
   }, [refreshKey])
+
+  // "Load more" appends further pages below the freshly fetched first page.
+  const [extraHouseholds, setExtraHouseholds] = useState<Household[]>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  useEffect(() => {
+    setExtraHouseholds([])
+    setNextCursor(data?.page.nextCursor ?? null)
+  }, [data])
+
+  async function handleLoadMore() {
+    if (!nextCursor || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const page = await api.get<PageEnvelope<Household>>(routes.households({ limit: PAGE_SIZE, cursor: nextCursor }))
+      setExtraHouseholds((current) => [...current, ...page.items])
+      setNextCursor(page.nextCursor)
+    } catch (loadError) {
+      setStatusMessage(loadError instanceof Error ? loadError.message : 'Unable to load more households.')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  const visibleHouseholds = useMemo(
+    () => (data ? [...data.page.items, ...extraHouseholds] : []),
+    [data, extraHouseholds]
+  )
 
   async function handleCreate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
@@ -110,7 +140,7 @@ export function Component() {
           title="Household list"
           subtitle="Open the dedicated detail route for member and spouse management."
         >
-          {data.households.length ? (
+          {visibleHouseholds.length ? (
             <DataTable caption="Household groups">
               <thead>
                 <tr>
@@ -121,7 +151,7 @@ export function Component() {
                 </tr>
               </thead>
               <tbody>
-                {data.households.map((household) => (
+                {visibleHouseholds.map((household) => (
                   <tr key={household.id}>
                     <td>{household.name}</td>
                     <td>{household.primaryClientId}</td>
@@ -138,6 +168,13 @@ export function Component() {
           ) : (
             <EmptyState title="No households yet." detail="Create the first household from the panel on this page." />
           )}
+          {nextCursor ? (
+            <div className="activity-load-more">
+              <button type="button" onClick={() => void handleLoadMore()} disabled={loadingMore}>
+                {loadingMore ? 'Loading...' : 'Load more'}
+              </button>
+            </div>
+          ) : null}
         </PageSection>
       </div>
     </div>

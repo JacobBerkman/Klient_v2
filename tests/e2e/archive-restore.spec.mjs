@@ -25,9 +25,20 @@ test('@release-blocking client archives from detail, drops out of the list, and 
 
   await page.goto(`/profiles/${client.id}`)
   const archivePanel = page.getByTestId('profile-archive')
-  await archivePanel.getByRole('button', { name: 'Archive profile' }).click()
-  await expect(archivePanel.getByText(/Archiving hides this client/)).toBeVisible()
-  await archivePanel.getByRole('button', { name: 'Confirm archive' }).click()
+  const archiveTrigger = archivePanel.getByRole('button', { name: 'Archive profile' })
+  const dialog = page.getByRole('dialog')
+
+  // The confirmation now lives in a modal dialog: Escape dismisses it and
+  // focus returns to the triggering control (asserted once, in this spec).
+  await archiveTrigger.click()
+  await expect(dialog).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(dialog).toHaveCount(0)
+  await expect(archiveTrigger).toBeFocused()
+
+  await archiveTrigger.click()
+  await expect(dialog.getByText(/Archiving hides this client/)).toBeVisible()
+  await dialog.getByRole('button', { name: 'Confirm archive' }).click()
 
   await expect(page.getByText('Profile archived.')).toBeVisible()
   await expect(page.getByTestId('profile-archived-banner')).toBeVisible()
@@ -40,6 +51,7 @@ test('@release-blocking client archives from detail, drops out of the list, and 
   // Restore from the archived banner (detail route still resolves an archived profile).
   await page.goto(`/profiles/${client.id}`)
   await page.getByTestId('profile-restore').click()
+  await dialog.getByRole('button', { name: 'Confirm restore' }).click()
   await expect(page.getByText('Profile restored.')).toBeVisible()
   await expect(page.getByTestId('profile-archived-banner')).toHaveCount(0)
 
@@ -88,8 +100,9 @@ test('@release-blocking archiving a prospect removes it from the board and dashb
   // Archive from the detail route (the board has no archive affordance).
   await page.goto(`/profiles/${prospect.id}`)
   const archivePanel = page.getByTestId('profile-archive')
+  const dialog = page.getByRole('dialog')
   await archivePanel.getByRole('button', { name: 'Archive profile' }).click()
-  await archivePanel.getByRole('button', { name: 'Confirm archive' }).click()
+  await dialog.getByRole('button', { name: 'Confirm archive' }).click()
   await expect(page.getByText('Profile archived.')).toBeVisible()
 
   // Gone from the board and the dashboard prospect count drops to zero.
@@ -101,6 +114,7 @@ test('@release-blocking archiving a prospect removes it from the board and dashb
   // Restore returns it to its original stage on the board and to the dashboard count.
   await page.goto(`/profiles/${prospect.id}`)
   await page.getByTestId('profile-restore').click()
+  await dialog.getByRole('button', { name: 'Confirm restore' }).click()
   await expect(page.getByText('Profile restored.')).toBeVisible()
 
   await page.goto('/pipeline')

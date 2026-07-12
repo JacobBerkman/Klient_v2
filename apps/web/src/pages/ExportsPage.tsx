@@ -6,6 +6,7 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { DocumentTemplate, ExportJob, FormSubmission, Profile, QueueHealthPayload } from '../lib/types'
 import { useAuth } from '../app/auth'
+import { useToast } from '../components/toast'
 import {
   ActionPanel,
   ButtonLink,
@@ -52,6 +53,7 @@ function exportStateCopy(job: ExportJob, queueHealth: QueueHealthPayload | null)
 
 export function Component() {
   const { user } = useAuth()
+  const toast = useToast()
   const [searchParams] = useSearchParams()
   const [refreshKey, setRefreshKey] = useState(0)
   const [statusFilter, setStatusFilter] = useState(searchParams.get('status') || '')
@@ -106,7 +108,6 @@ export function Component() {
 
   async function handleCreateExport(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
-    setStatusMessage('')
     try {
       await api.post(routes.exports(), {
         templateId: createForm.templateId,
@@ -114,11 +115,11 @@ export function Component() {
         submissionId: createForm.submissionId || undefined,
         type: createForm.type
       })
-      setStatusMessage(`${createForm.type.toUpperCase()} export queued.`)
+      toast.success(`${createForm.type.toUpperCase()} export queued.`)
       setCreateForm((current) => ({ ...current, submissionId: '' }))
       setRefreshKey((value) => value + 1)
     } catch (createError) {
-      setStatusMessage(createError instanceof Error ? createError.message : 'Unable to queue export.')
+      toast.error(createError instanceof Error ? createError.message : 'Unable to queue export.')
     }
   }
 
@@ -134,13 +135,12 @@ export function Component() {
   }
 
   async function handleRetry(exportId: string) {
-    setStatusMessage('')
     try {
       await api.post(routes.exportRetry(exportId), {})
-      setStatusMessage('Export retry requested.')
+      toast.success('Export retry requested.')
       setRefreshKey((value) => value + 1)
     } catch (retryError) {
-      setStatusMessage(retryError instanceof Error ? retryError.message : 'Retry failed.')
+      toast.error(retryError instanceof Error ? retryError.message : 'Retry failed.')
     }
   }
 

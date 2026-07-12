@@ -1,3 +1,5 @@
+import { decodeCursor, encodeCursor } from '../shared/cursor.mjs'
+
 function clone(value) {
   if (value === undefined) return undefined
   return JSON.parse(JSON.stringify(value))
@@ -70,6 +72,19 @@ export function createTemplatesV2Service({ templatesV2Repository, policy }) {
     listForms(user) {
       policy.requireGuard(user, 'canReadForms')
       return templatesV2Repository.listCanonicalTemplates(user, { kind: 'form' }).map(toLegacyForm)
+    },
+    // Opt-in keyset pagination for form templates: same toLegacyForm item
+    // shape as listForms, wrapped in the { items, nextCursor } envelope.
+    listFormsPage(user, query = {}) {
+      policy.requireGuard(user, 'canReadForms')
+      const requestedLimit = Number.parseInt(query.limit, 10)
+      const { items, nextCursor } = templatesV2Repository.listCanonicalTemplatesPage(user, {
+        kind: 'form',
+        search: query.search || '',
+        cursor: decodeCursor(query.cursor),
+        limit: Number.isFinite(requestedLimit) ? requestedLimit : 50
+      })
+      return { items: items.map(toLegacyForm), nextCursor: encodeCursor(nextCursor) }
     },
     createDocument(user, input) {
       policy.requireGuard(user, 'canEditTemplate')

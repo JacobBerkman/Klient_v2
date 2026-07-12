@@ -5,6 +5,8 @@ import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
 import type { PipelineStageRecord, PipelineStagesPayload } from '../lib/types'
 import { useAuth } from '../app/auth'
+import { ConfirmDialog } from '../components/ConfirmDialog'
+import { useToast } from '../components/toast'
 import {
   ActionPanel,
   Badge,
@@ -13,7 +15,6 @@ import {
   EmptyState,
   ErrorState,
   Field,
-  InlineNotice,
   LoadingState,
   PageHero,
   PageSection
@@ -25,11 +26,6 @@ export const handle = {
   breadcrumb: 'Stages'
 }
 
-type StatusMessage = {
-  tone: 'info' | 'success' | 'danger'
-  text: string
-}
-
 const DEACTIVATE_EXPLANATION =
   'Prospects already in this stage keep it, and its column stays on the pipeline board marked inactive. ' +
   'New moves into this stage are rejected, and new prospects default to the first active stage. ' +
@@ -37,10 +33,10 @@ const DEACTIVATE_EXPLANATION =
 
 export function Component() {
   const { user } = useAuth()
+  const toast = useToast()
   const canManageStages = hasGuard(user, 'canMovePipeline')
   const [refreshKey, setRefreshKey] = useState(0)
   const [createForm, setCreateForm] = useState({ key: '', label: '', color: '' })
-  const [statusMessage, setStatusMessage] = useState<StatusMessage | null>(null)
   const [busy, setBusy] = useState(false)
   const [editingStageId, setEditingStageId] = useState('')
   const [editingLabel, setEditingLabel] = useState('')
@@ -51,17 +47,13 @@ export function Component() {
 
   async function runMutation(mutation: () => Promise<unknown>, successText: string) {
     setBusy(true)
-    setStatusMessage(null)
     try {
       await mutation()
-      setStatusMessage({ tone: 'success', text: successText })
+      toast.success(successText)
       setRefreshKey((value) => value + 1)
       return true
     } catch (mutationError) {
-      setStatusMessage({
-        tone: 'danger',
-        text: mutationError instanceof Error ? mutationError.message : 'Stage update failed.'
-      })
+      toast.error(mutationError instanceof Error ? mutationError.message : 'Stage update failed.')
       return false
     } finally {
       setBusy(false)
@@ -144,7 +136,6 @@ export function Component() {
           </ButtonLink>
         }
       />
-      {statusMessage ? <InlineNotice tone={statusMessage.tone}>{statusMessage.text}</InlineNotice> : null}
       <div className="split-grid">
         <ActionPanel
           title="Create stage"
@@ -234,24 +225,17 @@ export function Component() {
                     </td>
                     <td>{formatDateTime(stage.updatedAt || stage.createdAt)}</td>
                     <td>
-                      {confirmingStageId === stage.id ? (
-                        <div className="compact-stack">
-                          <p className="muted compact">{DEACTIVATE_EXPLANATION}</p>
-                          <div className="actions-row">
-                            <button
-                              type="button"
-                              className="secondary-button"
-                              disabled={busy}
-                              onClick={() => void handleDeactivate(stage)}
-                            >
-                              Confirm deactivate {stage.label}
-                            </button>
-                            <button type="button" className="ghost-button" onClick={() => setConfirmingStageId('')}>
-                              Cancel
-                            </button>
-                          </div>
-                        </div>
-                      ) : editingStageId === stage.id ? (
+                      <ConfirmDialog
+                        open={confirmingStageId === stage.id}
+                        title={`Deactivate ${stage.label}?`}
+                        description={DEACTIVATE_EXPLANATION}
+                        confirmLabel={`Confirm deactivate ${stage.label}`}
+                        tone="danger"
+                        busy={busy}
+                        onConfirm={() => void handleDeactivate(stage)}
+                        onCancel={() => setConfirmingStageId('')}
+                      />
+                      {editingStageId === stage.id ? (
                         <div className="actions-row">
                           <button
                             type="button"

@@ -51,6 +51,12 @@ import {
   listAllDocumentUploadRows,
   listAuditEvents,
   queryAuditEventsPage,
+  queryProfileRowsPage,
+  queryHouseholdRowsPage,
+  queryTemplateAggregateRowsPage,
+  queryFormSubmissionRowsPage,
+  querySearchIndex,
+  querySubmissionRowsForSearch,
   listDocumentUploadRowsByFirm,
   listDocumentUploadRowsByFirmClient,
   listDraftSectionStates,
@@ -942,6 +948,22 @@ export function createStore({
             parseIso(a.updatedAt || a.createdAt) - parseIso(b.updatedAt || b.createdAt) ||
             a.id.localeCompare(b.id)
         )
+    },
+    // Keyset-paged directory read (opt-in via limit/cursor query params).
+    // Lives BESIDE listProfiles — dashboard, exports, and SqliteReadRepository
+    // callers keep the full-list method untouched. Filters (kind, archived,
+    // search over name/email) are pushed into SQL; ordering is
+    // last_name/first_name (case-insensitive), id.
+    listProfilesPage(user, { kind = null, search = '', includeArchived = false, cursor = null, limit = 50 } = {}) {
+      requirePermission(user, 'profiles:read')
+      return queryProfileRowsPage({
+        firmId: user.firmId,
+        kind: kind || null,
+        includeArchived: Boolean(includeArchived),
+        search,
+        cursor,
+        limit
+      })
     },
     getProfileDetail(user, profileId) {
       const firmContext = requireFirmContext(user, { method: 'store.getProfileDetail' })
@@ -1934,6 +1956,28 @@ export function createStore({
           )
         }))
     },
+    // Keyset-paged household directory (opt-in via limit/cursor). Ordering is
+    // name (case-insensitive), id; members are attached exactly like
+    // listHouseholds so envelope items match the legacy item shape.
+    listHouseholdsPage(user, { search = '', includeArchived = false, cursor = null, limit = 50 } = {}) {
+      requirePermission(user, 'households:read')
+      const { items, nextCursor } = queryHouseholdRowsPage({
+        firmId: user.firmId,
+        includeArchived: Boolean(includeArchived),
+        search,
+        cursor,
+        limit
+      })
+      return {
+        items: items.map((household) => ({
+          ...household,
+          members: state.householdMembers.filter(
+            (member) => member.firmId === user.firmId && member.householdId === household.id
+          )
+        })),
+        nextCursor
+      }
+    },
     // Soft-delete a household. Scope is deliberately minimal and documented:
     // ONLY the household row is stamped with archivedAt. Member profiles are NOT
     // cascaded (they stay active and readable) and spouse links are left intact,
@@ -2011,6 +2055,19 @@ export function createStore({
         if (kind === 'form') return entry.kind === 'form'
         if (kind === 'document') return entry.kind !== 'form'
         return true
+      })
+    },
+    // Keyset-paged template catalog over the canonical template_aggregates
+    // table (kept in sync by persistTemplateAggregateRow at every mutation
+    // site). Ordering is name (case-insensitive), id.
+    listTemplateAggregatesPage(user, { kind = null, search = '', cursor = null, limit = 50 } = {}) {
+      requirePermission(user, 'profiles:read')
+      return queryTemplateAggregateRowsPage({
+        firmId: user.firmId,
+        kind: kind || null,
+        search,
+        cursor,
+        limit
       })
     },
     createTemplateAggregate(user, input) {
@@ -2119,6 +2176,11 @@ export function createStore({
     listFormTemplates(user) {
       return this.listTemplateAggregates(user, { kind: 'form' }).map(formTemplateAdapter)
     },
+    // Keyset-paged variant of listFormTemplates (opt-in via limit/cursor).
+    listFormTemplatesPage(user, { search = '', cursor = null, limit = 50 } = {}) {
+      const { items, nextCursor } = this.listTemplateAggregatesPage(user, { kind: 'form', search, cursor, limit })
+      return { items: items.map(formTemplateAdapter), nextCursor }
+    },
     createFormTemplate(user, input) {
       const template = this.createTemplateAggregate(user, {
         kind: 'form',
@@ -2153,6 +2215,114 @@ export function createStore({
         })
         .slice()
         .sort((a, b) => new Date(b.updatedAt || b.createdAt).getTime() - new Date(a.updatedAt || a.createdAt).getTime())
+    },
+    // Keyset-paged submissions read (opt-in via limit/cursor). The draft
+    // collaborator visibility rule is pushed into SQL (json_each EXISTS +
+    // creator check), so pages stay full for every viewer. Items carry the
+    // same normalized collaborators / expired-lock shaping as
+    // listFormSubmissions; ordering is created_at DESC, rowid DESC.
+    listFormSubmissionsPage(user, { status = null, cursor = null, limit = 50 } = {}) {
+      requirePermission(user, 'forms:read')
+      const actorUserId = resolveUserId(user)
+      const currentTime = Date.now()
+      const { items, nextCursor } = queryFormSubmissionRowsPage({
+        firmId: user.firmId,
+        status: status || null,
+        viewerUserId: actorUserId,
+        cursor,
+        limit
+      })
+      return {
+        items: items.map((entry) => {
+          const collaborators = normalizeDraftCollaborators(entry)
+          if (entry.lock && parseIso(entry.lock.expiresAt) <= currentTime) {
+            return { ...entry, lock: null, collaborators }
+          }
+          return { ...entry, collaborators }
+        }),
+        nextCursor
+      }
+    },
+    // Global search over the runtime-managed search index. Only promoted
+    // plaintext columns are indexed (see ensureSearchIndex in storage.mjs);
+    // submissions are resolved at query time by joining matched profile /
+    // template ids, so client-entered submission payloads are never indexed.
+    searchGlobal(user, { q = '', types = null, limit = 20 } = {}) {
+      requirePermission(user, 'profiles:read')
+      const query = String(q || '').trim()
+      const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50)
+      const allTypes = ['profile', 'household', 'template', 'submission']
+      const requested = new Set(
+        Array.isArray(types) && types.length ? types.filter((type) => allTypes.includes(type)) : allTypes
+      )
+      if (!query || requested.size === 0) {
+        return { query, results: [] }
+      }
+
+      // Submissions surface through matched profiles/templates, so those
+      // entity types are queried from the index whenever submissions are in
+      // scope even if they are not emitted as results themselves.
+      const indexTypes = new Set()
+      if (requested.has('profile') || requested.has('submission')) indexTypes.add('profile')
+      if (requested.has('household')) indexTypes.add('household')
+      if (requested.has('template') || requested.has('submission')) {
+        indexTypes.add('template')
+        indexTypes.add('form_template')
+        indexTypes.add('document_template')
+      }
+
+      const rows = querySearchIndex({
+        firmId: user.firmId,
+        q: query,
+        types: [...indexTypes],
+        limit: 50
+      })
+
+      // template_aggregates and its form/document projection tables carry the
+      // same ids; dedupe to one result per navigable entity, keeping the
+      // best-ranked row.
+      const results = []
+      const seen = new Set()
+      const matchedProfileIds = []
+      const matchedTemplateIds = []
+      for (const row of rows) {
+        const mappedType = row.entityType === 'profile' || row.entityType === 'household' ? row.entityType : 'template'
+        const key = `${mappedType}:${row.entityId}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        if (mappedType === 'profile') matchedProfileIds.push(row.entityId)
+        if (mappedType === 'template') matchedTemplateIds.push(row.entityId)
+        if (!requested.has(mappedType)) continue
+        results.push({
+          type: mappedType,
+          id: row.entityId,
+          title: row.title || '',
+          subtitle: row.subtitle || ''
+        })
+      }
+
+      if (requested.has('submission')) {
+        const submissionRows = querySubmissionRowsForSearch({
+          firmId: user.firmId,
+          profileIds: matchedProfileIds,
+          templateIds: matchedTemplateIds,
+          viewerUserId: resolveUserId(user),
+          limit: safeLimit
+        })
+        for (const row of submissionRows) {
+          const key = `submission:${row.id}`
+          if (seen.has(key)) continue
+          seen.add(key)
+          results.push({
+            type: 'submission',
+            id: row.id,
+            title: `${row.templateName || row.templateId || 'Form'} — ${row.clientName || 'Unknown client'}`,
+            subtitle: row.status || ''
+          })
+        }
+      }
+
+      return { query, results: results.slice(0, safeLimit) }
     },
     // Advisor-side draft-resume search. Firm-scoped and gated on forms:write
     // (drafts are being resumed for EDITING, so readonly is denied). Query

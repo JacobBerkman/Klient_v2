@@ -9,6 +9,7 @@
   "canMovePipeline": ["admin", "advisor"],
   "canReadHouseholds": ["admin", "advisor", "readonly"],
   "canWriteHouseholds": ["admin", "advisor"],
+  "canUseGlobalSearch": ["admin", "advisor", "readonly"],
   "canReadForms": ["admin", "advisor", "readonly"],
   "canWriteForms": ["admin", "advisor"],
   "canManageDraftSharing": ["admin", "advisor"],

@@ -39,7 +39,9 @@ test('advisor uploads, downloads, and archives a profile attachment', async ({ p
     mimeType: 'text/plain',
     buffer: Buffer.from(contents)
   })
-  await expect(page.getByTestId('attachment-status')).toContainText(`Uploaded "${fileName}".`)
+  // Upload feedback now surfaces as a toast in the notifications region.
+  const notifications = page.getByRole('region', { name: 'Notifications' })
+  await expect(notifications.getByText(`Uploaded "${fileName}".`)).toBeVisible()
 
   const row = page.getByTestId('attachment-row')
   await expect(row).toHaveCount(1)
@@ -55,10 +57,11 @@ test('advisor uploads, downloads, and archives a profile attachment', async ({ p
   })
   expect(downloadResponse.status()).toBe(200)
 
-  // Two-step archive removes it from the default (non-archived) attachments list.
+  // Archiving confirms through the modal dialog before removing it from the
+  // default (non-archived) attachments list.
   await row.getByRole('button', { name: 'Archive', exact: true }).click()
-  await page.getByRole('button', { name: 'Confirm archive' }).click()
-  await expect(page.getByTestId('attachment-status')).toContainText('Attachment archived.')
+  await page.getByRole('dialog').getByRole('button', { name: 'Confirm archive' }).click()
+  await expect(notifications.getByText('Attachment archived.')).toBeVisible()
   await expect(page.getByTestId('attachment-row')).toHaveCount(0)
   await expect(page.getByText('No attachments yet.')).toBeVisible()
 })

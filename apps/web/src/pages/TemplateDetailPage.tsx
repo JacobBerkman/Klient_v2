@@ -15,6 +15,8 @@ import type {
   TemplateVersionComparePayload
 } from '../lib/types'
 import { useAuth } from '../app/auth'
+import { ConfirmDialog } from '../components/ConfirmDialog'
+import { useToast } from '../components/toast'
 import {
   Card,
   EmptyState,
@@ -85,6 +87,7 @@ function validationPreviewFromError(error: unknown): TemplatePreviewPayload | nu
 export function Component() {
   const { templateId = '' } = useParams()
   const { user } = useAuth()
+  const toast = useToast()
   const [refreshKey, setRefreshKey] = useState(0)
   const [statusMessage, setStatusMessage] = useState('')
   const [mappings, setMappings] = useState<MappingRow[]>([])
@@ -94,6 +97,8 @@ export function Component() {
   const [publishForm, setPublishForm] = useState({ versionBump: '', changelog: '' })
   const [compareSelection, setCompareSelection] = useState({ baseVersion: '', targetVersion: '' })
   const [revertSelection, setRevertSelection] = useState({ targetVersion: '', changelog: '' })
+  const [confirmingRevert, setConfirmingRevert] = useState(false)
+  const [reverting, setReverting] = useState(false)
 
   const { data, error, loading } = useAsync<TemplateDetailData>(async () => {
     const [templates, versions, transitions, profiles, submissions, formTemplates] = await Promise.all([
@@ -178,7 +183,7 @@ export function Component() {
         clientId: selection.clientId || undefined,
         submissionId: selection.submissionId || undefined
       })
-      setStatusMessage('Template published.')
+      toast.success('Template published.')
       setRefreshKey((value) => value + 1)
     } catch (publishError) {
       if (publishError instanceof ApiError && publishError.details && typeof publishError.details === 'object') {
@@ -190,7 +195,7 @@ export function Component() {
           })
         }
       }
-      setStatusMessage(publishError instanceof Error ? publishError.message : 'Publish failed.')
+      toast.error(publishError instanceof Error ? publishError.message : 'Publish failed.')
     }
   }
 
@@ -226,19 +231,22 @@ export function Component() {
     }
   }
 
-  async function handleRevert(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  async function handleRevert() {
     if (!template) return
+    setReverting(true)
     try {
       await api.post(routes.documentTemplateRevert(template.id), {
         targetVersion: Number(revertSelection.targetVersion),
         changelog: revertSelection.changelog
       })
       setRevertSelection({ targetVersion: '', changelog: '' })
-      setStatusMessage('Template reverted.')
+      toast.success('Template reverted.')
       setRefreshKey((value) => value + 1)
     } catch (revertError) {
-      setStatusMessage(revertError instanceof Error ? revertError.message : 'Revert failed.')
+      toast.error(revertError instanceof Error ? revertError.message : 'Revert failed.')
+    } finally {
+      setConfirmingRevert(false)
+      setReverting(false)
     }
   }
 
@@ -802,7 +810,13 @@ export function Component() {
             </Card>
           ) : null}
 
-          <form className="form-grid" onSubmit={handleRevert}>
+          <form
+            className="form-grid"
+            onSubmit={(event) => {
+              event.preventDefault()
+              setConfirmingRevert(true)
+            }}
+          >
             <label>
               <span>Revert to version</span>
               <select
@@ -833,6 +847,16 @@ export function Component() {
               Revert version
             </button>
           </form>
+          <ConfirmDialog
+            open={confirmingRevert}
+            title={`Revert to version ${revertSelection.targetVersion}?`}
+            description="Reverting replaces the current mappings with the selected version's snapshot and records a new version entry with your changelog."
+            confirmLabel="Confirm revert"
+            tone="danger"
+            busy={reverting}
+            onConfirm={() => void handleRevert()}
+            onCancel={() => setConfirmingRevert(false)}
+          />
 
           {data.transitions.length ? (
             <Card className="section-card inset-card">
