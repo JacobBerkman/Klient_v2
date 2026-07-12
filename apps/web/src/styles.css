@@ -322,6 +322,9 @@ summary:focus-visible {
   font-size: 1.4rem;
   line-height: 1.2;
   margin-top: 0.25rem;
+  /* The sidebar is fixed navy in both themes; inherit its light text color
+     instead of the theme heading color, which is dark in light mode. */
+  color: inherit;
 }
 
 .eyebrow {
