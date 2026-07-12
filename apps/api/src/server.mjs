@@ -18,10 +18,14 @@ import {
   deleteCsrfTokensBySession,
   deleteExpiredCsrfTokens,
   readCsrfToken,
-  upsertCsrfToken
+  upsertCsrfToken,
+  getFirmRow,
+  getUserRow,
+  getProfileRow
 } from './storage.mjs'
 import { createStore } from './store.mjs'
 import { createModules } from './modules/index.mjs'
+import { createMailer } from './mailer/index.mjs'
 import { createKeyProvider } from './pii-crypto.mjs'
 import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 import {
@@ -742,7 +746,27 @@ export function bootstrapPiiKeyProvider() {
   return createKeyProvider(runtime, { kmsAdapter })
 }
 
-export function createHttpServer({ modules }) {
+export function createHttpServer({ modules, mailer }) {
+  // Email delivery is strictly additive fire-and-forget: when no mailer is
+  // provided (existing callers/tests) or EMAIL_PROVIDER=disabled, every API
+  // response stays byte-identical to the pre-mailer behavior.
+  const transactionalMailer = mailer || { send: async () => ({ ok: true, skipped: true, provider: 'disabled' }) }
+  const firmNameFor = (firmId) => {
+    try {
+      return getFirmRow(firmId)?.name || ''
+    } catch {
+      return ''
+    }
+  }
+  const sendTransactionalEmail = (payload) => {
+    // mailer.send() never rejects, but belt-and-braces: nothing thrown here may
+    // ever reach a request handler or change a response.
+    try {
+      void transactionalMailer.send(payload)
+    } catch {
+      // Swallowed: email must never affect the API response.
+    }
+  }
   return createServer(async (req, res) => {
     const requestId = req.headers['x-request-id'] || randomUUID()
     const url = new URL(req.url || '/', `http://${req.headers.host || `${runtime.host}:${runtime.port}`}`)
@@ -1319,6 +1343,19 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canManageUsers')
         const result = modules.firmsUsers.inviteUser(user, await parseBody(req))
+        // Fire-and-forget invite email; the response keeps returning the token.
+        sendTransactionalEmail({
+          to: result?.email,
+          template: 'userInvite',
+          data: {
+            token: result?.token,
+            firmName: firmNameFor(user.firmId),
+            role: result?.role,
+            expiresAt: result?.expiresAt
+          },
+          firmId: user.firmId,
+          actorUserId: user.id
+        })
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -1339,7 +1376,32 @@ export function createHttpServer({ modules }) {
       }
       if (pathname === '/api/password-resets' && req.method === 'POST') {
         authorize('canRequestPasswordReset', { allowAnonymous: true })
-        const result = modules.auth.requestReset(await parseBody(req))
+        const body = await parseBody(req)
+        const result = modules.auth.requestReset(body)
+        // Anti-enumeration preserved: an unknown email returns { ok: true }
+        // with no token and sends NOTHING. Only a successful reset (token
+        // minted for a real account) triggers the fire-and-forget email, and
+        // the response body is unchanged either way.
+        if (result?.token) {
+          const requester = (() => {
+            try {
+              return getUserRow(result.userId)
+            } catch {
+              return null
+            }
+          })()
+          sendTransactionalEmail({
+            to: body?.email,
+            template: 'passwordReset',
+            data: {
+              token: result.token,
+              firmName: firmNameFor(requester?.firmId),
+              expiresAt: result.expiresAt
+            },
+            firmId: requester?.firmId || null,
+            actorUserId: result.userId || null
+          })
+        }
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -2484,6 +2546,28 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canCreatePortalLink')
         const result = modules.forms.createPortalLink(user, body.profileId, body)
+        // Fire-and-forget portal-link email to the linked profile's email (if
+        // it has one). Firm-scoped row read; failures never affect the response.
+        const linkedProfile = (() => {
+          try {
+            return getProfileRow(result?.profileId, { firmId: user.firmId })
+          } catch {
+            return null
+          }
+        })()
+        if (linkedProfile?.email) {
+          sendTransactionalEmail({
+            to: linkedProfile.email,
+            template: 'portalLink',
+            data: {
+              token: result?.token,
+              firmName: firmNameFor(user.firmId),
+              expiresAt: result?.expiresAt
+            },
+            firmId: user.firmId,
+            actorUserId: user.id
+          })
+        }
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -2588,7 +2672,20 @@ function startServer() {
   })
   const reads = new SqliteReadRepository()
   const modules = createModules({ store, reads })
-  const server = createHttpServer({ modules })
+  const mailer = createMailer({
+    runtime,
+    log,
+    // Audit through the existing store audit trail. The mailer only ever puts
+    // the template name and a MASKED recipient in metadata — never the token
+    // or a tokenized URL.
+    onAudit: ({ firmId, actorUserId, action, metadata }) => {
+      store.addAuditEvent(
+        { firmId: firmId || null, id: actorUserId || null },
+        { entityType: 'email', entityId: metadata?.template || 'email', action, metadata }
+      )
+    }
+  })
+  const server = createHttpServer({ modules, mailer })
 
   let isShuttingDown = false
   function shutdown(signal) {
