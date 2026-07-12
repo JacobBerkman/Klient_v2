@@ -46,14 +46,17 @@ function snapValue(value: number) {
   return Math.round(value / SNAP_GRID_POINTS) * SNAP_GRID_POINTS
 }
 
-function snapField(field: LayoutField): LayoutField {
-  return {
-    ...field,
-    x: Math.max(0, snapValue(Number(field.x || 0))),
-    y: Math.max(0, snapValue(Number(field.y || 0))),
-    width: Math.max(8, snapValue(Number(field.width || 1))),
-    height: Math.max(8, snapValue(Number(field.height || 1)))
-  }
+function snapField(field: LayoutField, pageWidth = Infinity, pageHeight = Infinity): LayoutField {
+  // Snapping can push a field past the lower AND upper page bounds; clamp both so
+  // a snapped placement never lands off the page. Widths/heights are clamped to
+  // the page extent, then x/y are clamped so the (snapped) box stays fully on-page.
+  const maxWidth = Math.max(8, pageWidth)
+  const maxHeight = Math.max(8, pageHeight)
+  const width = clamp(Math.max(8, snapValue(Number(field.width || 1))), 8, maxWidth)
+  const height = clamp(Math.max(8, snapValue(Number(field.height || 1))), 8, maxHeight)
+  const x = clamp(Math.max(0, snapValue(Number(field.x || 0))), 0, Math.max(0, pageWidth - width))
+  const y = clamp(Math.max(0, snapValue(Number(field.y || 0))), 0, Math.max(0, pageHeight - height))
+  return { ...field, x, y, width, height }
 }
 
 function readSnapPreference() {
@@ -202,6 +205,32 @@ export function Component() {
     commit(fieldsRef.current.map((field, fieldIndex) => (fieldIndex === index ? { ...field, ...patch } : field)))
   }
 
+  // Coordinate-table edits: typing a number must NOT push a history entry per
+  // keystroke (that would blow past the 50-entry cap and evict real undo state).
+  // Instead the pre-edit snapshot is captured once when a cell is focused / first
+  // mutated, values apply LIVE to layout state, and a single history entry is
+  // pushed on blur or Enter — one coherent undo per field edit.
+  const cellEditSnapshotRef = useRef<LayoutField[] | null>(null)
+
+  function beginCellEdit() {
+    if (!cellEditSnapshotRef.current) cellEditSnapshotRef.current = fieldsRef.current
+  }
+
+  function updateFieldLive(index: number, patch: Partial<LayoutField>) {
+    // Arm the snapshot on the first live change even if focus was missed.
+    if (!cellEditSnapshotRef.current) cellEditSnapshotRef.current = fieldsRef.current
+    updateField(index, patch)
+  }
+
+  function commitCellEdit() {
+    const snapshot = cellEditSnapshotRef.current
+    cellEditSnapshotRef.current = null
+    if (!snapshot) return
+    if (JSON.stringify(snapshot) === JSON.stringify(fieldsRef.current)) return
+    setPast((entries) => [...entries, snapshot].slice(-HISTORY_LIMIT))
+    setFuture([])
+  }
+
   function duplicateField(index: number) {
     const source = fieldsRef.current[index]
     if (!source) return
@@ -281,8 +310,11 @@ export function Component() {
       const current = fieldsRef.current
       // Snap-to-grid quantizes only the settled field, folded into this same
       // gesture so it costs a single undo entry.
+      const pageWidthPoints = state.viewport.width / state.viewport.scale
       const settled = snapEnabledRef.current
-        ? current.map((field, fieldIndex) => (fieldIndex === state.index ? snapField(field) : field))
+        ? current.map((field, fieldIndex) =>
+            fieldIndex === state.index ? snapField(field, pageWidthPoints, state.viewport.pageHeight) : field
+          )
         : current
       const changed = JSON.stringify(settled) !== JSON.stringify(state.snapshot)
       if (changed) {
@@ -356,6 +388,19 @@ export function Component() {
   const visibleFields = fields
     .map((field, index) => ({ field, index }))
     .filter(({ field }) => Number(field.pageIndex || 0) === pageIndex)
+  // A field name may be placed multiple times (duplicate placements). Testids must
+  // stay unique for strict e2e selectors, so the FIRST placement of each name
+  // keeps the exact existing testid (pdf-field-overlay-<name>) and each later
+  // duplicate is suffixed (--2, --3, …). Ranked over the full fields array by
+  // original index so the suffix is stable regardless of the current page.
+  const placementSuffix = new Map<number, string>()
+  const nameSeenCount = new Map<string, number>()
+  fields.forEach((field, index) => {
+    const name = String(field.fieldName)
+    const seen = nameSeenCount.get(name) || 0
+    nameSeenCount.set(name, seen + 1)
+    placementSuffix.set(index, seen === 0 ? '' : `--${seen + 1}`)
+  })
   const extractedFieldNames = (
     template.extraction?.fields?.length ? template.extraction.fields : template.extractedFields || []
   )
@@ -460,7 +505,7 @@ export function Component() {
                   visibleFields.map(({ field, index }) => (
                   <div
                     key={`${field.fieldName}-${index}`}
-                    data-testid={`pdf-field-overlay-${field.fieldName}`}
+                    data-testid={`pdf-field-overlay-${field.fieldName}${placementSuffix.get(index) || ''}`}
                     className={`pdf-field-overlay${field.locked ? ' pdf-field-overlay-locked' : ''}`}
                     style={overlayStyle(field, viewport)}
                     onPointerDown={(event) => handlePointerDown(index, 'drag', event)}
@@ -469,7 +514,7 @@ export function Component() {
                     {!field.locked ? (
                       <div
                         className="pdf-field-resize-handle"
-                        data-testid={`pdf-field-resize-${field.fieldName}`}
+                        data-testid={`pdf-field-resize-${field.fieldName}${placementSuffix.get(index) || ''}`}
                         role="presentation"
                         onPointerDown={(event) => handlePointerDown(index, 'resize', event)}
                       />
@@ -547,7 +592,12 @@ export function Component() {
                         type="number"
                         min="0"
                         value={Number(field.pageIndex || 0)}
-                        onChange={(event) => updateFieldCommitted(index, { pageIndex: Number(event.target.value) })}
+                        onFocus={beginCellEdit}
+                        onChange={(event) => updateFieldLive(index, { pageIndex: Number(event.target.value) })}
+                        onBlur={commitCellEdit}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') commitCellEdit()
+                        }}
                       />
                     </td>
                     {(['x', 'y', 'width', 'height'] as const).map((key) => (
@@ -556,7 +606,12 @@ export function Component() {
                           aria-label={`${key} for ${field.fieldName}`}
                           type="number"
                           value={Number(field[key] || 0)}
-                          onChange={(event) => updateFieldCommitted(index, { [key]: Number(event.target.value) })}
+                          onFocus={beginCellEdit}
+                          onChange={(event) => updateFieldLive(index, { [key]: Number(event.target.value) })}
+                          onBlur={commitCellEdit}
+                          onKeyDown={(event) => {
+                            if (event.key === 'Enter') commitCellEdit()
+                          }}
                         />
                       </td>
                     ))}

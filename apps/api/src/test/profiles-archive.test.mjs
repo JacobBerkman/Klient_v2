@@ -231,6 +231,66 @@ test('archiving an already-archived profile is a 409, and restoring a non-archiv
   )
 })
 
+test('an archived prospect cannot be moved on the board (409 PROFILE_ARCHIVED) and the board is unchanged', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const keep = store.createProfile(user, { kind: 'prospect', firstName: 'Keep', lastName: 'P', stage: 'discovery' })
+  const target = store.createProfile(user, { kind: 'prospect', firstName: 'Ghost', lastName: 'P', stage: 'discovery' })
+
+  store.archiveProfile(user, target.id, {})
+  const boardBefore = store.getBoard(user)
+
+  // Direct stage move (PATCH /api/profiles/:id/stage path).
+  assert.throws(
+    () => store.moveProfileStage(user, target.id, 'discovery'),
+    (error) => {
+      assert.equal(error.statusCode, 409)
+      assert.equal(error.code, 'PROFILE_ARCHIVED')
+      return true
+    }
+  )
+  // Reorder path (POST /api/pipeline/stages/reorder).
+  assert.throws(
+    () => store.reorderBoard(user, { profileId: target.id, toStage: 'discovery', beforeProfileId: keep.id }),
+    (error) => {
+      assert.equal(error.code, 'PROFILE_ARCHIVED')
+      return true
+    }
+  )
+
+  // The archived row never re-entered the board, and the board is byte-identical.
+  const boardAfter = store.getBoard(user)
+  assert.equal(boardAfter.boardVersion, boardBefore.boardVersion, 'board version not bumped by the rejected move')
+  const discoveryAfter = boardAfter.columns.find((column) => column.stage === 'discovery')
+  assert.deepEqual(
+    discoveryAfter.cards.map((card) => card.id),
+    [keep.id],
+    'archived prospect stayed off the board'
+  )
+  // Still archived (no split-brain): stage remains null.
+  const detail = store.getProfileDetail(user, target.id)
+  assert.ok(detail.profile.archivedAt)
+  assert.equal(detail.profile.stage, null)
+})
+
+test('archiving a client suspends portal/client auth resolution (archived email login is not found)', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const email = `client-${Math.random().toString(16).slice(2)}@example.com`
+  const client = store.createProfile(user, { kind: 'client', firstName: 'Portal', lastName: 'Client', email })
+  const clientUser = { id: 'client-user', firmId: user.firmId, email, role: 'client' }
+
+  // Before archive, the client profile resolves for the client session.
+  assert.equal(store.getClientWorkspace(clientUser).profile.id, client.id)
+
+  store.archiveProfile(user, client.id, {})
+
+  // After archive, auth resolution treats the client as if it does not exist.
+  assert.throws(() => store.getClientWorkspace(clientUser), /not found/i)
+})
+
 test('household archive stamps only the household row and excludes it from listings; restore brings it back', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)

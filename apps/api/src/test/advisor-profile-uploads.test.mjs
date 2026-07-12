@@ -275,11 +275,11 @@ test('completion without inline bytes fails when no object was uploaded to the k
 })
 
 test('advisor upload list is firm-scoped: cross-firm access is rejected and never leaks rows', async () => {
-  const { rootDir, store, admin, profile } = await buildHarness()
+  const { rootDir, store, admin, profile, firmId } = await buildHarness()
   try {
     await store.completeProfileUpload(admin, profile.id, {
       name: 'Firm A doc',
-      object: { bucket: 'test-docs', key: `firm-a/${profile.id}/doc.pdf`, contentType: 'application/pdf' }
+      object: { bucket: 'test-docs', key: `${firmId}/${profile.id}/doc.pdf`, contentType: 'application/pdf' }
     })
 
     const intruder = { ...admin, id: 'intruder', firmId: `firm-other-${randomUUID()}` }
@@ -302,11 +302,11 @@ test('advisor upload list is firm-scoped: cross-firm access is rejected and neve
 })
 
 test('archiving an advisor upload is a soft delete hidden from the default list', async () => {
-  const { rootDir, store, admin, profile } = await buildHarness()
+  const { rootDir, store, admin, profile, firmId } = await buildHarness()
   try {
     const saved = await store.completeProfileUpload(admin, profile.id, {
       name: 'To be archived',
-      object: { bucket: 'test-docs', key: `firm/${profile.id}/archive-me.pdf`, contentType: 'application/pdf' }
+      object: { bucket: 'test-docs', key: `${firmId}/${profile.id}/archive-me.pdf`, contentType: 'application/pdf' }
     })
 
     const archived = store.archiveProfileUpload(admin, profile.id, saved.id)
@@ -333,11 +333,11 @@ test('archiving an advisor upload is a soft delete hidden from the default list'
 })
 
 test('retention sweep keeps working for advisor-created uploads', async () => {
-  const { rootDir, store, admin, profile } = await buildHarness()
+  const { rootDir, store, admin, profile, firmId } = await buildHarness()
   try {
     const saved = await store.completeProfileUpload(admin, profile.id, {
       name: 'Aged advisor doc',
-      object: { bucket: 'test-docs', key: `firm/${profile.id}/aged.pdf`, contentType: 'application/pdf' }
+      object: { bucket: 'test-docs', key: `${firmId}/${profile.id}/aged.pdf`, contentType: 'application/pdf' }
     })
 
     // Age the upload past archiveAfterDays (1) but before purgeAfterDays (2)
@@ -351,6 +351,126 @@ test('retention sweep keeps working for advisor-created uploads', async () => {
     assert.ok(swept, 'advisor upload is visible to the firm-scoped sweep result')
     assert.equal(swept.status, 'archived', 'lifecycle sweep archives the aged advisor upload')
     assert.ok(swept.archivedAt)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test('raw-upload store releases its claim when putObject fails so a retry can succeed (L2 TOCTOU revert)', async () => {
+  const rootDir = await mkdtemp(join(tmpdir(), 'klient-raw-upload-revert-'))
+  const baseStorage = createObjectStorage({
+    provider: createLocalFilesystemStorageProvider({ rootDir }),
+    bucketDocuments: 'test-docs',
+    bucketExports: 'test-exports',
+    retentionPolicies: {
+      export_artifact: { ttlDays: 14, archiveAfterDays: 1, purgeAfterDays: 2 },
+      uploaded_document: { ttlDays: 30, archiveAfterDays: 1, purgeAfterDays: 2 }
+    }
+  })
+  let failNextPut = true
+  const objectStorage = {
+    ...baseStorage,
+    async putObject(args) {
+      if (failNextPut) {
+        failNextPut = false
+        throw new Error('transient storage failure')
+      }
+      return baseStorage.putObject(args)
+    }
+  }
+  const store = createStore({ objectStorage })
+  const firmId = store.__listFirmsForTest()[0].id
+  const admin = { ...store.__listUsersForTest(firmId).find((entry) => entry.role === 'admin') }
+  const profile = store.createProfile(admin, { kind: 'client', firstName: 'Raw', lastName: 'Retry' })
+  try {
+    const presign = await store.createProfileUploadPresign(admin, profile.id, {
+      fileName: 'retry.pdf',
+      contentType: 'application/pdf'
+    })
+    const bytes = Buffer.from('%PDF-1.4 retry bytes')
+    // First PUT: putObject throws AFTER the intent was claimed. The claim must be
+    // rolled back so the intent is retryable (not stuck in 'storing').
+    await assert.rejects(() =>
+      store.storeUploadedBytes({
+        uploadId: presign.uploadId,
+        objectKey: presign.object.key,
+        contentType: 'application/pdf',
+        body: bytes
+      })
+    )
+    assert.equal(getUploadIntentById(presign.uploadId).status, 'pending', 'claim reverted to pending on failure')
+
+    // Retry now succeeds against the same reserved key.
+    const stored = await store.storeUploadedBytes({
+      uploadId: presign.uploadId,
+      objectKey: presign.object.key,
+      contentType: 'application/pdf',
+      body: bytes
+    })
+    assert.equal(stored.object.key, presign.object.key)
+    assert.equal(getUploadIntentById(presign.uploadId).status, 'stored')
+
+    // Single-use: a second store after success is rejected.
+    await assert.rejects(
+      () =>
+        store.storeUploadedBytes({
+          uploadId: presign.uploadId,
+          objectKey: presign.object.key,
+          contentType: 'application/pdf',
+          body: bytes
+        }),
+      (error) => error.statusCode === 409
+    )
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test('completeProfileUpload rejects a legacy (no-intent) object key outside the firm namespace', async () => {
+  const { rootDir, store, admin, profile } = await buildHarness()
+  try {
+    await assert.rejects(
+      () =>
+        store.completeProfileUpload(admin, profile.id, {
+          name: 'Foreign firm object',
+          // A key living under ANOTHER firm's prefix must never be registerable.
+          object: { bucket: 'test-docs', key: `firm-victim/${profile.id}/steal.pdf`, contentType: 'application/pdf' }
+        }),
+      (error) => {
+        assert.equal(error.statusCode, 403)
+        assert.equal(error.code, 'UPLOAD_OBJECT_KEY_FORBIDDEN')
+        return true
+      }
+    )
+    // Nothing was recorded.
+    assert.equal(store.listProfileUploads(admin, profile.id).uploads.length, 0)
+  } finally {
+    await rm(rootDir, { recursive: true, force: true })
+  }
+})
+
+test('completeProfileUpload ignores a mismatched input.object key when an intent is present (uses the reserved key)', async () => {
+  const { rootDir, store, admin, profile } = await buildHarness()
+  try {
+    const presign = await store.createProfileUploadPresign(admin, profile.id, {
+      fileName: 'legit.pdf',
+      contentType: 'application/pdf'
+    })
+    // A caller that tries to swap in a different (foreign) key on completion is
+    // rejected — the reserved intent key is authoritative.
+    await assert.rejects(
+      () =>
+        store.completeProfileUpload(admin, profile.id, {
+          uploadId: presign.uploadId,
+          object: { bucket: presign.object.bucket, key: `firm-victim/${profile.id}/swap.pdf` },
+          fileBytesBase64: Buffer.from('%PDF-1.4 swap attempt').toString('base64')
+        }),
+      (error) => {
+        assert.equal(error.statusCode, 403)
+        assert.equal(error.code, 'UPLOAD_OBJECT_KEY_FORBIDDEN')
+        return true
+      }
+    )
   } finally {
     await rm(rootDir, { recursive: true, force: true })
   }

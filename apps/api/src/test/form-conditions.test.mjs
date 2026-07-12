@@ -139,6 +139,29 @@ test('repeatable sections evaluate required visibleIf per row', () => {
   assert.equal(missing[0].rowIndex, 1)
 })
 
+test('repeatable detection covers all three authoring shapes (repeatable / repeater / type:repeater)', () => {
+  // The server treats { type: 'repeater' } and { repeater: true } as repeatable
+  // just like { repeatable: true }. A missing required row field must be reported
+  // for each shape (regression: the client renderers previously gated only on
+  // section.repeatable and rendered type:'repeater' flat, silently skipping
+  // per-row required validation).
+  for (const shape of [{ repeatable: true }, { repeater: true }, { type: 'repeater' }]) {
+    const sections = [
+      {
+        key: 'assets',
+        title: 'Assets',
+        ...shape,
+        fields: [{ key: 'amount', label: 'Amount', type: 'number', required: true }]
+      }
+    ]
+    const missing = collectMissingRequiredFields(sections, { assets: [{ amount: '' }] })
+    assert.equal(missing.length, 1, `shape ${JSON.stringify(shape)} is treated as repeatable`)
+    assert.equal(missing[0].sectionKey, 'assets')
+    assert.equal(missing[0].fieldKey, 'amount')
+    assert.equal(missing[0].rowIndex, 0)
+  }
+})
+
 // --- Server submit validation through the store ----------------------------
 
 async function loadStore() {

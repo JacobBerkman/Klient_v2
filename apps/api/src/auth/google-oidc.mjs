@@ -30,7 +30,7 @@
 //
 // No id_token / access_token is ever persisted; only the transient verified
 // claims are used to look up the pilot user, then discarded.
-import { createHash, createSign, createVerify, createPublicKey, randomBytes } from 'node:crypto'
+import { createHash, createSign, createVerify, createPublicKey, randomBytes, timingSafeEqual } from 'node:crypto'
 
 export const GOOGLE_AUTHORIZATION_ENDPOINT = 'https://accounts.google.com/o/oauth2/v2/auth'
 export const GOOGLE_TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token'
@@ -153,6 +153,23 @@ export function generatePkcePair() {
 
 export function generateOpaqueToken(bytes = 32) {
   return base64UrlEncode(randomBytes(bytes))
+}
+
+// SHA-256 (base64url) of the browser-binding token. Only this hash is persisted
+// in the login-state row; the raw token lives exclusively in the short-lived
+// httpOnly cookie set on the initiating browser, mirroring how the PKCE verifier
+// and nonce secrets are kept out of anything an attacker could read.
+export function hashBindingToken(token) {
+  return base64UrlEncode(createHash('sha256').update(String(token || '')).digest())
+}
+
+// Constant-time compare of two base64url hash strings.
+function bindingHashMatches(expectedHash, candidateHash) {
+  if (!expectedHash || !candidateHash) return false
+  const expected = Buffer.from(String(expectedHash))
+  const candidate = Buffer.from(String(candidateHash))
+  if (expected.length !== candidate.length) return false
+  return timingSafeEqual(expected, candidate)
 }
 
 export function buildGoogleAuthorizationUrl({
@@ -380,12 +397,19 @@ export function createGoogleOidcProvider({
     assertEnabled()
     const state = generateOpaqueToken(32)
     const nonce = generateOpaqueToken(32)
+    // Browser-binding token: returned to the HTTP layer to set as a short-lived
+    // httpOnly cookie on THIS browser; only its hash is persisted. The callback
+    // must present the matching cookie, binding the completion to the browser
+    // that initiated the flow (defeats login-CSRF where an attacker replays a
+    // state they obtained in a different browser context).
+    const bindingToken = generateOpaqueToken(32)
+    const bindingHash = hashBindingToken(bindingToken)
     const { codeVerifier, codeChallenge } = generatePkcePair()
     const createdAt = new Date(now()).toISOString()
     const expiresAt = new Date(now() + stateTtlMs).toISOString()
     // Prune-on-insert (expired or already-used rows) bounds table growth.
     storage.insertLoginState(
-      { state, codeVerifier, nonce, createdAt, expiresAt },
+      { state, codeVerifier, nonce, bindingHash, createdAt, expiresAt },
       { pruneCutoff: createdAt }
     )
     const authorizationUrl = buildGoogleAuthorizationUrl({
@@ -395,14 +419,14 @@ export function createGoogleOidcProvider({
       nonce,
       codeChallenge
     })
-    return { authorizationUrl, state }
+    return { authorizationUrl, state, bindingToken }
   }
 
   // Consumes the state row (single-use, unexpired), exchanges the code, validates
   // the id_token, and matches the verified email to an existing pilot user. On a
   // verified identity it establishes the session directly (MFA skipped — see the
   // module header). No auto-provisioning: an unknown email throws oidc_no_account.
-  async function completeLogin({ state, code, error } = {}) {
+  async function completeLogin({ state, code, error, bindingToken } = {}) {
     assertEnabled()
     if (error) {
       // Google returned an error (e.g. access_denied) instead of a code.
@@ -416,6 +440,14 @@ export function createGoogleOidcProvider({
     if (!row) throw new GoogleOidcError('oidc_state_invalid', 'Unknown or expired sign-in state.')
     if (new Date(row.expiresAt).getTime() <= now()) {
       throw new GoogleOidcError('oidc_state_invalid', 'Sign-in state has expired.')
+    }
+    // Browser-binding check: the callback must carry the binding cookie whose
+    // token hashes to the value stored at /start. This is verified BEFORE the
+    // state is consumed so a forged cross-browser callback cannot even burn the
+    // state. Rows always carry a binding hash now (startLogin sets one); a null
+    // hash would only appear on a pre-upgrade row, which we reject as unbound.
+    if (!bindingHashMatches(row.bindingHash, hashBindingToken(bindingToken))) {
+      throw new GoogleOidcError('oidc_binding_invalid', 'Sign-in could not be bound to the originating browser.')
     }
     // Single-use: the first consume flips used_at; a replay sees changes === 0.
     const consumed = storage.markLoginStateUsed(state, new Date(now()).toISOString())
