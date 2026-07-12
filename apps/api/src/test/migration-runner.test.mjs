@@ -37,7 +37,11 @@ const EXPECTED_TABLES = [
   'export_worker_heartbeats',
   'stage_changes',
   'board_versions',
-  'pipeline_stage_records'
+  'pipeline_stage_records',
+  'auth_attempts',
+  'password_reset_attempts',
+  'password_resets',
+  'mfa_challenges'
 ]
 
 test('migration runner: fresh database reaches latest user_version with expected schema in WAL mode', async () => {

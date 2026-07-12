@@ -1401,6 +1401,234 @@ function ensureClientDataEntitiesSeededFromState(state) {
   }
 }
 
+// --- Auth entity repositories (sources of truth) -----------------------------
+// Four ephemeral, security-critical entities: the login-attempt log
+// (auth_attempts), the reset-request log (password_reset_attempts), reset
+// tokens (password_resets), and pending MFA login challenges (mfa_challenges).
+// The tables are columns-only (no payload JSON): each record is small and flat,
+// fully described by its columns. Rate limiting and expiry — which the store
+// used to compute with an in-memory pruneByAge + filter/count — are now
+// enforced directly in SQL: COUNT(...) WHERE ... AND created_at > cutoff, and
+// expires_at <= now comparisons. All timestamps are ISO-8601 UTC strings, so
+// the cutoff comparisons are exact under lexicographic ordering. The blob
+// serializes empty arrays for the four keys purely for shape compatibility.
+//
+// Insert paths accept a pruneCutoff and delete rows at/older than it before
+// inserting, in one transaction — this mirrors pruneByAge running on every
+// write and keeps these ephemeral tables from growing without bound. Deleting
+// rows at/before the cutoff never changes a subsequent COUNT (which filters
+// created_at > cutoff / uses live expiry), so pruning is semantics-preserving.
+
+export function insertAuthAttempt(attempt, { pruneCutoff = null } = {}) {
+  runInTransaction(() => {
+    if (pruneCutoff) db.prepare('DELETE FROM auth_attempts WHERE created_at <= ?').run(pruneCutoff)
+    db.prepare('INSERT INTO auth_attempts (id, email, ip_address, ok, created_at) VALUES (?, ?, ?, ?, ?)').run(
+      attempt.id || randomUUID(),
+      attempt.email ?? null,
+      attempt.ipAddress ?? null,
+      attempt.ok ? 1 : 0,
+      attempt.createdAt ?? nowIso()
+    )
+  })
+}
+
+// Failed logins within the window: ok = 0 AND created_at > cutoff. Matches the
+// old pruneByAge(window) + filter(email && !ok).length count exactly.
+export function countFailedLoginsByEmail(email, cutoffIso) {
+  return (
+    db
+      .prepare('SELECT COUNT(*) AS count FROM auth_attempts WHERE email = ? AND ok = 0 AND created_at > ?')
+      .get(email, cutoffIso)?.count || 0
+  )
+}
+
+export function countFailedLoginsByIp(ipAddress, cutoffIso) {
+  return (
+    db
+      .prepare('SELECT COUNT(*) AS count FROM auth_attempts WHERE ip_address = ? AND ok = 0 AND created_at > ?')
+      .get(ipAddress, cutoffIso)?.count || 0
+  )
+}
+
+// Successful login clears every attempt for the email (the old code inserted an
+// ok=1 row then clearLoginAttempts deleted all rows for the email; the net
+// effect is "no attempts remain for that email").
+export function deleteAuthAttemptsByEmail(email) {
+  return db.prepare('DELETE FROM auth_attempts WHERE email = ?').run(email).changes
+}
+
+export function deleteExpiredAuthAttempts(cutoffIso) {
+  return db.prepare('DELETE FROM auth_attempts WHERE created_at <= ?').run(cutoffIso).changes
+}
+
+export function insertPasswordResetAttempt(attempt, { pruneCutoff = null } = {}) {
+  runInTransaction(() => {
+    if (pruneCutoff) db.prepare('DELETE FROM password_reset_attempts WHERE created_at <= ?').run(pruneCutoff)
+    db.prepare('INSERT INTO password_reset_attempts (id, email, ip_address, created_at) VALUES (?, ?, ?, ?)').run(
+      attempt.id || randomUUID(),
+      attempt.email ?? null,
+      attempt.ipAddress ?? null,
+      attempt.createdAt ?? nowIso()
+    )
+  })
+}
+
+export function countResetAttemptsByEmail(email, cutoffIso) {
+  return (
+    db
+      .prepare('SELECT COUNT(*) AS count FROM password_reset_attempts WHERE email = ? AND created_at > ?')
+      .get(email, cutoffIso)?.count || 0
+  )
+}
+
+export function countResetAttemptsByIp(ipAddress, cutoffIso) {
+  return (
+    db
+      .prepare('SELECT COUNT(*) AS count FROM password_reset_attempts WHERE ip_address = ? AND created_at > ?')
+      .get(ipAddress, cutoffIso)?.count || 0
+  )
+}
+
+export function deleteExpiredPasswordResetAttempts(cutoffIso) {
+  return db.prepare('DELETE FROM password_reset_attempts WHERE created_at <= ?').run(cutoffIso).changes
+}
+
+const PASSWORD_RESET_COLUMNS = `
+  id,
+  user_id AS userId,
+  token,
+  created_at AS createdAt,
+  expires_at AS expiresAt
+`
+
+export function insertPasswordReset(reset, { pruneCutoff = null } = {}) {
+  runInTransaction(() => {
+    if (pruneCutoff) db.prepare('DELETE FROM password_resets WHERE expires_at <= ?').run(pruneCutoff)
+    db.prepare('INSERT INTO password_resets (id, user_id, token, created_at, expires_at) VALUES (?, ?, ?, ?, ?)').run(
+      reset.id || randomUUID(),
+      reset.userId ?? null,
+      reset.token,
+      reset.createdAt ?? nowIso(),
+      reset.expiresAt ?? null
+    )
+  })
+  return reset
+}
+
+export function findPasswordResetByToken(token) {
+  return db.prepare(`SELECT ${PASSWORD_RESET_COLUMNS} FROM password_resets WHERE token = ?`).get(token) || null
+}
+
+export function deletePasswordResetsByUser(userId) {
+  return db.prepare('DELETE FROM password_resets WHERE user_id = ?').run(userId).changes
+}
+
+export function deletePasswordResetById(id) {
+  return db.prepare('DELETE FROM password_resets WHERE id = ?').run(id).changes
+}
+
+// Test-only support: upsert an existing reset by id so a test can push its
+// expiresAt into the past (mirrors the old store.state.passwordResets mutation).
+export function upsertPasswordResetRow(reset) {
+  db.prepare(
+    `
+    INSERT INTO password_resets (id, user_id, token, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?)
+    ON CONFLICT(id) DO UPDATE SET
+      user_id = excluded.user_id,
+      token = excluded.token,
+      created_at = excluded.created_at,
+      expires_at = excluded.expires_at
+  `
+  ).run(reset.id, reset.userId ?? null, reset.token, reset.createdAt ?? null, reset.expiresAt ?? null)
+  return reset
+}
+
+const MFA_CHALLENGE_COLUMNS = `
+  id,
+  token,
+  user_id AS userId,
+  method,
+  created_at AS createdAt,
+  expires_at AS expiresAt
+`
+
+export function insertMfaChallenge(challenge, { pruneCutoff = null } = {}) {
+  runInTransaction(() => {
+    if (pruneCutoff) db.prepare('DELETE FROM mfa_challenges WHERE expires_at <= ?').run(pruneCutoff)
+    db.prepare(
+      'INSERT INTO mfa_challenges (id, token, user_id, method, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?)'
+    ).run(
+      challenge.id || randomUUID(),
+      challenge.token,
+      challenge.userId ?? null,
+      challenge.method ?? null,
+      challenge.createdAt ?? nowIso(),
+      challenge.expiresAt ?? null
+    )
+  })
+  return challenge
+}
+
+// MFA consume path: resolve a single challenge by token scoped to the user, the
+// same match the old state.mfaChallenges.find(token && userId) performed.
+export function findMfaChallengeByTokenAndUser(token, userId) {
+  return db.prepare(`SELECT ${MFA_CHALLENGE_COLUMNS} FROM mfa_challenges WHERE token = ? AND user_id = ?`).get(token, userId) || null
+}
+
+export function deleteMfaChallengesByUser(userId) {
+  return db.prepare('DELETE FROM mfa_challenges WHERE user_id = ?').run(userId).changes
+}
+
+export function deleteMfaChallengeById(id) {
+  return db.prepare('DELETE FROM mfa_challenges WHERE id = ?').run(id).changes
+}
+
+// Blob-to-table seeding for freshly seeded states and any legacy blob that
+// predates migration 008. Keyed INSERT OR IGNORE keeps it idempotent against
+// the migration backfill.
+function ensureAuthEntitiesSeededFromState(state) {
+  const insertAuth = db.prepare(`
+    INSERT OR IGNORE INTO auth_attempts (id, email, ip_address, ok, created_at)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  for (const attempt of state.authAttempts || []) {
+    if (!attempt || typeof attempt !== 'object' || !attempt.id) continue
+    insertAuth.run(attempt.id, attempt.email ?? null, attempt.ipAddress ?? null, attempt.ok ? 1 : 0, attempt.createdAt ?? null)
+  }
+  const insertResetAttempt = db.prepare(`
+    INSERT OR IGNORE INTO password_reset_attempts (id, email, ip_address, created_at)
+    VALUES (?, ?, ?, ?)
+  `)
+  for (const attempt of state.passwordResetAttempts || []) {
+    if (!attempt || typeof attempt !== 'object' || !attempt.id) continue
+    insertResetAttempt.run(attempt.id, attempt.email ?? null, attempt.ipAddress ?? null, attempt.createdAt ?? null)
+  }
+  const insertReset = db.prepare(`
+    INSERT OR IGNORE INTO password_resets (id, user_id, token, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?)
+  `)
+  for (const reset of state.passwordResets || []) {
+    if (!reset || typeof reset !== 'object' || !reset.id || !reset.token) continue
+    insertReset.run(reset.id, reset.userId ?? null, reset.token, reset.createdAt ?? null, reset.expiresAt ?? null)
+  }
+  const insertChallenge = db.prepare(`
+    INSERT OR IGNORE INTO mfa_challenges (id, token, user_id, method, created_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `)
+  for (const challenge of state.mfaChallenges || []) {
+    if (!challenge || typeof challenge !== 'object' || !challenge.id || !challenge.token) continue
+    insertChallenge.run(
+      challenge.id,
+      challenge.token,
+      challenge.userId ?? null,
+      challenge.method ?? null,
+      challenge.createdAt ?? null,
+      challenge.expiresAt ?? null
+    )
+  }
+}
+
 function syncAnalyticsMaterialized(state) {
   db.exec('DELETE FROM analytics_materialized')
   const firms = state.firms || []
@@ -1545,6 +1773,10 @@ function stripRelationalMirrors(state) {
   state.documentUploads = []
   state.portalLinks = []
   state.invites = []
+  state.authAttempts = []
+  state.passwordResetAttempts = []
+  state.passwordResets = []
+  state.mfaChallenges = []
 }
 
 export function loadState(seedFactory) {
@@ -1565,6 +1797,7 @@ export function loadState(seedFactory) {
     ensureSubmissionEntitiesSeededFromState(state)
     ensureBoardEntitiesSeededFromState(state)
     ensureClientDataEntitiesSeededFromState(state)
+    ensureAuthEntitiesSeededFromState(state)
     const hadBlobMirrors =
       [
         state.exportJobs,
@@ -1578,7 +1811,11 @@ export function loadState(seedFactory) {
         state.notes,
         state.documentUploads,
         state.portalLinks,
-        state.invites
+        state.invites,
+        state.authAttempts,
+        state.passwordResetAttempts,
+        state.passwordResets,
+        state.mfaChallenges
       ].some((entries) => Array.isArray(entries) && entries.length > 0) ||
       [state.boardVersions, state.pipelineStagesByFirm].some(
         (entries) => entries && typeof entries === 'object' && Object.keys(entries).length > 0
@@ -1608,6 +1845,7 @@ export function loadState(seedFactory) {
   ensureSubmissionEntitiesSeededFromState(state)
   ensureBoardEntitiesSeededFromState(state)
   ensureClientDataEntitiesSeededFromState(state)
+  ensureAuthEntitiesSeededFromState(state)
   stripRelationalMirrors(state)
   state.sessions = []
   return state
@@ -1636,7 +1874,11 @@ export function saveState(state) {
     notes: [],
     documentUploads: [],
     portalLinks: [],
-    invites: []
+    invites: [],
+    authAttempts: [],
+    passwordResetAttempts: [],
+    passwordResets: [],
+    mfaChallenges: []
   })
   // The blob upsert, derived query tables, and materialized analytics must
   // commit together: a failure partway through (e.g. mid replaceRows) would
