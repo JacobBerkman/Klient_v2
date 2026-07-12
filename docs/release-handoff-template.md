@@ -5,7 +5,7 @@ For exact operator commands and diagnostics triage, use the canonical operator f
 For canonical ordering references, use `docs/deployment-quick-reference.md#canonical-hard-gate-sequence-validatemaster-exact-execution-order` and `docs/deployment-quick-reference.md#deterministic-post-deploy-validation-sequence`.
 For a filled historical example, see `docs/release-handoffs/release-handoff-2026-03-30.md`.
 
-Architecture note: this release process assumes the existing single-process **Node + SQLite + static web** deployment model (no split app-tier/database migration in this template). The canonical UI is the React/Vite app in `apps/web/src`, built by `npm run web:build` into `apps/web/dist`; `apps/web/public` remains legacy-only at `/legacy` and `/legacy/portal`.
+Architecture note: this release process assumes the existing single-process **Node + SQLite + static web** deployment model (no split app-tier/database migration in this template). The canonical UI is the React/Vite app in `apps/web/src`, built by `npm run web:build` into `apps/web/dist`, which is the only web shell the backend serves.
 
 ## 1) Release identity
 - **Release ID**: `<release-id>`

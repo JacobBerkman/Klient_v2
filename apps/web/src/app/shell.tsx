@@ -143,12 +143,6 @@ export function AppShell() {
               </NavLink>
             ))}
         </nav>
-        <div className="sidebar-footer">
-          <p className="muted compact">Legacy shell is retained temporarily for explicit fallback checks.</p>
-          <a className="text-link" href="/legacy">
-            Open legacy-only shell
-          </a>
-        </div>
       </aside>
       <div className="shell-main">
         <header className="topbar">
