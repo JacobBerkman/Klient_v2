@@ -7,12 +7,22 @@ import { pathToFileURL } from 'node:url'
 
 const repoRoot = process.cwd()
 
+// Importing storage.mjs at its canonical (non-cache-busted) URL returns the very
+// same module instance store.mjs imported, so store writes and these read-backs
+// share one node:sqlite connection — letting tests assert the persisted firm row
+// (not just the in-memory copy) reflects stage-config changes.
+async function loadStorage() {
+  const storageUrl = pathToFileURL(resolve(repoRoot, 'apps/api/src/storage.mjs')).href
+  return import(storageUrl)
+}
+
 async function loadStore() {
   const tempDir = mkdtempSync(join(tmpdir(), 'klient-analytics-stage-config-'))
   process.chdir(tempDir)
   try {
     process.env.APP_SECRET = 'test-secret-for-analytics-stage-config'
-    const moduleUrl = pathToFileURL(resolve(repoRoot, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
+    const moduleUrl =
+      pathToFileURL(resolve(repoRoot, 'apps/api/src/store.mjs')).href + `?t=${Date.now()}-${Math.random()}`
     const mod = await import(moduleUrl)
     return mod.createStore()
   } finally {
@@ -20,9 +30,9 @@ async function loadStore() {
   }
 }
 
-function createAdvisor(store) {
+function createAdvisor(store, firmName = 'Analytics Stage Firm') {
   const session = store.register({
-    firmName: 'Analytics Stage Firm',
+    firmName,
     firstName: 'Ari',
     lastName: 'Advisor',
     email: `analytics-${Math.random().toString(16).slice(2)}@example.com`,
@@ -36,12 +46,8 @@ test('analytics funnel ordering and conversion follow tenant stage configuration
   const user = createAdvisor(store)
 
   // The analytics funnel order + start/end stages are driven by the firm's
-  // persisted stageConfig (resolveFirmAnalyticsStages). There is no public API
-  // to reshape a firm's analytics stage config, and mutating an in-memory
-  // dashboard copy no longer persists (firm rows are relational). So we assert
-  // against the firm's actual configured funnel: the ordering must match the
-  // configured stage order, and overall conversion is endStageCount /
-  // startStageCount. Derive start/mid/end from an initial (empty) snapshot.
+  // persisted stageConfig (resolveFirmAnalyticsStages). Derive start/mid/end from
+  // an initial (empty) snapshot and assert conversion is endCount / startCount.
   const baseline = store.getAnalytics(user)
   const funnelOrder = baseline.funnel.map((entry) => entry.stage)
   const startStage = baseline.stageMetadata.find((stage) => stage.isStart).id
@@ -64,25 +70,165 @@ test('analytics funnel ordering and conversion follow tenant stage configuration
   assert.equal(snapshot.overallConversionRate, 0.5)
 })
 
-test('analytics maps unknown or missing stages into a predictable legacy bucket', async () => {
+test('creating a custom stage couples it into analytics: prospects surface there, not in legacy_unassigned', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)
 
-  // A prospect's stage must be an ACTIVE pipeline stage, but the analytics
-  // funnel is resolved from the firm's stageConfig (resolveFirmAnalyticsStages).
-  // Custom pipeline stages created via createPipelineStage are active -- so
-  // createProfile accepts them -- yet are absent from the analytics stageConfig,
-  // so analytics must bucket them into legacy_unassigned. This is the supported
-  // reproduction of the original "unknown / off-config stage" case.
-  store.createPipelineStage(user, { key: 'old_analysis', label: 'Old Analysis' })
-  store.createPipelineStage(user, { key: 'legacy_intake', label: 'Legacy Intake' })
+  // Create a bespoke pipeline stage and move a prospect into it.
+  const custom = store.createPipelineStage(user, { key: 'planning_session', label: 'Planning Session' })
+  const prospect = store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'Pat',
+    lastName: 'Prospect',
+    stage: 'discovery'
+  })
+  store.moveProfileStage(user, prospect.id, custom.key)
 
-  store.createProfile(user, { kind: 'prospect', firstName: 'Legacy', lastName: 'Known', stage: 'old_analysis' })
-  store.createProfile(user, { kind: 'prospect', firstName: 'Legacy', lastName: 'Missing', stage: 'legacy_intake' })
+  const snapshot = store.getAnalytics(user)
+
+  // The custom stage appears as its own funnel entry with the moved prospect's
+  // count -- NOT bucketed into legacy_unassigned (the decoupling bug).
+  const funnelEntry = snapshot.funnel.find((entry) => entry.stage === 'planning_session')
+  assert.equal(funnelEntry?.count, 1)
+  assert.ok(
+    !snapshot.funnel.some((entry) => entry.stage === 'legacy_unassigned'),
+    'no legacy_unassigned funnel entry should exist for a coupled custom stage'
+  )
+  assert.equal(snapshot.stageAging.planning_session?.count, 1)
+  assert.equal(snapshot.stageAging.legacy_unassigned, undefined)
+
+  // stageMetadata carries the custom stage with its label.
+  const meta = snapshot.stageMetadata.find((stage) => stage.id === 'planning_session')
+  assert.equal(meta?.label, 'Planning Session')
+
+  // The persisted firm row (read back through storage, not the in-memory copy)
+  // reflects the coupled stage config.
+  const storage = await loadStorage()
+  const firmRow = storage.getFirmRow(user.firmId)
+  assert.ok(
+    firmRow.stageConfig.stages.some((stage) => stage.key === 'planning_session'),
+    'firm row stageConfig must include the custom stage'
+  )
+})
+
+test('renaming a stage updates the analytics label in the same persist cycle', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const custom = store.createPipelineStage(user, { key: 'annual_review', label: 'Annual Review' })
+  const prospect = store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'Ren',
+    lastName: 'Review',
+    stage: 'discovery'
+  })
+  store.moveProfileStage(user, prospect.id, custom.key)
+
+  const before = store.getAnalytics(user)
+  assert.equal(before.stageMetadata.find((stage) => stage.id === 'annual_review')?.label, 'Annual Review')
+
+  // updatePipelineStageMetadata takes the stage ID (not key).
+  store.updatePipelineStageMetadata(user, custom.id, { label: 'Client Review' })
+
+  const after = store.getAnalytics(user)
+  assert.equal(after.stageMetadata.find((stage) => stage.id === 'annual_review')?.label, 'Client Review')
+  assert.equal(after.stageAgingOrdered.find((entry) => entry.stageId === 'annual_review')?.stageLabel, 'Client Review')
+
+  const storage = await loadStorage()
+  const firmRow = storage.getFirmRow(user.firmId)
+  assert.equal(
+    firmRow.stageConfig.stages.find((stage) => stage.key === 'annual_review')?.label,
+    'Client Review'
+  )
+})
+
+test('reordering pipeline stages reorders the analytics funnel', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const planning = store.createPipelineStage(user, { key: 'planning_session', label: 'Planning Session' })
+  const review = store.createPipelineStage(user, { key: 'annual_review', label: 'Annual Review' })
+
+  // Move the two custom stages to the very front of the pipeline.
+  const { stages: before } = store.listPipelineStages(user)
+  const idByKey = new Map(before.map((stage) => [stage.key, stage.id]))
+  const prefixIds = [review.key, planning.key].map((key) => idByKey.get(key))
+  const remainingIds = before.map((stage) => stage.id).filter((id) => !prefixIds.includes(id))
+  store.reorderPipelineStages(user, { stageIds: [...prefixIds, ...remainingIds] })
+
+  const snapshot = store.getAnalytics(user)
+  const funnelKeys = snapshot.funnel.map((entry) => entry.stage)
+  assert.deepEqual(funnelKeys.slice(0, 2), ['annual_review', 'planning_session'])
+
+  const storage = await loadStorage()
+  const firmRow = storage.getFirmRow(user.firmId)
+  assert.deepEqual(
+    firmRow.stageConfig.stages.slice(0, 2).map((stage) => stage.key),
+    ['annual_review', 'planning_session']
+  )
+})
+
+test('deactivating a stage keeps its analytics counts instead of dumping to legacy_unassigned', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const custom = store.createPipelineStage(user, { key: 'planning_session', label: 'Planning Session' })
+  const prospect = store.createProfile(user, {
+    kind: 'prospect',
+    firstName: 'Dee',
+    lastName: 'Active',
+    stage: 'discovery'
+  })
+  store.moveProfileStage(user, prospect.id, custom.key)
+
+  // Deactivate the stage while a prospect still sits in it.
+  store.deactivatePipelineStage(user, custom.id)
+
+  const snapshot = store.getAnalytics(user)
+
+  // Documented choice: deactivated stages remain in analytics (active:false) with
+  // their historical counts -- prospects are NOT dumped into legacy_unassigned.
+  const funnelEntry = snapshot.funnel.find((entry) => entry.stage === 'planning_session')
+  assert.equal(funnelEntry?.count, 1)
+  assert.equal(snapshot.stageAging.planning_session?.count, 1)
+  assert.equal(snapshot.stageAging.legacy_unassigned, undefined)
+
+  const meta = snapshot.stageMetadata.find((stage) => stage.id === 'planning_session')
+  assert.equal(meta?.active, false)
+
+  const storage = await loadStorage()
+  const firmRow = storage.getFirmRow(user.firmId)
+  const persisted = firmRow.stageConfig.stages.find((stage) => stage.key === 'planning_session')
+  assert.ok(persisted, 'deactivated stage must remain in the persisted stage config')
+  assert.equal(persisted.active, false)
+})
+
+test('genuinely orphaned stages (pre-stage-management data) map into the legacy bucket', async () => {
+  // A prospect whose stage predates stage management -- no matching stage record
+  // and no config entry -- is the legitimate legacy case. The coupling only syncs
+  // firm.stageConfig on stage mutations, so an orphan stage carried by a profile
+  // (never a configured/record stage) must still fall into legacy_unassigned.
+  // Insert such prospects straight into the relational profiles table (bypassing
+  // createProfile's active-stage guard, which is exactly how pre-existing data
+  // slips in).
+  const store = await loadStore()
+  const user = createAdvisor(store)
+  const storage = await loadStorage()
+  for (const suffix of ['1', '2']) {
+    storage.upsertProfileRow({
+      id: `prospect-orphan-${suffix}`,
+      firmId: user.firmId,
+      kind: 'prospect',
+      firstName: 'Ancient',
+      lastName: suffix,
+      stage: 'ancient_intake',
+      createdAt: `2024-02-0${suffix}T00:00:00.000Z`,
+      updatedAt: `2024-02-0${suffix}T00:00:00.000Z`
+    })
+  }
 
   const snapshot = store.getAnalytics(user)
   const legacyFunnel = snapshot.funnel.find((entry) => entry.stage === 'legacy_unassigned')
-
   assert.equal(legacyFunnel?.count, 2)
   assert.equal(snapshot.stageAging.legacy_unassigned?.count, 2)
 
