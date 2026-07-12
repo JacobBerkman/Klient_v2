@@ -11,24 +11,61 @@ This repository contains a **single-command runnable advisory onboarding app** w
 | Collaborative draft editing safeguards                                   | `implemented` | Conflict guard + lease recovery are now enforced across API + UI draft flows with integration coverage. See [Milestone M2](docs/milestones/claims-roadmap.md#milestone-m2-draft-collaboration-hardening).                                             |
 | Queue-backed export/document automation                                  | `implemented` | Queue orchestration now includes retry-safe processing, dead-letter handling, machine-usable queue diagnostics, and verified artifact readiness/download flows. See [Milestone M3](docs/milestones/claims-roadmap.md#milestone-m3-export-automation). |
 
-## What is included
+## Features
 
-- admin firm bootstrap and sign-in
-- persistent SQLite-backed local data storage in `data/app.db`
-- dashboard with stats and recent activity
-- prospects and clients management
-- persisted prospect pipeline board
-- households and member linking
-- dynamic form template and submission flows
+The web UI ships the Kinetic Financial brand (self-hosted Cabin/Roboto fonts, navy sidebar) with responsive breakpoints, WCAG AA contrast, a keyboard skip-link, and reduced-motion / high-contrast support.
+
+**Pipeline & clients**
+
+- prospect and client management with search, detail pages, notes, and per-record tags
+- persisted drag-and-drop pipeline board with configurable stages
+- stage management admin UI (`/admin/stages`) to add, rename, reorder, and deactivate custom stages; deactivated stages keep their historical records
+- first-class prospect→client conversion from the profile detail page and terminal kanban columns, with board hygiene and audit trail
+- household creation, member management, and spouse linking/creation
+- soft delete/archive and restore for profiles and households — archived records are excluded everywhere by default, their portal access is suspended, and restore returns them to their prior stage
+- masked handling of sensitive identifiers (SSNs, tax IDs), stored encrypted and returned masked
+
+**Forms & templates**
+
+- dynamic form templates with advisor and client-portal submission flows
+- conditional form fields (`visibleIf` with equals/notEquals/in/notEmpty); hidden fields are exempt from required-on-submit validation
 - collaborative draft editing with revision IDs, lock leases, and conflict prompts
-- guided client portal for draft and submitted onboarding responses
-- document templates and queue-backed export job automation with retry/dead-letter orchestration
-- audit trail plus advisor-facing analytics panels (funnel conversion, stage aging, form completion, productivity)
-- invite flow and password reset endpoints
+- advisor and portal form draft auto-save (portal saves per section with revision tracking)
+- PDF document template ingestion: persisted source PDF, AcroForm field extraction, linked generated form templates, and extraction diagnostics
+- visual AcroForm mapper (`/templates/:templateId/mapper`): PDF preview with field overlays, page navigation, drag/resize and numeric placement editing, snap-to-grid, undo/redo, duplicate placement, and test-fill preview
+
+**Documents**
+
+- advisor attachments on the profile detail page (raw binary upload up to 20 MB, download, archive)
+- queue-backed export automation that fills source-backed AcroForm PDFs and generates structured advisor XLSX workbooks, with retry and dead-letter handling
+- persisted completed artifacts with authenticated downloads from `/exports`
+
+**Portal**
+
+- guided client portal (`/portal?token=...`) for reviewing shared data, saving per-section drafts, and submitting onboarding responses
+- portal access automatically suspended for archived profiles and households
+
+**Analytics & activity**
+
+- advisor analytics panels (funnel conversion, stage aging, form completion, productivity); custom stages appear in the funnel
+- in-app notifications (bell) for export lifecycle and other events
+- firm activity feed (`/activity`) with categories, filters, and privacy rules
+- audit trail (`/audit`)
+
+**Auth & security**
+
+- firm admin registration and cookie-based sign-in with TOTP MFA, backup codes, invite flow, and password reset
+- optional real Google (OpenID Connect) sign-in alongside local login (config-gated; see [DEPLOYMENT.md](DEPLOYMENT.md#google-sign-in-optional))
+- field-level envelope encryption for PII with key-rotation support and audited unmask policy checks
+- rate-limited logins and 8-hour sessions
+
+**Operations**
+
+- single Node + SQLite + static-web runtime; relational SQLite in `data/app.db` with versioned migrations
+- health/readiness probes and authenticated ops diagnostics (runtime config, storage health, export worker queue, audit counts)
+- scheduled, encrypted backups (AES-256-GCM `KLBK` artifacts) plus verify-only restore drills
+- companion export worker, Docker + compose packaging, and optional TLS via Caddy
 - canonical routed React/Vite web UI served by the backend from `apps/web/dist`
-- operational diagnostics for runtime config, storage health, export worker queue, and audit counts
-- Docker + compose deployment artifacts
-- backup, restore, and export worker scripts
 
 ## Environment
 
@@ -46,21 +83,6 @@ Kinetic Klient is now consolidated onto **one real runtime architecture**:
 `apps/web/dist` is generated build output and is not committed to git: run `npm run web:build` after a fresh clone before serving the app with plain Node (Docker and CI build it themselves). Until it is built, the backend has no web shell to serve and static routes return 404.
 
 The older duplicate Fastify/TypeScript backend path and related workspace scaffolding have been removed so the repository now has one real startup path.
-
-## Product capabilities
-
-- firm admin registration and sign-in
-- persistent session-backed advisory workspace
-- dashboard with recent activity and operating stats
-- prospect/client creation, search, detail, notes, and stage management
-- household creation, member management, and spouse linking/creation
-- masked sensitive data handling for SSNs and tax IDs
-- form template creation plus advisor and portal submission flows
-- PDF document template ingestion with persisted source artifacts, AcroForm field extraction, linked generated form templates, and extraction diagnostics
-- AcroForm visual mapper route with PDF preview, extracted field overlays, page navigation, drag/resize placement editing, test-fill preview, linked form visibility, and mapping/readiness checks
-- template-driven export jobs that fill uploaded AcroForm PDFs when available, generate structured advisor XLSX workbooks, persist completed artifacts, and preserve retry/dead-letter queue behavior
-- invite and password reset flows
-- readiness/health probes, backup/restore scripts, Docker packaging, and smoke coverage
 
 ## Runtime architecture kept
 
@@ -281,6 +303,14 @@ Open `http://localhost:3000/portal?token=...` with a generated portal token to r
 
 ## Backup
 
+The default day-to-day and scheduled backup mechanism is the **encrypted** pipeline: `npm run backup` takes a WAL-safe `VACUUM INTO` snapshot and writes a single AES-256-GCM `KLBK` artifact, and `npm run restore` decrypts and verifies it (with a `--verify-only` drill mode). See [DEPLOYMENT.md](DEPLOYMENT.md#backups--restore-encrypted) for keys, retention, and scheduling.
+
+```bash
+npm run backup
+```
+
+The legacy unencrypted `.db` snapshot scripts remain only for the release-evidence rollback flow:
+
 ```bash
 node scripts/backup-db.mjs
 ```
@@ -293,13 +323,6 @@ Runtime data is stored in:
 
 Delete the file to reseed state. If `ENABLE_DEMO_MODE=true`, the demo dataset is seeded; otherwise startup state remains empty.
 
-## Backups
-
-```bash
-node scripts/backup-db.mjs
-node scripts/restore-db.mjs data/backup-<timestamp>.db
-```
-
 ## Export worker
 
 ```bash
@@ -310,9 +333,9 @@ The companion worker is the canonical queue processor for export jobs in local, 
 
 Completed PDF/XLSX artifacts are persisted to configured object storage metadata and downloaded from `GET /api/exports/:id/download`; old completed jobs without persisted objects retain a compatibility re-render fallback. Ops diagnostics expose `workerMode`, heartbeat timing, `workerObservedRecently`, and `pendingWithoutWorker` so operators can distinguish queued jobs waiting on a worker from actively processing jobs.
 
-## Mapper MVP scope
+## Mapper scope
 
-The visual mapper is MVP-canonical for previewing source PDFs, reviewing extracted AcroForm overlays, editing placement with drag/resize or numeric coordinates, saving audited layout metadata, and generating temporary test-fill previews. Snapping, alignment guides, and bulk placement refinement are intentionally post-MVP; the export renderer remains AcroForm-field driven rather than layout-overlay driven.
+The visual mapper previews source PDFs, reviews extracted AcroForm overlays, edits placement with drag/resize or numeric coordinates, snaps placements to a grid, supports undo/redo and duplicate placement, saves audited layout metadata, and generates temporary test-fill previews. The export renderer remains AcroForm-field driven rather than layout-overlay driven.
 
 ## Docker
 
