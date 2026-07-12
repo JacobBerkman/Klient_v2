@@ -10,7 +10,7 @@ import {
   sectionStorageKey,
   updateRepeaterRow
 } from '../lib/formSchema'
-import { isFieldVisible } from '../lib/formConditions'
+import { isFieldVisible, isRepeatableSection } from '../lib/formConditions'
 import { collaboratorSummary, formatDateTime, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
@@ -477,7 +477,7 @@ export function Component() {
               }}
             >
               {template.sections.map((section, sectionIndex) => {
-                if (section.repeatable) {
+                if (isRepeatableSection(section)) {
                   const rows = repeaterRows(editorData, section, sectionIndex)
                   return (
                     <Card key={sectionStorageKey(section, sectionIndex)} className="section-card">

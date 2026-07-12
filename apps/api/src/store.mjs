@@ -190,6 +190,13 @@ const DEFAULT_STAGE_DEFINITIONS = createDefaultFirmStageConfig().stages.map((sta
   }
 })
 const LEGACY_STAGE_BUCKET = 'legacy_unassigned'
+// Synthetic stage_change destinations that are NOT real pipeline stages: archive
+// and convert write these terminal sentinel markers into stage history (see the
+// archiveProfile / convertProfile comments). They must never be counted as
+// advisor "stage moves" for productivity. The funnel/aging loops already skip
+// them (toAnalyticsStage buckets unknown stages into LEGACY_STAGE_BUCKET and only
+// prospect rows are iterated).
+const SYNTHETIC_STAGE_CHANGE_TARGETS = new Set(['archived', 'converted'])
 const DEFAULT_ANALYTICS_STAGE_DEFINITIONS = createDefaultFirmStageConfig().stages.map((stage) => {
   const id = getStageKey(stage)
   return {
@@ -1338,6 +1345,51 @@ export function createStore({
     }
   }
 
+  // Resolve the object metadata to record for an upload COMPLETION, closing the
+  // caller-supplied-key trust hole. Two cases:
+  //   - Intent present: the intent's reserved object (minted server-side under
+  //     `${firmId}/...` at presign time) is authoritative. A caller-supplied
+  //     input.object may only ECHO the reserved bucket/key (used to carry an
+  //     optional checksum hint); any bucket/key divergence is a tamper attempt
+  //     and is rejected. This prevents registering/downloading an object at an
+  //     arbitrary key (including another firm's) via a completion call.
+  //   - No intent (legacy completion): the caller supplies the whole object, so
+  //     the key MUST live under the caller's own firm namespace (`${firmId}/`,
+  //     the prefix createUploadIntent and every server-minted key use). This
+  //     blocks writing/registering an object outside the firm's prefix.
+  function resolveCompletionObject({ intent, input = {}, firmId, defaultRetentionClass = 'uploaded_document' }) {
+    const reject = (message) => {
+      const error = new Error(message)
+      error.statusCode = 403
+      error.code = 'UPLOAD_OBJECT_KEY_FORBIDDEN'
+      return error
+    }
+    const suppliedObject = input.object || {}
+    if (intent?.object?.key) {
+      if (suppliedObject.key && String(suppliedObject.key) !== String(intent.object.key)) {
+        throw reject('Upload object key does not match the reserved upload intent.')
+      }
+      if (suppliedObject.bucket && String(suppliedObject.bucket) !== String(intent.object.bucket)) {
+        throw reject('Upload object bucket does not match the reserved upload intent.')
+      }
+      return normalizeObjectMetadata(
+        // Pin bucket/key to the intent; only adopt a caller checksum hint.
+        { ...intent.object, checksum: suppliedObject.checksum || intent.object.checksum || null },
+        input.retentionClass || intent.object.retentionClass || defaultRetentionClass
+      )
+    }
+    const object = normalizeObjectMetadata(suppliedObject, input.retentionClass || defaultRetentionClass)
+    // The register/download hijack requires an actual key. A keyless legacy record
+    // (metadata-only, no object) has nothing to register or fetch, so we leave it
+    // untouched; but ANY supplied key MUST live under the caller's own firm prefix
+    // (the shape createUploadIntent and every server-minted key use) so it can
+    // never point at another firm's object.
+    if (object.key && !String(object.key).startsWith(`${firmId}/`)) {
+      throw reject('Upload object key is outside this firm’s storage namespace.')
+    }
+    return object
+  }
+
   function createUploadIntent({
     firmId,
     clientId,
@@ -2025,6 +2077,12 @@ export function createStore({
     if (!userEmail) throw new Error('Client profile not found.')
     const profile = findClientProfileRowByEmail(user.firmId, userEmail)
     if (!profile) throw new Error('Client profile not found.')
+    // Archive semantics: archiving a client SUSPENDS their portal/client access.
+    // findClientProfileRowByEmail is a plain email lookup that still resolves
+    // archived rows (its other caller — invite-accept de-dup — needs that), so we
+    // exclude archived profiles HERE, at the auth-resolution site, rather than in
+    // the shared lookup. An archived client is treated as if no profile exists.
+    if (profile.archivedAt) throw new Error('Client profile not found.')
     return profile
   }
 
@@ -2898,6 +2956,21 @@ export function createStore({
             throw error
           }
 
+          // Archive guard: an archived prospect keeps kind==='prospect' but has a
+          // nulled stage and is soft-deleted from every list/analytics read. The
+          // kind check above therefore does NOT catch it, so a stage move here
+          // would re-assign stage/order/board-version WITHOUT clearing archivedAt,
+          // producing a split-brain row that is visible on the board yet hidden
+          // everywhere else. Reject; the caller must restore the profile first
+          // (restoreProfile re-seats it on the board cleanly).
+          if (profile.archivedAt) {
+            const error = new Error('Archived profiles cannot be moved on the pipeline board. Restore it first.')
+            error.statusCode = 409
+            error.code = 'PROFILE_ARCHIVED'
+            error.details = { profileId }
+            throw error
+          }
+
           const currentVersion = Number(profile.pipelineVersion || 1)
           if (expectedVersion !== null && Number(expectedVersion) !== currentVersion) {
             throw pipelineConflict('Profile ordering version mismatch.', {
@@ -3401,10 +3474,7 @@ export function createStore({
       requirePermission(user, 'client:write')
       const profile = requireClientProfile(user)
       const intent = input.uploadId ? getUploadIntent(input.uploadId, user.firmId) : null
-      const object = normalizeObjectMetadata(
-        input.object || intent?.object || {},
-        input.retentionClass || 'uploaded_document'
-      )
+      const object = resolveCompletionObject({ intent, input, firmId: user.firmId })
       const malwareScan = normalizeMalwareScan(input.malwareScan)
       const upload = {
         id: randomUUID(),
@@ -3469,6 +3539,11 @@ export function createStore({
       if (intent.status === 'stored') {
         throw failWith('Upload has already been stored for this intent.', 409)
       }
+      // A prior request already claimed this intent and is mid-putObject (see the
+      // atomic claim below). Reject the concurrent PUT rather than double-write.
+      if (intent.status === 'storing') {
+        throw failWith('Upload is already being stored for this intent.', 409)
+      }
       const object = intent.object || {}
       if (!object.bucket || !object.key) {
         throw failWith('Upload intent has no reserved object key.', 409)
@@ -3489,19 +3564,38 @@ export function createStore({
       if (buffer.length > limitBytes) {
         throw failWith(`Upload exceeds the ${Math.floor(limitBytes / (1024 * 1024))} MB limit.`, 413)
       }
-      const stored = await objectStorage.putObject({
-        bucket: object.bucket,
-        key: object.key,
-        body: buffer,
-        contentType: expectedContentType || contentType || object.contentType,
-        retentionClass: object.retentionClass,
-        metadata: {
-          fileName: intent.fileName || 'upload.bin',
-          uploadIntentId: uploadId,
-          source: intent.source || 'client',
-          purpose: 'raw_upload'
-        }
-      })
+      // TOCTOU fix: claim the intent BEFORE the awaited putObject. better-sqlite3
+      // is synchronous and single-writer, so the check-then-claim above runs to
+      // completion with no interleaving; a second concurrent PUT that arrives
+      // while this one is awaiting putObject reads status==='storing' and is
+      // rejected instead of racing to a duplicate write. The cheap synchronous
+      // validations above intentionally run first so a bad request never consumes
+      // (and locks out) the intent.
+      intent.status = 'storing'
+      insertUploadIntent(intent)
+      let stored
+      try {
+        stored = await objectStorage.putObject({
+          bucket: object.bucket,
+          key: object.key,
+          body: buffer,
+          contentType: expectedContentType || contentType || object.contentType,
+          retentionClass: object.retentionClass,
+          metadata: {
+            fileName: intent.fileName || 'upload.bin',
+            uploadIntentId: uploadId,
+            source: intent.source || 'client',
+            purpose: 'raw_upload'
+          }
+        })
+      } catch (putError) {
+        // Storing the bytes failed: release the claim so a legitimate retry can
+        // re-attempt the PUT against the same reserved key.
+        intent.status = 'pending'
+        insertUploadIntent(intent)
+        persist()
+        throw putError
+      }
       intent.status = 'stored'
       intent.storedAt = now()
       intent.storedChecksum = stored.checksum || null
@@ -3566,10 +3660,7 @@ export function createStore({
         entityName: 'Profile'
       })
       const intent = input.uploadId ? getUploadIntent(input.uploadId, user.firmId) : null
-      const object = normalizeObjectMetadata(
-        input.object || intent?.object || {},
-        input.retentionClass || intent?.object?.retentionClass || 'uploaded_document'
-      )
+      const object = resolveCompletionObject({ intent, input, firmId: user.firmId })
       // Optional inline bytes: advisors upload from the profile page, so persist
       // the payload to object storage here (server-side putObject) at the
       // intent's reserved key, which makes downloads work end-to-end without a
@@ -5308,10 +5399,7 @@ export function createStore({
       const intent = input.uploadId ? getUploadIntent(input.uploadId, link.firmId) : null
       const uploadCategory = input.category || intent?.category || 'general'
       assertPortalUploadScope(link, uploadCategory)
-      const object = normalizeObjectMetadata(
-        input.object || intent?.object || {},
-        input.retentionClass || intent?.object?.retentionClass || 'uploaded_document'
-      )
+      const object = resolveCompletionObject({ intent, input, firmId: link.firmId })
       const malwareScan = normalizeMalwareScan(input.malwareScan)
       const upload = {
         id: randomUUID(),
@@ -5385,6 +5473,13 @@ export function createStore({
       const lastStage = stageCounts[stageConfig.endStage] || 0
 
       const firmStageChanges = listStageChangeRowsByFirm(user.firmId)
+      // Genuine board moves only: strip the synthetic terminal markers (archive/
+      // convert) so they never inflate advisorProductivity.stageMoves. Funnel and
+      // aging read firmStageChanges directly because they already ignore these
+      // rows structurally (prospect-only iteration + legacy bucketing).
+      const realStageMoves = firmStageChanges.filter(
+        (entry) => !SYNTHETIC_STAGE_CHANGE_TARGETS.has(String(entry.toStage || ''))
+      )
       const stageEvents = firmStageChanges.slice().sort((a, b) => parseIso(a.changedAt) - parseIso(b.changedAt))
       const stageEntryTimes = new Map()
       stageEvents.forEach((event) => {
@@ -5500,7 +5595,7 @@ export function createStore({
       const advisorProductivity = advisors.map((advisor) => {
         const assignedProfiles = firmProfiles.filter((entry) => entry.advisorUserId === advisor.id)
         const notesCount = firmNotes.filter((entry) => entry.createdByUserId === advisor.id).length
-        const stageMoves = firmStageChanges.filter((entry) => entry.changedByUserId === advisor.id).length
+        const stageMoves = realStageMoves.filter((entry) => entry.changedByUserId === advisor.id).length
         const submissions = firmSubmissions.filter((entry) => entry.createdByUserId === advisor.id).length
         return {
           advisorUserId: advisor.id,

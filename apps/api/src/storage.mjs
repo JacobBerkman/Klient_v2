@@ -1323,6 +1323,11 @@ export function listProspectStageIds(firmId) {
 
 // First client profile whose email matches (case-insensitive), in insertion
 // order — mirrors the old state.profiles.find for portal client resolution.
+// NOTE: this intentionally still resolves ARCHIVED clients — the invite-accept
+// de-dup caller needs to see them so it never re-creates a duplicate profile for
+// an archived client's email. Auth/authorization callers (portal + client login,
+// e.g. requireClientProfile) MUST exclude archived rows themselves, because
+// archiving a client suspends their portal/client access.
 export function findClientProfileRowByEmail(firmId, email) {
   const normalized = String(email || '').toLowerCase()
   if (!normalized) return null
@@ -2148,6 +2153,7 @@ const OIDC_LOGIN_STATE_COLUMNS = `
   state,
   code_verifier AS codeVerifier,
   nonce,
+  binding_hash AS bindingHash,
   created_at AS createdAt,
   expires_at AS expiresAt,
   used_at AS usedAt
@@ -2161,8 +2167,8 @@ export function insertOidcLoginState(row, { pruneCutoff = null } = {}) {
       db.prepare('DELETE FROM oidc_login_states WHERE expires_at <= ? OR used_at IS NOT NULL').run(pruneCutoff)
     }
     db.prepare(
-      'INSERT INTO oidc_login_states (state, code_verifier, nonce, created_at, expires_at, used_at) VALUES (?, ?, ?, ?, ?, NULL)'
-    ).run(row.state, row.codeVerifier, row.nonce, row.createdAt ?? nowIso(), row.expiresAt)
+      'INSERT INTO oidc_login_states (state, code_verifier, nonce, binding_hash, created_at, expires_at, used_at) VALUES (?, ?, ?, ?, ?, ?, NULL)'
+    ).run(row.state, row.codeVerifier, row.nonce, row.bindingHash ?? null, row.createdAt ?? nowIso(), row.expiresAt)
   })
   return row
 }

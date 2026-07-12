@@ -48,6 +48,16 @@ const COOKIE_POLICY = Object.freeze({
     localName: 'klient-csrf',
     path: '/',
     sameSite: 'Strict'
+  },
+  // Google OIDC browser-binding cookie. SameSite=Lax (NOT Strict) is required:
+  // the callback is a top-level cross-site GET navigation from accounts.google.com,
+  // and a Strict cookie would not be sent on it. Lax still withholds the cookie
+  // from cross-site subresource/POST forgeries, which is the CSRF surface here.
+  oidc: {
+    secureName: '__Host-klient-oidc',
+    localName: 'klient-oidc',
+    path: '/',
+    sameSite: 'Lax'
   }
 })
 const CSRF_HEADER = 'x-csrf-token'
@@ -173,6 +183,43 @@ function clearSessionCookie(req) {
       })
     )
   )
+}
+
+const OIDC_BINDING_COOKIE_MAX_AGE_SECONDS = 60 * 10
+
+function buildOidcBindingCookie(req, bindingToken) {
+  return serializeCookie(
+    cookieName(req, 'oidc'),
+    bindingToken,
+    cookieConfig(req, {
+      path: COOKIE_POLICY.oidc.path,
+      sameSite: COOKIE_POLICY.oidc.sameSite,
+      maxAge: OIDC_BINDING_COOKIE_MAX_AGE_SECONDS
+    })
+  )
+}
+
+function clearOidcBindingCookie(req) {
+  return cookieNamesForRead('oidc').map((name) =>
+    serializeCookie(
+      name,
+      '',
+      cookieConfig(req, {
+        path: COOKIE_POLICY.oidc.path,
+        sameSite: COOKIE_POLICY.oidc.sameSite,
+        maxAge: 0
+      })
+    )
+  )
+}
+
+function resolveOidcBindingToken(req) {
+  const cookies = parseCookies(req)
+  for (const name of cookieNamesForRead('oidc')) {
+    const value = String(cookies[name] || '').trim()
+    if (value) return value
+  }
+  return ''
 }
 
 function readOpsBearerToken(req) {
@@ -1132,12 +1179,14 @@ export function createHttpServer({ modules }) {
           finalizeLog(404)
           return notFound(res, requestId)
         }
-        const { authorizationUrl } = await modules.googleOidc.startLogin()
+        const { authorizationUrl, bindingToken } = await modules.googleOidc.startLogin()
         res.writeHead(302, {
           ...baseHeaders(),
           'X-Request-Id': requestId,
           Location: authorizationUrl,
-          'Cache-Control': 'no-store'
+          'Cache-Control': 'no-store',
+          // Bind this flow to the initiating browser; the callback must echo it.
+          'Set-Cookie': buildOidcBindingCookie(req, bindingToken)
         })
         finalizeLog(302)
         return res.end()
@@ -1151,7 +1200,8 @@ export function createHttpServer({ modules }) {
           const result = await modules.googleOidc.completeLogin({
             state: url.searchParams.get('state'),
             code: url.searchParams.get('code'),
-            error: url.searchParams.get('error')
+            error: url.searchParams.get('error'),
+            bindingToken: resolveOidcBindingToken(req)
           })
           // Rotate any pre-existing session, mirroring local login.
           const priorToken = resolveSessionToken(req)
@@ -1174,7 +1224,12 @@ export function createHttpServer({ modules }) {
             'X-Request-Id': requestId,
             Location: '/',
             'Cache-Control': 'no-store',
-            'Set-Cookie': [buildSessionCookie(req, result.session.token), csrf.headers['Set-Cookie']]
+            // Clear the one-time binding cookie now that the flow is complete.
+            'Set-Cookie': [
+              buildSessionCookie(req, result.session.token),
+              csrf.headers['Set-Cookie'],
+              ...clearOidcBindingCookie(req)
+            ]
           })
           finalizeLog(302)
           return res.end()
@@ -1191,7 +1246,10 @@ export function createHttpServer({ modules }) {
             ...baseHeaders(),
             'X-Request-Id': requestId,
             Location: `/login?error=${encodeURIComponent(reason)}`,
-            'Cache-Control': 'no-store'
+            'Cache-Control': 'no-store',
+            // Clear the binding cookie on failure too so a stale token cannot leak
+            // into a later attempt.
+            'Set-Cookie': clearOidcBindingCookie(req)
           })
           finalizeLog(302)
           return res.end()

@@ -10,7 +10,7 @@
 // server copy for the full contract; the schema validator enforces authoring
 // constraints, this module only evaluates already-valid definitions and fails
 // OPEN (renders the field) on anything it does not understand.
-import type { FormField } from './types'
+import type { FormField, FormSection } from './types'
 
 export const VISIBLE_IF_OPS = ['equals', 'notEquals', 'in', 'notEmpty'] as const
 
@@ -27,6 +27,23 @@ export interface VisibleIfCondition {
 export function fieldKey(field: FormField): string {
   if (!field || typeof field !== 'object') return ''
   return String(field.key ?? field.path ?? field.name ?? field.id ?? '')
+}
+
+// Is a section repeatable (row-array storage + per-row validation)? This MUST
+// stay identical to the server helper in apps/api/src/form-conditions.mjs, which
+// treats all three authoring shapes as repeatable: `repeatable: true`,
+// `repeater: true`, or `type: 'repeater'`. The renderers previously gated only on
+// `section.repeatable`, so a `{ type: 'repeater' }` template rendered flat on the
+// client while the server validated (and stored) it as repeatable — a silent
+// mismatch. Route every render/storage repeatable decision through this helper.
+export function isRepeatableSection(section: FormSection | null | undefined): boolean {
+  if (!section || typeof section !== 'object') return false
+  const record = section as Record<string, unknown>
+  if (record.repeatable === true) return true
+  if (record.repeater === true) return true
+  return String(record.type || '')
+    .trim()
+    .toLowerCase() === 'repeater'
 }
 
 function valueToString(value: unknown): string {

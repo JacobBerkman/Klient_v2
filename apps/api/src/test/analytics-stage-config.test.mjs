@@ -70,6 +70,32 @@ test('analytics funnel ordering and conversion follow tenant stage configuration
   assert.equal(snapshot.overallConversionRate, 0.5)
 })
 
+test('advisorProductivity.stageMoves counts real board moves only — archive/convert markers do not inflate it', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  const productivityFor = (snapshot) =>
+    snapshot.advisorProductivity.find((entry) => entry.advisorUserId === user.id)?.stageMoves ?? null
+
+  const a = store.createProfile(user, { kind: 'prospect', firstName: 'Ada', lastName: 'A', stage: 'discovery' })
+  const b = store.createProfile(user, { kind: 'prospect', firstName: 'Ben', lastName: 'B', stage: 'discovery' })
+  const baseline = productivityFor(store.getAnalytics(user))
+  assert.ok(Number.isInteger(baseline), 'advisor appears in the productivity list')
+
+  // One genuine board move (a real stage_change) ...
+  const stages = store.getBoard(user).columns.map((column) => column.stage)
+  const otherStage = stages.find((stage) => stage !== 'discovery') || 'discovery'
+  store.moveProfileStage(user, a.id, otherStage)
+
+  // ... plus two lifecycle ops that each write a SYNTHETIC marker ('converted' /
+  // 'archived') which must NOT be counted as productivity stage moves.
+  store.convertProspectToClient(user, a.id, {})
+  store.archiveProfile(user, b.id, {})
+
+  const after = productivityFor(store.getAnalytics(user))
+  assert.equal(after, baseline + 1, 'only the single real move increments stageMoves; synthetic markers are excluded')
+})
+
 test('creating a custom stage couples it into analytics: prospects surface there, not in legacy_unassigned', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)

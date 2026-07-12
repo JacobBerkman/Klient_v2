@@ -10,7 +10,7 @@ import {
   sectionStorageKey,
   updateRepeaterRow
 } from '../lib/formSchema'
-import { isFieldVisible } from '../lib/formConditions'
+import { isFieldVisible, isRepeatableSection } from '../lib/formConditions'
 import { formatDateTime, profileName } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
 import { autosaveStatusLabel, useAutosave } from '../lib/useAutosave'
@@ -188,7 +188,7 @@ function extractSectionSlice(
   section: FormSection,
   index: number
 ): Record<string, unknown> {
-  if (section.repeatable) {
+  if (isRepeatableSection(section)) {
     return { [sectionStorageKey(section, index)]: repeaterRows(data, section, index) }
   }
   const slice: Record<string, unknown> = {}
@@ -299,7 +299,7 @@ function PortalDraftSection({
     </p>
   ) : null
 
-  if (section.repeatable) {
+  if (isRepeatableSection(section)) {
     const rows = repeaterRows(draftData, section, sectionIndex)
     return (
       <Card className="section-card inset-card">

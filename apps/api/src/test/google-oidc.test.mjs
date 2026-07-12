@@ -297,12 +297,17 @@ test('provider is inert when config is disabled (routes would 404)', async () =>
 test('startLogin persists a single-use state row and returns a Google URL', async () => {
   const storage = createMemoryStateStore()
   const provider = buildProvider({ storage, fetchImpl: tokenFetch(), getUserByEmail: () => null })
-  const { authorizationUrl, state } = await provider.startLogin()
+  const { authorizationUrl, state, bindingToken } = await provider.startLogin()
   assert.ok(authorizationUrl.startsWith(GOOGLE_AUTHORIZATION_ENDPOINT))
   const row = storage.rows.get(state)
   assert.ok(row.codeVerifier)
   assert.ok(row.nonce)
   assert.equal(row.usedAt, null)
+  // Browser-binding: a raw token is returned to the caller (for the cookie) and
+  // only its hash is persisted.
+  assert.ok(bindingToken)
+  assert.ok(row.bindingHash)
+  assert.notEqual(row.bindingHash, bindingToken)
 })
 
 test('completeLogin establishes a session for a matching pilot user (MFA skipped)', async () => {
@@ -326,7 +331,7 @@ test('completeLogin establishes a session for a matching pilot user (MFA skipped
     fetchImpl: null // set below
   })
 
-  const { state } = await provider.startLogin()
+  const { state, bindingToken } = await provider.startLogin()
   const nonce = storage.rows.get(state).nonce
   const idToken = signIdToken({ claims: baseClaims({ nonce }) })
   // Re-create with a fetch bound to this id_token (provider closes over fetchImpl).
@@ -345,7 +350,7 @@ test('completeLogin establishes a session for a matching pilot user (MFA skipped
     fetchImpl: tokenFetch({ idToken })
   })
 
-  const result = await provider2.completeLogin({ state, code: 'auth-code' })
+  const result = await provider2.completeLogin({ state, code: 'auth-code', bindingToken })
   assert.equal(result.session.token, 'session-token')
   assert.equal(result.email, 'advisor@pilotfirm.test')
   assert.equal(sessions.length, 1)
@@ -358,12 +363,12 @@ test('completeLogin establishes a session for a matching pilot user (MFA skipped
 test('completeLogin refuses an unknown email (no auto-provisioning)', async () => {
   const storage = createMemoryStateStore()
   const provider = buildProvider({ storage, fetchImpl: tokenFetch(), getUserByEmail: () => null })
-  const { state } = await provider.startLogin()
+  const { state, bindingToken } = await provider.startLogin()
   const nonce = storage.rows.get(state).nonce
   const idToken = signIdToken({ claims: baseClaims({ nonce }) })
   const provider2 = buildProvider({ storage, fetchImpl: tokenFetch({ idToken }), getUserByEmail: () => null })
   await assert.rejects(
-    () => provider2.completeLogin({ state, code: 'auth-code' }),
+    () => provider2.completeLogin({ state, code: 'auth-code', bindingToken }),
     (err) => err.code === 'oidc_no_account'
   )
 })
@@ -372,16 +377,48 @@ test('completeLogin rejects a replayed (already-used) state', async () => {
   const storage = createMemoryStateStore()
   const user = { id: 'user-1', firmId: 'firm-1', email: 'advisor@pilotfirm.test' }
   const provider = buildProvider({ storage, fetchImpl: tokenFetch(), getUserByEmail: () => user })
-  const { state } = await provider.startLogin()
+  const { state, bindingToken } = await provider.startLogin()
   const nonce = storage.rows.get(state).nonce
   const idToken = signIdToken({ claims: baseClaims({ nonce }) })
   const provider2 = buildProvider({ storage, fetchImpl: tokenFetch({ idToken }), getUserByEmail: () => user })
 
-  await provider2.completeLogin({ state, code: 'auth-code' }) // first use consumes it
+  await provider2.completeLogin({ state, code: 'auth-code', bindingToken }) // first use consumes it
   await assert.rejects(
-    () => provider2.completeLogin({ state, code: 'auth-code' }),
+    () => provider2.completeLogin({ state, code: 'auth-code', bindingToken }),
     (err) => err.code === 'oidc_state_invalid'
   )
+})
+
+test('completeLogin rejects a callback that is missing the browser-binding cookie', async () => {
+  const storage = createMemoryStateStore()
+  const user = { id: 'user-1', firmId: 'firm-1', email: 'advisor@pilotfirm.test' }
+  const provider = buildProvider({ storage, fetchImpl: tokenFetch(), getUserByEmail: () => user })
+  const { state } = await provider.startLogin()
+  const nonce = storage.rows.get(state).nonce
+  const idToken = signIdToken({ claims: baseClaims({ nonce }) })
+  const provider2 = buildProvider({ storage, fetchImpl: tokenFetch({ idToken }), getUserByEmail: () => user })
+  // No bindingToken supplied (attacker replaying `state` in a different browser).
+  await assert.rejects(
+    () => provider2.completeLogin({ state, code: 'auth-code' }),
+    (err) => err.code === 'oidc_binding_invalid'
+  )
+  // The state must NOT have been consumed by the rejected attempt.
+  assert.equal(storage.rows.get(state).usedAt, null)
+})
+
+test('completeLogin rejects a callback whose binding token does not match', async () => {
+  const storage = createMemoryStateStore()
+  const user = { id: 'user-1', firmId: 'firm-1', email: 'advisor@pilotfirm.test' }
+  const provider = buildProvider({ storage, fetchImpl: tokenFetch(), getUserByEmail: () => user })
+  const { state } = await provider.startLogin()
+  const nonce = storage.rows.get(state).nonce
+  const idToken = signIdToken({ claims: baseClaims({ nonce }) })
+  const provider2 = buildProvider({ storage, fetchImpl: tokenFetch({ idToken }), getUserByEmail: () => user })
+  await assert.rejects(
+    () => provider2.completeLogin({ state, code: 'auth-code', bindingToken: 'not-the-real-binding-token' }),
+    (err) => err.code === 'oidc_binding_invalid'
+  )
+  assert.equal(storage.rows.get(state).usedAt, null)
 })
 
 test('completeLogin rejects an expired state', async () => {
