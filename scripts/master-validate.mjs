@@ -20,6 +20,7 @@ function shouldIncludeMergeParityStep() {
 const baseGateStepDefinitions = {
   'Static syntax checks': { command: 'npm', args: ['run', 'check:syntax'], evidenceFile: null },
   'Conflict marker guard': { command: 'npm', args: ['run', 'check:conflicts'], evidenceFile: null },
+  'Unit tests': { command: 'npm', args: ['run', 'test:unit'], evidenceFile: null },
   'Web build verification': { command: 'npm', args: ['run', 'web:build'], evidenceFile: null },
   'API contract tests': {
     command: 'npm',
@@ -69,6 +70,7 @@ const baseGateStepDefinitions = {
 const BASE_GATE_ORDER = Object.freeze([
   'Static syntax checks',
   'Conflict marker guard',
+  'Unit tests',
   'Web build verification',
   'API contract tests',
   'Negative-path RBAC checks',

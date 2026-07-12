@@ -82,11 +82,12 @@ test('legacy state without stage config migrates to default stage definitions', 
   if (!requireStageConfigApi(store, t)) return
 
   const advisor = createAdvisor(store)
-  const stages = store.listPipelineStages(advisor)
+  // listPipelineStages returns { stages: [...] } now, not a bare array.
+  const { stages } = store.listPipelineStages(advisor)
 
   assert.ok(Array.isArray(stages))
   assert.ok(stages.length > 0)
-  assert.equal(stages[0].key || stages[0].id || stages[0].stage, 'discovery')
+  assert.equal(stages[0].key, 'discovery')
 })
 
 test('firms maintain isolated stage definitions', async (t) => {
@@ -96,12 +97,14 @@ test('firms maintain isolated stage definitions', async (t) => {
   const alpha = createAdvisor(store, 'Alpha Advisors')
   const beta = createAdvisor(store, 'Beta Advisors')
 
-  const created = store.createPipelineStage(alpha, { key: 'estate_planning', label: 'Estate Planning', orderIndex: 3 })
-  const alphaStages = store.listPipelineStages(alpha)
-  const betaStages = store.listPipelineStages(beta)
+  // createPipelineStage takes { key, label } (snake_case key, no orderIndex)
+  // and returns the created stage record.
+  const created = store.createPipelineStage(alpha, { key: 'estate_planning', label: 'Estate Planning' })
+  const { stages: alphaStages } = store.listPipelineStages(alpha)
+  const { stages: betaStages } = store.listPipelineStages(beta)
 
-  assert.ok(alphaStages.some((stage) => (stage.key || stage.id || stage.stage) === (created.key || created.id || created.stage)))
-  assert.ok(!betaStages.some((stage) => (stage.key || stage.id || stage.stage) === (created.key || created.id || created.stage)))
+  assert.ok(alphaStages.some((stage) => stage.key === created.key))
+  assert.ok(!betaStages.some((stage) => stage.key === created.key))
 })
 
 test('invalid stage assignment and stage reorder requests are rejected', async (t) => {
@@ -120,8 +123,10 @@ test('invalid stage assignment and stage reorder requests are rejected', async (
     store.moveProfileStage(advisor, profile.id, '__missing_stage__')
   })
 
+  // reorderPipelineStages requires { stageIds } covering every stage id for the
+  // firm exactly once; a bogus/partial id list must be rejected.
   assert.throws(() => {
-    store.reorderPipelineStages(advisor, { stageOrder: ['__missing_stage__'] })
+    store.reorderPipelineStages(advisor, { stageIds: ['__missing_stage__'] })
   })
 })
 
@@ -133,22 +138,28 @@ test('reorder normalization works for non-default custom stage sequences', async
   const customA = store.createPipelineStage(advisor, { key: 'estate_planning', label: 'Estate Planning' })
   const customB = store.createPipelineStage(advisor, { key: 'tax_review', label: 'Tax Review' })
 
-  store.reorderPipelineStages(advisor, {
-    stageOrder: [
-      customB.key || customB.id || customB.stage,
-      'discovery',
-      customA.key || customA.id || customA.stage,
-      'analysis'
-    ]
-  })
+  // reorderPipelineStages consumes stage ids (not keys) and must list every
+  // stage id for the firm exactly once. Build the desired prefix ordering and
+  // append the remaining stage ids in their current order.
+  const { stages: before } = store.listPipelineStages(advisor)
+  const idByKey = new Map(before.map((stage) => [stage.key, stage.id]))
+  const expectedPrefix = [customB.key, 'discovery', customA.key, 'analysis']
+  const prefixIds = expectedPrefix.map((key) => idByKey.get(key))
+  const remainingIds = before.map((stage) => stage.id).filter((id) => !prefixIds.includes(id))
 
-  const reordered = store.listPipelineStages(advisor)
-  const keys = reordered.map((stage) => stage.key || stage.id || stage.stage)
-  const expectedPrefix = [customB.key || customB.id || customB.stage, 'discovery', customA.key || customA.id || customA.stage, 'analysis']
+  store.reorderPipelineStages(advisor, { stageIds: [...prefixIds, ...remainingIds] })
+
+  const { stages: reordered } = store.listPipelineStages(advisor)
+  const keys = reordered.map((stage) => stage.key)
 
   assert.deepEqual(keys.slice(0, expectedPrefix.length), expectedPrefix)
-  const orderValues = reordered.map((stage) => Number(stage.orderIndex || stage.position || stage.rank || 0)).filter((value) => Number.isFinite(value) && value > 0)
+  const orderValues = reordered.map((stage) => stage.order)
   assert.deepEqual(orderValues, [...orderValues].sort((a, b) => a - b))
+  // Order values are normalized to a contiguous 1..N sequence after reorder.
+  assert.deepEqual(
+    orderValues,
+    Array.from({ length: reordered.length }, (_, index) => index + 1)
+  )
 })
 
 test('pipeline + stage config flow: create/deactivate/reorder stages then move cards', async (t) => {
@@ -166,17 +177,22 @@ test('pipeline + stage config flow: create/deactivate/reorder stages then move c
     stage: 'discovery'
   })
 
-  store.reorderPipelineStages(advisor, {
-    stageOrder: [planning.key || planning.id || planning.stage, 'discovery', review.key || review.id || review.stage, 'analysis']
-  })
+  // Reorder via stage ids covering every stage exactly once (prefix + rest).
+  const { stages: before } = store.listPipelineStages(advisor)
+  const idByKey = new Map(before.map((stage) => [stage.key, stage.id]))
+  const prefixIds = [planning.key, 'discovery', review.key, 'analysis'].map((key) => idByKey.get(key))
+  const remainingIds = before.map((stage) => stage.id).filter((id) => !prefixIds.includes(id))
+  store.reorderPipelineStages(advisor, { stageIds: [...prefixIds, ...remainingIds] })
 
-  const moved = store.moveProfileStage(advisor, card.id, planning.key || planning.id || planning.stage)
-  assert.equal(moved.stage || moved.moved?.stage, planning.key || planning.id || planning.stage)
+  // moveProfileStage takes a stage KEY; the result carries the moved profile.
+  const moved = store.moveProfileStage(advisor, card.id, planning.key)
+  assert.equal(moved.stage || moved.moved?.stage, planning.key)
 
-  store.deactivatePipelineStage(advisor, review.key || review.id || review.stage)
+  // deactivatePipelineStage takes a stage ID (not a key).
+  store.deactivatePipelineStage(advisor, review.id)
 
   assert.throws(() => {
-    store.moveProfileStage(advisor, card.id, review.key || review.id || review.stage)
+    store.moveProfileStage(advisor, card.id, review.key)
   })
 
   const board = store.getBoard(advisor)
