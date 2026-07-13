@@ -175,11 +175,19 @@ export function Component() {
   const missingMappingFields = requiredMappingFields.filter((name) => !mappedPdfFields.has(name))
   const mappingReadinessStatus = missingMappingFields.length ? 'missing required mappings' : 'complete mappings'
   // A field is unmapped when it has no row, an empty sourcePath, or a sourcePath
-  // that just echoes its own field key (the auto-build placeholder).
+  // that just echoes its own field key (the auto-build placeholder). The
+  // placeholder key is the snake_case form key auto-build generates
+  // (defaultSourcePathForField on the API side), so mirror that normalization.
   const unmappedFieldCount = requiredMappingFields.filter((name) => {
     const row = mappings.find((entry) => String(entry.pdfField || '').trim() === name)
     const sourcePath = String(row?.sourcePath || '').trim()
-    return !row || !sourcePath || sourcePath === name
+    const placeholderKey = name
+      .trim()
+      .replace(/([a-z])([A-Z])/g, '$1_$2')
+      .replace(/[^a-zA-Z0-9]+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .toLowerCase()
+    return !row || !sourcePath || sourcePath === name || sourcePath === placeholderKey
   }).length
 
   async function handleSaveMappings() {

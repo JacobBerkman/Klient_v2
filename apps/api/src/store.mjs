@@ -2077,6 +2077,11 @@ export function createStore({
       const formSchema = validateFormDefinitionSchema(input.formSchema || { sections: input.sections || [] }, {
         contextPath: input.formSchema ? '/formSchema' : '/sections'
       }).schema
+      // The v2 create path must not silently drop caller-provided mappings,
+      // extracted fields, or document metadata (fileName) — the compatibility
+      // service forwards them from the manual create-template flow.
+      const blueprint = input.blueprint || { sections: [] }
+      const mappings = Array.isArray(input.mappings) ? input.mappings : []
       const template = normalizeTemplateAggregate(
         {
           id: randomUUID(),
@@ -2084,9 +2089,11 @@ export function createStore({
           kind,
           name: input.name,
           description: input.description || '',
+          documentMetadata: input.documentMetadata || undefined,
           formSchema,
-          blueprint: { sections: [] },
-          mappings: [],
+          blueprint,
+          mappings,
+          extractedFields: Array.isArray(input.extractedFields) ? input.extractedFields : [],
           generatedFromDocumentTemplateId: input.generatedFromDocumentTemplateId || null,
           generation: input.generation || null,
           publishState: 'draft',
@@ -2095,8 +2102,8 @@ export function createStore({
               version: 1,
               event: 'created',
               formSchema,
-              blueprint: { sections: [] },
-              mappings: [],
+              blueprint,
+              mappings,
               generation: input.generation || null,
               publishState: 'draft',
               createdAt,

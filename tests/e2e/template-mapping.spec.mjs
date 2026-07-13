@@ -3,7 +3,7 @@ import { apiFromPage, registerAdminViaApi, signInFromUi, test, expect } from './
 // Not @release-blocking: exercises the source-path picker + auto-map flow that
 // depends on GET /api/templates/:id/mapping-paths and
 // POST /api/templates/:id/mappings/auto-map (merged alongside this UI).
-test('template mapping picker shows grouped paths, saves a selection, and auto-map surfaces a toast', async ({
+test('template mapping picker shows grouped paths, auto-map applies heuristics, and manual picks save', async ({
   page,
   seededRunId
 }) => {
@@ -11,7 +11,10 @@ test('template mapping picker shows grouped paths, saves a selection, and auto-m
   const auth = { csrfToken, sessionCookie }
   await signInFromUi(page, email, password)
 
-  // Seed a document template through the manual create endpoint (no PDF needed).
+  // Seed a document template through the manual create endpoint (no PDF
+  // needed). Both rows carry the snake_case auto-build placeholder key, which
+  // the UI counts as unmapped. householdName matches the auto-map heuristics;
+  // misc_reference_code deliberately matches nothing.
   const templateResponse = await apiFromPage(
     page,
     'POST',
@@ -19,25 +22,41 @@ test('template mapping picker shows grouped paths, saves a selection, and auto-m
     {
       name: `Mapping Picker Template ${seededRunId}`,
       fileName: 'mapping-picker.pdf',
-      extractedFields: ['clientName', 'householdName'],
+      extractedFields: ['householdName', 'misc_reference_code'],
       mappings: [
-        { pdfField: 'clientName', fieldLabel: 'Client name', sourcePath: '', required: true },
-        { pdfField: 'householdName', fieldLabel: 'Household name', sourcePath: '', required: false }
+        { pdfField: 'householdName', fieldLabel: 'Household name', sourcePath: 'household_name', required: false },
+        {
+          pdfField: 'misc_reference_code',
+          fieldLabel: 'Reference code',
+          sourcePath: 'misc_reference_code',
+          required: false
+        }
       ]
     },
     auth
   )
-  expect(templateResponse.status).toBe(201)
+  expect(templateResponse.status, JSON.stringify(templateResponse.body)).toBe(201)
   const documentTemplate = templateResponse.body
 
   await page.goto(`/templates/${documentTemplate.id}`)
   await expect(page.getByRole('heading', { name: 'Mappings' })).toBeVisible()
 
-  // Both seeded fields start unmapped, so the badge reports them.
+  // Both rows still echo their auto-build placeholder keys, so both count as
+  // unmapped.
   await expect(page.getByTestId('unmapped-count-badge')).toHaveText('2 fields unmapped')
 
-  // The picker opens with labeled group sections.
-  const picker = page.getByRole('combobox', { name: 'Source path for householdName' })
+  // Auto-map applies the household heuristic to householdName, leaves the
+  // reference code untouched, and surfaces a toast in the notifications live
+  // region (same pattern as theme-and-toasts.spec.mjs).
+  await page.getByTestId('auto-map-button').click()
+  const notifications = page.getByRole('region', { name: 'Notifications' })
+  const toast = notifications.getByRole('status').filter({ hasText: 'Auto-mapped 1 of 2 fields' })
+  await expect(toast).toBeVisible()
+  await expect(page.getByRole('combobox', { name: 'Source path for householdName' })).toHaveValue('household.name')
+  await expect(page.getByTestId('unmapped-count-badge')).toHaveText('1 field unmapped')
+
+  // The picker opens with labeled group sections for the remaining field.
+  const picker = page.getByRole('combobox', { name: 'Source path for misc_reference_code' })
   await picker.click()
   const listbox = page.getByTestId('source-path-listbox')
   await expect(listbox).toBeVisible()
@@ -52,15 +71,8 @@ test('template mapping picker shows grouped paths, saves a selection, and auto-m
   await expect(listbox).toHaveCount(0)
   await expect(picker).toHaveValue(String(selectedPath))
 
-  // Save mappings succeeds with the picked path.
+  // Save mappings succeeds with the picked path and everything reads mapped.
   await page.getByRole('button', { name: 'Save mappings' }).click()
   await expect(page.getByText('Mappings saved.')).toBeVisible()
-  await expect(page.getByTestId('unmapped-count-badge')).toHaveText('1 field unmapped')
-
-  // Auto-map applies the returned template and surfaces a toast in the
-  // notifications live region (same pattern as theme-and-toasts.spec.mjs).
-  await page.getByTestId('auto-map-button').click()
-  const notifications = page.getByRole('region', { name: 'Notifications' })
-  const toast = notifications.getByRole('status').filter({ hasText: /Auto-mapped \d+ of \d+ fields/ })
-  await expect(toast).toBeVisible()
+  await expect(page.getByTestId('unmapped-count-badge')).toHaveText('all fields mapped')
 })

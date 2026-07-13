@@ -96,11 +96,22 @@ export function SourcePathPicker({
     const input = inputRef.current
     if (!input) return
     const rect = input.getBoundingClientRect()
+    // Clamp within the viewport: prefer opening below the input, but flip
+    // above when the space below cannot fit the list, and cap the height to
+    // the available space so every option stays reachable (the listbox has
+    // overflow-y: auto).
+    const viewportHeight = window.innerHeight
+    const spaceBelow = viewportHeight - rect.bottom - 8
+    const spaceAbove = rect.top - 8
+    const preferredMaxHeight = 320 // matches the 20rem CSS cap
+    const openAbove = spaceBelow < 160 && spaceAbove > spaceBelow
+    const maxHeight = Math.min(preferredMaxHeight, Math.max(120, openAbove ? spaceAbove : spaceBelow))
     setPopoverStyle({
       position: 'fixed',
-      top: rect.bottom + 4,
+      ...(openAbove ? { bottom: viewportHeight - rect.top + 4 } : { top: rect.bottom + 4 }),
       left: rect.left,
-      minWidth: rect.width
+      minWidth: rect.width,
+      maxHeight
     })
   }, [])
 
