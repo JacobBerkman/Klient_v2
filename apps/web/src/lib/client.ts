@@ -53,8 +53,7 @@ export const routes = {
   profileStage: (profileId: string) => joinPath('/api/profiles', profileId, 'stage'),
   profileNotes: (profileId: string) => joinPath('/api/profiles', profileId, 'notes'),
   profileMeetings: (profileId: string) => joinPath('/api/profiles', profileId, 'meetings'),
-  profileMeeting: (profileId: string, meetingId: string) =>
-    joinPath('/api/profiles', profileId, 'meetings', meetingId),
+  profileMeeting: (profileId: string, meetingId: string) => joinPath('/api/profiles', profileId, 'meetings', meetingId),
   profileTags: (profileId: string) => joinPath('/api/profiles', profileId, 'tags'),
   profileTag: (profileId: string, tag: string) => joinPath('/api/profiles', profileId, 'tags', tag),
   profileSensitive: (profileId: string) => joinPath('/api/profiles', profileId, 'sensitive'),
@@ -97,6 +96,8 @@ export const routes = {
   documentTemplateCompare: (templateId: string, query: Record<string, QueryValue>) =>
     withQuery(joinPath('/api/templates', templateId, 'compare'), query),
   documentTemplateRevert: (templateId: string) => joinPath('/api/templates', templateId, 'revert'),
+  templateMappingPaths: (templateId: string) => joinPath('/api/templates', templateId, 'mapping-paths'),
+  templateAutoMap: (templateId: string) => joinPath('/api/templates', templateId, 'mappings', 'auto-map'),
   exports: (query: Record<string, QueryValue> = {}) => withQuery('/api/exports', query),
   exportRetry: (exportId: string) => joinPath('/api/exports', exportId, 'retry'),
   exportDownload: (exportId: string) => joinPath('/api/exports', exportId, 'download'),

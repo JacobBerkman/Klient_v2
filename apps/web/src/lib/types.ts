@@ -570,6 +570,32 @@ export interface DocumentTemplate {
   updatedAt?: string
 }
 
+// GET /api/templates/:templateId/mapping-paths — grouped catalog of data source
+// paths a PDF field can be mapped to. Group keys are fixed by the API contract.
+export interface TemplateMappingPathOption {
+  path: string
+  label: string
+  type: string
+}
+
+export interface TemplateMappingPathGroup {
+  key: 'profile' | 'spouse' | 'household' | 'custom' | 'form'
+  label: string
+  paths: TemplateMappingPathOption[]
+}
+
+export interface TemplateMappingPathsPayload {
+  groups: TemplateMappingPathGroup[]
+}
+
+// POST /api/templates/:templateId/mappings/auto-map — server-side heuristic mapping.
+// `template` is the same template payload shape the template detail responses use.
+export interface TemplateAutoMapPayload {
+  applied: number
+  total: number
+  template: DocumentTemplate
+}
+
 export interface ExportJob {
   id: string
   clientId?: string | null

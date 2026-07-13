@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { RouterProvider } from 'react-router-dom'
 import { router } from './app/router'
 import { AuthProvider } from './app/auth'
+import { ToastProvider } from './components/toast'
 // Self-hosted brand fonts (bundled locally by @fontsource — no runtime CDN).
 // Cabin for headings, Roboto for body. Latin subsets only to keep the bundle lean.
 import '@fontsource/cabin/latin-500.css'
@@ -16,7 +17,9 @@ import './styles.css'
 ReactDOM.createRoot(document.getElementById('root') as HTMLElement).render(
   <React.StrictMode>
     <AuthProvider>
-      <RouterProvider router={router} />
+      <ToastProvider>
+        <RouterProvider router={router} />
+      </ToastProvider>
     </AuthProvider>
   </React.StrictMode>
 )
