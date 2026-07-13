@@ -220,11 +220,82 @@ test('production Node server contract supports auth and profile workflows', asyn
   assert.equal(historyResponse.status, 200)
   assert.equal(history.at(-1).toStage, 'analysis')
 
+  // Backward compat: WITHOUT limit/cursor query params the profiles list is
+  // still a bare array — pagination is strictly opt-in.
   const { response: profilesResponse, data: profiles } = await jsonFetch(port, '/api/profiles?search=Contract', {
     headers: { Cookie: adminCookie }
   })
   assert.equal(profilesResponse.status, 200)
+  assert.ok(Array.isArray(profiles))
   assert.ok(profiles.some((entry) => entry.id === profile.id))
+
+  // Opt-in pagination: a limit param switches to the { items, nextCursor }
+  // envelope on profiles, households, form templates, and form submissions.
+  const { response: pagedProfilesResponse, data: pagedProfiles } = await jsonFetch(
+    port,
+    '/api/profiles?search=Contract&limit=1',
+    { headers: { Cookie: adminCookie } }
+  )
+  assert.equal(pagedProfilesResponse.status, 200)
+  assert.ok(!Array.isArray(pagedProfiles))
+  assert.ok(Array.isArray(pagedProfiles.items))
+  assert.ok(Object.hasOwn(pagedProfiles, 'nextCursor'))
+  assert.ok(pagedProfiles.items.some((entry) => entry.id === profile.id))
+
+  const { response: legacyHouseholdsResponse, data: legacyHouseholds } = await jsonFetch(port, '/api/households', {
+    headers: { Cookie: adminCookie }
+  })
+  assert.equal(legacyHouseholdsResponse.status, 200)
+  assert.ok(Array.isArray(legacyHouseholds), 'no-param households response stays a bare array')
+  const { response: pagedHouseholdsResponse, data: pagedHouseholds } = await jsonFetch(
+    port,
+    '/api/households?limit=1',
+    { headers: { Cookie: adminCookie } }
+  )
+  assert.equal(pagedHouseholdsResponse.status, 200)
+  assert.ok(Array.isArray(pagedHouseholds.items))
+  assert.ok(Object.hasOwn(pagedHouseholds, 'nextCursor'))
+
+  const { response: legacyFormTemplatesResponse, data: legacyFormTemplates } = await jsonFetch(
+    port,
+    '/api/forms/templates',
+    { headers: { Cookie: adminCookie } }
+  )
+  assert.equal(legacyFormTemplatesResponse.status, 200)
+  assert.ok(Array.isArray(legacyFormTemplates), 'no-param form templates response stays a bare array')
+  const { response: pagedFormTemplatesResponse, data: pagedFormTemplates } = await jsonFetch(
+    port,
+    '/api/forms/templates?limit=1',
+    { headers: { Cookie: adminCookie } }
+  )
+  assert.equal(pagedFormTemplatesResponse.status, 200)
+  assert.ok(Array.isArray(pagedFormTemplates.items))
+  assert.ok(Object.hasOwn(pagedFormTemplates, 'nextCursor'))
+
+  const { response: legacySubmissionsResponse, data: legacySubmissions } = await jsonFetch(
+    port,
+    '/api/forms/submissions',
+    { headers: { Cookie: adminCookie } }
+  )
+  assert.equal(legacySubmissionsResponse.status, 200)
+  assert.ok(Array.isArray(legacySubmissions), 'no-param submissions response stays a bare array')
+  const { response: pagedSubmissionsResponse, data: pagedSubmissions } = await jsonFetch(
+    port,
+    '/api/forms/submissions?limit=1',
+    { headers: { Cookie: adminCookie } }
+  )
+  assert.equal(pagedSubmissionsResponse.status, 200)
+  assert.ok(Array.isArray(pagedSubmissions.items))
+  assert.ok(Object.hasOwn(pagedSubmissions, 'nextCursor'))
+
+  // Global search finds the created profile and stays firm-scoped via the
+  // session; the client role is excluded by policy (asserted in unit tests).
+  const { response: searchResponse, data: searchPayload } = await jsonFetch(port, '/api/search?q=Contract', {
+    headers: { Cookie: adminCookie }
+  })
+  assert.equal(searchResponse.status, 200)
+  assert.ok(Array.isArray(searchPayload.results))
+  assert.ok(searchPayload.results.some((entry) => entry.type === 'profile' && entry.id === profile.id))
 
   const { response: auditResponse, data: audit } = await jsonFetch(port, '/api/audit', {
     headers: { Cookie: adminCookie }

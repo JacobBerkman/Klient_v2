@@ -1,5 +1,27 @@
 export type Role = 'admin' | 'advisor' | 'readonly' | 'client' | 'anonymous'
 
+// Opt-in keyset pagination envelope returned by list endpoints when a
+// limit/cursor query param is present. nextCursor is an opaque token; null
+// means the page is the tail.
+export interface PageEnvelope<T> {
+  items: T[]
+  nextCursor: string | null
+}
+
+export type GlobalSearchResultType = 'profile' | 'household' | 'template' | 'submission'
+
+export interface GlobalSearchResult {
+  type: GlobalSearchResultType
+  id: string
+  title: string
+  subtitle?: string
+}
+
+export interface GlobalSearchPayload {
+  query: string
+  results: GlobalSearchResult[]
+}
+
 export interface Firm {
   id: string
   name?: string | null

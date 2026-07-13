@@ -35,10 +35,11 @@ test('stage management UI creates, reorders, renames, and deactivates pipeline s
   await expect(page.getByText('Stage updated.')).toBeVisible()
   await expect(createdRow).toContainText('Priority Review Plus')
 
-  // Deactivate requires an explicit confirmation that explains the behavior.
+  // Deactivate requires an explicit confirmation dialog that explains the behavior.
   await page.getByRole('button', { name: 'Deactivate Discovery' }).click()
-  await expect(page.getByText(/Prospects already in this stage keep it/)).toBeVisible()
-  await page.getByRole('button', { name: 'Confirm deactivate Discovery' }).click()
+  const deactivateDialog = page.getByRole('dialog')
+  await expect(deactivateDialog.getByText(/Prospects already in this stage keep it/)).toBeVisible()
+  await deactivateDialog.getByRole('button', { name: 'Confirm deactivate Discovery' }).click()
   await expect(page.getByText('Stage "Discovery" deactivated.')).toBeVisible()
   await expect(page.getByTestId('stage-row-discovery').getByText('Inactive')).toBeVisible()
 

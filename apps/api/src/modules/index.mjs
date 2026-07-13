@@ -15,6 +15,7 @@ import { createAnalyticsService } from './analytics/service.mjs'
 import { createNotificationsService } from './notifications/service.mjs'
 import { createEventsService } from './events/service.mjs'
 import { createMeetingsService } from './meetings/service.mjs'
+import { createSearchService } from './search/service.mjs'
 import {
   StoreProfileRepository,
   StoreTemplateRepository,
@@ -49,6 +50,7 @@ export function createModules({ store, reads }) {
     analytics: createAnalyticsService({ store, reads, policy }),
     notifications: createNotificationsService({ policy }),
     events: createEventsService({ store, policy }),
-    meetings: createMeetingsService({ store, policy })
+    meetings: createMeetingsService({ store, policy }),
+    search: createSearchService({ store, policy })
   }
 }

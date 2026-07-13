@@ -6,9 +6,9 @@
 // (profiles:read/write) as defense in depth.
 export function createEventsService({ store, policy }) {
   return {
-    listEvents(user, { includeArchived = false } = {}) {
+    listEvents(user, { includeArchived = false, limit } = {}) {
       policy.requireGuard(user, 'canReadProfiles')
-      return store.listEvents(user, { includeArchived })
+      return store.listEvents(user, { includeArchived, limit })
     },
     createEvent(user, input) {
       policy.requireGuard(user, 'canWriteProfiles')

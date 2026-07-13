@@ -57,7 +57,10 @@ test('template mapping picker shows grouped paths, saves a selection, and auto-m
   await expect(page.getByText('Mappings saved.')).toBeVisible()
   await expect(page.getByTestId('unmapped-count-badge')).toHaveText('1 field unmapped')
 
-  // Auto-map applies the returned template and surfaces a toast.
+  // Auto-map applies the returned template and surfaces a toast in the
+  // notifications live region (same pattern as theme-and-toasts.spec.mjs).
   await page.getByTestId('auto-map-button').click()
-  await expect(page.getByTestId('toast')).toContainText(/Auto-mapped \d+ of \d+ fields/)
+  const notifications = page.getByRole('region', { name: 'Notifications' })
+  const toast = notifications.getByRole('status').filter({ hasText: /Auto-mapped \d+ of \d+ fields/ })
+  await expect(toast).toBeVisible()
 })

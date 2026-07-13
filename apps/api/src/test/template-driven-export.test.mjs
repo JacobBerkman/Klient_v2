@@ -95,6 +95,10 @@ test('template-driven PDF and XLSX exports persist completed artifacts and downl
   assert.equal(processed.failed, 0)
 
   const jobs = store.listExports(user)
+  // Exports list is clamped: an explicit limit is honored and oversized or
+  // invalid limits fall back to the ≤200 cap instead of unbounded rows.
+  assert.equal(store.listExports(user, { limit: 1 }).length, 1, 'exports list honors the clamped limit parameter')
+  assert.equal(store.listExports(user, { limit: 9_999 }).length, jobs.length, 'oversized limit is clamped')
   const completedPdf = jobs.find((job) => job.id === pdfJob.id)
   const completedXlsx = jobs.find((job) => job.id === xlsxJob.id)
   assert.equal(completedPdf.status, 'completed')

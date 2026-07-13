@@ -3,7 +3,10 @@ import { useEffect, useState, type ReactNode } from 'react'
 import { api, routes } from '../lib/client'
 import type { DashboardPayload } from '../lib/types'
 import { homePathForUser } from '../lib/permissions'
+import { useTheme, type ThemePreference } from '../lib/theme'
 import { NotificationBell } from '../components/NotificationBell'
+import { GlobalSearch } from '../components/GlobalSearch'
+import { SegmentedControl } from '../components/ui'
 import { useAuth } from './auth'
 
 export interface RouteHandle {
@@ -42,6 +45,24 @@ function resolveHandleValue(
 ) {
   if (!handleValue) return ''
   return typeof handleValue === 'function' ? handleValue(params) : handleValue
+}
+
+const THEME_OPTIONS: Array<{ label: string; value: ThemePreference }> = [
+  { label: 'Light', value: 'light' },
+  { label: 'System', value: 'system' },
+  { label: 'Dark', value: 'dark' }
+]
+
+function ThemeControl() {
+  const { preference, setPreference } = useTheme()
+  return (
+    <SegmentedControl
+      label="Theme"
+      options={THEME_OPTIONS}
+      value={preference}
+      onChange={(value) => setPreference(value as ThemePreference)}
+    />
+  )
 }
 
 function FullPageLoading({ label }: { label: string }) {
@@ -156,6 +177,8 @@ export function AppShell() {
             <strong>{user ? `${user.firstName} ${user.lastName}` : 'Session'}</strong>
           </div>
           <div className="topbar-actions">
+            <GlobalSearch />
+            <ThemeControl />
             <NotificationBell />
             <span className="role-pill" aria-label="Current role">
               {user?.role || 'anonymous'}

@@ -18,6 +18,8 @@ import type {
   TemplateVersionComparePayload
 } from '../lib/types'
 import { useAuth } from '../app/auth'
+import { ConfirmDialog } from '../components/ConfirmDialog'
+import { useToast } from '../components/toast'
 import {
   Badge,
   Card,
@@ -31,7 +33,6 @@ import {
   StatusBadge
 } from '../components/ui'
 import { SourcePathPicker } from '../components/SourcePathPicker'
-import { useToast } from '../components/toast'
 
 export const handle = {
   title: ({ templateId }: Record<string, string | undefined>) => `Template ${templateId || ''}`.trim(),
@@ -91,7 +92,7 @@ function validationPreviewFromError(error: unknown): TemplatePreviewPayload | nu
 export function Component() {
   const { templateId = '' } = useParams()
   const { user } = useAuth()
-  const { showToast } = useToast()
+  const toast = useToast()
   const [refreshKey, setRefreshKey] = useState(0)
   const [statusMessage, setStatusMessage] = useState('')
   const [mappings, setMappings] = useState<MappingRow[]>([])
@@ -101,6 +102,8 @@ export function Component() {
   const [publishForm, setPublishForm] = useState({ versionBump: '', changelog: '' })
   const [compareSelection, setCompareSelection] = useState({ baseVersion: '', targetVersion: '' })
   const [revertSelection, setRevertSelection] = useState({ targetVersion: '', changelog: '' })
+  const [confirmingRevert, setConfirmingRevert] = useState(false)
+  const [reverting, setReverting] = useState(false)
   // Grouped source-path catalog for the mapping picker; fetched once per template.
   // null = still loading or unavailable (picker falls back to free-text entry).
   const [mappingPathGroups, setMappingPathGroups] = useState<TemplateMappingPathGroup[] | null>(null)
@@ -209,9 +212,9 @@ export function Component() {
     try {
       const payload = await api.post<TemplateAutoMapPayload>(routes.templateAutoMap(template.id), {})
       setTemplateOverride(payload.template)
-      showToast(`Auto-mapped ${payload.applied} of ${payload.total} fields`, 'success')
+      toast.success(`Auto-mapped ${payload.applied} of ${payload.total} fields`)
     } catch (autoMapError) {
-      showToast(autoMapError instanceof Error ? autoMapError.message : 'Auto-map failed.', 'error')
+      toast.error(autoMapError instanceof Error ? autoMapError.message : 'Auto-map failed.')
     } finally {
       setAutoMapping(false)
     }
@@ -240,7 +243,7 @@ export function Component() {
         clientId: selection.clientId || undefined,
         submissionId: selection.submissionId || undefined
       })
-      setStatusMessage('Template published.')
+      toast.success('Template published.')
       refreshTemplateData()
     } catch (publishError) {
       if (publishError instanceof ApiError && publishError.details && typeof publishError.details === 'object') {
@@ -252,7 +255,7 @@ export function Component() {
           })
         }
       }
-      setStatusMessage(publishError instanceof Error ? publishError.message : 'Publish failed.')
+      toast.error(publishError instanceof Error ? publishError.message : 'Publish failed.')
     }
   }
 
@@ -288,19 +291,22 @@ export function Component() {
     }
   }
 
-  async function handleRevert(event: React.FormEvent<HTMLFormElement>) {
-    event.preventDefault()
+  async function handleRevert() {
     if (!template) return
+    setReverting(true)
     try {
       await api.post(routes.documentTemplateRevert(template.id), {
         targetVersion: Number(revertSelection.targetVersion),
         changelog: revertSelection.changelog
       })
       setRevertSelection({ targetVersion: '', changelog: '' })
-      setStatusMessage('Template reverted.')
+      toast.success('Template reverted.')
       refreshTemplateData()
     } catch (revertError) {
-      setStatusMessage(revertError instanceof Error ? revertError.message : 'Revert failed.')
+      toast.error(revertError instanceof Error ? revertError.message : 'Revert failed.')
+    } finally {
+      setConfirmingRevert(false)
+      setReverting(false)
     }
   }
 
@@ -886,7 +892,13 @@ export function Component() {
             </Card>
           ) : null}
 
-          <form className="form-grid" onSubmit={handleRevert}>
+          <form
+            className="form-grid"
+            onSubmit={(event) => {
+              event.preventDefault()
+              setConfirmingRevert(true)
+            }}
+          >
             <label>
               <span>Revert to version</span>
               <select
@@ -917,6 +929,16 @@ export function Component() {
               Revert version
             </button>
           </form>
+          <ConfirmDialog
+            open={confirmingRevert}
+            title={`Revert to version ${revertSelection.targetVersion}?`}
+            description="Reverting replaces the current mappings with the selected version's snapshot and records a new version entry with your changelog."
+            confirmLabel="Confirm revert"
+            tone="danger"
+            busy={reverting}
+            onConfirm={() => void handleRevert()}
+            onCancel={() => setConfirmingRevert(false)}
+          />
 
           {data.transitions.length ? (
             <Card className="section-card inset-card">

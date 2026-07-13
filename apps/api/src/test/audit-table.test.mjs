@@ -137,13 +137,29 @@ test('store: sensitive actions land as canonical events in audit_events; blob st
   const readIndex = events.findIndex((entry) => entry.action === 'sensitive.read' && entry.entityId === created.id)
   assert.ok(readIndex < loginIndex, 'listAudit must return newest events first')
 
+  // The read is clamped: an explicit limit is honored and an oversized or
+  // invalid limit falls back to the ≤200 cap instead of unbounded rows.
+  assert.equal(store.listAudit(user, { limit: 1 }).length, 1, 'requested limit is honored')
+  assert.equal(
+    store.listAudit(user, { limit: 9_999 }).length,
+    events.length,
+    'oversized limit is clamped, never throws'
+  )
+  assert.equal(
+    store.listAudit(user, { limit: 'garbage' }).length,
+    events.length,
+    'invalid limit falls back to the default cap'
+  )
+
   // The blob no longer carries audit events.
   const blob = JSON.parse(readBlobPayload(storage.DB_PATH))
   assert.deepEqual(blob.auditEvents, [], 'app_state blob must serialize an empty auditEvents array')
 
   // Events survive a restart because the table is the source of truth.
   const restarted = storeModule.createStore()
-  const restartedUser = restarted.requireUser(restarted.login({ email: 'admin@demo.test', password: 'ChangeMe123!' }).token)
+  const restartedUser = restarted.requireUser(
+    restarted.login({ email: 'admin@demo.test', password: 'ChangeMe123!' }).token
+  )
   assert.ok(
     restarted
       .listAudit(restartedUser)
@@ -179,8 +195,14 @@ test('store: audit reads are firm-scoped', async () => {
   const eventsA = store.listAudit(userA)
   const eventsB = store.listAudit(userB)
   assert.ok(eventsA.find((entry) => entry.action === 'profile.created' && entry.entityId === profileA.id))
-  assert.ok(eventsA.every((entry) => entry.firmId === userA.firmId), 'firm A reads only firm A events')
-  assert.ok(eventsB.every((entry) => entry.firmId === userB.firmId), 'firm B reads only firm B events')
+  assert.ok(
+    eventsA.every((entry) => entry.firmId === userA.firmId),
+    'firm A reads only firm A events'
+  )
+  assert.ok(
+    eventsB.every((entry) => entry.firmId === userB.firmId),
+    'firm B reads only firm B events'
+  )
   assert.equal(
     eventsB.find((entry) => entry.entityId === profileA.id),
     undefined,
@@ -222,11 +244,7 @@ test('store: failed pipeline transaction does not leak audit rows', async () => 
     store.__clearTestHooks()
   }
 
-  assert.equal(
-    store.countAuditEvents(),
-    countBefore,
-    'a failed pipeline transaction must not insert any audit rows'
-  )
+  assert.equal(store.countAuditEvents(), countBefore, 'a failed pipeline transaction must not insert any audit rows')
   assert.equal(
     store.listAudit(user).find((entry) => entry.action === 'pipeline.stage_changed' && entry.entityId === prospect.id),
     undefined

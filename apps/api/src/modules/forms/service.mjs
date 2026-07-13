@@ -1,4 +1,5 @@
 import { createFirmContext } from '../shared/tenancy.mjs'
+import { decodeCursor, encodeCursor } from '../shared/cursor.mjs'
 
 export function createFormsService({ store, policy, templatesCompatibility = null }) {
   function createFormsError(message, { statusCode = 400, code = 'FORMS_VALIDATION_ERROR', details = null } = {}) {
@@ -232,9 +233,37 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
       policy.requireGuard(user, 'canWriteForms')
       return store.createFormTemplate(createFirmContext(user), input)
     },
+    // Opt-in keyset pagination for the templates list (limit/cursor query
+    // params); legacy bare-array listFormTemplates above stays untouched.
+    listFormTemplatesPage(user, query = {}) {
+      if (templatesCompatibility?.listFormsPage) {
+        return templatesCompatibility.listFormsPage(user, query)
+      }
+      policy.requireGuard(user, 'canReadForms')
+      const requestedLimit = Number.parseInt(query.limit, 10)
+      const { items, nextCursor } = store.listFormTemplatesPage(createFirmContext(user), {
+        search: query.search || '',
+        cursor: decodeCursor(query.cursor),
+        limit: Number.isFinite(requestedLimit) ? requestedLimit : 50
+      })
+      return { items, nextCursor: encodeCursor(nextCursor) }
+    },
     listFormSubmissions(user) {
       policy.requireGuard(user, 'canReadForms')
       return store.listFormSubmissions(createFirmContext(user))
+    },
+    // Opt-in keyset pagination for the submissions list (limit/cursor query
+    // params). Draft collaborator visibility is enforced in SQL by the store,
+    // so pages stay full; legacy bare-array listFormSubmissions is untouched.
+    listFormSubmissionsPage(user, query = {}) {
+      policy.requireGuard(user, 'canReadForms')
+      const requestedLimit = Number.parseInt(query.limit, 10)
+      const { items, nextCursor } = store.listFormSubmissionsPage(createFirmContext(user), {
+        status: query.status || null,
+        cursor: decodeCursor(query.cursor),
+        limit: Number.isFinite(requestedLimit) ? requestedLimit : 50
+      })
+      return { items, nextCursor: encodeCursor(nextCursor) }
     },
     listFormDrafts(user) {
       policy.requireGuard(user, 'canReadForms')
@@ -259,7 +288,8 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
       if (!result?.ok && result?.conflict) {
         throwDraftConflict(result, draftId, {
           code: 'FORMS_DRAFT_LOCK_CONFLICT',
-          fallbackSuggestion: 'Draft is locked by another advisor. Refresh, then retry lock when it expires or force takeover.'
+          fallbackSuggestion:
+            'Draft is locked by another advisor. Refresh, then retry lock when it expires or force takeover.'
         })
       }
       return result

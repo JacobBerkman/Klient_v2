@@ -4,6 +4,23 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Kinetic Klient</title>
+    <script>
+      // Pre-paint theme resolution: apply the stored preference (or the OS
+      // scheme for 'system'/missing/invalid values) before first paint so a
+      // dark-mode session never flashes light. Mirrors src/lib/theme.ts.
+      try {
+        var storedTheme = window.localStorage.getItem('klient-theme')
+        var resolvedTheme =
+          storedTheme === 'dark' || storedTheme === 'light'
+            ? storedTheme
+            : window.matchMedia('(prefers-color-scheme: dark)').matches
+              ? 'dark'
+              : 'light'
+        document.documentElement.dataset.theme = resolvedTheme
+      } catch (error) {
+        document.documentElement.dataset.theme = 'light'
+      }
+    </script>
   </head>
   <body>
     <div id="root"></div>

@@ -18,10 +18,14 @@ import {
   deleteCsrfTokensBySession,
   deleteExpiredCsrfTokens,
   readCsrfToken,
-  upsertCsrfToken
+  upsertCsrfToken,
+  getFirmRow,
+  getUserRow,
+  getProfileRow
 } from './storage.mjs'
 import { createStore } from './store.mjs'
 import { createModules } from './modules/index.mjs'
+import { createMailer } from './mailer/index.mjs'
 import { createKeyProvider } from './pii-crypto.mjs'
 import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 import {
@@ -31,6 +35,7 @@ import {
   readLastSuccessfulReleaseValidationTimestamp,
   summarizeExportQueue
 } from './operability.mjs'
+import { createRateLimiter } from './security/rate-limit.mjs'
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url))
 const distDir = resolve(__dirname, '../../web/dist')
@@ -87,7 +92,32 @@ const securityDiagnostics = {
     rejectedByReason: {},
     rotatedTotal: 0,
     invalidatedTotal: 0
+  },
+  rateLimit: {
+    limitedTotal: 0,
+    limitedByKeyType: {}
   }
+}
+
+// Coarse per-caller request budget for /api/* routes (auth endpoints keep
+// their own durable SQLite lockouts in local-provider.mjs). Health/readiness
+// probes and the CSRF bootstrap are exempt; static assets never match /api/*.
+const RATE_LIMIT_EXEMPT_PATHS = new Set(['/health', '/ready', CSRF_BOOTSTRAP_PATH])
+const rateLimiter = runtime.rateLimit.enabled
+  ? createRateLimiter({
+      maxRequests: runtime.rateLimit.maxRequests,
+      windowSeconds: runtime.rateLimit.windowSeconds
+    })
+  : null
+
+// Keyed by session-cookie hash when a session cookie is present (stable per
+// signed-in caller, never stores the raw token), otherwise by client IP.
+function rateLimitIdentity(req) {
+  const sessionCookie = resolveSessionToken(req)
+  if (sessionCookie) {
+    return { keyType: 'session', key: `session:${createHash('sha256').update(sessionCookie).digest('hex')}` }
+  }
+  return { keyType: 'ip', key: `ip:${getClientIp(req)}` }
 }
 
 function json(res, status, body, headers = {}) {
@@ -716,7 +746,27 @@ export function bootstrapPiiKeyProvider() {
   return createKeyProvider(runtime, { kmsAdapter })
 }
 
-export function createHttpServer({ modules }) {
+export function createHttpServer({ modules, mailer }) {
+  // Email delivery is strictly additive fire-and-forget: when no mailer is
+  // provided (existing callers/tests) or EMAIL_PROVIDER=disabled, every API
+  // response stays byte-identical to the pre-mailer behavior.
+  const transactionalMailer = mailer || { send: async () => ({ ok: true, skipped: true, provider: 'disabled' }) }
+  const firmNameFor = (firmId) => {
+    try {
+      return getFirmRow(firmId)?.name || ''
+    } catch {
+      return ''
+    }
+  }
+  const sendTransactionalEmail = (payload) => {
+    // mailer.send() never rejects, but belt-and-braces: nothing thrown here may
+    // ever reach a request handler or change a response.
+    try {
+      void transactionalMailer.send(payload)
+    } catch {
+      // Swallowed: email must never affect the API response.
+    }
+  }
   return createServer(async (req, res) => {
     const requestId = req.headers['x-request-id'] || randomUUID()
     const url = new URL(req.url || '/', `http://${req.headers.host || `${runtime.host}:${runtime.port}`}`)
@@ -825,6 +875,32 @@ export function createHttpServer({ modules }) {
     }
 
     try {
+      if (rateLimiter && pathname.startsWith('/api/') && !RATE_LIMIT_EXEMPT_PATHS.has(pathname)) {
+        const { key, keyType } = rateLimitIdentity(req)
+        const verdict = rateLimiter.check(key)
+        if (!verdict.allowed) {
+          securityDiagnostics.rateLimit.limitedTotal += 1
+          securityDiagnostics.rateLimit.limitedByKeyType[keyType] =
+            (securityDiagnostics.rateLimit.limitedByKeyType[keyType] || 0) + 1
+          const message = 'Too many requests. Please retry later.'
+          finalizeLog(429, { reason: 'rate_limited', rateLimitKeyType: keyType })
+          return json(
+            res,
+            429,
+            {
+              message,
+              error: {
+                message,
+                code: 'RATE_LIMITED',
+                details: { retryAfterSeconds: verdict.retryAfterSeconds },
+                statusCode: 429,
+                requestId
+              }
+            },
+            { 'X-Request-Id': requestId, 'Retry-After': String(verdict.retryAfterSeconds) }
+          )
+        }
+      }
       if (pathname === '/health' && (req.method === 'GET' || req.method === 'HEAD')) {
         const database = ensureDatabaseReady()
         const storageHealth = readStorageHealth()
@@ -1006,6 +1082,14 @@ export function createHttpServer({ modules }) {
                   rejectedByReason: securityDiagnostics.session.rejectedByReason,
                   rotatedTotal: securityDiagnostics.session.rotatedTotal,
                   invalidatedTotal: securityDiagnostics.session.invalidatedTotal
+                },
+                rateLimit: {
+                  enabled: Boolean(rateLimiter),
+                  maxRequests: runtime.rateLimit.maxRequests,
+                  windowSeconds: runtime.rateLimit.windowSeconds,
+                  limitedTotal: securityDiagnostics.rateLimit.limitedTotal,
+                  limitedByKeyType: securityDiagnostics.rateLimit.limitedByKeyType,
+                  trackedKeys: rateLimiter ? rateLimiter.keyCount : 0
                 }
               }
             }
@@ -1259,6 +1343,19 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canManageUsers')
         const result = modules.firmsUsers.inviteUser(user, await parseBody(req))
+        // Fire-and-forget invite email; the response keeps returning the token.
+        sendTransactionalEmail({
+          to: result?.email,
+          template: 'userInvite',
+          data: {
+            token: result?.token,
+            firmName: firmNameFor(user.firmId),
+            role: result?.role,
+            expiresAt: result?.expiresAt
+          },
+          firmId: user.firmId,
+          actorUserId: user.id
+        })
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -1279,7 +1376,32 @@ export function createHttpServer({ modules }) {
       }
       if (pathname === '/api/password-resets' && req.method === 'POST') {
         authorize('canRequestPasswordReset', { allowAnonymous: true })
-        const result = modules.auth.requestReset(await parseBody(req))
+        const body = await parseBody(req)
+        const result = modules.auth.requestReset(body)
+        // Anti-enumeration preserved: an unknown email returns { ok: true }
+        // with no token and sends NOTHING. Only a successful reset (token
+        // minted for a real account) triggers the fire-and-forget email, and
+        // the response body is unchanged either way.
+        if (result?.token) {
+          const requester = (() => {
+            try {
+              return getUserRow(result.userId)
+            } catch {
+              return null
+            }
+          })()
+          sendTransactionalEmail({
+            to: body?.email,
+            template: 'passwordReset',
+            data: {
+              token: result.token,
+              firmName: firmNameFor(requester?.firmId),
+              expiresAt: result.expiresAt
+            },
+            firmId: requester?.firmId || null,
+            actorUserId: result.userId || null
+          })
+        }
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -1412,6 +1534,18 @@ export function createHttpServer({ modules }) {
         if (status) query.status = status
         const includeArchived = url.searchParams.get('includeArchived')
         if (includeArchived === '1' || includeArchived === 'true') query.includeArchived = true
+        // Pagination is STRICTLY opt-in: only a limit/cursor query param
+        // switches to the { items, nextCursor } envelope. The no-param
+        // response stays the legacy bare array, byte-identical.
+        if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
+          const result = modules.profiles.listProfilesPage(user, {
+            ...query,
+            cursor: url.searchParams.get('cursor') || '',
+            limit: url.searchParams.get('limit') || ''
+          })
+          finalizeLog(200, { firmId: user.firmId })
+          return replyJson(200, result, { 'X-Request-Id': requestId })
+        }
         const result = modules.profiles.listProfiles(user, query)
         finalizeLog(200, { firmId: user.firmId })
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -1525,7 +1659,10 @@ export function createHttpServer({ modules }) {
         const result = await modules.forms.storeUploadedBytes({
           uploadId: decodeURIComponent(rawUploadId),
           objectKey: url.searchParams.get('key') || null,
-          contentType: String(req.headers['content-type'] || '').split(';')[0].trim() || null,
+          contentType:
+            String(req.headers['content-type'] || '')
+              .split(';')[0]
+              .trim() || null,
           body
         })
         finalizeLog(200)
@@ -1734,7 +1871,10 @@ export function createHttpServer({ modules }) {
         const includeArchived = ['1', 'true', 'yes'].includes(
           String(url.searchParams.get('includeArchived') || '').toLowerCase()
         )
-        const result = modules.events.listEvents(user, { includeArchived })
+        const result = modules.events.listEvents(user, {
+          includeArchived,
+          limit: url.searchParams.get('limit') || ''
+        })
         finalizeLog(200)
         return replyJson(200, { events: result }, { 'X-Request-Id': requestId })
       }
@@ -1842,6 +1982,17 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/households' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadHouseholds')
+        // Opt-in pagination: limit/cursor switches to the { items, nextCursor }
+        // envelope; the no-param response stays the legacy bare array.
+        if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
+          const result = modules.households.listHouseholdsPage(user, {
+            search: url.searchParams.get('search') || '',
+            cursor: url.searchParams.get('cursor') || '',
+            limit: url.searchParams.get('limit') || ''
+          })
+          finalizeLog(200)
+          return replyJson(200, result, { 'X-Request-Id': requestId })
+        }
         const result = modules.households.listHouseholds(user)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -1921,6 +2072,17 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/forms/templates' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadForms')
+        // Opt-in pagination: limit/cursor switches to the { items, nextCursor }
+        // envelope; the no-param response stays the legacy bare array.
+        if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
+          const result = modules.forms.listFormTemplatesPage(user, {
+            search: url.searchParams.get('search') || '',
+            cursor: url.searchParams.get('cursor') || '',
+            limit: url.searchParams.get('limit') || ''
+          })
+          finalizeLog(200)
+          return replyJson(200, result, { 'X-Request-Id': requestId })
+        }
         const result = modules.forms.listFormTemplates(user)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -1935,6 +2097,17 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/forms/submissions' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadForms')
+        // Opt-in pagination: limit/cursor switches to the { items, nextCursor }
+        // envelope; the no-param response stays the legacy bare array.
+        if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
+          const result = modules.forms.listFormSubmissionsPage(user, {
+            status: url.searchParams.get('status') || '',
+            cursor: url.searchParams.get('cursor') || '',
+            limit: url.searchParams.get('limit') || ''
+          })
+          finalizeLog(200)
+          return replyJson(200, result, { 'X-Request-Id': requestId })
+        }
         const result = modules.forms.listFormSubmissions(user)
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -2246,7 +2419,8 @@ export function createHttpServer({ modules }) {
           clientId: url.searchParams.get('clientId') || undefined,
           fromDate: url.searchParams.get('fromDate') || undefined,
           toDate: url.searchParams.get('toDate') || undefined,
-          sort: url.searchParams.get('sort') || undefined
+          sort: url.searchParams.get('sort') || undefined,
+          limit: url.searchParams.get('limit') || undefined
         })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
@@ -2359,7 +2533,7 @@ export function createHttpServer({ modules }) {
       if (pathname === '/api/audit' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadAudit')
-        const result = modules.audit.list(user)
+        const result = modules.audit.list(user, { limit: url.searchParams.get('limit') || '' })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -2372,6 +2546,18 @@ export function createHttpServer({ modules }) {
           from: url.searchParams.get('from') || '',
           to: url.searchParams.get('to') || '',
           cursor: url.searchParams.get('cursor') || '',
+          limit: url.searchParams.get('limit') || ''
+        })
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      // Global search (Cmd/Ctrl+K). Read-only GET (no CSRF concerns), guarded
+      // by canUseGlobalSearch inside the service — the client role is excluded.
+      if (pathname === '/api/search' && req.method === 'GET') {
+        const user = requireUser()
+        const result = modules.search.search(user, {
+          q: url.searchParams.get('q') || '',
+          types: url.searchParams.get('types') || '',
           limit: url.searchParams.get('limit') || ''
         })
         finalizeLog(200)
@@ -2417,6 +2603,28 @@ export function createHttpServer({ modules }) {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canCreatePortalLink')
         const result = modules.forms.createPortalLink(user, body.profileId, body)
+        // Fire-and-forget portal-link email to the linked profile's email (if
+        // it has one). Firm-scoped row read; failures never affect the response.
+        const linkedProfile = (() => {
+          try {
+            return getProfileRow(result?.profileId, { firmId: user.firmId })
+          } catch {
+            return null
+          }
+        })()
+        if (linkedProfile?.email) {
+          sendTransactionalEmail({
+            to: linkedProfile.email,
+            template: 'portalLink',
+            data: {
+              token: result?.token,
+              firmName: firmNameFor(user.firmId),
+              expiresAt: result?.expiresAt
+            },
+            firmId: user.firmId,
+            actorUserId: user.id
+          })
+        }
         finalizeLog(201)
         return replyJson(201, result, { 'X-Request-Id': requestId })
       }
@@ -2443,7 +2651,10 @@ export function createHttpServer({ modules }) {
       const portalDraftSectionsMatch = pathname.match(/^\/api\/portal\/[^/]+\/drafts\/([^/]+)\/sections$/)
       if (portalDraftSectionsMatch && req.method === 'GET') {
         const { token } = requirePortalSession()
-        const result = modules.forms.listPortalDraftSectionStates(token, decodeURIComponent(portalDraftSectionsMatch[1]))
+        const result = modules.forms.listPortalDraftSectionStates(
+          token,
+          decodeURIComponent(portalDraftSectionsMatch[1])
+        )
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
@@ -2518,7 +2729,20 @@ function startServer() {
   })
   const reads = new SqliteReadRepository()
   const modules = createModules({ store, reads })
-  const server = createHttpServer({ modules })
+  const mailer = createMailer({
+    runtime,
+    log,
+    // Audit through the existing store audit trail. The mailer only ever puts
+    // the template name and a MASKED recipient in metadata — never the token
+    // or a tokenized URL.
+    onAudit: ({ firmId, actorUserId, action, metadata }) => {
+      store.addAuditEvent(
+        { firmId: firmId || null, id: actorUserId || null },
+        { entityType: 'email', entityId: metadata?.template || 'email', action, metadata }
+      )
+    }
+  })
+  const server = createHttpServer({ modules, mailer })
 
   let isShuttingDown = false
   function shutdown(signal) {

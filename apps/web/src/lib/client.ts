@@ -65,12 +65,12 @@ export const routes = {
   profileUploadArchive: (profileId: string, uploadId: string) =>
     joinPath('/api/profiles', profileId, 'uploads', uploadId, 'archive'),
   profileCustomFieldSchema: () => '/api/profiles/custom-fields/schema',
-  households: () => '/api/households',
+  households: (query: Record<string, QueryValue> = {}) => withQuery('/api/households', query),
   householdMembers: (householdId: string) => joinPath('/api/households', householdId, 'members'),
   householdLinkSpouse: () => '/api/households/link-spouse',
   householdCreateSpouse: () => '/api/households/create-spouse',
-  formTemplates: () => '/api/forms/templates',
-  formSubmissions: () => '/api/forms/submissions',
+  formTemplates: (query: Record<string, QueryValue> = {}) => withQuery('/api/forms/templates', query),
+  formSubmissions: (query: Record<string, QueryValue> = {}) => withQuery('/api/forms/submissions', query),
   formSubmission: (submissionId: string) => joinPath('/api/forms/submissions', submissionId),
   formSubmissionSectionItem: (submissionId: string, sectionKey: string, itemKey: string) =>
     joinPath('/api/forms/submissions', submissionId, 'sections', sectionKey, 'items', itemKey),
@@ -105,6 +105,7 @@ export const routes = {
   exportsQueueHealth: () => '/api/ops/exports/queue',
   exportRuntime: () => '/api/ops/export-runtime',
   audit: () => '/api/audit',
+  search: (query: Record<string, QueryValue> = {}) => withQuery('/api/search', query),
   activity: (query: Record<string, QueryValue> = {}) => withQuery('/api/activity', query),
   analytics: (query: Record<string, QueryValue> = {}) => withQuery('/api/analytics', query),
   analyticsDashboard: (query: Record<string, QueryValue> = {}) => withQuery('/api/analytics/dashboard', query),
