@@ -228,10 +228,7 @@ function PortalDraftSection({
   enabled
 }: PortalDraftSectionProps) {
   const sectionId = useMemo(() => portalSectionId(section, sectionIndex), [section, sectionIndex])
-  const slice = useMemo(
-    () => extractSectionSlice(draftData, section, sectionIndex),
-    [draftData, section, sectionIndex]
-  )
+  const slice = useMemo(() => extractSectionSlice(draftData, section, sectionIndex), [draftData, section, sectionIndex])
   const conflictStateRef = useRef<PortalDraftSectionState | null>(null)
   const [reloaded, setReloaded] = useState(false)
 
@@ -265,8 +262,7 @@ function PortalDraftSection({
     if (!serverState) return
     conflictStateRef.current = null
     versionsRef.current[sectionId] = Number(serverState.version || 0)
-    const serverSlice =
-      serverState.data && typeof serverState.data === 'object' ? serverState.data : {}
+    const serverSlice = serverState.data && typeof serverState.data === 'object' ? serverState.data : {}
     setDraftData((current) => ({ ...current, ...serverSlice }))
     autosave.reset(serverSlice)
     setReloaded(true)
@@ -337,20 +333,20 @@ function PortalDraftSection({
                   {(section.fields || [])
                     .filter((field) => isFieldVisible(field, rowObject))
                     .map((field) =>
-                    renderField(
-                      field,
-                      String(rowObject[field.key] || ''),
-                      (nextValue) =>
-                        setDraftData((current) =>
-                          updateRepeaterRow(current, section, sectionIndex, rowIndex, {
-                            ...rowObject,
-                            [field.key]: nextValue
-                          })
-                        ),
-                      false,
-                      `-${rowIndex}`
-                    )
-                  )}
+                      renderField(
+                        field,
+                        String(rowObject[field.key] || ''),
+                        (nextValue) =>
+                          setDraftData((current) =>
+                            updateRepeaterRow(current, section, sectionIndex, rowIndex, {
+                              ...rowObject,
+                              [field.key]: nextValue
+                            })
+                          ),
+                        false,
+                        `-${rowIndex}`
+                      )
+                    )}
                 </div>
               </Card>
             )
@@ -370,17 +366,17 @@ function PortalDraftSection({
         {(section.fields || [])
           .filter((field) => isFieldVisible(field, draftData))
           .map((field) =>
-          renderField(
-            field,
-            String(draftData[field.key] || ''),
-            (nextValue) =>
-              setDraftData((current) => ({
-                ...current,
-                [field.key]: nextValue
-              })),
-            false
-          )
-        )}
+            renderField(
+              field,
+              String(draftData[field.key] || ''),
+              (nextValue) =>
+                setDraftData((current) => ({
+                  ...current,
+                  [field.key]: nextValue
+                })),
+              false
+            )
+          )}
       </div>
     </Card>
   )
@@ -512,25 +508,30 @@ export function Component() {
     async function adopt() {
       versionsRef.current = {}
       if (!template || !data || data.mode !== 'token') {
+        // Signed-in (non-token) mode has no server-side draft to adopt, but the
+        // form still opens pre-filled from the client's records.
+        const seed = template ? { ...(template.prefill || {}) } : {}
         draftIdRef.current = null
         setDraftId(null)
-        setDraftData({})
-        portalAutosave.reset({})
+        setDraftData(seed)
+        portalAutosave.reset(seed)
         setAdoptGeneration((value) => value + 1)
         return
       }
-      const existing = data.submissions.find(
-        (entry) => entry.templateId === template.id && entry.status === 'draft'
-      )
+      const existing = data.submissions.find((entry) => entry.templateId === template.id && entry.status === 'draft')
       if (!existing) {
+        // A fresh form opens PRE-FILLED from the client's firm records, so they
+        // confirm or correct known details instead of retyping them. Whatever
+        // they leave in place is submitted as their own answer — which is what
+        // the exported PDF reads. Only a brand-new draft is seeded: re-seeding
+        // an existing one would resurrect values the client deliberately cleared.
         draftIdRef.current = null
         setDraftId(null)
-        setDraftData({})
+        setDraftData({ ...(template.prefill || {}) })
         setAdoptGeneration((value) => value + 1)
         return
       }
-      const base =
-        existing.data && typeof existing.data === 'object' ? (existing.data as Record<string, unknown>) : {}
+      const base = existing.data && typeof existing.data === 'object' ? (existing.data as Record<string, unknown>) : {}
       let merged: Record<string, unknown> = { ...base }
       const versions: Record<string, number> = {}
       try {

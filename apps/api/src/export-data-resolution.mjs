@@ -189,6 +189,17 @@ export function buildRelatedExportEntities(profile, { getProfileRow, getHousehol
   }
 }
 
+// Resolves a single firm-record path (profile.* / spouse.* / household.*) with
+// no submission in play. This is what lets the client's intake form open
+// PRE-FILLED from the records the PDF would otherwise have fallen back to: the
+// same vocabulary, the same resolver, so the form and the export can never
+// disagree about what "profile.email" means.
+export function resolveRecordValue({ sourcePath, profile = null, spouse = null, household = null } = {}) {
+  const path = String(sourcePath || '').trim()
+  if (!path) return undefined
+  return resolveSourceValue({ sourcePath: path, profile, submission: null, spouse, household })
+}
+
 export function resolveExportData({
   mappings = [],
   profile = null,

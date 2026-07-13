@@ -11,6 +11,7 @@ import {
   getDraftSectionState,
   getFirmRow,
   getFormSubmissionById,
+  getHouseholdRow,
   getPortalLinkRow,
   getProfileRow,
   getUploadIntent,
@@ -22,6 +23,7 @@ import {
   upsertFormSubmission,
   upsertPortalLinkRow
 } from '../storage.mjs'
+import { buildRelatedExportEntities, resolveRecordValue } from '../export-data-resolution.mjs'
 import { assertRequiredFieldsForSubmission, normalizeSectionIdentifier, now, requirePermission } from './helpers.mjs'
 
 function normalizePortalScope(scope = {}) {
@@ -31,6 +33,59 @@ function normalizePortalScope(scope = {}) {
       ? [...new Set(scope.uploadCategories.filter(Boolean))]
       : null
   }
+}
+
+// Every scalar field key a form schema can hold. Repeatable sections are
+// skipped: their rows are client-authored lists with no single record to seed.
+function collectScalarFieldKeys(sections = []) {
+  const keys = new Set()
+  for (const section of Array.isArray(sections) ? sections : []) {
+    if (!section || typeof section !== 'object') continue
+    if (section.repeatable === true || section.type === 'repeatable') continue
+    for (const field of Array.isArray(section.fields) ? section.fields : []) {
+      const key = String(field?.key || field?.id || '').trim()
+      if (key) keys.add(key)
+    }
+  }
+  return keys
+}
+
+// Pre-fills a client's intake form from the firm records the exported PDF would
+// otherwise have fallen back to. The document template that generated this form
+// already declares the mapping (form key -> fallbackSourcePath), so the form and
+// the export read the SAME vocabulary through the SAME resolver and cannot
+// disagree. The client sees their known details, corrects anything stale, and
+// submits — so the answer, not the record, is what lands in the document.
+// Firm-scoped and null-safe: no linked document template, no spouse, or no
+// household simply yields fewer prefilled keys.
+function buildFormPrefill({ firmId, formTemplate, profile, templateAggregates }) {
+  if (!formTemplate || !profile) return {}
+  const documentTemplate = templateAggregates.find(
+    (entry) => entry.firmId === firmId && entry.kind !== 'form' && entry.linkedFormTemplateId === formTemplate.id
+  )
+  if (!documentTemplate) return {}
+
+  const fieldKeys = collectScalarFieldKeys(formTemplate.formSchema?.sections || [])
+  if (fieldKeys.size === 0) return {}
+
+  const { spouse, household } = buildRelatedExportEntities(profile, {
+    getProfileRow,
+    getHouseholdRow,
+    firmId
+  })
+
+  const prefill = {}
+  for (const rule of documentTemplate.mappings || []) {
+    if (!rule || typeof rule !== 'object') continue
+    if (String(rule.repeaterPath || '').trim()) continue
+    const fieldKey = String(rule.sourcePath || '').trim()
+    const recordPath = String(rule.fallbackSourcePath || '').trim()
+    if (!fieldKey || !recordPath || !fieldKeys.has(fieldKey)) continue
+    const value = resolveRecordValue({ sourcePath: recordPath, profile, spouse, household })
+    if (value === undefined || value === null || value === '') continue
+    prefill[fieldKey] = value
+  }
+  return prefill
 }
 
 function resolvePortalLinkByToken(token) {
@@ -175,7 +230,15 @@ export function createPortalDomain(ctx) {
           id: entry.id,
           name: entry.name,
           description: entry.description || '',
-          sections: entry.formSchema?.sections || []
+          sections: entry.formSchema?.sections || [],
+          // Known details seeded from firm records so the client confirms or
+          // corrects them instead of retyping them (see buildFormPrefill).
+          prefill: buildFormPrefill({
+            firmId: link.firmId,
+            formTemplate: entry,
+            profile,
+            templateAggregates: state.templateAggregates
+          })
         }))
       const uploads = listDocumentUploadRowsByFirmClient(link.firmId, link.profileId)
         .filter(

@@ -363,6 +363,12 @@ export interface FormTemplate {
     [key: string]: unknown
   }
   sections: FormSection[]
+  /**
+   * Known details seeded from the client's firm records (profile / spouse /
+   * household), keyed by form field. Present on portal reads; a fresh draft
+   * opens with these values so the client corrects rather than retypes them.
+   */
+  prefill?: Record<string, unknown>
   generatedFromDocumentTemplateId?: string | null
   generation?: {
     source?: string
