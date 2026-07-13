@@ -240,6 +240,14 @@ export function createTemplatesService({ templateRepository, policy, store = nul
       policy.requireGuard(user, 'canEditTemplate')
       return templateRepository.updateTemplateMappings(user, templateId, mappings, input)
     },
+    mappingPaths(user, templateId) {
+      policy.requireGuard(user, 'canReadTemplate')
+      return templateRepository.getTemplateMappingPaths(user, templateId)
+    },
+    autoMapMappings(user, templateId) {
+      policy.requireGuard(user, 'canEditTemplate')
+      return runMutation(() => templateRepository.autoMapTemplateMappings(user, templateId))
+    },
     getSourcePdf(user, templateId) {
       policy.requireGuard(user, 'canReadTemplate')
       return templateRepository.getTemplateSourcePdf(user, templateId)

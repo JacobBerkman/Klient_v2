@@ -2320,6 +2320,22 @@ export function createHttpServer({ modules, mailer }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/mapping-paths') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadTemplate')
+        const result = modules.templates.mappingPaths(user, id)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/mappings/auto-map') && req.method === 'POST') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canEditTemplate')
+        const result = modules.templates.autoMapMappings(user, id)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/templates/') && pathname.endsWith('/source-pdf') && req.method === 'GET') {
         const id = pathname.split('/')[3]
         const user = requireUser()

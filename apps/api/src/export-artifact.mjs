@@ -624,7 +624,9 @@ function resolveArtifactParts(job) {
     resolveExportData({
       mappings: templateMappings,
       profile: renderContext.client || null,
-      submission: renderContext.submission || null
+      submission: renderContext.submission || null,
+      spouse: renderContext.spouse || null,
+      household: renderContext.household || null
     })
 
   const metadata = {

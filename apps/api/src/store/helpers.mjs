@@ -1,11 +1,7 @@
 import { createHash } from 'node:crypto'
 import { convertLegacyFormDefinition } from '../modules/forms/schema/form-definition-validator.mjs'
 import { collectMissingRequiredFields } from '../form-conditions.mjs'
-import {
-  upsertDocumentTemplateRow,
-  upsertFormTemplateRow,
-  upsertTemplateAggregateRow
-} from '../storage.mjs'
+import { upsertDocumentTemplateRow, upsertFormTemplateRow, upsertTemplateAggregateRow } from '../storage.mjs'
 import {
   CUSTOM_FIELD_TYPES,
   DEFAULT_ANALYTICS_STAGE_DEFINITIONS,
@@ -466,7 +462,8 @@ export function createTemplateVersion(template, event, overrides = {}) {
 
 export function resolveTemplateFormSections(template) {
   if (!template || typeof template !== 'object') return []
-  const fromSchema = template.formSchema && Array.isArray(template.formSchema.sections) ? template.formSchema.sections : null
+  const fromSchema =
+    template.formSchema && Array.isArray(template.formSchema.sections) ? template.formSchema.sections : null
   if (fromSchema) return fromSchema
   return Array.isArray(template.sections) ? template.sections : []
 }
@@ -659,6 +656,8 @@ export function collectFormSchemaSourcePaths(sections = [], output = new Map()) 
 }
 
 export function profileSourcePaths() {
+  // Sensitive values (SSN, tax ids) live encrypted in profile.pii and are
+  // deliberately NOT exposed as mapping source paths. Never add pii.* here.
   return new Map([
     ['profile.firstName', { source: 'profile', type: 'text' }],
     ['profile.lastName', { source: 'profile', type: 'text' }],
@@ -669,7 +668,18 @@ export function profileSourcePaths() {
     ['profile.stage', { source: 'profile', type: 'text' }],
     ['profile.source.sourceCity', { source: 'profile', type: 'text' }],
     ['profile.source.sourceVenue', { source: 'profile', type: 'text' }],
-    ['profile.source.sourceDate', { source: 'profile', type: 'date' }]
+    ['profile.source.sourceDate', { source: 'profile', type: 'date' }],
+    ['spouse.firstName', { source: 'spouse', type: 'text' }],
+    ['spouse.lastName', { source: 'spouse', type: 'text' }],
+    ['spouse.email', { source: 'spouse', type: 'text' }],
+    ['spouse.phone', { source: 'spouse', type: 'text' }],
+    ['spouse.dateOfBirth', { source: 'spouse', type: 'date' }],
+    ['household.name', { source: 'household', type: 'text' }],
+    ['household.primary.firstName', { source: 'household', type: 'text' }],
+    ['household.primary.lastName', { source: 'household', type: 'text' }],
+    ['household.primary.email', { source: 'household', type: 'text' }],
+    ['household.primary.phone', { source: 'household', type: 'text' }],
+    ['household.primary.dateOfBirth', { source: 'household', type: 'date' }]
   ])
 }
 

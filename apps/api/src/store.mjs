@@ -113,7 +113,7 @@ import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs'
 import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
 import { renderExportArtifact } from './export-artifact.mjs'
-import { resolveExportData } from './export-data-resolution.mjs'
+import { resolveExportData, buildRelatedExportEntities } from './export-data-resolution.mjs'
 import { renderPdfFromTemplate } from './export-renderers/pdf-template.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
 import {
@@ -128,6 +128,7 @@ import { validateMappingRules } from './modules/templates/schema/mapping-rules-v
 import { collectMissingRequiredFields } from './form-conditions.mjs'
 import { extractTemplateFieldsFromPdfBytes } from './modules/templates/template-ingestion.mjs'
 import { buildFormTemplateFromExtractedFields } from './modules/templates/template-form-builder.mjs'
+import { suggestMapping, defaultSourcePathForField } from './modules/templates/auto-map.mjs'
 import { createDefaultFirmStageConfig, getStageKey, normalizeFirmStageConfig } from './stage-config.mjs'
 
 import {
@@ -2842,6 +2843,139 @@ export function createStore({
       persist()
       return documentTemplateAdapter(template)
     },
+    // Read-only picker payload for the mapping UI: the full allowed source-path
+    // vocabulary grouped by origin. Sensitive profile.pii values are never part
+    // of the vocabulary and therefore never appear here.
+    getTemplateMappingPaths(user, templateId) {
+      const firmContext = requireFirmContext(user, { method: 'store.getTemplateMappingPaths' })
+      requirePermission(user, 'templates:read')
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
+      )
+      const titleizeSegment = (value) =>
+        String(value || '')
+          .replace(/([a-z])([A-Z])/g, '$1 $2')
+          .replace(/[_./[\]-]+/g, ' ')
+          .trim()
+          .replace(/\b\w/g, (token) => token.toUpperCase())
+      const leafLabel = (path) => titleizeSegment(String(path).split('.').pop())
+      const firm = getFirmRow(user.firmId)
+      const groupsByKey = {
+        profile: { key: 'profile', label: 'Client Profile', paths: [] },
+        spouse: { key: 'spouse', label: 'Spouse', paths: [] },
+        household: { key: 'household', label: 'Household', paths: [] },
+        custom: { key: 'custom', label: 'Custom Fields', paths: [] },
+        form: { key: 'form', label: 'Form Fields', paths: [] }
+      }
+      const customLabelsByKey = new Map(
+        normalizeCustomFieldSchema(firm?.customFieldSchema).fields.map((field) => [field.key, field.label])
+      )
+      for (const [path, meta] of profileSourcePathsForFirm(firm).entries()) {
+        const type = String(meta?.type || 'text')
+        if (meta?.source === 'profile_custom_field') {
+          groupsByKey.custom.paths.push({
+            path,
+            label: customLabelsByKey.get(meta.customFieldKey) || titleizeSegment(meta.customFieldKey),
+            type
+          })
+        } else if (path.startsWith('spouse.')) {
+          groupsByKey.spouse.paths.push({ path, label: `Spouse ${leafLabel(path)}`, type })
+        } else if (path.startsWith('household.primary.')) {
+          groupsByKey.household.paths.push({ path, label: `Household Primary ${leafLabel(path)}`, type })
+        } else if (path.startsWith('household.')) {
+          groupsByKey.household.paths.push({ path, label: `Household ${leafLabel(path)}`, type })
+        } else {
+          groupsByKey.profile.paths.push({ path, label: leafLabel(path), type })
+        }
+      }
+      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, {
+        contextPath: '/formSchema'
+      })
+      for (const [path, meta] of collectFormSchemaSourcePaths(formSchemaResult.schema.sections, new Map()).entries()) {
+        groupsByKey.form.paths.push({ path, label: leafLabel(path), type: String(meta?.type || 'text') })
+      }
+      return {
+        groups: [groupsByKey.profile, groupsByKey.spouse, groupsByKey.household, groupsByKey.custom, groupsByKey.form]
+      }
+    },
+    // Applies the conservative auto-map heuristics to every mapping row that is
+    // still at the auto-build default (sourcePath empty or equal to its own
+    // generated form key). Confident matches move to profile/spouse/household
+    // paths; everything else is left untouched, so the action is idempotent.
+    autoMapTemplateMappings(user, templateId) {
+      const firmContext = requireFirmContext(user, { method: 'store.autoMapTemplateMappings' })
+      requirePermission(user, 'templates:write')
+      const template = validateTenantEntityOwnership(
+        firmContext,
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
+        { entityName: 'Template' }
+      )
+      const candidateMappings = deepClone(template.mappings || [])
+      const total = candidateMappings.length
+      let applied = 0
+      for (const rule of candidateMappings) {
+        if (!rule || typeof rule !== 'object' || Array.isArray(rule)) continue
+        // Repeater-group rows keep their generated row-indexed source paths.
+        if (String(rule.repeaterPath || '').trim()) continue
+        if (String(rule.targetType || '').trim() === 'checkbox') continue
+        const pdfField = String(rule.pdfField || '').trim()
+        if (!pdfField) continue
+        const currentSourcePath = String(rule.sourcePath || '').trim()
+        if (currentSourcePath && currentSourcePath !== defaultSourcePathForField(pdfField)) continue
+        const suggestion = suggestMapping(pdfField)
+        if (!suggestion || suggestion.sourcePath === currentSourcePath) continue
+        rule.sourcePath = suggestion.sourcePath
+        if (suggestion.type === 'date') {
+          rule.targetType = 'date'
+          rule.transform = { type: 'date' }
+        }
+        applied += 1
+      }
+      if (!applied) {
+        // No rows left at the auto-build default: leave the template untouched
+        // (no version snapshot) but still record the attempted action so the
+        // audited-mutation invariant holds and the trail shows the request.
+        addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.mappings_auto_mapped', {
+          applied: 0,
+          total,
+          unchanged: true
+        })
+        persist()
+        return { applied: 0, total, template: documentTemplateAdapter(template) }
+      }
+      const formSchemaResult = validateFormDefinitionSchema(template.formSchema || { sections: [] }, {
+        contextPath: '/formSchema'
+      })
+      const allowedSourcePaths = profileSourcePathsForFirm(getFirmRow(user.firmId))
+      collectFormSchemaSourcePaths(formSchemaResult.schema.sections, allowedSourcePaths)
+      const normalizedMappings = validateMappingRules(candidateMappings, {
+        contextPath: '/mappings',
+        repeaterPaths: formSchemaResult.repeaterPaths,
+        requiredPdfFields: normalizeRequiredPdfFields(template.extractedFields || []),
+        allowedSourcePaths
+      })
+      const previousMappings = deepClone(template.mappings || [])
+      template.mappings = normalizedMappings
+      template.mappingRules = template.mappings
+      template.versions.push(
+        createTemplateVersion(template, 'mappings_updated', {
+          mappings: template.mappings,
+          diff: { mappings: { changed: true }, autoMap: { applied } },
+          actorUserId: user.id
+        })
+      )
+      template.updatedAt = now()
+      addAudit(user.firmId, user.id, 'template_aggregate', template.id, 'document_template.mappings_auto_mapped', {
+        before: { mappings: previousMappings, count: previousMappings.length },
+        after: { mappings: deepClone(template.mappings), count: template.mappings.length },
+        applied
+      })
+      persistTemplateAggregateRow(template)
+      persist()
+      return { applied, total, template: documentTemplateAdapter(template) }
+    },
     async getTemplateSourcePdf(user, templateId) {
       const firmContext = requireFirmContext(user, { method: 'store.getTemplateSourcePdf' })
       requirePermission(user, 'templates:read')
@@ -2971,10 +3105,17 @@ export function createStore({
       const submission = validateTenantEntityOwnership(firmContext, getFormSubmissionById(submissionId), {
         entityName: 'Submission'
       })
+      const related = buildRelatedExportEntities(profile, {
+        getProfileRow,
+        getHouseholdRow,
+        firmId: user.firmId
+      })
       const resolved = resolveExportData({
         mappings: template.mappings || [],
         profile,
-        submission
+        submission,
+        spouse: related.spouse,
+        household: related.household
       })
       const rowIdByIndex = new Map(
         (resolved.rows || [])
@@ -3073,10 +3214,17 @@ export function createStore({
         const submission = validateTenantEntityOwnership(firmContext, getFormSubmissionById(preflightSubmissionId), {
           entityName: 'Submission'
         })
+        const preflightRelated = buildRelatedExportEntities(profile, {
+          getProfileRow,
+          getHouseholdRow,
+          firmId: user.firmId
+        })
         const preflight = resolveExportData({
           mappings: template.mappings || [],
           profile,
-          submission
+          submission,
+          spouse: preflightRelated.spouse,
+          household: preflightRelated.household
         })
         const blockingIssues = (preflight.rows || []).flatMap((row) =>
           (row.warnings || [])
