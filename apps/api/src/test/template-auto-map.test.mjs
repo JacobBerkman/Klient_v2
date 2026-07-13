@@ -120,10 +120,53 @@ test('auto-build maps heuristic PDF field names to profile/spouse/household path
   assert.equal(byField.consent_checkbox.transform?.type, 'checkbox')
 })
 
+test('auto-map fills the record fallback (never the primary) when an intake form exists', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+  const pdf = await createHeuristicPdf()
+
+  // Auto-build produces a linked intake form, so every PDF field is something
+  // the CLIENT can answer. Auto-map must therefore populate the record fallback
+  // and leave the form key as the primary source — overwriting the primary would
+  // silently discard the client's answers.
+  const template = await store.autoBuildTemplate(user, {
+    name: 'Linked Form Auto Map',
+    fileName: 'linked-form-auto-map.pdf',
+    fileBytesBase64: pdf.toString('base64')
+  })
+  assert.ok(template.linkedFormTemplateId, 'auto-build generates the linked intake form')
+
+  // Reset the auto-build fallbacks so auto-map has work to do.
+  const stripped = template.mappings.map((mapping) => {
+    const next = { ...mapping }
+    delete next.fallbackSourcePath
+    return next
+  })
+  store.updateTemplateMappings(user, template.id, stripped)
+
+  const result = store.autoMapTemplateMappings(user, template.id)
+  assert.ok(result.applied > 0, 'confident matches are applied')
+  const byField = Object.fromEntries(result.template.mappings.map((mapping) => [mapping.pdfField, mapping]))
+
+  assert.equal(byField.client_first_name.sourcePath, 'client_first_name', "the client's answer stays primary")
+  assert.equal(byField.client_first_name.fallbackSourcePath, 'profile.firstName')
+  assert.equal(byField.spouse_dob.sourcePath, 'spouse_dob')
+  assert.equal(byField.spouse_dob.fallbackSourcePath, 'spouse.dateOfBirth')
+  assert.equal(byField.household_name.fallbackSourcePath, 'household.name')
+  // No confident match: no fallback invented.
+  assert.equal(byField.other_notes.fallbackSourcePath, undefined)
+
+  // Idempotent.
+  const second = store.autoMapTemplateMappings(user, template.id)
+  assert.equal(second.applied, 0)
+})
+
 test('auto-map action applies suggestions to default rows, is idempotent, and versions the change', async () => {
   const store = await loadStore()
   const user = createAdvisor(store)
 
+  // No linked intake form: there is no client answer to protect, so suggestions
+  // become the PRIMARY source path.
   const template = store.createDocumentTemplate(user, {
     name: 'Manual Auto Map Template',
     mappings: [

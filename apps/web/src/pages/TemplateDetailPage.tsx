@@ -175,20 +175,27 @@ export function Component() {
   const mappedPdfFields = new Set(mappings.map((mapping) => String(mapping.pdfField || '').trim()).filter(Boolean))
   const missingMappingFields = requiredMappingFields.filter((name) => !mappedPdfFields.has(name))
   const mappingReadinessStatus = missingMappingFields.length ? 'missing required mappings' : 'complete mappings'
-  // A field is unmapped when it has no row, an empty sourcePath, or a sourcePath
-  // that just echoes its own field key (the auto-build placeholder). The
-  // placeholder key is the snake_case form key auto-build generates
-  // (defaultSourcePathForField on the API side), so mirror that normalization.
+  // "Unmapped" means the field will export BLANK — nothing can fill it. A row
+  // pointing at its own generated form key IS mapped when a linked intake form
+  // exists (it resolves to the client's answer); without that form there is no
+  // answer to read, so such a row only counts as mapped if it has a record
+  // fallback. The placeholder key mirrors defaultSourcePathForField on the API.
+  const hasLinkedForm = Boolean(template?.linkedFormTemplateId)
   const unmappedFieldCount = requiredMappingFields.filter((name) => {
     const row = mappings.find((entry) => String(entry.pdfField || '').trim() === name)
-    const sourcePath = String(row?.sourcePath || '').trim()
+    if (!row) return true
+    const sourcePath = String(row.sourcePath || '').trim()
+    const fallbackSourcePath = String(row.fallbackSourcePath || '').trim()
+    if (fallbackSourcePath) return false
+    if (!sourcePath) return true
     const placeholderKey = name
       .trim()
       .replace(/([a-z])([A-Z])/g, '$1_$2')
       .replace(/[^a-zA-Z0-9]+/g, '_')
       .replace(/^_+|_+$/g, '')
       .toLowerCase()
-    return !row || !sourcePath || sourcePath === name || sourcePath === placeholderKey
+    const atFormKey = sourcePath === name || sourcePath === placeholderKey
+    return atFormKey && !hasLinkedForm
   }).length
 
   async function handleSaveMappings() {
@@ -621,6 +628,10 @@ export function Component() {
                   <th>PDF field</th>
                   <th>Label</th>
                   <th>Source path</th>
+                  <th>
+                    Record fallback
+                    <span className="muted th-hint">Used only when the source is blank</span>
+                  </th>
                   <th>Repeater path</th>
                   <th>Transform</th>
                   <th>Expression</th>
@@ -667,6 +678,22 @@ export function Component() {
                         groups={mappingPathGroups}
                         label={`Source path for ${String(mapping.pdfField || '').trim() || `row ${index + 1}`}`}
                         inputTestId={`mapping-source-path-${index}`}
+                      />
+                    </td>
+                    <td>
+                      <SourcePathPicker
+                        value={String(mapping.fallbackSourcePath || '')}
+                        onChange={(nextValue) =>
+                          setMappings((current) =>
+                            current.map((entry, rowIndex) =>
+                              rowIndex === index ? { ...entry, fallbackSourcePath: nextValue } : entry
+                            )
+                          )
+                        }
+                        groups={mappingPathGroups}
+                        label={`Record fallback for ${String(mapping.pdfField || '').trim() || `row ${index + 1}`}`}
+                        inputTestId={`mapping-fallback-path-${index}`}
+                        placeholder="Optional — e.g. profile.email"
                       />
                     </td>
                     <td>

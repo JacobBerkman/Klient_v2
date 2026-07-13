@@ -75,4 +75,21 @@ test('template mapping picker shows grouped paths, auto-map applies heuristics, 
   await page.getByRole('button', { name: 'Save mappings' }).click()
   await expect(page.getByText('Mappings saved.')).toBeVisible()
   await expect(page.getByTestId('unmapped-count-badge')).toHaveText('all fields mapped')
+
+  // The record fallback is a first-class, editable column: it fills the field
+  // from firm records only when the primary source resolves to nothing.
+  const fallbackPicker = page.getByRole('combobox', { name: 'Record fallback for misc_reference_code' })
+  await fallbackPicker.click()
+  const fallbackListbox = page.getByTestId('source-path-listbox')
+  const profileOption = fallbackListbox.getByRole('group', { name: 'Client profile' }).getByRole('option').first()
+  const fallbackPath = await profileOption.getAttribute('data-path')
+  await profileOption.click()
+  await expect(fallbackPicker).toHaveValue(String(fallbackPath))
+
+  await page.getByRole('button', { name: 'Save mappings' }).click()
+  await expect(page.getByText('Mappings saved.')).toBeVisible()
+  await page.reload()
+  await expect(page.getByRole('combobox', { name: 'Record fallback for misc_reference_code' })).toHaveValue(
+    String(fallbackPath)
+  )
 })

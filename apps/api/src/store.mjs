@@ -2939,10 +2939,18 @@ export function createStore({
         groups: [groupsByKey.profile, groupsByKey.spouse, groupsByKey.household, groupsByKey.custom, groupsByKey.form]
       }
     },
-    // Applies the conservative auto-map heuristics to every mapping row that is
-    // still at the auto-build default (sourcePath empty or equal to its own
-    // generated form key). Confident matches move to profile/spouse/household
-    // paths; everything else is left untouched, so the action is idempotent.
+    // Applies the conservative auto-map heuristics to rows that carry no record
+    // source yet. WHERE the suggestion lands depends on whether a client can
+    // answer the field:
+    //   - template HAS a linked intake form and the row still points at that
+    //     form's key => the suggestion becomes the RECORD FALLBACK. The client's
+    //     own answer stays the primary source; records only fill what they left
+    //     blank. Overwriting the primary here would silently discard answers to
+    //     the very form this PDF generated.
+    //   - no linked form (nothing for a client to answer), or the row has no
+    //     source at all => the suggestion becomes the primary sourcePath.
+    // Rows that already carry a deliberate mapping are never touched, so the
+    // action is idempotent.
     autoMapTemplateMappings(user, templateId) {
       const firmContext = requireFirmContext(user, { method: 'store.autoMapTemplateMappings' })
       requirePermission(user, 'templates:write')
@@ -2951,6 +2959,7 @@ export function createStore({
         state.templateAggregates.find((entry) => entry.id === templateId && entry.kind !== 'form'),
         { entityName: 'Template' }
       )
+      const hasLinkedForm = Boolean(template.linkedFormTemplateId)
       const candidateMappings = deepClone(template.mappings || [])
       const total = candidateMappings.length
       let applied = 0
@@ -2969,9 +2978,26 @@ export function createStore({
         const pdfField = String(rule.pdfField || '').trim()
         if (!pdfField) continue
         const currentSourcePath = String(rule.sourcePath || '').trim()
-        if (currentSourcePath && currentSourcePath !== defaultSourcePathForField(pdfField)) continue
+        const formKey = defaultSourcePathForField(pdfField)
+        const atFormKey = currentSourcePath === formKey
+        // A deliberate mapping (anything that is neither empty nor the generated
+        // form key) is the advisor's decision — never rewrite it.
+        if (currentSourcePath && !atFormKey) continue
         const suggestion = suggestMapping(pdfField)
-        if (!suggestion || suggestion.sourcePath === currentSourcePath) continue
+        if (!suggestion) continue
+
+        if (hasLinkedForm && atFormKey) {
+          // The client can answer this field, so their answer stays primary and
+          // the record match becomes the fallback for when they leave it blank.
+          if (String(rule.fallbackSourcePath || '').trim() === suggestion.sourcePath) continue
+          rule.fallbackSourcePath = suggestion.sourcePath
+          applied += 1
+          continue
+        }
+
+        // Nothing for a client to answer (no linked intake form) or no source at
+        // all: the record path becomes the primary mapping.
+        if (suggestion.sourcePath === currentSourcePath) continue
         rule.sourcePath = suggestion.sourcePath
         if (suggestion.type === 'date') {
           rule.targetType = 'date'

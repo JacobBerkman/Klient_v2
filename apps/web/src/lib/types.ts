@@ -474,6 +474,8 @@ export interface MappingRow {
   pdfField?: string
   fieldLabel?: string
   sourcePath?: string
+  /** Firm-record path used only when sourcePath resolves to nothing. */
+  fallbackSourcePath?: string
   repeaterPath?: string
   required?: boolean
   transformType?: string

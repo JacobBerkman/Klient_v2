@@ -337,6 +337,30 @@ export function validateMappingRules(input, options = {}) {
           }
         })
       }
+      // fallbackSourcePath fills the field from firm records when the primary
+      // source resolves to nothing (see export-data-resolution). It is a real
+      // data source, so it is held to the same known-path rule as sourcePath —
+      // a typo here would otherwise fail silently as a blank export field.
+      const fallbackSourcePath = normalizePath(rule.fallbackSourcePath)
+      if (
+        enforceKnownSourcePaths &&
+        allowedSourcePaths &&
+        fallbackSourcePath &&
+        !allowedSourcePaths.has(fallbackSourcePath)
+      ) {
+        pushIssue(issues, {
+          code: 'unknown_source_path',
+          path: `${rulePath}/fallbackSourcePath`,
+          rowIndex: index,
+          field: 'fallbackSourcePath',
+          message: `fallbackSourcePath "${String(rule.fallbackSourcePath)}" is not a known profile/form schema path.`,
+          meta: {
+            providedSourcePath: String(rule.fallbackSourcePath || ''),
+            normalizedSourcePath: fallbackSourcePath
+          }
+        })
+      }
+
       const expectedTargetType = String(rule.targetType || '').trim()
       const sourceMeta = sourcePath && allowedSourcePaths ? allowedSourcePaths.get(sourcePath) : null
       const sourceType = String(sourceMeta?.type || '').trim()
