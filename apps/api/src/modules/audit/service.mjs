@@ -19,9 +19,10 @@ function normalizeLegacyEvent(event = {}) {
 export function createAuditService({ store, policy }) {
   return {
     schema: CANONICAL_AUDIT_FIELDS,
-    list(user) {
+    list(user, filters = {}) {
       policy.requireGuard(user, 'canReadAudit')
-      return store.listAudit(user).map(normalizeLegacyEvent)
+      // The store clamps the read to the newest 200 events (default and max).
+      return store.listAudit(user, { limit: filters.limit }).map(normalizeLegacyEvent)
     }
   }
 }

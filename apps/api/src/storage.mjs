@@ -680,12 +680,7 @@ function ensureIdentityEntitiesSeededFromState(state) {
   `)
   for (const household of state.households || []) {
     if (!household || typeof household !== 'object' || !household.id) continue
-    insertHousehold.run(
-      household.id,
-      household.firmId ?? 'unknown',
-      household.name ?? '',
-      JSON.stringify(household)
-    )
+    insertHousehold.run(household.id, household.firmId ?? 'unknown', household.name ?? '', JSON.stringify(household))
   }
 }
 
@@ -725,9 +720,7 @@ export function listAuditEvents(firmId, { limit = 0 } = {}) {
     ORDER BY occurred_at DESC, rowid DESC
   `
   const rows =
-    Number(limit) > 0
-      ? db.prepare(`${baseSql} LIMIT ?`).all(firmId, Number(limit))
-      : db.prepare(baseSql).all(firmId)
+    Number(limit) > 0 ? db.prepare(`${baseSql} LIMIT ?`).all(firmId, Number(limit)) : db.prepare(baseSql).all(firmId)
   return rows.map((row) => JSON.parse(row.payload))
 }
 
@@ -2264,7 +2257,11 @@ export function insertMfaChallenge(challenge, { pruneCutoff = null } = {}) {
 // MFA consume path: resolve a single challenge by token scoped to the user, the
 // same match the old state.mfaChallenges.find(token && userId) performed.
 export function findMfaChallengeByTokenAndUser(token, userId) {
-  return db.prepare(`SELECT ${MFA_CHALLENGE_COLUMNS} FROM mfa_challenges WHERE token = ? AND user_id = ?`).get(token, userId) || null
+  return (
+    db
+      .prepare(`SELECT ${MFA_CHALLENGE_COLUMNS} FROM mfa_challenges WHERE token = ? AND user_id = ?`)
+      .get(token, userId) || null
+  )
 }
 
 export function deleteMfaChallengesByUser(userId) {
@@ -2304,9 +2301,7 @@ export function insertOidcLoginState(row, { pruneCutoff = null } = {}) {
 }
 
 export function findOidcLoginStateByState(state) {
-  return (
-    db.prepare(`SELECT ${OIDC_LOGIN_STATE_COLUMNS} FROM oidc_login_states WHERE state = ?`).get(state) || null
-  )
+  return db.prepare(`SELECT ${OIDC_LOGIN_STATE_COLUMNS} FROM oidc_login_states WHERE state = ?`).get(state) || null
 }
 
 // Single-use gate: returns 1 the first time a state is consumed, 0 on replay
@@ -2331,7 +2326,13 @@ function ensureAuthEntitiesSeededFromState(state) {
   `)
   for (const attempt of state.authAttempts || []) {
     if (!attempt || typeof attempt !== 'object' || !attempt.id) continue
-    insertAuth.run(attempt.id, attempt.email ?? null, attempt.ipAddress ?? null, attempt.ok ? 1 : 0, attempt.createdAt ?? null)
+    insertAuth.run(
+      attempt.id,
+      attempt.email ?? null,
+      attempt.ipAddress ?? null,
+      attempt.ok ? 1 : 0,
+      attempt.createdAt ?? null
+    )
   }
   const insertResetAttempt = db.prepare(`
     INSERT OR IGNORE INTO password_reset_attempts (id, email, ip_address, created_at)
@@ -2426,9 +2427,7 @@ function syncAnalyticsMaterialized(state) {
   // notes is the relational source of truth (the blob serializes an empty
   // array), so notes-authored counts aggregate over the table. createdByUserId
   // is not a promoted column, so it is read from the payload JSON.
-  db.prepare(
-    "SELECT firm_id AS firmId, json_extract(payload, '$.createdByUserId') AS createdByUserId FROM notes"
-  )
+  db.prepare("SELECT firm_id AS firmId, json_extract(payload, '$.createdByUserId') AS createdByUserId FROM notes")
     .all()
     .forEach((note) => {
       const actor = usersById.get(note.createdByUserId)
@@ -2482,6 +2481,552 @@ function syncAnalyticsMaterialized(state) {
     })
     insert.run(firmId, JSON.stringify(summary), nowIso())
   })
+}
+
+// --- Keyset-paged list readers ------------------------------------------------
+// Opt-in pagination for the big list endpoints, copying the
+// queryAuditEventsPage shape: SQL-pushed filters, fetch limit+1, return
+// { items, nextCursor } where nextCursor is the keyset position of the last
+// returned row (null when the page is the tail). Every filter/order term reads
+// promoted plaintext columns (or the non-sensitive archivedAt marker in the
+// payload); encrypted PII inside payload JSON is never touched. Limits clamp
+// to 1..200.
+
+function clampPageLimit(limit, fallback = 50) {
+  return Math.min(Math.max(Number(limit) || fallback, 1), 200)
+}
+
+// Directory page: last_name, first_name (both case-insensitive), then id as
+// the unique tiebreaker. Search matches the exact JS haystack the legacy
+// listProfiles filter built: `${firstName} ${lastName} ${email || ''}`,
+// case-insensitive substring.
+export function queryProfileRowsPage({
+  firmId,
+  kind = null,
+  includeArchived = false,
+  search = '',
+  cursor = null,
+  limit = 50
+} = {}) {
+  const clauses = ['firm_id = ?']
+  const params = [firmId]
+
+  if (kind) {
+    clauses.push('kind = ?')
+    params.push(kind)
+  }
+  if (!includeArchived) {
+    clauses.push("json_extract(payload, '$.archivedAt') IS NULL")
+  }
+  const q = String(search || '')
+    .trim()
+    .toLowerCase()
+  if (q) {
+    clauses.push("instr(lower(first_name || ' ' || last_name || ' ' || COALESCE(email, '')), ?) > 0")
+    params.push(q)
+  }
+  if (cursor && typeof cursor === 'object' && cursor.id) {
+    const lastName = String(cursor.lastName ?? '')
+    const firstName = String(cursor.firstName ?? '')
+    const id = String(cursor.id)
+    clauses.push(`(
+      last_name COLLATE NOCASE > ?
+      OR (last_name COLLATE NOCASE = ? AND first_name COLLATE NOCASE > ?)
+      OR (last_name COLLATE NOCASE = ? AND first_name COLLATE NOCASE = ? AND id > ?)
+    )`)
+    params.push(lastName, lastName, firstName, lastName, firstName, id)
+  }
+
+  const safeLimit = clampPageLimit(limit)
+  const rows = db
+    .prepare(
+      `
+      SELECT last_name AS lastName, first_name AS firstName, id, payload
+      FROM profiles
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY last_name COLLATE NOCASE, first_name COLLATE NOCASE, id
+      LIMIT ?
+    `
+    )
+    .all(...params, safeLimit + 1)
+
+  const hasMore = rows.length > safeLimit
+  const page = hasMore ? rows.slice(0, safeLimit) : rows
+  const items = page.map((row) => JSON.parse(row.payload))
+  const lastRow = page[page.length - 1]
+  const nextCursor =
+    hasMore && lastRow ? { lastName: lastRow.lastName, firstName: lastRow.firstName, id: lastRow.id } : null
+  return { items, nextCursor }
+}
+
+// Household directory page: name (case-insensitive), then id. Search is a
+// case-insensitive substring over the promoted name column.
+export function queryHouseholdRowsPage({
+  firmId,
+  includeArchived = false,
+  search = '',
+  cursor = null,
+  limit = 50
+} = {}) {
+  const clauses = ['firm_id = ?']
+  const params = [firmId]
+
+  if (!includeArchived) {
+    clauses.push("json_extract(payload, '$.archivedAt') IS NULL")
+  }
+  const q = String(search || '')
+    .trim()
+    .toLowerCase()
+  if (q) {
+    clauses.push('instr(lower(name), ?) > 0')
+    params.push(q)
+  }
+  if (cursor && typeof cursor === 'object' && cursor.id) {
+    const name = String(cursor.name ?? '')
+    const id = String(cursor.id)
+    clauses.push('(name COLLATE NOCASE > ? OR (name COLLATE NOCASE = ? AND id > ?))')
+    params.push(name, name, id)
+  }
+
+  const safeLimit = clampPageLimit(limit)
+  const rows = db
+    .prepare(
+      `
+      SELECT name, id, payload
+      FROM households
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY name COLLATE NOCASE, id
+      LIMIT ?
+    `
+    )
+    .all(...params, safeLimit + 1)
+
+  const hasMore = rows.length > safeLimit
+  const page = hasMore ? rows.slice(0, safeLimit) : rows
+  const items = page.map((row) => JSON.parse(row.payload))
+  const lastRow = page[page.length - 1]
+  const nextCursor = hasMore && lastRow ? { name: lastRow.name, id: lastRow.id } : null
+  return { items, nextCursor }
+}
+
+// Template catalog page over the canonical template_aggregates rows: name
+// (case-insensitive), then id. `kind` mirrors listTemplateAggregates: 'form'
+// selects form templates, 'document' selects everything that is not a form.
+export function queryTemplateAggregateRowsPage({ firmId, kind = null, search = '', cursor = null, limit = 50 } = {}) {
+  const clauses = ['firm_id = ?']
+  const params = [firmId]
+
+  if (kind === 'form') {
+    clauses.push("kind = 'form'")
+  } else if (kind === 'document') {
+    clauses.push("kind != 'form'")
+  }
+  const q = String(search || '')
+    .trim()
+    .toLowerCase()
+  if (q) {
+    clauses.push('instr(lower(name), ?) > 0')
+    params.push(q)
+  }
+  if (cursor && typeof cursor === 'object' && cursor.id) {
+    const name = String(cursor.name ?? '')
+    const id = String(cursor.id)
+    clauses.push('(name COLLATE NOCASE > ? OR (name COLLATE NOCASE = ? AND id > ?))')
+    params.push(name, name, id)
+  }
+
+  const safeLimit = clampPageLimit(limit)
+  const rows = db
+    .prepare(
+      `
+      SELECT name, id, payload
+      FROM template_aggregates
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY name COLLATE NOCASE, id
+      LIMIT ?
+    `
+    )
+    .all(...params, safeLimit + 1)
+
+  const hasMore = rows.length > safeLimit
+  const page = hasMore ? rows.slice(0, safeLimit) : rows
+  const items = page.map((row) => JSON.parse(row.payload))
+  const lastRow = page[page.length - 1]
+  const nextCursor = hasMore && lastRow ? { name: lastRow.name, id: lastRow.id } : null
+  return { items, nextCursor }
+}
+
+// Draft visibility, pushed into SQL so pages stay full: a draft is visible only
+// to its collaborators. This mirrors normalizeDraftCollaborators exactly — the
+// creator (created_by_user_id) is always an implicit collaborator, and explicit
+// membership lives in the payload's $.collaborators array. json_each on a
+// missing $.collaborators path yields zero rows, so drafts without the array
+// fall back to the creator check alone.
+const SUBMISSION_DRAFT_VISIBILITY_SQL = `(
+  COALESCE(status, '') != 'draft'
+  OR (? != '' AND COALESCE(created_by_user_id, '') = ?)
+  OR EXISTS (
+    SELECT 1 FROM json_each(payload, '$.collaborators')
+    WHERE ? != '' AND json_extract(json_each.value, '$.userId') = ?
+  )
+)`
+
+// Submission list page: created_at DESC, rowid DESC (stable tiebreak for
+// same-timestamp rows). The collaborator visibility rule is part of the WHERE
+// clause, so a requested page is always full when more visible rows exist.
+export function queryFormSubmissionRowsPage({
+  firmId,
+  status = null,
+  viewerUserId = null,
+  cursor = null,
+  limit = 50
+} = {}) {
+  const viewer = String(viewerUserId || '')
+  const clauses = ['firm_id = ?', SUBMISSION_DRAFT_VISIBILITY_SQL]
+  const params = [firmId, viewer, viewer, viewer, viewer]
+
+  if (status) {
+    clauses.push('status = ?')
+    params.push(status)
+  }
+  if (cursor && typeof cursor === 'object' && cursor.rowid) {
+    const createdAt = String(cursor.createdAt ?? '')
+    clauses.push("(COALESCE(created_at, '') < ? OR (COALESCE(created_at, '') = ? AND rowid < ?))")
+    params.push(createdAt, createdAt, Number(cursor.rowid) || 0)
+  }
+
+  const safeLimit = clampPageLimit(limit)
+  const rows = db
+    .prepare(
+      `
+      SELECT rowid AS rowid, COALESCE(created_at, '') AS createdAt, payload
+      FROM form_submissions
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY COALESCE(created_at, '') DESC, rowid DESC
+      LIMIT ?
+    `
+    )
+    .all(...params, safeLimit + 1)
+
+  const hasMore = rows.length > safeLimit
+  const page = hasMore ? rows.slice(0, safeLimit) : rows
+  const items = page.map((row) => JSON.parse(row.payload))
+  const lastRow = page[page.length - 1]
+  const nextCursor = hasMore && lastRow ? { createdAt: lastRow.createdAt, rowid: lastRow.rowid } : null
+  return { items, nextCursor }
+}
+
+// --- Global search index --------------------------------------------------
+// Runtime-managed (NOT a numbered migration) so startup never hard-fails on an
+// SQLite build without FTS5: when FTS5 is available search_index is an FTS5
+// virtual table ranked with bm25(); otherwise it is a plain table served by
+// indexed LIKE/instr matching. Triggers keep it in sync with the source
+// tables. ONLY promoted plaintext columns are ever written into the index —
+// profiles first_name/last_name/email/phone, households.name, template names/
+// kinds. Payload JSON (which carries the encrypted SSN/DOB envelopes and
+// client-entered submission data) is read solely for the non-sensitive
+// archivedAt marker in trigger gates and is never indexed. Submissions are
+// resolved at query time by joining matched profile/template ids — submission
+// payloads are never indexed.
+
+let searchIndexMode = null // 'fts5' | 'like' | null (unavailable)
+
+const SEARCH_INDEX_SOURCES = [
+  {
+    table: 'profiles',
+    entityType: 'profile',
+    title: "trim(R.first_name || ' ' || R.last_name)",
+    subtitle: "trim(COALESCE(R.email, '') || ' ' || COALESCE(R.phone, ''))",
+    gate: "json_extract(R.payload, '$.archivedAt') IS NULL"
+  },
+  {
+    table: 'households',
+    entityType: 'household',
+    title: 'R.name',
+    subtitle: "''",
+    gate: "json_extract(R.payload, '$.archivedAt') IS NULL"
+  },
+  {
+    table: 'form_templates',
+    entityType: 'form_template',
+    title: 'R.name',
+    subtitle: "'Form template'",
+    gate: null
+  },
+  {
+    table: 'document_templates',
+    entityType: 'document_template',
+    title: 'R.name',
+    subtitle: "'Document template'",
+    gate: null
+  },
+  {
+    table: 'template_aggregates',
+    entityType: 'template',
+    title: 'R.name',
+    subtitle: "CASE WHEN R.kind = 'form' THEN 'Form template' ELSE 'Document template' END",
+    gate: null
+  }
+]
+
+function searchSourceSql(source, alias) {
+  const rewrite = (sql) => sql.replaceAll('R.', `${alias}.`)
+  return {
+    title: rewrite(source.title),
+    subtitle: rewrite(source.subtitle),
+    gate: source.gate ? rewrite(source.gate) : null
+  }
+}
+
+function searchIndexTriggerStatements(source) {
+  const { title, subtitle, gate } = searchSourceSql(source, 'new')
+  const deleteFor = (rowRef) =>
+    `DELETE FROM search_index WHERE entity_type = '${source.entityType}' AND entity_id = ${rowRef}.id;`
+  const insertNew = `INSERT INTO search_index (title, subtitle, firm_id, entity_type, entity_id)
+    SELECT ${title}, ${subtitle}, new.firm_id, '${source.entityType}', new.id
+    ${gate ? `WHERE ${gate}` : ''};`
+  return [
+    `CREATE TRIGGER IF NOT EXISTS trg_search_index_${source.table}_insert AFTER INSERT ON ${source.table}
+     BEGIN
+       ${deleteFor('new')}
+       ${insertNew}
+     END;`,
+    `CREATE TRIGGER IF NOT EXISTS trg_search_index_${source.table}_update AFTER UPDATE ON ${source.table}
+     BEGIN
+       ${deleteFor('old')}
+       ${deleteFor('new')}
+       ${insertNew}
+     END;`,
+    `CREATE TRIGGER IF NOT EXISTS trg_search_index_${source.table}_delete AFTER DELETE ON ${source.table}
+     BEGIN
+       ${deleteFor('old')}
+     END;`
+  ]
+}
+
+function rebuildSearchIndexFromSources() {
+  db.exec('DELETE FROM search_index')
+  for (const source of SEARCH_INDEX_SOURCES) {
+    const { title, subtitle, gate } = searchSourceSql(source, source.table)
+    db.exec(`
+      INSERT INTO search_index (title, subtitle, firm_id, entity_type, entity_id)
+      SELECT ${title}, ${subtitle}, ${source.table}.firm_id, '${source.entityType}', ${source.table}.id
+      FROM ${source.table}
+      ${gate ? `WHERE ${gate}` : ''}
+    `)
+  }
+}
+
+// Feature-detects FTS5, creates search_index (FTS5 virtual table or plain
+// LIKE-served table), installs the sync triggers, and rebuilds the index from
+// the source tables when it was just created. Idempotent; safe to call again
+// (e.g. from tests after dropping the table to exercise the LIKE fallback).
+export function ensureSearchIndex({ forceLikeMode = false } = {}) {
+  const existing = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'search_index'").get()
+  let created = false
+  if (!existing) {
+    if (!forceLikeMode) {
+      try {
+        db.exec(
+          'CREATE VIRTUAL TABLE search_index USING fts5(title, subtitle, firm_id UNINDEXED, entity_type UNINDEXED, entity_id UNINDEXED)'
+        )
+        searchIndexMode = 'fts5'
+        created = true
+      } catch {
+        // FTS5 not compiled into this SQLite build: fall through to the plain table.
+      }
+    }
+    if (!created) {
+      db.exec(`
+        CREATE TABLE search_index (
+          title TEXT NOT NULL DEFAULT '',
+          subtitle TEXT NOT NULL DEFAULT '',
+          firm_id TEXT NOT NULL,
+          entity_type TEXT NOT NULL,
+          entity_id TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_search_index_scope ON search_index (firm_id, entity_type, entity_id);
+      `)
+      searchIndexMode = 'like'
+      created = true
+    }
+  } else {
+    searchIndexMode = /fts5/i.test(existing.sql || '') ? 'fts5' : 'like'
+  }
+
+  for (const source of SEARCH_INDEX_SOURCES) {
+    for (const statement of searchIndexTriggerStatements(source)) {
+      db.exec(statement)
+    }
+  }
+
+  if (created) {
+    rebuildSearchIndexFromSources()
+  }
+  return { mode: searchIndexMode, rebuilt: created }
+}
+
+export function getSearchIndexMode() {
+  return searchIndexMode
+}
+
+// Sanitizes free text into a safe FTS5 MATCH expression: operators/quotes are
+// stripped, every term is double-quoted (so ., @, - inside emails and names
+// cannot be parsed as syntax), and terms are prefix-matched.
+function buildFtsMatchExpression(q) {
+  const terms = (String(q || '').match(/[\p{L}\p{N}@._'-]+/gu) || [])
+    .map((term) => term.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
+    .map((term) => term.replaceAll('"', ''))
+    .filter(Boolean)
+  if (!terms.length) return null
+  return terms.map((term) => `"${term}"*`).join(' ')
+}
+
+function searchTerms(q) {
+  return (String(q || '').match(/[\p{L}\p{N}@._'-]+/gu) || [])
+    .map((term) => term.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, ''))
+    .filter(Boolean)
+    .map((term) => term.toLowerCase())
+}
+
+// Firm-scoped index query. `types` filters on entity_type; limit clamps to
+// 1..50. FTS5 mode ranks with bm25 (ascending = most relevant first); LIKE
+// mode matches every term as a case-insensitive substring over title/subtitle
+// and orders alphabetically.
+export function querySearchIndex({ firmId, q, types = null, limit = 20 } = {}) {
+  if (!searchIndexMode || !firmId) return []
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50)
+  const typeList = Array.isArray(types) ? types.filter(Boolean) : null
+
+  if (searchIndexMode === 'fts5') {
+    const match = buildFtsMatchExpression(q)
+    if (!match) return []
+    const clauses = ['search_index MATCH ?', 'firm_id = ?']
+    const params = [match, firmId]
+    if (typeList && typeList.length) {
+      clauses.push(`entity_type IN (${typeList.map(() => '?').join(', ')})`)
+      params.push(...typeList)
+    }
+    return db
+      .prepare(
+        `
+        SELECT entity_type AS entityType, entity_id AS entityId, title, subtitle
+        FROM search_index
+        WHERE ${clauses.join(' AND ')}
+        ORDER BY bm25(search_index), title COLLATE NOCASE, entity_id
+        LIMIT ?
+      `
+      )
+      .all(...params, safeLimit)
+  }
+
+  const terms = searchTerms(q)
+  if (!terms.length) return []
+  const clauses = ['firm_id = ?']
+  const params = [firmId]
+  for (const term of terms) {
+    clauses.push("instr(lower(title || ' ' || subtitle), ?) > 0")
+    params.push(term)
+  }
+  if (typeList && typeList.length) {
+    clauses.push(`entity_type IN (${typeList.map(() => '?').join(', ')})`)
+    params.push(...typeList)
+  }
+  return db
+    .prepare(
+      `
+      SELECT entity_type AS entityType, entity_id AS entityId, title, subtitle
+      FROM search_index
+      WHERE ${clauses.join(' AND ')}
+      ORDER BY title COLLATE NOCASE, entity_id
+      LIMIT ?
+    `
+    )
+    .all(...params, safeLimit)
+}
+
+// Query-time submission resolution for global search: submissions surface when
+// their client or template matched the index. Names come from promoted
+// plaintext columns only; submission payloads (client-entered PII) are never
+// read. Draft visibility applies the same collaborator rule as the list page.
+export function querySubmissionRowsForSearch({
+  firmId,
+  profileIds = [],
+  templateIds = [],
+  viewerUserId = null,
+  limit = 20
+} = {}) {
+  const profiles = (profileIds || []).filter(Boolean)
+  const templates = (templateIds || []).filter(Boolean)
+  if (!profiles.length && !templates.length) return []
+
+  const viewer = String(viewerUserId || '')
+  const matchClauses = []
+  const matchParams = []
+  if (profiles.length) {
+    matchClauses.push(`client_id IN (${profiles.map(() => '?').join(', ')})`)
+    matchParams.push(...profiles)
+  }
+  if (templates.length) {
+    matchClauses.push(`template_id IN (${templates.map(() => '?').join(', ')})`)
+    matchParams.push(...templates)
+  }
+
+  const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50)
+  return db
+    .prepare(
+      `
+      SELECT
+        id,
+        status,
+        client_id AS clientId,
+        template_id AS templateId,
+        COALESCE(created_at, '') AS createdAt,
+        (SELECT trim(p.first_name || ' ' || p.last_name) FROM profiles p WHERE p.id = form_submissions.client_id) AS clientName,
+        (SELECT ta.name FROM template_aggregates ta WHERE ta.id = form_submissions.template_id) AS templateName
+      FROM form_submissions
+      WHERE firm_id = ?
+        AND (${matchClauses.join(' OR ')})
+        AND ${SUBMISSION_DRAFT_VISIBILITY_SQL}
+      ORDER BY COALESCE(created_at, '') DESC, rowid DESC
+      LIMIT ?
+    `
+    )
+    .all(firmId, ...matchParams, viewer, viewer, viewer, viewer, safeLimit)
+}
+
+// Test-only readers/hooks: pin the exact indexed column set (PII exclusion
+// proofs) and exercise the LIKE fallback by dropping + rebuilding the index.
+export function listSearchIndexEntriesForTest() {
+  return db
+    .prepare(
+      `
+      SELECT entity_type AS entityType, entity_id AS entityId, firm_id AS firmId, title, subtitle
+      FROM search_index
+      ORDER BY entity_type, entity_id
+    `
+    )
+    .all()
+}
+
+export function getSearchIndexColumnsForTest() {
+  return db
+    .prepare('SELECT name FROM pragma_table_info(?) ORDER BY cid')
+    .all('search_index')
+    .map((row) => row.name)
+}
+
+export function __dropSearchIndexForTest() {
+  db.exec('DROP TABLE IF EXISTS search_index')
+  searchIndexMode = null
+}
+
+// Best-effort init: a failure here (e.g. an exotic SQLite build) degrades
+// global search to "no results" rather than failing startup.
+try {
+  ensureSearchIndex()
+} catch {
+  searchIndexMode = null
 }
 
 export function ensureDatabaseReady() {

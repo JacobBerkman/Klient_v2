@@ -1,11 +1,12 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { api, routes } from '../lib/client'
 import { formatDateTime, humanizeKey, profileName } from '../lib/format'
 import { hasGuard } from '../lib/permissions'
 import { useAsync } from '../lib/useAsync'
-import type { CustomFieldSchemaPayload, Profile } from '../lib/types'
+import type { CustomFieldSchemaPayload, PageEnvelope, Profile } from '../lib/types'
 import { useAuth } from '../app/auth'
+import { useToast } from '../components/toast'
 import {
   ActionPanel,
   ButtonLink,
@@ -28,19 +29,22 @@ export const handle = {
   breadcrumb: 'Profiles'
 }
 
+const PAGE_SIZE = 50
+const SEARCH_DEBOUNCE_MS = 250
+
 interface ProfilesPageData {
-  profiles: Profile[]
+  page: PageEnvelope<Profile>
   schema: CustomFieldSchemaPayload
 }
 
 export function Component() {
   const { user } = useAuth()
+  const toast = useToast()
   const [searchParams, setSearchParams] = useSearchParams()
   const [refreshKey, setRefreshKey] = useState(0)
   const [search, setSearch] = useState('')
   const [kindFilter, setKindFilter] = useState<'all' | 'prospect' | 'client'>('all')
   const [showArchived, setShowArchived] = useState(false)
-  const [statusMessage, setStatusMessage] = useState('')
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState({
     kind: 'prospect',
@@ -53,29 +57,61 @@ export function Component() {
 
   const panel = searchParams.get('panel') || 'directory'
 
+  // Search and kind filters are pushed to the server (SQL-backed, paged);
+  // the input is debounced so keystrokes don't spam the API.
+  const [debouncedSearch, setDebouncedSearch] = useState('')
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), SEARCH_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [search])
+
+  const listQuery = useMemo(
+    () => ({
+      ...(debouncedSearch ? { search: debouncedSearch } : {}),
+      ...(kindFilter !== 'all' ? { kind: kindFilter } : {}),
+      ...(showArchived ? { includeArchived: 1 } : {})
+    }),
+    [debouncedSearch, kindFilter, showArchived]
+  )
+
   const { data, error, loading } = useAsync<ProfilesPageData>(async () => {
-    const [profiles, schema] = await Promise.all([
-      api.get<Profile[]>(routes.profiles(showArchived ? { includeArchived: 1 } : {})),
+    const [page, schema] = await Promise.all([
+      api.get<PageEnvelope<Profile>>(routes.profiles({ ...listQuery, limit: PAGE_SIZE })),
       api.get<CustomFieldSchemaPayload>(routes.profileCustomFieldSchema()).catch(() => ({ fields: [] }))
     ])
-    return { profiles, schema }
-  }, [refreshKey, showArchived])
+    return { page, schema }
+  }, [refreshKey, listQuery])
 
-  const visibleProfiles = useMemo(() => {
-    if (!data) return []
-    const token = search.trim().toLowerCase()
-    return data.profiles.filter((profile) => {
-      if (kindFilter !== 'all' && profile.kind !== kindFilter) return false
-      if (!token) return true
-      const haystack = `${profileName(profile)} ${profile.email || ''} ${profile.phone || ''}`.toLowerCase()
-      return haystack.includes(token)
-    })
-  }, [data, kindFilter, search])
+  // "Load more" appends further pages below the freshly fetched first page.
+  const [extraProfiles, setExtraProfiles] = useState<Profile[]>([])
+  const [nextCursor, setNextCursor] = useState<string | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  useEffect(() => {
+    setExtraProfiles([])
+    setNextCursor(data?.page.nextCursor ?? null)
+  }, [data])
+
+  async function handleLoadMore() {
+    if (!nextCursor || loadingMore) return
+    setLoadingMore(true)
+    try {
+      const page = await api.get<PageEnvelope<Profile>>(
+        routes.profiles({ ...listQuery, limit: PAGE_SIZE, cursor: nextCursor })
+      )
+      setExtraProfiles((current) => [...current, ...page.items])
+      setNextCursor(page.nextCursor)
+    } catch (loadError) {
+      toast.error(loadError instanceof Error ? loadError.message : 'Unable to load more profiles.')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  const visibleProfiles = useMemo(() => (data ? [...data.page.items, ...extraProfiles] : []), [data, extraProfiles])
 
   async function handleCreateProfile(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()
     setCreating(true)
-    setStatusMessage('')
     try {
       await api.post(routes.profiles(), {
         kind: form.kind,
@@ -85,7 +121,7 @@ export function Component() {
         phone: form.phone || undefined,
         ...(form.stage ? { stage: form.stage } : {})
       })
-      setStatusMessage('Profile created.')
+      toast.success('Profile created.')
       setForm({
         kind: 'prospect',
         firstName: '',
@@ -96,7 +132,7 @@ export function Component() {
       })
       setRefreshKey((value) => value + 1)
     } catch (createError) {
-      setStatusMessage(createError instanceof Error ? createError.message : 'Unable to create profile.')
+      toast.error(createError instanceof Error ? createError.message : 'Unable to create profile.')
     } finally {
       setCreating(false)
     }
@@ -249,14 +285,12 @@ export function Component() {
                     {creating ? 'Creating...' : 'Create profile'}
                   </button>
                 </form>
-                <p className={statusMessage ? 'inline-notice inline-notice-info' : 'muted'}>
-                  {statusMessage || 'Global create forms have been relocated into the relevant routed page.'}
-                </p>
+                <p className="muted">Global create forms have been relocated into the relevant routed page.</p>
               </ActionPanel>
 
               <ActionPanel
                 title="Profile list"
-                subtitle={`${visibleProfiles.length} profiles match the current filters.`}
+                subtitle={`${visibleProfiles.length} profiles loaded${nextCursor ? ' (more available)' : ''}.`}
               >
                 {visibleProfiles.length ? (
                   <DataTable caption="Profile directory results">
@@ -303,6 +337,13 @@ export function Component() {
                     detail="Adjust the search or profile type filter, or create a new profile."
                   />
                 )}
+                {nextCursor ? (
+                  <div className="activity-load-more">
+                    <button type="button" onClick={() => void handleLoadMore()} disabled={loadingMore}>
+                      {loadingMore ? 'Loading...' : 'Load more'}
+                    </button>
+                  </div>
+                ) : null}
               </ActionPanel>
             </div>
           </>

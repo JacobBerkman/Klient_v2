@@ -270,7 +270,6 @@ function PortalDraftSection({
     setDraftData((current) => ({ ...current, ...serverSlice }))
     autosave.reset(serverSlice)
     setReloaded(true)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autosave.status])
 
   // Register this section's flush so the shared container onBlur can flush every
@@ -555,7 +554,6 @@ export function Component() {
     return () => {
       cancelled = true
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, selectedTemplateId])
 
   async function handleSubmit(status: 'draft' | 'submitted') {

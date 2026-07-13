@@ -261,6 +261,9 @@ export function createStoreExportsRepository({
       const fromDate = parseIsoDate(options.fromDate)
       const toDate = parseIsoDate(options.toDate)
       const sort = String(options.sort || 'createdAt_desc').trim()
+      // Clamped list read (default and max 200), applied after sorting so the
+      // newest/most relevant jobs win when a firm exceeds the cap.
+      const limit = Math.min(Math.max(Number.parseInt(options.limit, 10) || 200, 1), 200)
 
       const filtered = jobs
         .filter((entry) => entry.firmId === user.firmId)
@@ -269,7 +272,7 @@ export function createStoreExportsRepository({
         .filter((entry) => !fromDate || Number(new Date(entry.createdAt || 0)) >= fromDate.getTime())
         .filter((entry) => !toDate || Number(new Date(entry.createdAt || 0)) <= toDate.getTime())
 
-      return sortJobs(filtered, sort).map(withArtifactMetadata)
+      return sortJobs(filtered, sort).slice(0, limit).map(withArtifactMetadata)
     },
     create(user, input = {}) {
       const template = state.templateAggregates.find(

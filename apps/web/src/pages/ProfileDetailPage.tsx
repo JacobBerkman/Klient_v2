@@ -19,6 +19,8 @@ const MEETING_TYPE_OPTIONS = [
 ] as const
 import { useAuth } from '../app/auth'
 import { ProfileTagsEditor } from '../components/ProfileTags'
+import { ConfirmDialog } from '../components/ConfirmDialog'
+import { useToast } from '../components/toast'
 import {
   ActionPanel,
   ButtonLink,
@@ -51,12 +53,14 @@ const MAX_ATTACHMENT_BYTES = 20 * 1024 * 1024
 export function Component() {
   const { profileId = '' } = useParams()
   const { user } = useAuth()
+  const toast = useToast()
   const [refreshKey, setRefreshKey] = useState(0)
   const [statusMessage, setStatusMessage] = useState('')
   const [noteBody, setNoteBody] = useState('')
   const [confirmingConvert, setConfirmingConvert] = useState(false)
   const [converting, setConverting] = useState(false)
   const [confirmingArchiveProfile, setConfirmingArchiveProfile] = useState(false)
+  const [confirmingRestoreProfile, setConfirmingRestoreProfile] = useState(false)
   const [archivingProfile, setArchivingProfile] = useState(false)
   const [uploading, setUploading] = useState(false)
   const [uploadMessage, setUploadMessage] = useState('')
@@ -65,7 +69,6 @@ export function Component() {
   const [meetingType, setMeetingType] = useState<string>('intro')
   const [meetingScheduledAt, setMeetingScheduledAt] = useState('')
   const [meetingNotes, setMeetingNotes] = useState('')
-  const [meetingMessage, setMeetingMessage] = useState('')
   const [confirmingDeleteMeetingId, setConfirmingDeleteMeetingId] = useState('')
   const [deletingMeetingId, setDeletingMeetingId] = useState('')
 
@@ -129,13 +132,12 @@ export function Component() {
     setArchivingProfile(true)
     try {
       await profilesApi.archive(profileId, { expectedUpdatedAt: data.profile.updatedAt })
-      setConfirmingArchiveProfile(false)
-      setStatusMessage('Profile archived.')
+      toast.success('Profile archived.')
       setRefreshKey((value) => value + 1)
     } catch (archiveError) {
-      setConfirmingArchiveProfile(false)
-      setStatusMessage(archiveError instanceof Error ? archiveError.message : 'Archive failed.')
+      toast.error(archiveError instanceof Error ? archiveError.message : 'Archive failed.')
     } finally {
+      setConfirmingArchiveProfile(false)
       setArchivingProfile(false)
     }
   }
@@ -145,11 +147,12 @@ export function Component() {
     setArchivingProfile(true)
     try {
       await profilesApi.restore(profileId, { expectedUpdatedAt: data.profile.updatedAt })
-      setStatusMessage('Profile restored.')
+      toast.success('Profile restored.')
       setRefreshKey((value) => value + 1)
     } catch (restoreError) {
-      setStatusMessage(restoreError instanceof Error ? restoreError.message : 'Restore failed.')
+      toast.error(restoreError instanceof Error ? restoreError.message : 'Restore failed.')
     } finally {
+      setConfirmingRestoreProfile(false)
       setArchivingProfile(false)
     }
   }
@@ -160,10 +163,10 @@ export function Component() {
     try {
       await api.post(routes.profileNotes(profileId), { body: noteBody })
       setNoteBody('')
-      setStatusMessage('Note added.')
+      toast.success('Note added.')
       setRefreshKey((value) => value + 1)
     } catch (noteError) {
-      setStatusMessage(noteError instanceof Error ? noteError.message : 'Note creation failed.')
+      toast.error(noteError instanceof Error ? noteError.message : 'Note creation failed.')
     }
   }
 
@@ -193,10 +196,10 @@ export function Component() {
         contentType,
         sizeBytes: file.size
       })
-      setUploadMessage(`Uploaded "${file.name}".`)
+      toast.success(`Uploaded "${file.name}".`)
       setRefreshKey((value) => value + 1)
     } catch (uploadError) {
-      setUploadMessage(uploadError instanceof Error ? uploadError.message : 'Attachment upload failed.')
+      toast.error(uploadError instanceof Error ? uploadError.message : 'Attachment upload failed.')
     } finally {
       setUploading(false)
       input.value = ''
@@ -207,13 +210,12 @@ export function Component() {
     setArchivingId(uploadId)
     try {
       await api.post(routes.profileUploadArchive(profileId, uploadId))
-      setConfirmingArchiveId('')
-      setUploadMessage('Attachment archived.')
+      toast.success('Attachment archived.')
       setRefreshKey((value) => value + 1)
     } catch (archiveError) {
-      setConfirmingArchiveId('')
-      setUploadMessage(archiveError instanceof Error ? archiveError.message : 'Archive failed.')
+      toast.error(archiveError instanceof Error ? archiveError.message : 'Archive failed.')
     } finally {
+      setConfirmingArchiveId('')
       setArchivingId('')
     }
   }
@@ -229,10 +231,10 @@ export function Component() {
       setMeetingType('intro')
       setMeetingScheduledAt('')
       setMeetingNotes('')
-      setMeetingMessage('Meeting logged.')
+      toast.success('Meeting logged.')
       setRefreshKey((value) => value + 1)
     } catch (meetingError) {
-      setMeetingMessage(meetingError instanceof Error ? meetingError.message : 'Could not log meeting.')
+      toast.error(meetingError instanceof Error ? meetingError.message : 'Could not log meeting.')
     }
   }
 
@@ -240,13 +242,12 @@ export function Component() {
     setDeletingMeetingId(meetingId)
     try {
       await api.delete(routes.profileMeeting(profileId, meetingId))
-      setConfirmingDeleteMeetingId('')
-      setMeetingMessage('Meeting deleted.')
+      toast.success('Meeting deleted.')
       setRefreshKey((value) => value + 1)
     } catch (meetingError) {
-      setConfirmingDeleteMeetingId('')
-      setMeetingMessage(meetingError instanceof Error ? meetingError.message : 'Meeting delete failed.')
+      toast.error(meetingError instanceof Error ? meetingError.message : 'Meeting delete failed.')
     } finally {
+      setConfirmingDeleteMeetingId('')
       setDeletingMeetingId('')
     }
   }
@@ -281,15 +282,26 @@ export function Component() {
             pickers. Its notes, uploads, and submissions are preserved.
           </InlineNotice>
           {hasGuard(user, 'canWriteProfiles') ? (
-            <button
-              type="button"
-              className="secondary-button"
-              disabled={archivingProfile}
-              data-testid="profile-restore"
-              onClick={() => void handleRestoreProfile()}
-            >
-              {archivingProfile ? 'Restoring...' : 'Restore profile'}
-            </button>
+            <>
+              <button
+                type="button"
+                className="secondary-button"
+                disabled={archivingProfile}
+                data-testid="profile-restore"
+                onClick={() => setConfirmingRestoreProfile(true)}
+              >
+                {archivingProfile ? 'Restoring...' : 'Restore profile'}
+              </button>
+              <ConfirmDialog
+                open={confirmingRestoreProfile}
+                title="Restore profile?"
+                description={`Restoring returns this ${data.profile.kind} to lists, the pipeline board, dashboard counts, analytics, and client pickers.`}
+                confirmLabel="Confirm restore"
+                busy={archivingProfile}
+                onConfirm={() => void handleRestoreProfile()}
+                onCancel={() => setConfirmingRestoreProfile(false)}
+              />
+            </>
           ) : null}
         </div>
       ) : null}
@@ -381,44 +393,26 @@ export function Component() {
             ) : null}
             {!data.profile.archivedAt && hasGuard(user, 'canWriteProfiles') ? (
               <div className="compact-stack" data-testid="profile-archive">
-                {confirmingArchiveProfile ? (
-                  <>
-                    <p className="muted compact">
-                      Archiving hides this {data.profile.kind} from lists, the pipeline board, dashboard counts,
-                      analytics, and client pickers. Notes, uploads, and submissions are preserved, and you can restore
-                      it later.
-                    </p>
-                    <div className="actions-row">
-                      <button
-                        type="button"
-                        className="secondary-button"
-                        disabled={archivingProfile}
-                        onClick={() => void handleArchiveProfile()}
-                      >
-                        Confirm archive
-                      </button>
-                      <button
-                        type="button"
-                        className="ghost-button"
-                        disabled={archivingProfile}
-                        onClick={() => setConfirmingArchiveProfile(false)}
-                      >
-                        Cancel
-                      </button>
-                    </div>
-                  </>
-                ) : (
-                  <button
-                    type="button"
-                    className="ghost-button"
-                    onClick={() => {
-                      setStatusMessage('')
-                      setConfirmingArchiveProfile(true)
-                    }}
-                  >
-                    Archive profile
-                  </button>
-                )}
+                <button
+                  type="button"
+                  className="ghost-button"
+                  onClick={() => {
+                    setStatusMessage('')
+                    setConfirmingArchiveProfile(true)
+                  }}
+                >
+                  Archive profile
+                </button>
+                <ConfirmDialog
+                  open={confirmingArchiveProfile}
+                  title="Archive profile?"
+                  description={`Archiving hides this ${data.profile.kind} from lists, the pipeline board, dashboard counts, analytics, and client pickers. Notes, uploads, and submissions are preserved, and you can restore it later.`}
+                  confirmLabel="Confirm archive"
+                  tone="danger"
+                  busy={archivingProfile}
+                  onConfirm={() => void handleArchiveProfile()}
+                  onCancel={() => setConfirmingArchiveProfile(false)}
+                />
               </div>
             ) : null}
           </ActionPanel>
@@ -580,26 +574,7 @@ export function Component() {
                         Download
                       </a>
                       {canWriteProfiles ? (
-                        confirmingArchiveId === upload.id ? (
-                          <>
-                            <button
-                              type="button"
-                              className="ghost-button compact"
-                              disabled={archivingId === upload.id}
-                              onClick={() => void handleArchive(upload.id)}
-                            >
-                              Confirm archive
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost-button compact"
-                              disabled={archivingId === upload.id}
-                              onClick={() => setConfirmingArchiveId('')}
-                            >
-                              Cancel
-                            </button>
-                          </>
-                        ) : (
+                        <>
                           <button
                             type="button"
                             className="ghost-button compact"
@@ -610,7 +585,17 @@ export function Component() {
                           >
                             Archive
                           </button>
-                        )
+                          <ConfirmDialog
+                            open={confirmingArchiveId === upload.id}
+                            title="Archive attachment?"
+                            description={`Archiving removes "${upload.name}" from this profile's attachment list. The stored document follows the standard retention lifecycle.`}
+                            confirmLabel="Confirm archive"
+                            tone="danger"
+                            busy={archivingId === upload.id}
+                            onConfirm={() => void handleArchive(upload.id)}
+                            onCancel={() => setConfirmingArchiveId('')}
+                          />
+                        </>
                       ) : null}
                     </div>
                   </td>
@@ -621,7 +606,11 @@ export function Component() {
         ) : (
           <EmptyState
             title="No attachments yet."
-            detail={canWriteProfiles ? 'Upload a document to attach it to this profile.' : 'No documents are attached to this profile.'}
+            detail={
+              canWriteProfiles
+                ? 'Upload a document to attach it to this profile.'
+                : 'No documents are attached to this profile.'
+            }
           />
         )}
       </PageSection>
@@ -660,11 +649,6 @@ export function Component() {
             <button type="submit">Log meeting</button>
           </form>
         ) : null}
-        {meetingMessage ? (
-          <p className="inline-notice inline-notice-info" data-testid="meeting-status">
-            {meetingMessage}
-          </p>
-        ) : null}
         {meetings.loading ? (
           <LoadingState label="Loading meetings" />
         ) : meetings.error ? (
@@ -690,37 +674,23 @@ export function Component() {
                   {canWriteProfiles ? (
                     <td>
                       <div className="actions-row">
-                        {confirmingDeleteMeetingId === meeting.id ? (
-                          <>
-                            <button
-                              type="button"
-                              className="ghost-button compact"
-                              disabled={deletingMeetingId === meeting.id}
-                              onClick={() => void handleDeleteMeeting(meeting.id)}
-                            >
-                              Confirm delete
-                            </button>
-                            <button
-                              type="button"
-                              className="ghost-button compact"
-                              disabled={deletingMeetingId === meeting.id}
-                              onClick={() => setConfirmingDeleteMeetingId('')}
-                            >
-                              Cancel
-                            </button>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            className="ghost-button compact"
-                            onClick={() => {
-                              setMeetingMessage('')
-                              setConfirmingDeleteMeetingId(meeting.id)
-                            }}
-                          >
-                            Delete
-                          </button>
-                        )}
+                        <button
+                          type="button"
+                          className="ghost-button compact"
+                          onClick={() => setConfirmingDeleteMeetingId(meeting.id)}
+                        >
+                          Delete
+                        </button>
+                        <ConfirmDialog
+                          open={confirmingDeleteMeetingId === meeting.id}
+                          title="Delete meeting?"
+                          description="Deleting removes this meeting from the profile's log. This cannot be undone."
+                          confirmLabel="Confirm delete"
+                          tone="danger"
+                          busy={deletingMeetingId === meeting.id}
+                          onConfirm={() => void handleDeleteMeeting(meeting.id)}
+                          onCancel={() => setConfirmingDeleteMeetingId('')}
+                        />
                       </div>
                     </td>
                   ) : null}
@@ -731,7 +701,11 @@ export function Component() {
         ) : (
           <EmptyState
             title="No meetings logged yet."
-            detail={canWriteProfiles ? 'Log the first meeting with this profile above.' : 'No meetings are recorded for this profile.'}
+            detail={
+              canWriteProfiles
+                ? 'Log the first meeting with this profile above.'
+                : 'No meetings are recorded for this profile.'
+            }
           />
         )}
       </PageSection>

@@ -44,10 +44,12 @@ function normalizeEventInput(input = {}) {
 export function createEventsDomain(ctx) {
   const { addAudit, persist } = ctx
   return {
-    listEvents(user, { includeArchived = false } = {}) {
+    listEvents(user, { includeArchived = false, limit } = {}) {
       requireFirmContext(user, { method: 'store.listEvents' })
       requirePermission(user, 'profiles:read')
-      return listEventRowsByFirm(user.firmId, { includeArchived })
+      // Clamped list read (default and max 200) so the endpoint stays bounded.
+      const cappedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 200, 1), 200)
+      return listEventRowsByFirm(user.firmId, { includeArchived }).slice(0, cappedLimit)
     },
     getEvent(user, eventId) {
       const firmContext = requireFirmContext(user, { method: 'store.getEvent' })
@@ -130,7 +132,9 @@ export function createEventsDomain(ctx) {
       const firmContext = requireFirmContext(user, { method: 'store.createMeeting' })
       requirePermission(user, 'profiles:write')
       const profile = validateTenantEntityOwnership(firmContext, getProfileRow(profileId), { entityName: 'Profile' })
-      const rawType = String(input.meetingType ?? input.type ?? '').trim().toLowerCase()
+      const rawType = String(input.meetingType ?? input.type ?? '')
+        .trim()
+        .toLowerCase()
       const meetingType = MEETING_TYPES.has(rawType) ? rawType : 'other'
       let scheduledAt = null
       if (input.scheduledAt != null && String(input.scheduledAt).trim() !== '') {
