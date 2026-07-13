@@ -10,6 +10,9 @@ import type {
   FormSubmission,
   MappingRow,
   Profile,
+  TemplateAutoMapPayload,
+  TemplateMappingPathGroup,
+  TemplateMappingPathsPayload,
   TemplatePreviewPayload,
   TemplateVersion,
   TemplateVersionComparePayload
@@ -18,6 +21,7 @@ import { useAuth } from '../app/auth'
 import { ConfirmDialog } from '../components/ConfirmDialog'
 import { useToast } from '../components/toast'
 import {
+  Badge,
   Card,
   EmptyState,
   ErrorState,
@@ -28,6 +32,7 @@ import {
   PageSection,
   StatusBadge
 } from '../components/ui'
+import { SourcePathPicker } from '../components/SourcePathPicker'
 
 export const handle = {
   title: ({ templateId }: Record<string, string | undefined>) => `Template ${templateId || ''}`.trim(),
@@ -99,6 +104,13 @@ export function Component() {
   const [revertSelection, setRevertSelection] = useState({ targetVersion: '', changelog: '' })
   const [confirmingRevert, setConfirmingRevert] = useState(false)
   const [reverting, setReverting] = useState(false)
+  // Grouped source-path catalog for the mapping picker; fetched once per template.
+  // null = still loading or unavailable (picker falls back to free-text entry).
+  const [mappingPathGroups, setMappingPathGroups] = useState<TemplateMappingPathGroup[] | null>(null)
+  const [autoMapping, setAutoMapping] = useState(false)
+  // Freshest template payload returned by auto-map; cleared on the next full refetch
+  // so the canonical list response wins again.
+  const [templateOverride, setTemplateOverride] = useState<DocumentTemplate | null>(null)
 
   const { data, error, loading } = useAsync<TemplateDetailData>(async () => {
     const [templates, versions, transitions, profiles, submissions, formTemplates] = await Promise.all([
@@ -112,7 +124,10 @@ export function Component() {
     return { templates, versions, transitions, profiles, submissions, formTemplates }
   }, [templateId, refreshKey])
 
-  const template = data?.templates.find((entry) => entry.id === templateId) || null
+  const template =
+    (templateOverride && templateOverride.id === templateId ? templateOverride : null) ||
+    data?.templates.find((entry) => entry.id === templateId) ||
+    null
   const linkedForm = data?.formTemplates.find((entry) => entry.id === template?.linkedFormTemplateId) || null
   const extractionFields = template?.extraction?.fields?.length
     ? template.extraction.fields
@@ -123,6 +138,30 @@ export function Component() {
     if (!template) return
     setMappings((template.mappings || []).length ? template.mappings : [emptyMapping()])
   }, [template?.id, template?.updatedAt, template?.versionHash])
+
+  // Fetch the grouped source-path catalog once per template. Failure is
+  // non-fatal: the picker degrades to free-text entry.
+  useEffect(() => {
+    let cancelled = false
+    setMappingPathGroups(null)
+    if (!templateId) return
+    void api
+      .get<TemplateMappingPathsPayload>(routes.templateMappingPaths(templateId))
+      .then((payload) => {
+        if (!cancelled) setMappingPathGroups(payload.groups || [])
+      })
+      .catch(() => {
+        // Leave null so the picker advertises manual entry.
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [templateId])
+
+  function refreshTemplateData() {
+    setTemplateOverride(null)
+    setRefreshKey((value) => value + 1)
+  }
 
   const submissionsForSelection = useMemo(
     () =>
@@ -135,6 +174,13 @@ export function Component() {
   const mappedPdfFields = new Set(mappings.map((mapping) => String(mapping.pdfField || '').trim()).filter(Boolean))
   const missingMappingFields = requiredMappingFields.filter((name) => !mappedPdfFields.has(name))
   const mappingReadinessStatus = missingMappingFields.length ? 'missing required mappings' : 'complete mappings'
+  // A field is unmapped when it has no row, an empty sourcePath, or a sourcePath
+  // that just echoes its own field key (the auto-build placeholder).
+  const unmappedFieldCount = requiredMappingFields.filter((name) => {
+    const row = mappings.find((entry) => String(entry.pdfField || '').trim() === name)
+    const sourcePath = String(row?.sourcePath || '').trim()
+    return !row || !sourcePath || sourcePath === name
+  }).length
 
   async function handleSaveMappings() {
     if (!template) return
@@ -144,7 +190,7 @@ export function Component() {
         expectedVersionHash: template.versionHash
       })
       setStatusMessage('Mappings saved.')
-      setRefreshKey((value) => value + 1)
+      refreshTemplateData()
     } catch (saveError) {
       const validationPreview = validationPreviewFromError(saveError)
       if (validationPreview) {
@@ -157,6 +203,20 @@ export function Component() {
       } else {
         setStatusMessage(saveError instanceof Error ? saveError.message : 'Mapping save failed.')
       }
+    }
+  }
+
+  async function handleAutoMap() {
+    if (!template || autoMapping) return
+    setAutoMapping(true)
+    try {
+      const payload = await api.post<TemplateAutoMapPayload>(routes.templateAutoMap(template.id), {})
+      setTemplateOverride(payload.template)
+      toast.success(`Auto-mapped ${payload.applied} of ${payload.total} fields`)
+    } catch (autoMapError) {
+      toast.error(autoMapError instanceof Error ? autoMapError.message : 'Auto-map failed.')
+    } finally {
+      setAutoMapping(false)
     }
   }
 
@@ -184,7 +244,7 @@ export function Component() {
         submissionId: selection.submissionId || undefined
       })
       toast.success('Template published.')
-      setRefreshKey((value) => value + 1)
+      refreshTemplateData()
     } catch (publishError) {
       if (publishError instanceof ApiError && publishError.details && typeof publishError.details === 'object') {
         const details = publishError.details as Record<string, unknown>
@@ -241,7 +301,7 @@ export function Component() {
       })
       setRevertSelection({ targetVersion: '', changelog: '' })
       toast.success('Template reverted.')
-      setRefreshKey((value) => value + 1)
+      refreshTemplateData()
     } catch (revertError) {
       toast.error(revertError instanceof Error ? revertError.message : 'Revert failed.')
     } finally {
@@ -481,11 +541,30 @@ export function Component() {
         <PageSection
           title="Mappings"
           subtitle="Edit source paths, transforms, and repeater selectors without returning to the shell."
+          action={
+            <button
+              type="button"
+              className="secondary-button"
+              data-testid="auto-map-button"
+              onClick={() => void handleAutoMap()}
+              disabled={autoMapping || !hasGuard(user, 'canEditTemplate')}
+              aria-busy={autoMapping}
+            >
+              {autoMapping ? 'Auto-mapping...' : 'Auto-map fields'}
+            </button>
+          }
         >
           <div className="section-toolbar">
             <StatusBadge status={mappingReadinessStatus} />
             <StatusBadge status={`${requiredMappingFields.length} required PDF fields`} />
             <StatusBadge status={`${missingMappingFields.length} missing`} />
+            <span data-testid="unmapped-count-badge">
+              <Badge tone={unmappedFieldCount ? 'warning' : 'success'}>
+                {unmappedFieldCount
+                  ? `${unmappedFieldCount} field${unmappedFieldCount === 1 ? '' : 's'} unmapped`
+                  : 'all fields mapped'}
+              </Badge>
+            </span>
           </div>
           {missingMappingFields.length ? (
             <InlineNotice tone="warning">
@@ -538,15 +617,18 @@ export function Component() {
                       />
                     </td>
                     <td>
-                      <input
+                      <SourcePathPicker
                         value={String(mapping.sourcePath || '')}
-                        onChange={(event) =>
+                        onChange={(nextValue) =>
                           setMappings((current) =>
                             current.map((entry, rowIndex) =>
-                              rowIndex === index ? { ...entry, sourcePath: event.target.value } : entry
+                              rowIndex === index ? { ...entry, sourcePath: nextValue } : entry
                             )
                           )
                         }
+                        groups={mappingPathGroups}
+                        label={`Source path for ${String(mapping.pdfField || '').trim() || `row ${index + 1}`}`}
+                        inputTestId={`mapping-source-path-${index}`}
                       />
                     </td>
                     <td>

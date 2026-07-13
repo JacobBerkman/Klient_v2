@@ -2390,3 +2390,106 @@ details summary {
   letter-spacing: 0.04em;
   color: var(--color-text-muted);
 }
+
+/* -------------------------------------------------------------------------
+   Source path picker — grouped combobox for template mapping source paths
+   (see components/SourcePathPicker.tsx). The listbox is position: fixed
+   (inline top/left from JS) so the mapping table's overflow container does
+   not clip it; these rules cover the visual treatment only. Fully token
+   driven, so the [data-theme='dark'] overrides restyle it automatically.
+   ------------------------------------------------------------------------- */
+.source-path-picker {
+  position: relative;
+  min-width: 13rem;
+}
+
+.source-path-listbox {
+  z-index: 70;
+  margin: 0;
+  padding: 0.3rem;
+  list-style: none;
+  width: min(26rem, 92vw);
+  max-height: 20rem;
+  overflow-y: auto;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+
+.source-path-group {
+  padding-bottom: 0.2rem;
+}
+
+.source-path-group-label {
+  padding: 0.45rem 0.6rem 0.2rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--color-text-muted);
+}
+
+.source-path-group-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.source-path-option {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.source-path-option.is-active {
+  background: var(--color-primary-soft);
+}
+
+.source-path-option.is-custom .source-path-option-label {
+  color: var(--color-primary-hover);
+}
+
+.source-path-option-main {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  min-width: 0;
+}
+
+.source-path-option-label {
+  color: var(--color-text);
+  font-weight: 500;
+  font-size: 0.9rem;
+}
+
+.source-path-option-path {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  font-family: ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', Menlo, monospace;
+  overflow-wrap: anywhere;
+}
+
+.source-path-option-check {
+  color: var(--color-primary);
+  font-weight: 700;
+}
+
+.source-path-empty {
+  padding: 0.6rem;
+  color: var(--color-text-muted);
+  font-size: 0.85rem;
+}
+
+/* Badge/status row above the mappings table. */
+.section-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+  margin-bottom: var(--space-2);
+}
