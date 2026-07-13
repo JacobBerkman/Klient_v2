@@ -1,3 +1,5 @@
+import { suggestMapping } from './auto-map.mjs'
+
 function isObject(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value)
 }
@@ -113,13 +115,18 @@ function buildFlatSection(fields) {
 function buildMappingsForFlatFields(fields) {
   return fields.map((field) => {
     const key = normalizeKey(field.fieldName, 'field')
+    // Conservative auto-mapping: text fields whose names confidently match the
+    // profile/spouse/household vocabulary map straight to those paths; every
+    // other field keeps the historical default (the generated form's own key).
+    const suggestion = formFieldType(field.fieldType) === 'text' ? suggestMapping(field.fieldName) : null
     return {
       pdfField: field.fieldName,
       fieldLabel: titleize(field.fieldName, key),
-      sourcePath: key,
-      targetType: mappingTargetType(field.fieldType),
+      sourcePath: suggestion ? suggestion.sourcePath : key,
+      targetType: suggestion?.type === 'date' ? 'date' : mappingTargetType(field.fieldType),
       required: field.required === true,
-      transform: field.fieldType === 'checkbox' ? { type: 'checkbox' } : null
+      transform:
+        field.fieldType === 'checkbox' ? { type: 'checkbox' } : suggestion?.type === 'date' ? { type: 'date' } : null
     }
   })
 }

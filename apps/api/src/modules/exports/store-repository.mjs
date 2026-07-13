@@ -5,6 +5,7 @@ import {
   getExportJob,
   getFirmRow,
   getFormSubmissionById,
+  getHouseholdRow,
   getProfileRow,
   listExportQueueJobs,
   processExportQueueTickAsync,
@@ -12,7 +13,11 @@ import {
   requeueExportJob
 } from '../../storage.mjs'
 import { renderExportArtifact, renderExportArtifactPayload } from '../../export-artifact.mjs'
-import { resolveExportData, computeMappingVersionHash } from '../../export-data-resolution.mjs'
+import {
+  resolveExportData,
+  computeMappingVersionHash,
+  buildRelatedExportEntities
+} from '../../export-data-resolution.mjs'
 import { createFirmContext, validateEntityOwnership } from '../shared/tenancy.mjs'
 
 const PRESIGNED_DOWNLOAD_TTL_SECONDS = 300
@@ -44,9 +49,9 @@ function resolveSubmission(firmId, submissionId, clientId) {
   return findLatestFormSubmissionForExport(firmId, clientId)
 }
 
-function createRenderContext({ firm, template, client, submission }) {
+function createRenderContext({ firm, template, client, submission, spouse = null, household = null }) {
   const mappings = template?.mappings || []
-  const resolved = resolveExportData({ mappings, profile: client, submission })
+  const resolved = resolveExportData({ mappings, profile: client, submission, spouse, household })
   const mappingVersionHash = resolved.mappingVersionHash || computeMappingVersionHash(mappings)
   return {
     template: {
@@ -91,6 +96,11 @@ function createRenderContext({ firm, template, client, submission }) {
           data: submission.data || {}
         }
       : null,
+    // Firm-scoped spouse/household rows (already sanitized to the mapping-exposed
+    // subset) travel with the job so the render worker's re-resolution fallback
+    // can serve spouse.*/household.* paths too.
+    spouse: spouse || null,
+    household: household || null,
     resolved: {
       ...resolved,
       mappingVersionHash
@@ -272,7 +282,12 @@ export function createStoreExportsRepository({
       // profiles is the relational source of truth: firm-scoped row read.
       const client = input.clientId ? getProfileRow(input.clientId, { firmId: user.firmId }) : null
       const submission = resolveSubmission(user.firmId, String(input.submissionId || '').trim(), input.clientId)
-      const renderContext = createRenderContext({ firm, template, client, submission })
+      const { spouse, household } = buildRelatedExportEntities(client, {
+        getProfileRow,
+        getHouseholdRow,
+        firmId: user.firmId
+      })
+      const renderContext = createRenderContext({ firm, template, client, submission, spouse, household })
 
       const queued = enqueueExportJob({
         id: randomUUID(),

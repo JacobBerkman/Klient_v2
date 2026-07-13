@@ -72,7 +72,7 @@ function summarizeTransform(transform) {
   return summary
 }
 
-function resolveSourceValue({ sourcePath, profile, submission }) {
+function resolveSourceValue({ sourcePath, profile, submission, spouse, household }) {
   if (!sourcePath) return undefined
   if (sourcePath.startsWith('submission.')) {
     return resolvePathFromObject(submission?.data || {}, sourcePath.replace(/^submission\./, ''))
@@ -82,6 +82,15 @@ function resolveSourceValue({ sourcePath, profile, submission }) {
   }
   if (sourcePath.startsWith('profile.')) {
     return resolvePathFromObject(profile || {}, sourcePath.replace(/^profile\./, ''))
+  }
+  // spouse.* / household.* resolve from firm-scoped related rows supplied by the
+  // caller; a missing spouse/household simply resolves to undefined so exports
+  // stay non-fatal (renderers skip empty values).
+  if (sourcePath.startsWith('spouse.')) {
+    return resolvePathFromObject(spouse || {}, sourcePath.replace(/^spouse\./, ''))
+  }
+  if (sourcePath.startsWith('household.')) {
+    return resolvePathFromObject(household || {}, sourcePath.replace(/^household\./, ''))
   }
   const submissionValue = resolvePathFromObject(submission?.data || {}, sourcePath)
   if (submissionValue !== undefined) return submissionValue
@@ -134,11 +143,63 @@ export function computeMappingVersionHash(mappings = []) {
     .digest('hex')
 }
 
-export function resolveExportData({ mappings = [], profile = null, submission = null } = {}) {
+// Projects a firm-scoped profile row down to the non-sensitive fields the
+// mapping vocabulary exposes (spouse.* / household.primary.*). Encrypted
+// profile.pii never crosses this boundary.
+export function sanitizeRelatedExportProfile(profile) {
+  if (!profile || typeof profile !== 'object') return null
+  return {
+    id: profile.id || null,
+    firstName: profile.firstName || null,
+    lastName: profile.lastName || null,
+    email: profile.email || null,
+    phone: profile.phone || null,
+    dateOfBirth: profile.dateOfBirth || null
+  }
+}
+
+export function buildHouseholdExportContext(householdRow, primaryProfile = null) {
+  if (!householdRow || typeof householdRow !== 'object') return null
+  return {
+    id: householdRow.id || null,
+    name: householdRow.name || null,
+    primary: sanitizeRelatedExportProfile(primaryProfile)
+  }
+}
+
+// Resolves the export client's spouse + household rows via injected firm-scoped
+// lookups. Null-safe: missing linkage yields nulls, which downstream resolution
+// treats as empty values (non-fatal, PDF_FIELD_SKIPPED_EMPTY / blank cell).
+export function buildRelatedExportEntities(profile, { getProfileRow, getHouseholdRow, firmId } = {}) {
+  const spouseRow =
+    profile?.spouseClientId && typeof getProfileRow === 'function'
+      ? getProfileRow(profile.spouseClientId, { firmId })
+      : null
+  const householdRow =
+    profile?.householdId && typeof getHouseholdRow === 'function'
+      ? getHouseholdRow(profile.householdId, { firmId })
+      : null
+  const primaryRow =
+    householdRow?.primaryClientId && typeof getProfileRow === 'function'
+      ? getProfileRow(householdRow.primaryClientId, { firmId })
+      : null
+  return {
+    spouse: sanitizeRelatedExportProfile(spouseRow),
+    household: buildHouseholdExportContext(householdRow, primaryRow)
+  }
+}
+
+export function resolveExportData({
+  mappings = [],
+  profile = null,
+  submission = null,
+  spouse = null,
+  household = null
+} = {}) {
   const canonicalMappings = canonicalizeMappings(mappings)
   const rows = canonicalMappings.map((rule, index) => {
     const sourcePath = String(rule.sourcePath || '').trim()
-    const rawValue = resolveSourceValue({ sourcePath, profile, submission })
+    const rawValue = resolveSourceValue({ sourcePath, profile, submission, spouse, household })
     const transformed = applyTransform(rawValue, rule?.transform || null)
     const value = normalizeResolvedValue(rule, rawValue)
     const warnings = []
@@ -168,6 +229,7 @@ export function resolveExportData({ mappings = [], profile = null, submission = 
         normalizedType === targetType ||
         (targetType === 'text' && normalizedType === 'string') ||
         (targetType === 'select' && normalizedType === 'string') ||
+        (targetType === 'date' && normalizedType === 'string') ||
         (targetType === 'checkbox' && ['boolean', 'string'].includes(normalizedType))
       if (!compatible) {
         addWarning(

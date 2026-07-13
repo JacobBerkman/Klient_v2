@@ -10,6 +10,12 @@ export class TemplateRepository {
   updateTemplateMappings(_firmContext, _templateId, _mappings) {
     throwRepositoryScaffoldError('TemplateRepository', 'updateTemplateMappings')
   }
+  getTemplateMappingPaths(_firmContext, _templateId) {
+    throwRepositoryScaffoldError('TemplateRepository', 'getTemplateMappingPaths')
+  }
+  autoMapTemplateMappings(_firmContext, _templateId) {
+    throwRepositoryScaffoldError('TemplateRepository', 'autoMapTemplateMappings')
+  }
   publishTemplate(_firmContext, _templateId) {
     throwRepositoryScaffoldError('TemplateRepository', 'publishTemplate')
   }

@@ -1525,7 +1525,10 @@ export function createHttpServer({ modules }) {
         const result = await modules.forms.storeUploadedBytes({
           uploadId: decodeURIComponent(rawUploadId),
           objectKey: url.searchParams.get('key') || null,
-          contentType: String(req.headers['content-type'] || '').split(';')[0].trim() || null,
+          contentType:
+            String(req.headers['content-type'] || '')
+              .split(';')[0]
+              .trim() || null,
           body
         })
         finalizeLog(200)
@@ -2147,6 +2150,22 @@ export function createHttpServer({ modules }) {
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/mapping-paths') && req.method === 'GET') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canReadTemplate')
+        const result = modules.templates.mappingPaths(user, id)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
+      if (pathname.startsWith('/api/templates/') && pathname.endsWith('/mappings/auto-map') && req.method === 'POST') {
+        const id = pathname.split('/')[3]
+        const user = requireUser()
+        modules.policy.requireGuard(user, 'canEditTemplate')
+        const result = modules.templates.autoMapMappings(user, id)
+        finalizeLog(200)
+        return replyJson(200, result, { 'X-Request-Id': requestId })
+      }
       if (pathname.startsWith('/api/templates/') && pathname.endsWith('/source-pdf') && req.method === 'GET') {
         const id = pathname.split('/')[3]
         const user = requireUser()
@@ -2443,7 +2462,10 @@ export function createHttpServer({ modules }) {
       const portalDraftSectionsMatch = pathname.match(/^\/api\/portal\/[^/]+\/drafts\/([^/]+)\/sections$/)
       if (portalDraftSectionsMatch && req.method === 'GET') {
         const { token } = requirePortalSession()
-        const result = modules.forms.listPortalDraftSectionStates(token, decodeURIComponent(portalDraftSectionsMatch[1]))
+        const result = modules.forms.listPortalDraftSectionStates(
+          token,
+          decodeURIComponent(portalDraftSectionsMatch[1])
+        )
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })
       }
