@@ -8,7 +8,7 @@ export interface PageEnvelope<T> {
   nextCursor: string | null
 }
 
-export type GlobalSearchResultType = 'profile' | 'household' | 'template' | 'submission'
+export type GlobalSearchResultType = 'profile' | 'household' | 'template' | 'form_template' | 'submission'
 
 export interface GlobalSearchResult {
   type: GlobalSearchResultType

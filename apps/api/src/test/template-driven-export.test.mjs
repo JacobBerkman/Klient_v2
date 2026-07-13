@@ -170,9 +170,14 @@ test('spouse and household mappings resolve into PDF and XLSX exports', async ()
     fileName: 'spouse-household-export.pdf',
     fileBytesBase64: sourcePdf.toString('base64')
   })
+  // Auto-build keeps the generated form key as the primary source and carries
+  // the heuristic match as the fallback, so a field the client left blank is
+  // still filled from firm records (asserted below via the filled PDF).
   const byField = Object.fromEntries(template.mappings.map((mapping) => [mapping.pdfField, mapping]))
-  assert.equal(byField.spouse_first.sourcePath, 'spouse.firstName')
-  assert.equal(byField.household_name.sourcePath, 'household.name')
+  assert.equal(byField.spouse_first.sourcePath, 'spouse_first')
+  assert.equal(byField.spouse_first.fallbackSourcePath, 'spouse.firstName')
+  assert.equal(byField.household_name.sourcePath, 'household_name')
+  assert.equal(byField.household_name.fallbackSourcePath, 'household.name')
   assert.equal(byField.client_name.sourcePath, 'client_name')
 
   const primary = store.createProfile(user, {
@@ -224,7 +229,58 @@ test('spouse and household mappings resolve into PDF and XLSX exports', async ()
   const sharedStrings = zipEntries.get('xl/sharedStrings.xml') || ''
   assert.ok(sharedStrings.includes('Sydney'), 'XLSX shared strings should include the spouse first name')
   assert.ok(sharedStrings.includes('Hartley Household'), 'XLSX shared strings should include the household name')
-  assert.ok(sharedStrings.includes('spouse.firstName'), 'XLSX shared strings should include the spouse source path')
+  assert.ok(sharedStrings.includes('spouse_first'), 'XLSX shared strings should include the spouse source path')
+})
+
+test("a client's submitted answer wins over the auto-mapped record fallback", async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+  const sourcePdf = await createSpouseHouseholdSourcePdf()
+
+  const template = await store.autoBuildTemplate(user, {
+    name: 'Answer Precedence',
+    fileName: 'answer-precedence.pdf',
+    fileBytesBase64: sourcePdf.toString('base64')
+  })
+
+  const primary = store.createProfile(user, {
+    kind: 'client',
+    firstName: 'Harper',
+    lastName: 'Hartley',
+    email: `precedence-primary-${Date.now()}@example.test`
+  })
+  const spouse = store.createProfile(user, {
+    kind: 'client',
+    firstName: 'Sydney',
+    lastName: 'Spouse',
+    email: `precedence-spouse-${Date.now()}@example.test`
+  })
+  store.linkSpouse(user, primary.id, spouse.id)
+
+  // The client corrects the spouse's name in the intake form the PDF generated.
+  // That answer must reach the exported document — the profile record is only a
+  // fallback for fields the client left blank.
+  const submission = store.createFormSubmission(user, {
+    clientId: primary.id,
+    templateId: template.linkedFormTemplateId,
+    status: 'submitted',
+    data: { client_name: 'Harper Hartley', spouse_first: 'Sydnee' }
+  })
+
+  const job = store.createExport(user, {
+    templateId: template.id,
+    clientId: primary.id,
+    submissionId: submission.id,
+    type: 'pdf'
+  })
+  const processed = await store.processQueuedExports(user)
+  assert.equal(processed.failed, 0)
+
+  const download = await store.getExportDownload(user, job.id)
+  const filledForm = (await PDFDocument.load(download.body)).getForm()
+  assert.equal(filledForm.getTextField('spouse_first').getText(), 'Sydnee', "the client's answer must win")
+  // The field the client left blank still falls back to the household record.
+  assert.equal(filledForm.getTextField('household_name').getText(), 'Hartley Household')
 })
 
 test('exports with spouse/household mappings still complete when no spouse is linked', async () => {

@@ -199,7 +199,19 @@ export function resolveExportData({
   const canonicalMappings = canonicalizeMappings(mappings)
   const rows = canonicalMappings.map((rule, index) => {
     const sourcePath = String(rule.sourcePath || '').trim()
-    const rawValue = resolveSourceValue({ sourcePath, profile, submission, spouse, household })
+    // Auto-built rules keep the generated form key as the primary source (so a
+    // client's own submitted answer always wins) and carry the auto-mapped
+    // profile/spouse/household path as a fallback, which fills the field from
+    // firm records when the client left it blank. Without the fallback the two
+    // intents conflict: mapping straight to profile.* would silently ignore
+    // what the client typed into the very form the PDF generated.
+    const fallbackSourcePath = String(rule.fallbackSourcePath || '').trim()
+    const primaryValue = resolveSourceValue({ sourcePath, profile, submission, spouse, household })
+    const rawValue =
+      primaryValue === undefined || primaryValue === null || primaryValue === ''
+        ? (resolveSourceValue({ sourcePath: fallbackSourcePath, profile, submission, spouse, household }) ??
+          primaryValue)
+        : primaryValue
     const transformed = applyTransform(rawValue, rule?.transform || null)
     const value = normalizeResolvedValue(rule, rawValue)
     const warnings = []

@@ -21,7 +21,8 @@ import {
   upsertCsrfToken,
   getFirmRow,
   getUserRow,
-  getProfileRow
+  getProfileRow,
+  getSessionByToken
 } from './storage.mjs'
 import { createStore } from './store.mjs'
 import { createModules } from './modules/index.mjs'
@@ -110,12 +111,23 @@ const rateLimiter = runtime.rateLimit.enabled
     })
   : null
 
-// Keyed by session-cookie hash when a session cookie is present (stable per
-// signed-in caller, never stores the raw token), otherwise by client IP.
+// Keyed by session-cookie hash ONLY when the cookie resolves to a real session
+// (stable per signed-in caller, never stores the raw token), otherwise by client
+// IP. Trusting an unvalidated cookie would let any caller mint a fresh bucket
+// per request — a full bypass of the limit, and a way to churn the limiter's
+// key table and evict legitimate callers' counters.
 function rateLimitIdentity(req) {
   const sessionCookie = resolveSessionToken(req)
   if (sessionCookie) {
-    return { keyType: 'session', key: `session:${createHash('sha256').update(sessionCookie).digest('hex')}` }
+    let session = null
+    try {
+      session = getSessionByToken(sessionCookie)
+    } catch {
+      session = null
+    }
+    if (session) {
+      return { keyType: 'session', key: `session:${createHash('sha256').update(sessionCookie).digest('hex')}` }
+    }
   }
   return { keyType: 'ip', key: `ip:${getClientIp(req)}` }
 }
@@ -2077,6 +2089,7 @@ export function createHttpServer({ modules, mailer }) {
         if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
           const result = modules.forms.listFormTemplatesPage(user, {
             search: url.searchParams.get('search') || '',
+            id: url.searchParams.get('id') || '',
             cursor: url.searchParams.get('cursor') || '',
             limit: url.searchParams.get('limit') || ''
           })
@@ -2102,6 +2115,7 @@ export function createHttpServer({ modules, mailer }) {
         if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
           const result = modules.forms.listFormSubmissionsPage(user, {
             status: url.searchParams.get('status') || '',
+            clientId: url.searchParams.get('clientId') || '',
             cursor: url.searchParams.get('cursor') || '',
             limit: url.searchParams.get('limit') || ''
           })
@@ -2549,6 +2563,18 @@ export function createHttpServer({ modules, mailer }) {
       if (pathname === '/api/audit' && req.method === 'GET') {
         const user = requireUser()
         modules.policy.requireGuard(user, 'canReadAudit')
+        // Opt-in pagination (same limit/cursor convention as the other lists):
+        // history past the newest 200 events stays reachable through the
+        // { items, nextCursor } envelope, while the no-param response keeps the
+        // legacy bare array every existing caller depends on.
+        if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
+          const page = modules.audit.listPage(user, {
+            cursor: url.searchParams.get('cursor') || '',
+            limit: url.searchParams.get('limit') || ''
+          })
+          finalizeLog(200)
+          return replyJson(200, page, { 'X-Request-Id': requestId })
+        }
         const result = modules.audit.list(user, { limit: url.searchParams.get('limit') || '' })
         finalizeLog(200)
         return replyJson(200, result, { 'X-Request-Id': requestId })

@@ -104,7 +104,7 @@ export const routes = {
   exportsProcess: () => '/api/exports/process',
   exportsQueueHealth: () => '/api/ops/exports/queue',
   exportRuntime: () => '/api/ops/export-runtime',
-  audit: () => '/api/audit',
+  audit: (query: Record<string, QueryValue> = {}) => withQuery('/api/audit', query),
   search: (query: Record<string, QueryValue> = {}) => withQuery('/api/search', query),
   activity: (query: Record<string, QueryValue> = {}) => withQuery('/api/activity', query),
   analytics: (query: Record<string, QueryValue> = {}) => withQuery('/api/analytics', query),

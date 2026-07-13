@@ -2061,11 +2061,12 @@ export function createStore({
     // Keyset-paged template catalog over the canonical template_aggregates
     // table (kept in sync by persistTemplateAggregateRow at every mutation
     // site). Ordering is name (case-insensitive), id.
-    listTemplateAggregatesPage(user, { kind = null, search = '', cursor = null, limit = 50 } = {}) {
+    listTemplateAggregatesPage(user, { kind = null, id = null, search = '', cursor = null, limit = 50 } = {}) {
       requirePermission(user, 'profiles:read')
       return queryTemplateAggregateRowsPage({
         firmId: user.firmId,
         kind: kind || null,
+        id: id || null,
         search,
         cursor,
         limit
@@ -2074,14 +2075,26 @@ export function createStore({
     createTemplateAggregate(user, input) {
       const kind = input.kind === 'document' ? 'document' : 'form'
       const createdAt = now()
-      const formSchema = validateFormDefinitionSchema(input.formSchema || { sections: input.sections || [] }, {
+      const formSchemaResult = validateFormDefinitionSchema(input.formSchema || { sections: input.sections || [] }, {
         contextPath: input.formSchema ? '/formSchema' : '/sections'
-      }).schema
+      })
+      const formSchema = formSchemaResult.schema
       // The v2 create path must not silently drop caller-provided mappings,
       // extracted fields, or document metadata (fileName) — the compatibility
-      // service forwards them from the manual create-template flow.
+      // service forwards them from the manual create-template flow. Mappings go
+      // through the same validator the v1 create path and the mappings-update
+      // path use, so invalid rules cannot be snapshotted into version 1.
       const blueprint = input.blueprint || { sections: [] }
-      const mappings = Array.isArray(input.mappings) ? input.mappings : []
+      const normalizedExtractedFields = normalizeExtractedFields(input.extractedFields || [])
+      const allowedSourcePaths = profileSourcePathsForFirm(getFirmRow(user.firmId))
+      collectFormSchemaSourcePaths(formSchemaResult.schema.sections, allowedSourcePaths)
+      const mappings = validateMappingRules(Array.isArray(input.mappings) ? input.mappings : [], {
+        contextPath: '/mappings',
+        repeaterPaths: formSchemaResult.repeaterPaths,
+        requiredPdfFields: normalizeRequiredPdfFields(normalizedExtractedFields),
+        allowedSourcePaths,
+        enforceKnownSourcePaths: input.enforceKnownSourcePaths === true
+      })
       const template = normalizeTemplateAggregate(
         {
           id: randomUUID(),
@@ -2093,7 +2106,7 @@ export function createStore({
           formSchema,
           blueprint,
           mappings,
-          extractedFields: Array.isArray(input.extractedFields) ? input.extractedFields : [],
+          extractedFields: normalizedExtractedFields,
           generatedFromDocumentTemplateId: input.generatedFromDocumentTemplateId || null,
           generation: input.generation || null,
           publishState: 'draft',
@@ -2229,13 +2242,14 @@ export function createStore({
     // creator check), so pages stay full for every viewer. Items carry the
     // same normalized collaborators / expired-lock shaping as
     // listFormSubmissions; ordering is created_at DESC, rowid DESC.
-    listFormSubmissionsPage(user, { status = null, cursor = null, limit = 50 } = {}) {
+    listFormSubmissionsPage(user, { status = null, clientId = null, cursor = null, limit = 50 } = {}) {
       requirePermission(user, 'forms:read')
       const actorUserId = resolveUserId(user)
       const currentTime = Date.now()
       const { items, nextCursor } = queryFormSubmissionRowsPage({
         firmId: user.firmId,
         status: status || null,
+        clientId: clientId || null,
         viewerUserId: actorUserId,
         cursor,
         limit
@@ -2259,9 +2273,16 @@ export function createStore({
       requirePermission(user, 'profiles:read')
       const query = String(q || '').trim()
       const safeLimit = Math.min(Math.max(Number(limit) || 20, 1), 50)
+      // 'template' scopes BOTH template kinds at request time; the emitted
+      // result type narrows form-kind aggregates to 'form_template' (which has
+      // no detail route) so callers can still ask for either by name.
       const allTypes = ['profile', 'household', 'template', 'submission']
       const requested = new Set(
-        Array.isArray(types) && types.length ? types.filter((type) => allTypes.includes(type)) : allTypes
+        Array.isArray(types) && types.length
+          ? types
+              .map((type) => (type === 'form_template' ? 'template' : type))
+              .filter((type) => allTypes.includes(type))
+          : allTypes
       )
       if (!query || requested.size === 0) {
         return { query, results: [] }
@@ -2293,16 +2314,27 @@ export function createStore({
       const seen = new Set()
       const matchedProfileIds = []
       const matchedTemplateIds = []
+      // Only DOCUMENT templates have a detail route (/templates/:id). Form-kind
+      // aggregates must not be emitted as 'template' results or activating one
+      // lands on a page that cannot load it; they surface as 'form_template',
+      // which the client routes to the forms list instead. Both kinds still
+      // count as template matches for submission resolution below.
+      const templateKind = (templateId) =>
+        state.templateAggregates.find((entry) => entry.id === templateId && entry.firmId === user.firmId)?.kind ||
+        'document'
       for (const row of rows) {
-        const mappedType = row.entityType === 'profile' || row.entityType === 'household' ? row.entityType : 'template'
+        const isEntity = row.entityType === 'profile' || row.entityType === 'household'
+        const mappedType = isEntity ? row.entityType : 'template'
         const key = `${mappedType}:${row.entityId}`
         if (seen.has(key)) continue
         seen.add(key)
         if (mappedType === 'profile') matchedProfileIds.push(row.entityId)
         if (mappedType === 'template') matchedTemplateIds.push(row.entityId)
         if (!requested.has(mappedType)) continue
+        const resultType =
+          mappedType === 'template' && templateKind(row.entityId) === 'form' ? 'form_template' : mappedType
         results.push({
-          type: mappedType,
+          type: resultType,
           id: row.entityId,
           title: row.title || '',
           subtitle: row.subtitle || ''
@@ -2926,7 +2958,14 @@ export function createStore({
         if (!rule || typeof rule !== 'object' || Array.isArray(rule)) continue
         // Repeater-group rows keep their generated row-indexed source paths.
         if (String(rule.repeaterPath || '').trim()) continue
-        if (String(rule.targetType || '').trim() === 'checkbox') continue
+        // Suggestions are text/date valued, so only rows that already expect a
+        // text-like target can take one. Rewriting a select/radio/checkbox row
+        // to a text source path would trip the validator's target_type_mismatch
+        // and fail the WHOLE auto-map call (mirrors template-form-builder, which
+        // only suggests for text fields). Date rows are handled by the upgrade
+        // below, which rewrites targetType alongside the source path.
+        const targetType = String(rule.targetType || '').trim()
+        if (targetType && targetType !== 'text') continue
         const pdfField = String(rule.pdfField || '').trim()
         if (!pdfField) continue
         const currentSourcePath = String(rule.sourcePath || '').trim()
@@ -3458,10 +3497,17 @@ export function createStore({
       requirePermission(user, 'audit:read')
       // Firm-scoped SQL read, newest first — audit_events is the source of
       // truth and the blob no longer carries audit events at all. The read is
-      // clamped to the newest 200 rows so the endpoint stays bounded; the
-      // keyset-paginated activity feed is the path for deeper history.
+      // clamped to the newest 200 rows so the endpoint stays bounded; callers
+      // that need deeper history use listAuditPage below (opt-in cursor).
       const cappedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 200, 1), 200)
       return listAuditEvents(user.firmId, { limit: cappedLimit })
+    },
+    // Opt-in keyset pagination over the SAME clamped read, so the audit trail
+    // stays fully reachable past the newest 200 events (a hard requirement for
+    // compliance review) without ever returning an unbounded result set.
+    listAuditPage(user, { cursor = null, limit = 200 } = {}) {
+      requirePermission(user, 'audit:read')
+      return queryAuditEventsPage({ firmId: user.firmId, cursor, limit })
     },
     // Keyset-paginated, filtered activity-feed read. Permission gating and the
     // category->prefix mapping live in the activity module; this is the thin

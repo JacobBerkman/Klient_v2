@@ -104,6 +104,7 @@ export function Component() {
   const [revertSelection, setRevertSelection] = useState({ targetVersion: '', changelog: '' })
   const [confirmingRevert, setConfirmingRevert] = useState(false)
   const [reverting, setReverting] = useState(false)
+  const [confirmingAutoMap, setConfirmingAutoMap] = useState(false)
   // Grouped source-path catalog for the mapping picker; fetched once per template.
   // null = still loading or unavailable (picker falls back to free-text entry).
   const [mappingPathGroups, setMappingPathGroups] = useState<TemplateMappingPathGroup[] | null>(null)
@@ -214,6 +215,22 @@ export function Component() {
     }
   }
 
+  // Auto-map runs server-side against the LAST SAVED mappings and its response
+  // replaces the editor state, so unsaved edits in the table would be silently
+  // discarded. Ask first when the table is dirty.
+  const hasUnsavedMappingEdits = Boolean(
+    template && JSON.stringify(mappings) !== JSON.stringify((template.mappings || []).length ? template.mappings : [])
+  )
+
+  function requestAutoMap() {
+    if (!template || autoMapping) return
+    if (hasUnsavedMappingEdits) {
+      setConfirmingAutoMap(true)
+      return
+    }
+    void handleAutoMap()
+  }
+
   async function handleAutoMap() {
     if (!template || autoMapping) return
     setAutoMapping(true)
@@ -225,6 +242,7 @@ export function Component() {
       toast.error(autoMapError instanceof Error ? autoMapError.message : 'Auto-map failed.')
     } finally {
       setAutoMapping(false)
+      setConfirmingAutoMap(false)
     }
   }
 
@@ -550,16 +568,28 @@ export function Component() {
           title="Mappings"
           subtitle="Edit source paths, transforms, and repeater selectors without returning to the shell."
           action={
-            <button
-              type="button"
-              className="secondary-button"
-              data-testid="auto-map-button"
-              onClick={() => void handleAutoMap()}
-              disabled={autoMapping || !hasGuard(user, 'canEditTemplate')}
-              aria-busy={autoMapping}
-            >
-              {autoMapping ? 'Auto-mapping...' : 'Auto-map fields'}
-            </button>
+            <>
+              <button
+                type="button"
+                className="secondary-button"
+                data-testid="auto-map-button"
+                onClick={requestAutoMap}
+                disabled={autoMapping || !hasGuard(user, 'canEditTemplate')}
+                aria-busy={autoMapping}
+              >
+                {autoMapping ? 'Auto-mapping...' : 'Auto-map fields'}
+              </button>
+              <ConfirmDialog
+                open={confirmingAutoMap}
+                title="Discard unsaved mapping edits?"
+                description="Auto-map runs against the last saved mappings and replaces the table with its result, so your unsaved edits will be lost. Save them first to keep them."
+                confirmLabel="Auto-map anyway"
+                tone="danger"
+                busy={autoMapping}
+                onConfirm={() => void handleAutoMap()}
+                onCancel={() => setConfirmingAutoMap(false)}
+              />
+            </>
           }
         >
           <div className="section-toolbar">

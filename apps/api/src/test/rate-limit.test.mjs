@@ -179,15 +179,29 @@ test('HTTP: /api/* requests are limited per key with 429 + Retry-After; exemptio
     const adminCookie = cookieFrom(loginResponse.headers.get('set-cookie'), ['klient-session', '__Host-klient-session'])
     assert.ok(adminCookie, 'login issued a session cookie')
 
-    // Session-cookie keying: requests carrying a session cookie consume that
-    // cookie's bucket (hash of the cookie value; validity is irrelevant here).
-    const cookieA = 'klient-session=rate-limit-fake-session-a'
+    // A second login (IP hit 2 of 3) yields an independent session whose own
+    // bucket is still untouched once the first session's is exhausted below —
+    // that is what lets the diagnostics assertion at the end get through.
+    const secondLogin = await fetch(`${context.baseUrl}/api/login`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: 'admin@demo.test', password: 'ChangeMe123!' })
+    })
+    assert.equal(secondLogin.status, 200)
+    const diagnosticsCookie = cookieFrom(secondLogin.headers.get('set-cookie'), [
+      'klient-session',
+      '__Host-klient-session'
+    ])
+    assert.ok(diagnosticsCookie, 'second login issued its own session cookie')
+
+    // Session-cookie keying: requests carrying a VALID session cookie consume
+    // that session's own bucket, independent of the IP bucket.
     for (let i = 0; i < 3; i += 1) {
-      const response = await fetch(`${context.baseUrl}/api/session`, { headers: { Cookie: cookieA } })
-      assert.equal(response.status, 401, `request ${i + 1} inside the budget is processed (auth 401)`)
+      const response = await fetch(`${context.baseUrl}/api/session`, { headers: { Cookie: adminCookie } })
+      assert.equal(response.status, 200, `request ${i + 1} inside the session budget is processed`)
     }
-    const limited = await fetch(`${context.baseUrl}/api/session`, { headers: { Cookie: cookieA } })
-    assert.equal(limited.status, 429, '4th request with the same session cookie is limited')
+    const limited = await fetch(`${context.baseUrl}/api/session`, { headers: { Cookie: adminCookie } })
+    assert.equal(limited.status, 429, '4th request on the same valid session is limited')
     const retryAfter = Number(limited.headers.get('retry-after'))
     assert.ok(retryAfter >= 1 && retryAfter <= 60, 'Retry-After header is set inside the window')
     const limitedBody = await limited.json()
@@ -196,24 +210,28 @@ test('HTTP: /api/* requests are limited per key with 429 + Retry-After; exemptio
     assert.ok(limitedBody.error.requestId, '429 envelope carries the request id')
     assert.equal(limitedBody.error.details.retryAfterSeconds, retryAfter)
 
-    // A different session cookie has its own bucket.
-    const cookieB = 'klient-session=rate-limit-fake-session-b'
-    const otherSession = await fetch(`${context.baseUrl}/api/session`, { headers: { Cookie: cookieB } })
-    assert.equal(otherSession.status, 401, 'a different session cookie is not limited')
+    // Forged/unknown session cookies must NOT mint their own bucket — otherwise
+    // any caller could bypass the limit entirely by sending a random cookie per
+    // request (and churn the limiter's key table). They fall back to IP keying.
+    // The two logins already spent 2 of 3 on the IP bucket, so one forged
+    // request fills it and the next forged cookie is refused.
+    const forged = await fetch(`${context.baseUrl}/api/session`, {
+      headers: { Cookie: 'klient-session=forged-session-0' }
+    })
+    assert.equal(forged.status, 401, 'a forged cookie consumes the IP budget (auth 401)')
+    const forgedLimited = await fetch(`${context.baseUrl}/api/session`, {
+      headers: { Cookie: 'klient-session=forged-session-final' }
+    })
+    assert.equal(forgedLimited.status, 429, 'a fresh forged cookie cannot escape the exhausted IP bucket')
 
-    // No cookie falls back to IP keying. The login above already spent 1 of 3:
-    // two more cookieless requests fill the bucket, the next one is limited.
-    for (let i = 0; i < 2; i += 1) {
-      const response = await fetch(`${context.baseUrl}/api/session`)
-      assert.equal(response.status, 401, `IP-keyed request ${i + 2} inside the budget is processed`)
-    }
+    // A cookieless request lands in that same exhausted IP bucket.
     const ipLimited = await fetch(`${context.baseUrl}/api/session`)
     assert.equal(ipLimited.status, 429, 'IP bucket limits once its own budget is spent')
 
-    // Ops diagnostics surfaces the counters. The admin session cookie is a
-    // fresh limiter bucket, so this safe-method GET goes through.
+    // Ops diagnostics surfaces the counters. The second session is its own
+    // untouched bucket, so this safe-method GET goes through.
     const diagnostics = await fetch(`${context.baseUrl}/api/ops/diagnostics`, {
-      headers: { Cookie: adminCookie }
+      headers: { Cookie: diagnosticsCookie }
     })
     assert.equal(diagnostics.status, 200)
     const body = await diagnostics.json()

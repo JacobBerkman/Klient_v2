@@ -10,6 +10,7 @@ const TYPE_LABELS: Record<GlobalSearchResult['type'], string> = {
   profile: 'Profile',
   household: 'Household',
   template: 'Template',
+  form_template: 'Form template',
   submission: 'Submission'
 }
 
@@ -21,6 +22,9 @@ function resultPath(result: GlobalSearchResult) {
       return `/households/${result.id}`
     case 'template':
       return `/templates/${result.id}`
+    // Form templates have no detail route; the forms list is where they live.
+    case 'form_template':
+      return '/forms'
     case 'submission':
       return `/forms/submissions/${result.id}`
   }
@@ -102,20 +106,32 @@ export function GlobalSearch() {
       return
     }
     setLoading(true)
+    // Requests can resolve out of order (a slow "jo" landing after a fast
+    // "john smith"), so a stale response must never overwrite a newer one —
+    // otherwise the list shows results for a query the user has moved on from
+    // and Enter navigates to the wrong entity.
+    let cancelled = false
     const timer = window.setTimeout(() => {
       void api
         .get<GlobalSearchPayload>(routes.search({ q: trimmed, limit: RESULT_LIMIT }))
         .then((payload) => {
+          if (cancelled) return
           setResults(payload.results || [])
           setActiveIndex(payload.results?.length ? 0 : -1)
         })
         .catch(() => {
+          if (cancelled) return
           setResults([])
           setActiveIndex(-1)
         })
-        .finally(() => setLoading(false))
+        .finally(() => {
+          if (!cancelled) setLoading(false)
+        })
     }, DEBOUNCE_MS)
-    return () => window.clearTimeout(timer)
+    return () => {
+      cancelled = true
+      window.clearTimeout(timer)
+    }
   }, [query, open])
 
   const activateResult = useCallback(

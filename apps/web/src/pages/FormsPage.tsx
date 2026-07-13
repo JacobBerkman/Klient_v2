@@ -78,15 +78,22 @@ export function Component() {
   const profileFilter = searchParams.get('profileId') || ''
   const templateFilter = searchParams.get('templateId') || ''
 
+  // The ?profileId= deep link is pushed into the submissions query rather than
+  // filtered client-side: a client's older submissions can sort past the first
+  // page, and filtering only the loaded rows would render them invisible.
   const { data, error, loading } = useAsync<FormsPageData>(async () => {
     const [templatesPage, drafts, submissionsPage, profiles] = await Promise.all([
-      api.get<PageEnvelope<FormTemplate>>(routes.formTemplates({ limit: PAGE_SIZE })),
+      api.get<PageEnvelope<FormTemplate>>(
+        routes.formTemplates({ limit: PAGE_SIZE, ...(templateFilter ? { id: templateFilter } : {}) })
+      ),
       api.get<FormSubmission[]>(routes.formDrafts()),
-      api.get<PageEnvelope<FormSubmission>>(routes.formSubmissions({ limit: PAGE_SIZE })),
+      api.get<PageEnvelope<FormSubmission>>(
+        routes.formSubmissions({ limit: PAGE_SIZE, ...(profileFilter ? { clientId: profileFilter } : {}) })
+      ),
       api.get<Profile[]>(routes.profiles({ kind: 'client' }))
     ])
     return { templatesPage, drafts, submissionsPage, profiles }
-  }, [refreshKey])
+  }, [refreshKey, profileFilter, templateFilter])
 
   // "Load more" state for the two paged lists (templates, submissions);
   // appended pages reset whenever the first page refetches.
@@ -108,7 +115,11 @@ export function Component() {
     setLoadingMoreTemplates(true)
     try {
       const page = await api.get<PageEnvelope<FormTemplate>>(
-        routes.formTemplates({ limit: PAGE_SIZE, cursor: templatesCursor })
+        routes.formTemplates({
+          limit: PAGE_SIZE,
+          cursor: templatesCursor,
+          ...(templateFilter ? { id: templateFilter } : {})
+        })
       )
       setExtraTemplates((current) => [...current, ...page.items])
       setTemplatesCursor(page.nextCursor)
@@ -124,7 +135,11 @@ export function Component() {
     setLoadingMoreSubmissions(true)
     try {
       const page = await api.get<PageEnvelope<FormSubmission>>(
-        routes.formSubmissions({ limit: PAGE_SIZE, cursor: submissionsCursor })
+        routes.formSubmissions({
+          limit: PAGE_SIZE,
+          cursor: submissionsCursor,
+          ...(profileFilter ? { clientId: profileFilter } : {})
+        })
       )
       setExtraSubmissions((current) => [...current, ...page.items])
       setSubmissionsCursor(page.nextCursor)
@@ -154,13 +169,14 @@ export function Component() {
     return data.drafts.filter((entry) => !profileFilter || entry.clientId === profileFilter)
   }, [data, profileFilter])
 
-  const visibleSubmissions = useMemo(() => {
-    return allSubmissions.filter((entry) => !profileFilter || entry.clientId === profileFilter)
-  }, [allSubmissions, profileFilter])
+  // profileId is already applied server-side (see the fetch above), so every
+  // loaded row is in scope — filtering again here would be a no-op that hides
+  // nothing but suggests the filter is page-local.
+  const visibleSubmissions = allSubmissions
 
-  const visibleTemplates = useMemo(() => {
-    return allTemplates.filter((entry) => !templateFilter || entry.id === templateFilter)
-  }, [allTemplates, templateFilter])
+  // templateId is applied server-side (see the fetch above), so the loaded set
+  // is already scoped to the deep link.
+  const visibleTemplates = allTemplates
 
   async function handleCreateTemplate(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault()

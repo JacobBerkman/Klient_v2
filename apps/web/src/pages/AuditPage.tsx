@@ -1,8 +1,8 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { api, routes } from '../lib/client'
 import { auditActor, formatDateTime } from '../lib/format'
 import { useAsync } from '../lib/useAsync'
-import type { AuditEvent } from '../lib/types'
+import type { AuditEvent, PageEnvelope } from '../lib/types'
 import {
   DataTable,
   EmptyState,
@@ -20,21 +20,55 @@ export const handle = {
   breadcrumb: 'Audit'
 }
 
+const PAGE_SIZE = 200
+
 export function Component() {
   const [search, setSearch] = useState('')
-  const { data, error, loading } = useAsync<AuditEvent[]>(() => api.get(routes.audit()), [])
+  // The audit read is clamped server-side, so the trail is walked with keyset
+  // pages (limit/cursor => { items, nextCursor } envelope). Without this the
+  // page could only ever see the newest 200 events and older compliance history
+  // would be unreachable from the UI.
+  const { data, error, loading } = useAsync<PageEnvelope<AuditEvent>>(
+    () => api.get(routes.audit({ limit: PAGE_SIZE })),
+    []
+  )
+
+  const [extraEvents, setExtraEvents] = useState<AuditEvent[]>([])
+  const [cursor, setCursor] = useState<string | null>(null)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [loadMoreError, setLoadMoreError] = useState('')
+  useEffect(() => {
+    setExtraEvents([])
+    setCursor(data?.nextCursor ?? null)
+  }, [data])
+
+  async function handleLoadMore() {
+    if (!cursor || loadingMore) return
+    setLoadingMore(true)
+    setLoadMoreError('')
+    try {
+      const page = await api.get<PageEnvelope<AuditEvent>>(routes.audit({ limit: PAGE_SIZE, cursor }))
+      setExtraEvents((current) => [...current, ...page.items])
+      setCursor(page.nextCursor)
+    } catch (pageError) {
+      setLoadMoreError(pageError instanceof Error ? pageError.message : 'Unable to load more audit events.')
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+
+  const allEvents = useMemo(() => (data ? [...data.items, ...extraEvents] : []), [data, extraEvents])
 
   const visibleEvents = useMemo(() => {
     const token = search.trim().toLowerCase()
-    if (!data) return []
-    return data.filter((event) => {
+    return allEvents.filter((event) => {
       if (!token) return true
       const haystack = [event.action, event.entityType, event.entityId, auditActor(event), JSON.stringify(event)]
         .join(' ')
         .toLowerCase()
       return haystack.includes(token)
     })
-  }, [data, search])
+  }, [allEvents, search])
 
   if (loading) return <LoadingState label="Loading audit log" />
   if (error || !data) return <ErrorState title="Audit log failed to load." detail={error?.message} />
@@ -89,8 +123,31 @@ export function Component() {
             </tbody>
           </DataTable>
         ) : (
-          <EmptyState title="No audit events match." detail="Try a broader search or wait for more activity." />
+          <EmptyState
+            title="No audit events match."
+            detail={
+              cursor
+                ? 'Search covers the events loaded so far — load more to search deeper history.'
+                : 'Try a broader search or wait for more activity.'
+            }
+          />
         )}
+        {loadMoreError ? <p className="form-error">{loadMoreError}</p> : null}
+        {cursor ? (
+          <div className="table-actions">
+            <button
+              type="button"
+              className="secondary-button"
+              data-testid="audit-load-more"
+              onClick={() => void handleLoadMore()}
+              disabled={loadingMore}
+              aria-busy={loadingMore}
+            >
+              {loadingMore ? 'Loading...' : 'Load more'}
+            </button>
+            <p className="muted">Search matches the {allEvents.length} events loaded so far.</p>
+          </div>
+        ) : null}
       </PageSection>
     </div>
   )

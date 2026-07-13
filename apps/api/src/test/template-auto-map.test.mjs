@@ -101,15 +101,22 @@ test('auto-build maps heuristic PDF field names to profile/spouse/household path
   assert.equal(template.extraction.status, 'completed')
   const byField = Object.fromEntries(template.mappings.map((mapping) => [mapping.pdfField, mapping]))
 
-  assert.equal(byField.client_first_name.sourcePath, 'profile.firstName')
-  assert.equal(byField.spouse_dob.sourcePath, 'spouse.dateOfBirth')
-  assert.equal(byField.spouse_dob.targetType, 'date')
-  assert.equal(byField.spouse_dob.transform?.type, 'date')
-  assert.equal(byField.household_name.sourcePath, 'household.name')
-  // Non-matching text field keeps the auto-build default (its own form key).
+  // Auto-build generates the intake form the CLIENT fills, so the generated
+  // form key stays the primary source (their answer wins) and the heuristic
+  // match rides along as fallbackSourcePath — used by export resolution only
+  // when the client left the field blank.
+  assert.equal(byField.client_first_name.sourcePath, 'client_first_name')
+  assert.equal(byField.client_first_name.fallbackSourcePath, 'profile.firstName')
+  assert.equal(byField.spouse_dob.sourcePath, 'spouse_dob')
+  assert.equal(byField.spouse_dob.fallbackSourcePath, 'spouse.dateOfBirth')
+  assert.equal(byField.household_name.sourcePath, 'household_name')
+  assert.equal(byField.household_name.fallbackSourcePath, 'household.name')
+  // Non-matching text field gets no fallback at all.
   assert.equal(byField.other_notes.sourcePath, 'other_notes')
+  assert.equal(byField.other_notes.fallbackSourcePath, undefined)
   // Checkbox fields never receive heuristic suggestions.
   assert.equal(byField.consent_checkbox.sourcePath, 'consent_checkbox')
+  assert.equal(byField.consent_checkbox.fallbackSourcePath, undefined)
   assert.equal(byField.consent_checkbox.transform?.type, 'checkbox')
 })
 

@@ -2522,7 +2522,11 @@ export function queryProfileRowsPage({
     .trim()
     .toLowerCase()
   if (q) {
-    clauses.push("instr(lower(first_name || ' ' || last_name || ' ' || COALESCE(email, '')), ?) > 0")
+    // Haystack must match the directory search placeholder ("name, email, or
+    // phone") and the legacy client-side filter it replaced — phone included.
+    clauses.push(
+      "instr(lower(first_name || ' ' || last_name || ' ' || COALESCE(email, '') || ' ' || COALESCE(phone, '')), ?) > 0"
+    )
     params.push(q)
   }
   if (cursor && typeof cursor === 'object' && cursor.id) {
@@ -2612,7 +2616,14 @@ export function queryHouseholdRowsPage({
 // Template catalog page over the canonical template_aggregates rows: name
 // (case-insensitive), then id. `kind` mirrors listTemplateAggregates: 'form'
 // selects form templates, 'document' selects everything that is not a form.
-export function queryTemplateAggregateRowsPage({ firmId, kind = null, search = '', cursor = null, limit = 50 } = {}) {
+export function queryTemplateAggregateRowsPage({
+  firmId,
+  kind = null,
+  id = null,
+  search = '',
+  cursor = null,
+  limit = 50
+} = {}) {
   const clauses = ['firm_id = ?']
   const params = [firmId]
 
@@ -2620,6 +2631,12 @@ export function queryTemplateAggregateRowsPage({ firmId, kind = null, search = '
     clauses.push("kind = 'form'")
   } else if (kind === 'document') {
     clauses.push("kind != 'form'")
+  }
+  // Deep links target one template by id; resolving it in SQL keeps it
+  // reachable even when it sorts past the first page.
+  if (id) {
+    clauses.push('id = ?')
+    params.push(id)
   }
   const q = String(search || '')
     .trim()
@@ -2671,12 +2688,13 @@ const SUBMISSION_DRAFT_VISIBILITY_SQL = `(
   )
 )`
 
-// Submission list page: created_at DESC, rowid DESC (stable tiebreak for
+// Submission list page: updated_at DESC, rowid DESC (stable tiebreak for
 // same-timestamp rows). The collaborator visibility rule is part of the WHERE
 // clause, so a requested page is always full when more visible rows exist.
 export function queryFormSubmissionRowsPage({
   firmId,
   status = null,
+  clientId = null,
   viewerUserId = null,
   cursor = null,
   limit = 50
@@ -2689,20 +2707,30 @@ export function queryFormSubmissionRowsPage({
     clauses.push('status = ?')
     params.push(status)
   }
+  if (clientId) {
+    clauses.push('client_id = ?')
+    params.push(clientId)
+  }
+  // Order by updated_at DESC to preserve the legacy listFormSubmissions
+  // invariant (most recently ACTIVE first): a submission reopened today must
+  // surface at the top even if it was created months ago. Falling back to
+  // created_at keeps rows written before updated_at was populated ordered
+  // sensibly instead of sinking to the bottom.
+  const sortKey = "COALESCE(NULLIF(updated_at, ''), created_at, '')"
   if (cursor && typeof cursor === 'object' && cursor.rowid) {
-    const createdAt = String(cursor.createdAt ?? '')
-    clauses.push("(COALESCE(created_at, '') < ? OR (COALESCE(created_at, '') = ? AND rowid < ?))")
-    params.push(createdAt, createdAt, Number(cursor.rowid) || 0)
+    const updatedAt = String(cursor.updatedAt ?? '')
+    clauses.push(`(${sortKey} < ? OR (${sortKey} = ? AND rowid < ?))`)
+    params.push(updatedAt, updatedAt, Number(cursor.rowid) || 0)
   }
 
   const safeLimit = clampPageLimit(limit)
   const rows = db
     .prepare(
       `
-      SELECT rowid AS rowid, COALESCE(created_at, '') AS createdAt, payload
+      SELECT rowid AS rowid, ${sortKey} AS updatedAt, payload
       FROM form_submissions
       WHERE ${clauses.join(' AND ')}
-      ORDER BY COALESCE(created_at, '') DESC, rowid DESC
+      ORDER BY ${sortKey} DESC, rowid DESC
       LIMIT ?
     `
     )
@@ -2712,7 +2740,7 @@ export function queryFormSubmissionRowsPage({
   const page = hasMore ? rows.slice(0, safeLimit) : rows
   const items = page.map((row) => JSON.parse(row.payload))
   const lastRow = page[page.length - 1]
-  const nextCursor = hasMore && lastRow ? { createdAt: lastRow.createdAt, rowid: lastRow.rowid } : null
+  const nextCursor = hasMore && lastRow ? { updatedAt: lastRow.updatedAt, rowid: lastRow.rowid } : null
   return { items, nextCursor }
 }
 

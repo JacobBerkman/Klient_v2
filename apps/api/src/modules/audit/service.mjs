@@ -1,3 +1,4 @@
+import { decodeCursor, encodeCursor } from '../shared/cursor.mjs'
 import { CANONICAL_AUDIT_FIELDS, createCanonicalAuditEvent } from './schema.mjs'
 
 function normalizeLegacyEvent(event = {}) {
@@ -23,6 +24,20 @@ export function createAuditService({ store, policy }) {
       policy.requireGuard(user, 'canReadAudit')
       // The store clamps the read to the newest 200 events (default and max).
       return store.listAudit(user, { limit: filters.limit }).map(normalizeLegacyEvent)
+    },
+    // Opt-in keyset pagination ({ items, nextCursor }) so the audit UI can walk
+    // past the newest 200 events — a hard requirement for compliance review.
+    // The no-cursor response above is unchanged.
+    listPage(user, filters = {}) {
+      policy.requireGuard(user, 'canReadAudit')
+      const requestedLimit = Number.parseInt(filters.limit, 10)
+      // The keyset reader returns { events, nextCursor }; the HTTP envelope
+      // uses the { items, nextCursor } shape every other paged list exposes.
+      const { events, nextCursor } = store.listAuditPage(user, {
+        cursor: decodeCursor(filters.cursor),
+        limit: Number.isFinite(requestedLimit) ? requestedLimit : 200
+      })
+      return { items: (events || []).map(normalizeLegacyEvent), nextCursor: encodeCursor(nextCursor) }
     }
   }
 }

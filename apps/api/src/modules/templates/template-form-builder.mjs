@@ -115,18 +115,22 @@ function buildFlatSection(fields) {
 function buildMappingsForFlatFields(fields) {
   return fields.map((field) => {
     const key = normalizeKey(field.fieldName, 'field')
-    // Conservative auto-mapping: text fields whose names confidently match the
-    // profile/spouse/household vocabulary map straight to those paths; every
-    // other field keeps the historical default (the generated form's own key).
+    // Auto-build generates BOTH a filled PDF mapping and the intake form the
+    // client answers, so the two must not fight. The generated form key stays
+    // the primary source — a client's own answer always wins — and a confident
+    // profile/spouse/household match rides along as fallbackSourcePath, which
+    // export resolution uses only when the client left the field blank. Mapping
+    // straight to profile.* here would silently discard what the client typed
+    // into the very form this PDF produced.
     const suggestion = formFieldType(field.fieldType) === 'text' ? suggestMapping(field.fieldName) : null
     return {
       pdfField: field.fieldName,
       fieldLabel: titleize(field.fieldName, key),
-      sourcePath: suggestion ? suggestion.sourcePath : key,
-      targetType: suggestion?.type === 'date' ? 'date' : mappingTargetType(field.fieldType),
+      sourcePath: key,
+      ...(suggestion ? { fallbackSourcePath: suggestion.sourcePath } : {}),
+      targetType: mappingTargetType(field.fieldType),
       required: field.required === true,
-      transform:
-        field.fieldType === 'checkbox' ? { type: 'checkbox' } : suggestion?.type === 'date' ? { type: 'date' } : null
+      transform: field.fieldType === 'checkbox' ? { type: 'checkbox' } : null
     }
   })
 }

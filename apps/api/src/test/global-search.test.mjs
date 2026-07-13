@@ -153,12 +153,35 @@ test('templates are indexed by name and deduped across projection tables', () =>
   const template = store.createFormTemplate(user, { name: 'Alpha Intake Packet', description: '', sections: [] })
 
   // The aggregate row AND the form_templates projection row are both indexed;
-  // the query dedupes them into a single navigable template result.
+  // the query dedupes them into a single navigable result. Form-kind templates
+  // surface as 'form_template' — only DOCUMENT templates have a /templates/:id
+  // detail route, so typing a form as 'template' would send the client to a
+  // page that cannot load it.
   const results = resultsFor(user, 'alpha intake')
-  const templates = results.filter((entry) => entry.type === 'template')
+  const templates = results.filter((entry) => entry.type === 'form_template')
   assert.equal(templates.length, 1)
   assert.equal(templates[0].id, template.id)
   assert.equal(templates[0].subtitle, 'Form template')
+  assert.equal(
+    results.some((entry) => entry.type === 'template'),
+    false,
+    'a form template must not be emitted as a document-template result'
+  )
+})
+
+test('document templates stay navigable as template results', () => {
+  const user = registerFirm('DocTemplateFirm')
+  const template = store.createDocumentTemplate(user, {
+    name: 'Beta Disclosure Packet',
+    fileName: 'beta.pdf',
+    extractedFields: [],
+    mappings: []
+  })
+
+  const results = resultsFor(user, 'beta disclosure')
+  const templates = results.filter((entry) => entry.type === 'template')
+  assert.equal(templates.length, 1)
+  assert.equal(templates[0].id, template.id)
 })
 
 test('submissions resolve at query time and respect draft collaborator visibility', () => {

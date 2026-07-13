@@ -260,6 +260,9 @@ export function createFormsService({ store, policy, templatesCompatibility = nul
       const requestedLimit = Number.parseInt(query.limit, 10)
       const { items, nextCursor } = store.listFormSubmissionsPage(createFirmContext(user), {
         status: query.status || null,
+        // Pushed down so a client's older submissions stay reachable past the
+        // first page — filtering only the loaded page would hide them.
+        clientId: query.clientId || null,
         cursor: decodeCursor(query.cursor),
         limit: Number.isFinite(requestedLimit) ? requestedLimit : 50
       })

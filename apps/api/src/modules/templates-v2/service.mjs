@@ -80,6 +80,9 @@ export function createTemplatesV2Service({ templatesV2Repository, policy }) {
       const requestedLimit = Number.parseInt(query.limit, 10)
       const { items, nextCursor } = templatesV2Repository.listCanonicalTemplatesPage(user, {
         kind: 'form',
+        // ?templateId= deep links resolve in SQL so the target stays reachable
+        // when it sorts past the first page.
+        id: query.id || '',
         search: query.search || '',
         cursor: decodeCursor(query.cursor),
         limit: Number.isFinite(requestedLimit) ? requestedLimit : 50
