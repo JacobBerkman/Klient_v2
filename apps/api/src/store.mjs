@@ -103,6 +103,7 @@ import {
 } from './storage.mjs'
 import { createAuthService } from './auth/service.mjs'
 import { createLocalAuthProvider } from './auth/local-provider.mjs'
+import { hashPassword } from './auth/passwords.mjs'
 import { createOidcAuthProvider } from './auth/oidc-provider.mjs'
 import { createSamlAuthProvider } from './auth/saml-provider.mjs'
 import { createGoogleOidcProvider } from './auth/google-oidc.mjs'
@@ -157,7 +158,6 @@ import {
   defaultStageLabel,
   documentTemplateAdapter,
   formTemplateAdapter,
-  hash,
   normalizeCustomFieldSchema,
   normalizeCustomFieldType,
   normalizeDraftCollaborators,
@@ -3644,11 +3644,17 @@ export function createStore({
       if (invite.expiresAt && new Date(invite.expiresAt).getTime() <= Date.now()) {
         throw new Error('Invite expired.')
       }
+      // Without this an invite for an address that already has an account mints a
+      // second user row for the same email, and getUserByEmail then resolves the
+      // login to whichever row it finds first.
+      if (getUserByEmail(String(invite.email || '').toLowerCase())) {
+        throw new Error('Invite email is already associated with an account.')
+      }
       const user = {
         id: randomUUID(),
         firmId: invite.firmId,
         email: invite.email,
-        passwordHash: hash(input.password),
+        passwordHash: hashPassword(input.password),
         firstName: input.firstName,
         lastName: input.lastName,
         role: invite.role,

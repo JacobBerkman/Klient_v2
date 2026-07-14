@@ -1,5 +1,6 @@
 import { createHmac, createHash, randomBytes, randomUUID } from 'node:crypto'
 import { createDefaultFirmStageConfig } from '../stage-config.mjs'
+import { hashPassword, verifyPassword } from './passwords.mjs'
 import {
   deleteInviteRow,
   findInviteRowByToken,
@@ -35,12 +36,18 @@ const MFA_CHALLENGE_TTL_MS = 1000 * 60 * 10
 const MFA_ENROLL_TTL_MS = 1000 * 60 * 10
 const BACKUP_CODE_COUNT = 8
 
+// Verified against when no account matches the submitted email, so that the
+// unknown-email path performs the same scrypt work as the known-email path.
+const DUMMY_PASSWORD_HASH = hashPassword(randomBytes(32).toString('hex'))
+
 function nowIso() {
   return new Date().toISOString()
 }
 
-function hash(password) {
-  return createHash('sha256').update(password).digest('hex')
+// Backup codes are high-entropy random values, not user-chosen secrets, so a
+// fast digest is appropriate here. Passwords go through scrypt (passwords.mjs).
+function hashBackupCode(code) {
+  return createHash('sha256').update(String(code || '')).digest('hex')
 }
 
 function base32Decode(input) {
@@ -236,16 +243,18 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
     const plainCodes = []
     const hashedCodes = []
     for (let idx = 0; idx < BACKUP_CODE_COUNT; idx += 1) {
-      const code = randomBytes(4).toString('hex').toUpperCase()
+      // 8 bytes = 64 bits of entropy; 4 bytes was brute-forceable offline if the
+      // hashed codes ever leaked. Older 8-char codes still verify unchanged.
+      const code = randomBytes(8).toString('hex').toUpperCase()
       plainCodes.push(code)
-      hashedCodes.push(hash(code))
+      hashedCodes.push(hashBackupCode(code))
     }
     return { plainCodes, hashedCodes }
   }
 
   function consumeBackupCode(user, backupCode) {
     const mfa = ensureMfaData(user)
-    const lookup = hash(
+    const lookup = hashBackupCode(
       String(backupCode || '')
         .trim()
         .toUpperCase()
@@ -285,7 +294,12 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       const normalizedEmail = normalizeEmail(email)
       ensureLoginAllowed(normalizedEmail, ipAddress)
       const existingUser = getUserByEmail(normalizedEmail)
-      const user = existingUser && existingUser.passwordHash === hash(password) ? existingUser : null
+      // Always run a verification so an unknown email costs the same scrypt work
+      // as a known one — otherwise the timing difference enumerates accounts.
+      const verification = existingUser
+        ? verifyPassword(password, existingUser.passwordHash)
+        : verifyPassword(password, DUMMY_PASSWORD_HASH)
+      const user = existingUser && verification.verified ? existingUser : null
       if (!user) {
         registerFailedLogin(normalizedEmail, ipAddress)
         addAudit(existingUser?.firmId || 'system', existingUser?.id || null, 'auth', normalizedEmail, 'auth.login.failed', {
@@ -294,6 +308,15 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         throw new Error('Invalid email or password.')
       }
       registerSuccessfulLogin(user)
+      if (verification.needsRehash) {
+        // Legacy unsalted-SHA256 hash: upgrade to scrypt now that we hold the
+        // plaintext. The upsert is the durable write.
+        user.passwordHash = hashPassword(password)
+        upsertUserRow(user)
+        addAudit(user.firmId, user.id, 'user', user.id, 'auth.password_hash.upgraded', {
+          after: { algorithm: 'scrypt' }
+        })
+      }
       const mfa = ensureMfaData(user)
       if (!mfa.enabled) {
         addAudit(user.firmId, user.id, 'user', user.id, 'auth.login.succeeded', {
@@ -346,7 +369,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         id: randomUUID(),
         firmId: firm.id,
         email: normalizedEmail,
-        passwordHash: hash(password),
+        passwordHash: hashPassword(password),
         firstName,
         lastName,
         role: 'admin',
@@ -376,7 +399,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
         id: randomUUID(),
         firmId: invite.firmId,
         email: invite.email,
-        passwordHash: hash(password),
+        passwordHash: hashPassword(password),
         firstName,
         lastName,
         role: invite.role,
@@ -433,7 +456,7 @@ export function createLocalAuthProvider({ state, persist, createSession, addAudi
       }
       const user = getUserRow(reset.userId)
       if (!user) throw new Error('User not found.')
-      user.passwordHash = hash(password)
+      user.passwordHash = hashPassword(password)
       user.security ||= {}
       user.security.failedLoginCount = 0
       user.security.lockoutUntil = null

@@ -1415,7 +1415,12 @@ export function createHttpServer({ modules, mailer }) {
           })
         }
         finalizeLog(200)
-        return replyJson(200, result, { 'X-Request-Id': requestId })
+        // The reset token is a credential: it goes to the account's mailbox and
+        // nowhere else. Returning it here would let anyone who knows an email
+        // address mint a token and take over the account. The response is also
+        // identical for known and unknown emails, which is what makes the
+        // anti-enumeration guarantee above actually hold.
+        return replyJson(200, { ok: true }, { 'X-Request-Id': requestId })
       }
       if (pathname === '/api/password-resets/confirm' && req.method === 'POST') {
         authorize('canConfirmPasswordReset', { allowAnonymous: true })

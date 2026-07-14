@@ -11,8 +11,8 @@ import {
   upsertFirmRow
 } from '../storage.mjs'
 import { DEFAULT_STAGE_DEFINITIONS } from './constants.mjs'
+import { hashPassword } from '../auth/passwords.mjs'
 import {
-  hash,
   normalizeCustomFieldSchema,
   normalizeExtensions,
   normalizeFinancialSummary,
@@ -121,7 +121,7 @@ export function seedState({ objectStorage = defaultObjectStorage } = {}) {
         id: adminId,
         firmId,
         email: 'admin@demo.test',
-        passwordHash: hash('ChangeMe123!'),
+        passwordHash: hashPassword('ChangeMe123!'),
         firstName: 'Demo',
         lastName: 'Admin',
         role: 'admin',

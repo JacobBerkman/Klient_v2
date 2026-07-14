@@ -167,10 +167,6 @@ export function csvCell(value) {
   return text
 }
 
-export function hash(password) {
-  return createHash('sha256').update(password).digest('hex')
-}
-
 export function assertStrongPassword(password) {
   const value = String(password || '')
   if (value.length < 12) throw new Error('Password must be at least 12 characters long.')

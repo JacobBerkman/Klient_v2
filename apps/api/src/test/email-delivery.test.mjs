@@ -243,11 +243,14 @@ test('invite: one message to the invited address with a working token link; resp
   assert.equal(audits[0].actorUserId, 'user-admin-1')
 })
 
-test('password reset (known email): one message with the reset token link; response byte-identical', async () => {
+test('password reset (known email): token is emailed, never returned in the response', async () => {
   const response = await postEverywhere('/api/password-resets', { email: 'known@example.test' })
   assert.equal(response.status, 200)
   const body = JSON.parse(response.text)
-  assert.equal(body.token, RESET_TOKEN, 'response keeps returning the reset token')
+  // The reset token is a credential. Returning it to an unauthenticated caller
+  // would let anyone who knows an email address take over that account.
+  assert.deepEqual(body, { ok: true }, 'response is a bare acknowledgement')
+  assert.ok(!response.text.includes(RESET_TOKEN), 'reset token never appears in the response body')
 
   const messages = takeMessages()
   assert.equal(messages.length, 1, 'exactly one reset message')
@@ -274,6 +277,21 @@ test('password reset (unknown email): sends nothing, audits nothing, response un
   assert.deepEqual(JSON.parse(response.text), { ok: true }, 'anti-enumeration acknowledgement is unchanged')
   assert.equal(takeMessages().length, 0, 'no message for an unknown email')
   assert.equal(takeAudits().length, 0, 'no audit event for an unknown email')
+})
+
+test('password reset: known and unknown emails are indistinguishable to the caller', async () => {
+  // Anti-enumeration only holds if the caller cannot tell the two apart. A
+  // response that carried the token for real accounts (and not for fake ones)
+  // was itself the enumeration oracle.
+  const known = await postEverywhere('/api/password-resets', { email: 'known@example.test' })
+  takeMessages()
+  takeAudits()
+  const unknown = await postEverywhere('/api/password-resets', { email: 'nobody@example.test' })
+  takeMessages()
+  takeAudits()
+
+  assert.equal(known.status, unknown.status, 'same status code')
+  assert.equal(known.text, unknown.text, 'same response body for a real and a fake account')
 })
 
 test('portal link: one message to the profile email with the portal deep link; response byte-identical', async () => {
