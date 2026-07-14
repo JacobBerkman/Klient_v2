@@ -143,10 +143,30 @@ export function computeMappingVersionHash(mappings = []) {
     .digest('hex')
 }
 
+// A profile's date of birth lives encrypted in the PII envelope: createProfile
+// writes pii.dobEncrypted and leaves the plaintext column empty. Reading
+// profile.dateOfBirth directly therefore always yields '' and every DOB mapping
+// exports blank. Decryption is best-effort -- a missing key degrades to a blank
+// cell (the pre-existing behavior) rather than failing the export.
+export function resolveProfileDateOfBirth(profile, decryptSensitiveValue) {
+  const plain = String(profile?.dateOfBirth || '').trim()
+  if (plain) return plain
+  const encrypted = profile?.pii?.dobEncrypted || profile?.pii?.dobCiphertext || null
+  if (!encrypted || typeof decryptSensitiveValue !== 'function') return null
+  try {
+    const decrypted = decryptSensitiveValue(encrypted)
+    return decrypted ? String(decrypted) : null
+  } catch {
+    return null
+  }
+}
+
 // Projects a firm-scoped profile row down to the non-sensitive fields the
-// mapping vocabulary exposes (spouse.* / household.primary.*). Encrypted
-// profile.pii never crosses this boundary.
-export function sanitizeRelatedExportProfile(profile) {
+// mapping vocabulary exposes (spouse.* / household.primary.*). The encrypted
+// profile.pii object itself never crosses this boundary; the DOB crosses only
+// as a decrypted scalar, because the vocabulary advertises it as a mappable
+// path (SSN/taxId remain excluded by design).
+export function sanitizeRelatedExportProfile(profile, decryptSensitiveValue) {
   if (!profile || typeof profile !== 'object') return null
   return {
     id: profile.id || null,
@@ -154,23 +174,26 @@ export function sanitizeRelatedExportProfile(profile) {
     lastName: profile.lastName || null,
     email: profile.email || null,
     phone: profile.phone || null,
-    dateOfBirth: profile.dateOfBirth || null
+    dateOfBirth: resolveProfileDateOfBirth(profile, decryptSensitiveValue)
   }
 }
 
-export function buildHouseholdExportContext(householdRow, primaryProfile = null) {
+export function buildHouseholdExportContext(householdRow, primaryProfile = null, decryptSensitiveValue) {
   if (!householdRow || typeof householdRow !== 'object') return null
   return {
     id: householdRow.id || null,
     name: householdRow.name || null,
-    primary: sanitizeRelatedExportProfile(primaryProfile)
+    primary: sanitizeRelatedExportProfile(primaryProfile, decryptSensitiveValue)
   }
 }
 
 // Resolves the export client's spouse + household rows via injected firm-scoped
 // lookups. Null-safe: missing linkage yields nulls, which downstream resolution
 // treats as empty values (non-fatal, PDF_FIELD_SKIPPED_EMPTY / blank cell).
-export function buildRelatedExportEntities(profile, { getProfileRow, getHouseholdRow, firmId } = {}) {
+export function buildRelatedExportEntities(
+  profile,
+  { getProfileRow, getHouseholdRow, firmId, decryptSensitiveValue } = {}
+) {
   const spouseRow =
     profile?.spouseClientId && typeof getProfileRow === 'function'
       ? getProfileRow(profile.spouseClientId, { firmId })
@@ -184,8 +207,8 @@ export function buildRelatedExportEntities(profile, { getProfileRow, getHousehol
       ? getProfileRow(householdRow.primaryClientId, { firmId })
       : null
   return {
-    spouse: sanitizeRelatedExportProfile(spouseRow),
-    household: buildHouseholdExportContext(householdRow, primaryRow)
+    spouse: sanitizeRelatedExportProfile(spouseRow, decryptSensitiveValue),
+    household: buildHouseholdExportContext(householdRow, primaryRow, decryptSensitiveValue)
   }
 }
 

@@ -16,7 +16,8 @@ import { renderExportArtifact, renderExportArtifactPayload } from '../../export-
 import {
   resolveExportData,
   computeMappingVersionHash,
-  buildRelatedExportEntities
+  buildRelatedExportEntities,
+  resolveProfileDateOfBirth
 } from '../../export-data-resolution.mjs'
 import { createFirmContext, validateEntityOwnership } from '../shared/tenancy.mjs'
 
@@ -49,9 +50,23 @@ function resolveSubmission(firmId, submissionId, clientId) {
   return findLatestFormSubmissionForExport(firmId, clientId)
 }
 
-function createRenderContext({ firm, template, client, submission, spouse = null, household = null }) {
+function createRenderContext({
+  firm,
+  template,
+  client,
+  submission,
+  spouse = null,
+  household = null,
+  decryptSensitiveValue = null
+}) {
   const mappings = template?.mappings || []
-  const resolved = resolveExportData({ mappings, profile: client, submission, spouse, household })
+  // The client's DOB is encrypted at rest, so the raw row carries an empty
+  // dateOfBirth. Resolve it once here so both the `profile.dateOfBirth` mapping
+  // path and the snapshot below see the real value.
+  const exportClient = client
+    ? { ...client, dateOfBirth: resolveProfileDateOfBirth(client, decryptSensitiveValue) || '' }
+    : client
+  const resolved = resolveExportData({ mappings, profile: exportClient, submission, spouse, household })
   const mappingVersionHash = resolved.mappingVersionHash || computeMappingVersionHash(mappings)
   return {
     template: {
@@ -73,17 +88,17 @@ function createRenderContext({ firm, template, client, submission, spouse = null
           branding: firm.branding || null
         }
       : null,
-    client: client
+    client: exportClient
       ? {
-          id: client.id,
-          firstName: client.firstName || null,
-          lastName: client.lastName || null,
-          email: client.email || null,
-          phone: client.phone || null,
-          dateOfBirth: client.dateOfBirth || null,
-          kind: client.kind || null,
-          stage: client.stage || null,
-          source: client.source || null
+          id: exportClient.id,
+          firstName: exportClient.firstName || null,
+          lastName: exportClient.lastName || null,
+          email: exportClient.email || null,
+          phone: exportClient.phone || null,
+          dateOfBirth: exportClient.dateOfBirth || null,
+          kind: exportClient.kind || null,
+          stage: exportClient.stage || null,
+          source: exportClient.source || null
         }
       : null,
     submission: submission
@@ -203,6 +218,7 @@ export function createStoreExportsRepository({
   persist,
   addAuditEvent,
   objectStorage,
+  decryptSensitiveValue = null,
   now = () => new Date().toISOString()
 }) {
   function parseIsoDate(value) {
@@ -288,9 +304,18 @@ export function createStoreExportsRepository({
       const { spouse, household } = buildRelatedExportEntities(client, {
         getProfileRow,
         getHouseholdRow,
-        firmId: user.firmId
+        firmId: user.firmId,
+        decryptSensitiveValue
       })
-      const renderContext = createRenderContext({ firm, template, client, submission, spouse, household })
+      const renderContext = createRenderContext({
+        firm,
+        template,
+        client,
+        submission,
+        spouse,
+        household,
+        decryptSensitiveValue
+      })
 
       const queued = enqueueExportJob({
         id: randomUUID(),

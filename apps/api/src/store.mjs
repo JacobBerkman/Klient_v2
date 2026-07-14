@@ -114,7 +114,11 @@ import { createKeyProvider, PiiCryptoService } from './pii-crypto.mjs'
 import { createRuntimeKmsAdapter } from './kms-adapter.mjs'
 import { canUnmaskSensitiveData, maskSsn, maskTaxId, validateUnmaskRequest } from './security/pii-policy.mjs'
 import { renderExportArtifact } from './export-artifact.mjs'
-import { resolveExportData, buildRelatedExportEntities } from './export-data-resolution.mjs'
+import {
+  resolveExportData,
+  buildRelatedExportEntities,
+  resolveProfileDateOfBirth
+} from './export-data-resolution.mjs'
 import { renderPdfFromTemplate } from './export-renderers/pdf-template.mjs'
 import { createStoreExportsRepository } from './modules/exports/store-repository.mjs'
 import {
@@ -315,6 +319,15 @@ export function createStore({
     return piiService.decrypt(payload)
   }
 
+  // The DOB is encrypted at rest, so a raw profile row always reports an empty
+  // dateOfBirth. Mapping preview/preflight resolve against the same vocabulary
+  // as a real export, so they have to see the same decrypted value or they would
+  // report a blank where the export produces a value (and vice versa).
+  function profileForExport(profile) {
+    if (!profile) return profile
+    return { ...profile, dateOfBirth: resolveProfileDateOfBirth(profile, decryptSensitiveValue) || '' }
+  }
+
   function persist() {
     // Templates are no longer re-normalized/re-projected here: migrateTemplateSystems
     // runs once at boot, and each template mutation upserts its own row (aggregate
@@ -340,6 +353,7 @@ export function createStore({
       )
     },
     objectStorage,
+    decryptSensitiveValue,
     now
   })
 
@@ -874,7 +888,8 @@ export function createStore({
     objectStorage,
     createUploadIntent,
     resolveCompletionObject,
-    normalizeMalwareScan
+    normalizeMalwareScan,
+    decryptSensitiveValue
   })
   const uploadsDomain = createUploadsDomain({
     state,
@@ -3199,11 +3214,12 @@ export function createStore({
       const related = buildRelatedExportEntities(profile, {
         getProfileRow,
         getHouseholdRow,
-        firmId: user.firmId
+        firmId: user.firmId,
+        decryptSensitiveValue
       })
       const resolved = resolveExportData({
         mappings: template.mappings || [],
-        profile,
+        profile: profileForExport(profile),
         submission,
         spouse: related.spouse,
         household: related.household
@@ -3308,11 +3324,12 @@ export function createStore({
         const preflightRelated = buildRelatedExportEntities(profile, {
           getProfileRow,
           getHouseholdRow,
-          firmId: user.firmId
+          firmId: user.firmId,
+          decryptSensitiveValue
         })
         const preflight = resolveExportData({
           mappings: template.mappings || [],
-          profile,
+          profile: profileForExport(profile),
           submission,
           spouse: preflightRelated.spouse,
           household: preflightRelated.household

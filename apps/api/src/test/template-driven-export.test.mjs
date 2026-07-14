@@ -232,6 +232,69 @@ test('spouse and household mappings resolve into PDF and XLSX exports', async ()
   assert.ok(sharedStrings.includes('spouse_first'), 'XLSX shared strings should include the spouse source path')
 })
 
+test('date-of-birth mappings export the real DOB, not a blank (it is encrypted at rest)', async () => {
+  const store = await loadStore()
+  const user = createAdvisor(store)
+
+  // The DOB lives in the encrypted PII envelope and the plaintext column is
+  // always empty, so a resolver reading profile.dateOfBirth directly produced a
+  // blank cell for every DOB field -- silently, on a field auto-map fills with
+  // confidence.
+  const pdf = await PDFDocument.create()
+  const page = pdf.addPage([612, 792])
+  const form = pdf.getForm()
+  form.createTextField('client_dob').addToPage(page, { x: 72, y: 700, width: 240, height: 24 })
+  form.createTextField('spouse_dob').addToPage(page, { x: 72, y: 660, width: 240, height: 24 })
+  const sourcePdf = Buffer.from(await pdf.save())
+
+  const template = await store.autoBuildTemplate(user, {
+    name: 'DOB Export',
+    fileName: 'dob-export.pdf',
+    fileBytesBase64: sourcePdf.toString('base64')
+  })
+
+  const byField = Object.fromEntries(template.mappings.map((mapping) => [mapping.pdfField, mapping]))
+  assert.equal(byField.spouse_dob.fallbackSourcePath, 'spouse.dateOfBirth', 'auto-map claims the spouse DOB path')
+
+  const primary = store.createProfile(user, {
+    kind: 'client',
+    firstName: 'Dana',
+    lastName: 'Doe',
+    email: `dob-primary-${Date.now()}@example.test`,
+    dateOfBirth: '1980-05-01'
+  })
+  const spouse = store.createProfile(user, {
+    kind: 'client',
+    firstName: 'Sam',
+    lastName: 'Doe',
+    email: `dob-spouse-${Date.now()}@example.test`,
+    dateOfBirth: '1982-11-17'
+  })
+  store.linkSpouse(user, primary.id, spouse.id)
+
+  // Client leaves both DOB fields blank, so both resolve from firm records.
+  const submission = store.createFormSubmission(user, {
+    clientId: primary.id,
+    templateId: template.linkedFormTemplateId,
+    status: 'submitted',
+    data: {}
+  })
+
+  const job = store.createExport(user, {
+    templateId: template.id,
+    clientId: primary.id,
+    submissionId: submission.id,
+    type: 'pdf'
+  })
+  const processed = await store.processQueuedExports(user)
+  assert.equal(processed.failed, 0)
+
+  const download = await store.getExportDownload(user, job.id)
+  const filled = (await PDFDocument.load(download.body)).getForm()
+  assert.equal(filled.getTextField('spouse_dob').getText(), '1982-11-17', 'spouse DOB is decrypted into the export')
+  assert.equal(filled.getTextField('client_dob').getText(), '1980-05-01', 'client DOB is decrypted into the export')
+})
+
 test("a client's submitted answer wins over the auto-mapped record fallback", async () => {
   const store = await loadStore()
   const user = createAdvisor(store)

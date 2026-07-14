@@ -23,7 +23,11 @@ import {
   upsertFormSubmission,
   upsertPortalLinkRow
 } from '../storage.mjs'
-import { buildRelatedExportEntities, resolveRecordValue } from '../export-data-resolution.mjs'
+import {
+  buildRelatedExportEntities,
+  resolveRecordValue,
+  resolveProfileDateOfBirth
+} from '../export-data-resolution.mjs'
 import { assertRequiredFieldsForSubmission, normalizeSectionIdentifier, now, requirePermission } from './helpers.mjs'
 
 function normalizePortalScope(scope = {}) {
@@ -58,7 +62,7 @@ function collectScalarFieldKeys(sections = []) {
 // submits — so the answer, not the record, is what lands in the document.
 // Firm-scoped and null-safe: no linked document template, no spouse, or no
 // household simply yields fewer prefilled keys.
-function buildFormPrefill({ firmId, formTemplate, profile, templateAggregates }) {
+function buildFormPrefill({ firmId, formTemplate, profile, templateAggregates, decryptSensitiveValue }) {
   if (!formTemplate || !profile) return {}
   const documentTemplate = templateAggregates.find(
     (entry) => entry.firmId === firmId && entry.kind !== 'form' && entry.linkedFormTemplateId === formTemplate.id
@@ -71,8 +75,16 @@ function buildFormPrefill({ firmId, formTemplate, profile, templateAggregates })
   const { spouse, household } = buildRelatedExportEntities(profile, {
     getProfileRow,
     getHouseholdRow,
-    firmId
+    firmId,
+    decryptSensitiveValue
   })
+  // The DOB is encrypted at rest, so the raw row reports an empty dateOfBirth.
+  // Resolve it here too, or a `profile.dateOfBirth` mapping would leave the
+  // intake field blank while the export fills it.
+  const recordProfile = {
+    ...profile,
+    dateOfBirth: resolveProfileDateOfBirth(profile, decryptSensitiveValue) || ''
+  }
 
   const prefill = {}
   for (const rule of documentTemplate.mappings || []) {
@@ -81,7 +93,7 @@ function buildFormPrefill({ firmId, formTemplate, profile, templateAggregates })
     const fieldKey = String(rule.sourcePath || '').trim()
     const recordPath = String(rule.fallbackSourcePath || '').trim()
     if (!fieldKey || !recordPath || !fieldKeys.has(fieldKey)) continue
-    const value = resolveRecordValue({ sourcePath: recordPath, profile, spouse, household })
+    const value = resolveRecordValue({ sourcePath: recordPath, profile: recordProfile, spouse, household })
     if (value === undefined || value === null || value === '') continue
     prefill[fieldKey] = value
   }
@@ -138,7 +150,15 @@ function findDraftForScope({ draftId, firmId, clientId }) {
 }
 
 export function createPortalDomain(ctx) {
-  const { state, persist, objectStorage, createUploadIntent, resolveCompletionObject, normalizeMalwareScan } = ctx
+  const {
+    state,
+    persist,
+    objectStorage,
+    createUploadIntent,
+    resolveCompletionObject,
+    normalizeMalwareScan,
+    decryptSensitiveValue
+  } = ctx
   return {
     createPortalLink(user, profileId, options = {}) {
       const firmContext = requireFirmContext(user, { method: 'store.createPortalLink' })
@@ -237,7 +257,8 @@ export function createPortalDomain(ctx) {
             firmId: link.firmId,
             formTemplate: entry,
             profile,
-            templateAggregates: state.templateAggregates
+            templateAggregates: state.templateAggregates,
+            decryptSensitiveValue
           })
         }))
       const uploads = listDocumentUploadRowsByFirmClient(link.firmId, link.profileId)
