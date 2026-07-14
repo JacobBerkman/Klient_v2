@@ -228,7 +228,7 @@ test('invite: one message to the invited address with a working token link; resp
   assert.ok(messages[0].subject.includes(FIRM_NAME), 'subject names the firm')
   assert.ok(messages[0].text.includes(FIRM_NAME), 'body names the firm')
   assert.ok(
-    messages[0].text.includes(`${BASE_URL}/register?invite=${INVITE_TOKEN}`),
+    messages[0].text.includes(`${BASE_URL}/accept-invite?token=${INVITE_TOKEN}`),
     'body contains the invite link with the token'
   )
 
@@ -258,7 +258,7 @@ test('password reset (known email): token is emailed, never returned in the resp
   assert.equal(messages[0].template, 'passwordReset')
   assert.ok(messages[0].text.includes(FIRM_NAME), 'body names the firm (resolved via the seeded user row)')
   assert.ok(
-    messages[0].text.includes(`${BASE_URL}/login?reset=${RESET_TOKEN}`),
+    messages[0].text.includes(`${BASE_URL}/reset-password?token=${RESET_TOKEN}`),
     'body contains the reset link with the token'
   )
 

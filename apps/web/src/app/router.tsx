@@ -20,6 +20,19 @@ export const router = createBrowserRouter([
       {
         path: '/register',
         lazy: () => import('../pages/RegisterPage')
+      },
+      {
+        path: '/forgot-password',
+        lazy: () => import('../pages/ForgotPasswordPage')
+      },
+      // Destinations of the reset and invite emails. Both carry ?token=.
+      {
+        path: '/reset-password',
+        lazy: () => import('../pages/ResetPasswordPage')
+      },
+      {
+        path: '/accept-invite',
+        lazy: () => import('../pages/AcceptInvitePage')
       }
     ]
   },

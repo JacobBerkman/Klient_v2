@@ -20,6 +20,13 @@ interface RegisterPayload {
   password: string
 }
 
+interface AcceptInvitePayload {
+  token: string
+  firstName: string
+  lastName: string
+  password: string
+}
+
 interface PendingMfaLogin {
   email: string
   password: string
@@ -35,6 +42,7 @@ interface AuthContextValue {
   refreshSession: () => Promise<User | null>
   login: (payload: LoginPayload) => Promise<{ mfaRequired: boolean; user: User | null }>
   register: (payload: RegisterPayload) => Promise<User>
+  acceptInvite: (payload: AcceptInvitePayload) => Promise<User>
   logout: () => Promise<void>
   clearPendingMfa: () => void
 }
@@ -111,6 +119,17 @@ export function AuthProvider({ children }: PropsWithChildren) {
     return session.user
   }
 
+  // Accepting an invite establishes a session exactly like register does: the
+  // endpoint is pre-auth (no CSRF token exists yet) and replies with the user
+  // plus a session cookie.
+  async function acceptInvite(payload: AcceptInvitePayload) {
+    const session = await api.post<{ user: User }>(routes.invitesAccept(), payload, { skipCsrf: true })
+    setPendingMfa(null)
+    setUser(session.user)
+    setStatus('authenticated')
+    return session.user
+  }
+
   async function logout() {
     try {
       await api.post(routes.logout(), {})
@@ -132,6 +151,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
       refreshSession,
       login,
       register,
+      acceptInvite,
       logout,
       clearPendingMfa: () => setPendingMfa(null)
     }),

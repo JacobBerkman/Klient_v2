@@ -2,15 +2,13 @@
 // the server route supplies plus `baseUrl` (injected by the mailer from the
 // runtime APP_BASE_URL value) and returns { subject, text }.
 //
-// Link paths are verified against the real frontend router
-// (apps/web/src/app/router.tsx):
-//   - /portal reads ?token= (apps/web/src/pages/PortalPage.tsx), so the portal
-//     link is a fully working deep link.
-//   - There is no invite-acceptance or reset-confirmation page yet
-//     (RegisterPage.tsx is firm signup; LoginPage.tsx has no token handling),
-//     so invite/reset emails link to the closest existing route (/register,
-//     /login) with the token as a query parameter AND spell out the token on
-//     its own line so it can be used once those screens land.
+// Every link path is a real route in apps/web/src/app/router.tsx and reads the
+// ?token= query parameter:
+//   - /accept-invite   -> AcceptInvitePage.tsx
+//   - /reset-password  -> ResetPasswordPage.tsx
+//   - /portal          -> PortalPage.tsx
+// The reset token is now delivered ONLY here (the API no longer returns it in
+// the response body), so these links have to work.
 
 function trimTrailingSlashes(value) {
   return String(value || '').replace(/\/+$/, '')
@@ -36,7 +34,7 @@ function composeBody(lines) {
 export const templates = {
   userInvite({ baseUrl, token, firmName, role, expiresAt } = {}) {
     const firm = firmLabel(firmName)
-    const inviteUrl = appUrl(baseUrl, `/register?invite=${encodeURIComponent(String(token || ''))}`)
+    const inviteUrl = appUrl(baseUrl, `/accept-invite?token=${encodeURIComponent(String(token || ''))}`)
     return {
       subject: `You have been invited to join ${firm} on Kinetic Klient`,
       text: composeBody([
@@ -56,7 +54,7 @@ export const templates = {
   },
   passwordReset({ baseUrl, token, firmName, expiresAt } = {}) {
     const firm = firmLabel(firmName)
-    const resetUrl = appUrl(baseUrl, `/login?reset=${encodeURIComponent(String(token || ''))}`)
+    const resetUrl = appUrl(baseUrl, `/reset-password?token=${encodeURIComponent(String(token || ''))}`)
     return {
       subject: `Password reset for your ${firm} Kinetic Klient account`,
       text: composeBody([

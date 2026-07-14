@@ -1,8 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { randomUUID } from 'node:crypto'
 
 import { createStore } from '../store.mjs'
 import { createModules } from '../modules/index.mjs'
+
+// This suite runs against the shared data/app.db, so fixed invite addresses
+// would collide with the users a previous run already created (acceptInvite now
+// refuses to mint a second account for an address that already has one).
+const RUN = randomUUID().slice(0, 8)
 
 function createReads() {
   return {
@@ -28,9 +34,13 @@ test('draft collaboration regression enforces role + collaborator boundaries for
   const modules = createModules({ store, reads: createReads() })
   const adminSession = store.login({ email: 'admin@demo.test', password: 'ChangeMe123!' })
   const admin = store.requireUser(adminSession.token)
-  const advisor = inviteAndAccept(store, admin, { email: 'advisor-collab@demo.test', role: 'advisor', firstName: 'Adv' })
+  const advisor = inviteAndAccept(store, admin, {
+    email: `advisor-collab-${RUN}@demo.test`,
+    role: 'advisor',
+    firstName: 'Adv'
+  })
   const readonly = inviteAndAccept(store, admin, {
-    email: 'readonly-collab@demo.test',
+    email: `readonly-collab-${RUN}@demo.test`,
     role: 'readonly',
     firstName: 'Read'
   })

@@ -24,12 +24,22 @@ export function Component() {
   const { login, pendingMfa, clearPendingMfa, enableDemoMode, googleAuthEnabled } = useAuth()
   const navigate = useNavigate()
   const location = useLocation()
-  const initialError = new URLSearchParams(location.search).get('error')
+  const searchParams = new URLSearchParams(location.search)
+  const initialError = searchParams.get('error')
+  // ResetPasswordPage lands here after a successful reset (every session for the
+  // account was revoked, so there is nothing to resume).
+  const resetCompleted = searchParams.get('reset') === 'done'
   const [email, setEmail] = useState('admin@demo.test')
   const [password, setPassword] = useState('ChangeMe123!')
   const [totpCode, setTotpCode] = useState('')
   const [backupCode, setBackupCode] = useState('')
-  const [statusMessage, setStatusMessage] = useState(initialError ? googleErrorMessage(initialError) : '')
+  const [statusMessage, setStatusMessage] = useState(
+    initialError
+      ? googleErrorMessage(initialError)
+      : resetCompleted
+        ? 'Your password has been reset. Sign in with your new password.'
+        : ''
+  )
   const [submitting, setSubmitting] = useState(false)
 
   const nextPath = (location.state as { from?: string } | null)?.from
@@ -168,6 +178,11 @@ export function Component() {
             </button>
           ) : null}
         </div>
+        {!pendingMfa ? (
+          <p className="muted">
+            <Link to="/forgot-password">Forgot your password?</Link>
+          </p>
+        ) : null}
       </form>
       {statusMessage ? (
         <p className="inline-notice inline-notice-info" data-testid="auth-status" role="status" aria-live="polite">
