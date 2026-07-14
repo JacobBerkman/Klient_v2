@@ -138,6 +138,7 @@ import {
   INVITE_TTL_MS,
   LEGACY_STAGE_BUCKET,
   MEETING_TYPES,
+  PROFILE_UPDATABLE_FIELDS,
   SESSION_IDLE_TIMEOUT_MS,
   SESSION_MAX_AGE_MS,
   STAGE_KEY_PATTERN,
@@ -1094,9 +1095,27 @@ export function createStore({
           nextPatch.extensions || profile.extensions || {}
         )
       }
+      if ('dateOfBirth' in nextPatch) {
+        // Same contract as createProfile: the DOB lives encrypted in the PII
+        // envelope and the plaintext column stays empty. Assigning the raw value
+        // here would write an unencrypted date of birth to the row.
+        profile.pii = {
+          ...(profile.pii || { maskingPolicy: 'role_based' }),
+          dobEncrypted: encryptSensitiveValue(nextPatch.dateOfBirth || '')
+        }
+        nextPatch.dateOfBirth = ''
+      }
       if ('customProfile' in nextPatch) delete nextPatch.customProfile
       if ('tags' in nextPatch) nextPatch.tags = normalizeProfileTags(nextPatch.tags)
-      Object.assign(profile, nextPatch, { updatedAt: now() })
+      // Only these fields may be set from a request body. Object.assign with a
+      // caller-controlled patch previously let a PATCH overwrite firmId (moving
+      // the record to another tenant), id, createdAt, or the encrypted `pii`
+      // envelope itself -- swapping ciphertext for attacker-chosen plaintext.
+      const assignable = {}
+      for (const key of Object.keys(nextPatch)) {
+        if (PROFILE_UPDATABLE_FIELDS.has(key)) assignable[key] = nextPatch[key]
+      }
+      Object.assign(profile, assignable, { updatedAt: now() })
       upsertProfileRow(profile)
       addAudit(user.firmId, user.id, 'profile', profileId, 'profile.updated', { fields: Object.keys(patch) })
       persist()

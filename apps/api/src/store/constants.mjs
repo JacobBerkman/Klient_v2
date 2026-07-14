@@ -95,3 +95,30 @@ export const TEMPLATE_STATES = new Set(['draft', 'review', 'published', 'depreca
 // that round-trips in the profile canonical object (profiles.payload).
 export const MAX_PROFILE_TAG_LENGTH = 40
 export const MAX_PROFILE_TAGS = 20
+
+// The only profile fields a request body may set. Everything absent from this
+// set is server-owned: id/firmId/createdAt are identity, `pii` is the encrypted
+// envelope (writable only through the ssn/taxId/dateOfBirth inputs, which are
+// encrypted on the way in), archivedAt belongs to archive/restore,
+// pipelineVersion to the board transaction, and the source_* timestamps to the
+// source normalizer.
+export const PROFILE_UPDATABLE_FIELDS = new Set([
+  'kind',
+  'firstName',
+  'lastName',
+  'email',
+  'phone',
+  'dateOfBirth',
+  'status',
+  'stage',
+  'stageOrderIndex',
+  'orderIndex',
+  'householdId',
+  'spouseClientId',
+  'advisorUserId',
+  'source',
+  'sourceDisplay',
+  'tags',
+  'extensions',
+  'financialSummary'
+])
