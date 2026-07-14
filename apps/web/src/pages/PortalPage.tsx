@@ -64,16 +64,35 @@ type PortalScreenData =
 
 function renderField(
   field: FormField,
-  value: string,
-  onChange: (value: string) => void,
+  value: unknown,
+  onChange: (value: unknown) => void,
   disabled: boolean,
   suffix = ''
 ) {
+  // Without an explicit branch, a checkbox fell through to the generic <input>
+  // below: `checked` was never bound and every toggle wrote the string "on",
+  // so boolean answers never round-tripped. Mirrors SubmissionDetailPage.
+  if (field.type === 'checkbox' || field.type === 'boolean') {
+    return (
+      <label key={`${field.key}${suffix}`} className="checkbox-field">
+        <input
+          type="checkbox"
+          checked={value === true || String(value ?? '').toLowerCase() === 'true'}
+          onChange={(event) => onChange(event.target.checked)}
+          disabled={disabled}
+        />
+        <span>{field.label || field.key}</span>
+      </label>
+    )
+  }
+
+  const textValue = String(value ?? '')
+
   if (field.type === 'textarea') {
     return (
       <label key={`${field.key}${suffix}`}>
         <span>{field.label || field.key}</span>
-        <textarea rows={4} value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled} />
+        <textarea rows={4} value={textValue} onChange={(event) => onChange(event.target.value)} disabled={disabled} />
       </label>
     )
   }
@@ -82,7 +101,7 @@ function renderField(
     return (
       <label key={`${field.key}${suffix}`}>
         <span>{field.label || field.key}</span>
-        <select value={value} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
+        <select value={textValue} onChange={(event) => onChange(event.target.value)} disabled={disabled}>
           <option value="">Select</option>
           {(field.options || []).map((option) => (
             <option key={option} value={option}>
@@ -99,7 +118,7 @@ function renderField(
       <span>{field.label || field.key}</span>
       <input
         type={fieldInputType(field)}
-        value={value}
+        value={textValue}
         onChange={(event) => onChange(event.target.value)}
         disabled={disabled}
       />
@@ -335,7 +354,7 @@ function PortalDraftSection({
                     .map((field) =>
                       renderField(
                         field,
-                        String(rowObject[field.key] || ''),
+                        rowObject[field.key],
                         (nextValue) =>
                           setDraftData((current) =>
                             updateRepeaterRow(current, section, sectionIndex, rowIndex, {
@@ -368,7 +387,7 @@ function PortalDraftSection({
           .map((field) =>
             renderField(
               field,
-              String(draftData[field.key] || ''),
+              draftData[field.key],
               (nextValue) =>
                 setDraftData((current) => ({
                   ...current,

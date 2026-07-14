@@ -66,16 +66,15 @@ export function Component() {
     type: 'pdf'
   })
 
-  if (!hasGuard(user, 'canReadExports')) {
-    return (
-      <ErrorState
-        title="Export access required."
-        detail="This route preserves role-based visibility and only loads export operations for advisor and admin roles."
-      />
-    )
-  }
+  // Evaluated as a value, not an early return: bailing out before useAsync/useMemo
+  // below would change the hook count between renders of a mounted component (a
+  // session refresh swapping `user` is enough) and React would throw.
+  const canReadExports = hasGuard(user, 'canReadExports')
 
   const { data, error, loading } = useAsync<ExportsPageData>(async () => {
+    if (!canReadExports) {
+      return { exports: [], templates: [], profiles: [], submissions: [], queueHealth: null }
+    }
     const [exports, templates, profiles, submissions, queueHealth] = await Promise.all([
       api.get<ExportJob[]>(
         routes.exports({ status: statusFilter || undefined, profileId: profileFilter || undefined })
@@ -88,7 +87,7 @@ export function Component() {
         : Promise.resolve(null)
     ])
     return { exports, templates, profiles, submissions, queueHealth }
-  }, [refreshKey, profileFilter, statusFilter, user])
+  }, [refreshKey, profileFilter, statusFilter, user, canReadExports])
 
   const profileById = useMemo(
     () => new Map((data?.profiles || []).map((profile) => [profile.id, profile])),
@@ -142,6 +141,15 @@ export function Component() {
     } catch (retryError) {
       toast.error(retryError instanceof Error ? retryError.message : 'Retry failed.')
     }
+  }
+
+  if (!canReadExports) {
+    return (
+      <ErrorState
+        title="Export access required."
+        detail="This route preserves role-based visibility and only loads export operations for advisor and admin roles."
+      />
+    )
   }
 
   if (loading) return <LoadingState label="Loading exports" />
