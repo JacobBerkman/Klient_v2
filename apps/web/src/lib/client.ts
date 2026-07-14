@@ -142,9 +142,15 @@ export const routes = {
     `${joinPath('/api/storage/uploads', uploadId)}?key=${encodeURIComponent(objectKey)}`
 }
 
-// Endpoints that legitimately answer 401 while anonymous -- a 401 from these is
-// not an expired session.
-const PRE_AUTH_PATHS = [
+// Endpoints whose 401 does NOT mean "your session expired", so they must not
+// trigger the global sign-out:
+//   - pre-auth endpoints: /api/session answering 401 while anonymous is its
+//     normal reply, not an expiry.
+//   - /api/ops/*: token-gated on KLIENT_OPS_TOKEN. They answer 401 to a
+//     perfectly valid admin session that simply has no ops token, and OpsPage
+//     deliberately tolerates that (see tolerateTokenGated). Signing the user out
+//     for it would boot any admin who opened the Ops page.
+const AUTH_REDIRECT_EXEMPT_PATHS = [
   '/api/session',
   '/api/login',
   '/api/register',
@@ -153,7 +159,8 @@ const PRE_AUTH_PATHS = [
   '/api/config',
   '/api/password-resets',
   '/api/invites/accept',
-  '/api/portal'
+  '/api/portal',
+  '/api/ops'
 ]
 
 let unauthorizedHandler: (() => void) | null = null
@@ -296,10 +303,8 @@ class ApiClient {
     // A session that expires mid-use used to surface as a page-level "failed to
     // load" error on whatever screen the user happened to be on. Tell the auth
     // provider instead: it drops the session, and RequireBackofficeSession sends
-    // them to /login with a return path. The pre-auth endpoints are excluded --
-    // /api/session answering 401 while anonymous is its normal reply, not an
-    // expiry.
-    if (response.status === 401 && !PRE_AUTH_PATHS.some((prefix) => path.startsWith(prefix))) {
+    // them to /login with a return path.
+    if (response.status === 401 && !AUTH_REDIRECT_EXEMPT_PATHS.some((prefix) => path.startsWith(prefix))) {
       unauthorizedHandler?.()
     }
 
