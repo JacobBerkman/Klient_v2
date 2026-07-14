@@ -1698,6 +1698,20 @@ export function createStore({
       const stage = validateTenantEntityOwnership(context, getPipelineStageRecordRow(stageId), {
         entityName: 'Pipeline stage'
       })
+      // A firm with no active stages cannot place a prospect anywhere:
+      // getDefaultProspectStage throws, so prospect creation and board moves
+      // break firm-wide. The admin UI disables the last stage's button, but that
+      // is only a client-side guard -- one direct API call would brick the board.
+      if (stage.isActive !== false) {
+        const activeStages = listFirmPipelineStages(context.firmId).filter((entry) => entry.isActive !== false)
+        if (activeStages.length <= 1) {
+          const error = new Error('A firm must keep at least one active pipeline stage.')
+          error.statusCode = 409
+          error.code = 'PIPELINE_LAST_ACTIVE_STAGE'
+          error.details = { stageId: stage.id, key: stage.key }
+          throw error
+        }
+      }
       stage.isActive = false
       stage.deactivatedAt = now()
       stage.updatedAt = stage.deactivatedAt

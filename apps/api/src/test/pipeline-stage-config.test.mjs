@@ -199,3 +199,43 @@ test('pipeline + stage config flow: create/deactivate/reorder stages then move c
   assert.ok(Array.isArray(board.columns))
   assert.ok(board.columns.every((column) => Array.isArray(column.cards)))
 })
+
+test('the last active stage cannot be deactivated', async (t) => {
+  const store = await loadStore()
+  if (!requireStageConfigApi(store, t)) return
+  const advisor = createAdvisor(store, 'Last Stage Firm')
+
+  // Deactivate every stage but one. The UI disables the final button, but the
+  // API is what has to hold: with zero active stages getDefaultProspectStage
+  // throws and the firm can no longer create a prospect or move a card.
+  const activeStages = () =>
+    store.listPipelineStages(advisor).stages.filter((stage) => stage.isActive !== false)
+
+  const stages = activeStages()
+  assert.ok(stages.length > 1, 'fixture starts with several active stages')
+  for (const stage of stages.slice(0, -1)) {
+    store.deactivatePipelineStage(advisor, stage.id)
+  }
+
+  const [survivor] = activeStages()
+  assert.ok(survivor, 'exactly one active stage remains')
+
+  assert.throws(
+    () => store.deactivatePipelineStage(advisor, survivor.id),
+    (error) => {
+      assert.equal(error.code, 'PIPELINE_LAST_ACTIVE_STAGE')
+      assert.equal(error.statusCode, 409)
+      return true
+    }
+  )
+
+  // The board still works: the surviving stage is intact and usable.
+  assert.equal(activeStages().length, 1)
+  const prospect = store.createProfile(advisor, {
+    kind: 'prospect',
+    firstName: 'Still',
+    lastName: 'Works',
+    email: `last-stage-${Date.now()}@example.test`
+  })
+  assert.equal(prospect.stage, survivor.key, 'prospects can still be placed on the board')
+})

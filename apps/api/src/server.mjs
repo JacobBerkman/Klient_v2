@@ -2002,8 +2002,13 @@ export function createHttpServer({ modules, mailer }) {
         // Opt-in pagination: limit/cursor switches to the { items, nextCursor }
         // envelope; the no-param response stays the legacy bare array.
         if (url.searchParams.has('limit') || url.searchParams.has('cursor')) {
+          const includeArchived = url.searchParams.get('includeArchived')
           const result = modules.households.listHouseholdsPage(user, {
             search: url.searchParams.get('search') || '',
+            // The service and the SQL both honor this; dropping it here made the
+            // paged endpoint silently ignore an explicit includeArchived=1 and
+            // diverge from the /api/profiles handler.
+            includeArchived: includeArchived === '1' || includeArchived === 'true',
             cursor: url.searchParams.get('cursor') || '',
             limit: url.searchParams.get('limit') || ''
           })
