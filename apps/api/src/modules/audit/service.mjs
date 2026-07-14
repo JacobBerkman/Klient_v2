@@ -1,5 +1,19 @@
 import { decodeCursor, encodeCursor } from '../shared/cursor.mjs'
+import { authCategoryPrefixes } from '../activity/categories.mjs'
 import { CANONICAL_AUDIT_FIELDS, createCanonicalAuditEvent } from './schema.mjs'
+
+// /api/activity hides other users' auth-category events from advisors and
+// read-only users, but the raw audit endpoint handed those same roles every
+// event with full before/after payloads -- so the privacy rule could be
+// sidestepped simply by reading /api/audit instead. Same rule, same SQL
+// enforcement, one definition of "auth category".
+function authPrivacyFor(user) {
+  return {
+    restrictAuthToSelf: user.role !== 'admin',
+    authPrefixes: authCategoryPrefixes(),
+    selfUserId: user.id
+  }
+}
 
 function normalizeLegacyEvent(event = {}) {
   if (event.actor && Object.prototype.hasOwnProperty.call(event, 'timestamp')) {
@@ -23,7 +37,7 @@ export function createAuditService({ store, policy }) {
     list(user, filters = {}) {
       policy.requireGuard(user, 'canReadAudit')
       // The store clamps the read to the newest 200 events (default and max).
-      return store.listAudit(user, { limit: filters.limit }).map(normalizeLegacyEvent)
+      return store.listAudit(user, { limit: filters.limit, ...authPrivacyFor(user) }).map(normalizeLegacyEvent)
     },
     // Opt-in keyset pagination ({ items, nextCursor }) so the audit UI can walk
     // past the newest 200 events — a hard requirement for compliance review.
@@ -35,7 +49,8 @@ export function createAuditService({ store, policy }) {
       // uses the { items, nextCursor } shape every other paged list exposes.
       const { events, nextCursor } = store.listAuditPage(user, {
         cursor: decodeCursor(filters.cursor),
-        limit: Number.isFinite(requestedLimit) ? requestedLimit : 200
+        limit: Number.isFinite(requestedLimit) ? requestedLimit : 200,
+        ...authPrivacyFor(user)
       })
       return { items: (events || []).map(normalizeLegacyEvent), nextCursor: encodeCursor(nextCursor) }
     }

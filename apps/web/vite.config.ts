@@ -18,7 +18,10 @@ const apiProxy: ProxyOptions = {
 
 export default defineConfig({
   plugins: [react()],
-  publicDir: false,
+  // Emits public/theme-init.js -- the render-blocking pre-paint theme script.
+  // It is a served file rather than an inline <script> so the Content-Security-
+  // Policy can stay script-src 'self' with no 'unsafe-inline' and no fragile hash.
+  publicDir: resolve(__dirname, 'public'),
   build: {
     outDir: resolve(__dirname, 'dist'),
     emptyOutDir: true,

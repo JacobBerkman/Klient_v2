@@ -3569,21 +3569,43 @@ export function createStore({
       })
       return { processed: result.processed, leased: result.leased, failed: result.failed }
     },
-    listAudit(user, { limit } = {}) {
+    listAudit(user, { limit, restrictAuthToSelf = false, authPrefixes = null, selfUserId = null } = {}) {
       requirePermission(user, 'audit:read')
       // Firm-scoped SQL read, newest first — audit_events is the source of
       // truth and the blob no longer carries audit events at all. The read is
       // clamped to the newest 200 rows so the endpoint stays bounded; callers
       // that need deeper history use listAuditPage below (opt-in cursor).
       const cappedLimit = Math.min(Math.max(Number.parseInt(limit, 10) || 200, 1), 200)
+      // The auth-privacy filter is applied in SQL (same as the activity feed) so
+      // a restricted page is never silently short.
+      if (restrictAuthToSelf) {
+        const { events } = queryAuditEventsPage({
+          firmId: user.firmId,
+          limit: cappedLimit,
+          restrictAuthToSelf,
+          authPrefixes,
+          selfUserId
+        })
+        return events
+      }
       return listAuditEvents(user.firmId, { limit: cappedLimit })
     },
     // Opt-in keyset pagination over the SAME clamped read, so the audit trail
     // stays fully reachable past the newest 200 events (a hard requirement for
     // compliance review) without ever returning an unbounded result set.
-    listAuditPage(user, { cursor = null, limit = 200 } = {}) {
+    listAuditPage(
+      user,
+      { cursor = null, limit = 200, restrictAuthToSelf = false, authPrefixes = null, selfUserId = null } = {}
+    ) {
       requirePermission(user, 'audit:read')
-      return queryAuditEventsPage({ firmId: user.firmId, cursor, limit })
+      return queryAuditEventsPage({
+        firmId: user.firmId,
+        cursor,
+        limit,
+        restrictAuthToSelf,
+        authPrefixes,
+        selfUserId
+      })
     },
     // Keyset-paginated, filtered activity-feed read. Permission gating and the
     // category->prefix mapping live in the activity module; this is the thin

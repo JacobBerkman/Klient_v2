@@ -657,13 +657,39 @@ async function serveStatic(pathname, res, requestId) {
   return notFound(res, requestId)
 }
 
+// Everything the SPA needs and nothing else.
+//   script-src 'self'  - the pre-paint theme script lives in public/theme-init.js
+//                        rather than inline precisely so this can stay strict.
+//   style-src  'unsafe-inline' - unavoidable: the mapper positions its field
+//                        overlays with inline style attributes, and CSP2 folds
+//                        style attributes into style-src.
+//   worker-src blob:   - pdf.js instantiates its bundled worker via a blob URL.
+//   img-src    blob:   - the mapper's test-fill preview opens a blob: PDF.
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "script-src 'self'",
+  "style-src 'self' 'unsafe-inline'",
+  "img-src 'self' data: blob:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "worker-src 'self' blob:"
+].join('; ')
+
 function baseHeaders() {
   return {
     'X-Frame-Options': 'DENY',
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
     'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
-    'Cross-Origin-Resource-Policy': 'same-origin'
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Content-Security-Policy': CONTENT_SECURITY_POLICY,
+    // Inert over plain HTTP (browsers ignore it) and enforced as soon as TLS
+    // terminates in front of the app -- see the Caddy compose profile.
+    'Strict-Transport-Security': 'max-age=31536000; includeSubDomains'
   }
 }
 
