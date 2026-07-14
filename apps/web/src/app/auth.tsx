@@ -1,5 +1,5 @@
 import { createContext, useContext, useEffect, useMemo, useState, type PropsWithChildren } from 'react'
-import { api, routes } from '../lib/client'
+import { api, routes, setUnauthorizedHandler } from '../lib/client'
 import type { RuntimePayload, User } from '../lib/types'
 
 type AuthStatus = 'loading' | 'authenticated' | 'anonymous'
@@ -71,6 +71,19 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   useEffect(() => {
     void refreshSession()
+  }, [])
+
+  // Any 401 from an authenticated endpoint means the session went away (expired,
+  // revoked by a password reset, signed out in another tab). Drop it here and the
+  // route guard redirects to /login with a return path.
+  useEffect(() => {
+    setUnauthorizedHandler(() => {
+      api.clearCsrfToken()
+      setPendingMfa(null)
+      setUser(null)
+      setStatus('anonymous')
+    })
+    return () => setUnauthorizedHandler(null)
   }, [])
 
   async function refreshSession() {

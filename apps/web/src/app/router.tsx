@@ -1,5 +1,6 @@
 import { createBrowserRouter } from 'react-router-dom'
 import { AnonymousOnly, AppShell, AuthFrame, RequireBackofficeSession, RootRedirect } from './shell'
+import { RouteError } from './RouteError'
 
 export const router = createBrowserRouter([
   {
@@ -12,6 +13,7 @@ export const router = createBrowserRouter([
         <AuthFrame />
       </AnonymousOnly>
     ),
+    errorElement: <RouteError />,
     children: [
       {
         path: '/login',
@@ -46,6 +48,9 @@ export const router = createBrowserRouter([
         <AppShell />
       </RequireBackofficeSession>
     ),
+    // Keeps a render throw or a stale-chunk import failure inside the app shell
+    // instead of dropping the user on React Router's default error screen.
+    errorElement: <RouteError />,
     children: [
       { path: '/dashboard', lazy: () => import('../pages/DashboardPage') },
       { path: '/pipeline', lazy: () => import('../pages/PipelinePage') },

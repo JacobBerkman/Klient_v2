@@ -1979,6 +1979,15 @@ export function createStore({
       validateTenantEntityOwnership(firmContext, getProfileRow(input.clientId), {
         entityName: 'Profile'
       })
+      // A profile carries exactly one householdId, so membership rows for any
+      // OTHER household are stale the moment this one is added -- leaving them
+      // behind made member lists and profile.householdId disagree. Dropping the
+      // same-household row too keeps re-adding an existing member idempotent
+      // (it previously appended a duplicate row) while still allowing a role
+      // change through the same call.
+      state.householdMembers = state.householdMembers.filter(
+        (entry) => !(entry.firmId === user.firmId && entry.clientId === input.clientId)
+      )
       const member = { householdId, clientId: input.clientId, role: input.role, firmId: user.firmId, createdAt: now() }
       state.householdMembers.push(member)
       const profile = getProfileRow(input.clientId, { firmId: user.firmId })

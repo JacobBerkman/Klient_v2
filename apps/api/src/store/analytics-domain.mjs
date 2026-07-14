@@ -121,6 +121,14 @@ export function createAnalyticsDomain(ctx) {
         if (endDate && created && created > endDate) return false
         if (cohortBy === 'stage' && cohortValue && (entry.stage || 'unassigned') !== cohortValue) return false
         if (cohortBy === 'advisor' && cohortValue && entry.advisorUserId !== cohortValue) return false
+        // The UI has always offered a "Source" cohort, but only stage and
+        // advisor were implemented -- picking Source silently returned
+        // unfiltered numbers. Matches the same venue the attribution panel
+        // buckets by (source.sourceVenue).
+        if (cohortBy === 'source' && cohortValue) {
+          const venue = String(entry.source?.sourceVenue || '').trim()
+          if (venue !== cohortValue) return false
+        }
         return true
       })
       const stageCounts = prospects.reduce((acc, profile) => {

@@ -142,6 +142,28 @@ export const routes = {
     `${joinPath('/api/storage/uploads', uploadId)}?key=${encodeURIComponent(objectKey)}`
 }
 
+// Endpoints that legitimately answer 401 while anonymous -- a 401 from these is
+// not an expired session.
+const PRE_AUTH_PATHS = [
+  '/api/session',
+  '/api/login',
+  '/api/register',
+  '/api/csrf',
+  '/api/runtime',
+  '/api/config',
+  '/api/password-resets',
+  '/api/invites/accept',
+  '/api/portal'
+]
+
+let unauthorizedHandler: (() => void) | null = null
+
+// Registered by AuthProvider so an expired session drops the user to /login
+// instead of rendering an error state on whatever page they were using.
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler
+}
+
 export class ApiError extends Error {
   status: number
   code: string | null
@@ -269,6 +291,16 @@ class ApiClient {
     if (mutating && !options.skipCsrf && !hasRetriedCsrf && isCsrfRejection(response.status, body)) {
       this.clearCsrfToken()
       return this.performRequest<T>(path, options, true)
+    }
+
+    // A session that expires mid-use used to surface as a page-level "failed to
+    // load" error on whatever screen the user happened to be on. Tell the auth
+    // provider instead: it drops the session, and RequireBackofficeSession sends
+    // them to /login with a return path. The pre-auth endpoints are excluded --
+    // /api/session answering 401 while anonymous is its normal reply, not an
+    // expiry.
+    if (response.status === 401 && !PRE_AUTH_PATHS.some((prefix) => path.startsWith(prefix))) {
+      unauthorizedHandler?.()
     }
 
     const errorBody = body && typeof body === 'object' ? (body as Record<string, unknown>) : {}
